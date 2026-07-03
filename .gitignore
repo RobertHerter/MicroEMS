@@ -1,3 +1,4 @@
 config.yaml
 dashboard.html
-__pycache__/
+ems/__pycache__/
+test/__pycache__/
