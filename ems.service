@@ -1,0 +1,17 @@
+[Unit]
+Description=EMS - Energy Management System (Haus-Akku, PV, Fahrzeug)
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ems
+WorkingDirectory=/opt/ems
+ExecStart=/opt/ems/.venv/bin/python -m ems.main --config /opt/ems/config.yaml --loop
+Restart=on-failure
+RestartSec=15
+# System-Umgebung
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

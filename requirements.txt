@@ -1,0 +1,23 @@
+# EMS – Python dependencies (Raspberry Pi OS Trixie / Debian 13)
+# Install into a venv:  python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+
+PyYAML>=6.0
+pandas>=2.0
+numpy>=1.24
+python-dateutil>=2.8
+
+# Optimierung (MILP). PuLP bringt den CBC-Solver bereits mit.
+PuLP>=2.7
+
+# Feiertage (Verbrauchsprognose)
+holidays>=0.45
+
+# InfluxDB – beide Clients, je nach konfigurierter Version wird einer genutzt
+influxdb>=5.3            # InfluxDB 1.x (InfluxQL)
+influxdb-client>=1.40    # InfluxDB 2.x (Flux)
+
+# MQTT-Ausgabe an Homey
+paho-mqtt>=1.6
+
+# Dashboard (selbst-enthaltenes interaktives HTML)
+plotly>=5.18

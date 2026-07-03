@@ -1,0 +1,147 @@
+# =============================================================================
+# EMS – Konfiguration (Beispiel)
+# Kopieren nach config.yaml und anpassen.
+# Alle Leistungen in W, Energien in Wh, Preise in ct/kWh, Zeiten lokal.
+# =============================================================================
+
+general:
+  timezone: "Europe/Berlin"
+  # Länge der Steuertabelle (Optimierungshorizont)
+  optimization_horizon_hours: 48
+  # Länge der Verbrauchsprognose, die in die DB geschrieben wird
+  forecast_horizon_hours: 72
+  # Zeitraster in Minuten (15 = 96 Slots/Tag)
+  slot_minutes: 15
+  # Wie oft der Dienst rechnet (nur bei --loop). In Minuten.
+  run_interval_minutes: 15
+
+# -----------------------------------------------------------------------------
+# InfluxDB – Version 1 oder 2 wählen. Nur der jeweilige Block muss gefüllt sein.
+# -----------------------------------------------------------------------------
+influxdb:
+  version: 2            # 1 oder 2
+
+  # ---- Version 1.x (InfluxQL) -------------------------------------------------
+  v1:
+    host: "localhost"
+    port: 8086
+    username: ""
+    password: ""
+    database: "homey"
+    ssl: false
+    verify_ssl: false
+
+  # ---- Version 2.x (Flux) -----------------------------------------------------
+  v2:
+    url: "http://localhost:8086"
+    token: "MEIN_INFLUX_TOKEN"
+    org: "meine-org"
+    bucket: "homey"
+
+  # ---- Signal-Zuordnung -------------------------------------------------------
+  # Für jedes Eingangssignal: measurement + field (+ optionale Tag-Filter).
+  # Diese Namen an die tatsächliche Homey/InfluxDB-Struktur anpassen.
+  signals:
+    house_consumption:      { measurement: "power", field: "house_load_w" }
+    electricity_price:      { measurement: "price", field: "import_ct_kwh" }
+    battery_soc:            { measurement: "battery", field: "soc_percent" }   # 0..100
+    pv_generation:          { measurement: "power", field: "pv_w" }
+    pv_forecast:            { measurement: "forecast", field: "pv_w" }         # Zukunftswerte
+    vehicle_soc:            { measurement: "car", field: "soc_percent", optional: true }
+    # Einspeisevergütung aus DB (nur wenn feed_in.mode == "db")
+    feed_in_tariff:         { measurement: "price", field: "feedin_ct_kwh" }
+
+  # ---- Ziel-Measurements (EMS schreibt hierhin) -------------------------------
+  outputs:
+    load_forecast:   "ems_load_forecast"   # prognostizierter Hausverbrauch (W)
+    control_table:   "ems_control"         # Steuerbefehle (W) je Slot, 48h
+    predicted_state: "ems_prediction"      # prognostizierte SoCs, Netz, Kosten je Slot
+
+# -----------------------------------------------------------------------------
+# Einspeisevergütung
+# -----------------------------------------------------------------------------
+feed_in:
+  mode: "fixed"          # "fixed" oder "db"
+  fixed_ct_kwh: 8.11     # gilt nur bei mode == "fixed"
+
+# -----------------------------------------------------------------------------
+# Haus-Batteriespeicher
+# -----------------------------------------------------------------------------
+house_battery:
+  capacity_wh: 10000
+  max_dc_charge_w: 5000       # max. DC-Ladeleistung (aus PV)
+  max_ac_charge_w: 3000       # max. AC-Ladeleistung (aus Netz)
+  max_discharge_w: 5000       # max. Entladeleistung
+  min_soc_percent: 10
+  max_soc_percent: 100
+  charge_efficiency: 0.96     # 0..1
+  discharge_efficiency: 0.96  # 0..1
+
+# -----------------------------------------------------------------------------
+# Wechselrichter
+# -----------------------------------------------------------------------------
+inverter:
+  max_ac_power_w: 8000        # max. AC-Leistung (Summe Durchsatz)
+
+# -----------------------------------------------------------------------------
+# Fahrzeug (optional – wird nur optimiert, wenn vehicle_soc verfügbar ist)
+# -----------------------------------------------------------------------------
+vehicle:
+  enabled: true
+  capacity_wh: 60000
+  max_charge_w: 11000
+  min_charge_w: 1400          # minimale Ladeleistung, wenn geladen wird (sonst 0)
+  min_soc_percent: 20
+  target_soc_percent: 80
+  departure_time: "07:00"     # tägliche Abfahrtzeit (lokal)
+  charge_efficiency: 0.92
+
+# -----------------------------------------------------------------------------
+# Optimierung
+# -----------------------------------------------------------------------------
+optimization:
+  # Wert des am Ende des Horizonts gespeicherten Akku-Inhalts (ct/kWh).
+  # Verhindert, dass der Akku am Horizontende myopisch entleert wird.
+  # "auto" = mittlerer Importpreis des Horizonts, oder feste Zahl in ct/kWh.
+  terminal_soc_value: "auto"
+  # Kleiner Zyklus-Malus (ct/kWh Durchsatz) gegen unnötiges Laden/Entladen.
+  cycle_penalty_ct_kwh: 0.1
+  solver_time_limit_s: 60
+
+# -----------------------------------------------------------------------------
+# Verbrauchsprognose (Ähnliche-Tage-Mittelung)
+# -----------------------------------------------------------------------------
+forecast:
+  lookback_days: 730          # Historie, die betrachtet wird (2 Jahre)
+  holiday_country: "DE"
+  holiday_subdivision: "BY"   # Bundesland (z.B. BY, BW, NW ...)
+  # Gewichte für die Ähnlichkeit (siehe forecast.py)
+  weight_same_weekday: 3.0
+  weight_same_daytype: 2.0    # Werktag/Wochenende/Feiertag
+  weight_same_month: 1.5
+  weight_same_season: 1.0
+  min_samples: 3              # min. Stichproben pro Slot, sonst Fallback
+
+# -----------------------------------------------------------------------------
+# MQTT (Ausgabe an Homey)
+# -----------------------------------------------------------------------------
+mqtt:
+  enabled: true
+  host: "localhost"
+  port: 1883
+  username: ""
+  password: ""
+  base_topic: "ems"
+  # Aktuelle Sollwerte des laufenden Slots als Einzeltopics publizieren
+  publish_setpoints: true
+  # Zusätzlich komplette 48h-Tabelle als JSON publizieren
+  publish_schedule_json: true
+  qos: 1
+  retain: true
+
+# -----------------------------------------------------------------------------
+# Dashboard
+# -----------------------------------------------------------------------------
+dashboard:
+  enabled: true
+  output_path: "./dashboard.html"
