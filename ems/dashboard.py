@@ -115,7 +115,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
             fig.add_trace(go.Scatter(
                 x=[x[0]], y=[None], mode="markers", name=_MODE_LABEL.get(m, m),
                 marker=dict(size=11, symbol="square", color=_MODE_LEGEND_COLOR.get(m, "gray")),
-                yaxis="y"))
+                yaxis="y", hoverinfo="skip", showlegend=True))
 
     # "Jetzt"-Linie über beide Panels
     now = pd.Timestamp.now(tz=x.tz)
@@ -123,23 +123,28 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
 
     n_eingriffe = int((table["mode"] != "auto").sum()) if has_mode else 0
     fig.update_layout(
-        height=920,
+        height=940,
         barmode="relative",
         template="plotly_white",
         hovermode="x unified",
-        title=(f"EMS Steuertabelle & Vorhersage — erwartete Netto-Kosten Horizont: "
-               f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} aktive Eingriffe  ·  "
-               f"Stand {now.strftime('%Y-%m-%d %H:%M')}"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="left", x=0),
-        margin=dict(l=65, r=120, t=95, b=40),
+        title=dict(
+            text=(f"EMS Steuertabelle & Vorhersage — Netto-Kosten Horizont: "
+                  f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} aktive Eingriffe  ·  "
+                  f"Stand {now.strftime('%Y-%m-%d %H:%M')}"),
+            x=0.5, xanchor="center", y=0.985, yanchor="top",
+        ),
+        # Legende UNTEN, damit sie nicht in den Titel läuft
+        legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="left", x=0,
+                    font=dict(size=10)),
+        margin=dict(l=65, r=120, t=70, b=150),
         # gemeinsame Zeitachse, rechts Platz für zwei zusätzliche Y-Achsen
         xaxis=dict(domain=[0.0, 0.86], anchor="y4"),
-        yaxis=dict(title="Leistung (W)", domain=[0.40, 1.0], zeroline=True),
-        yaxis2=dict(title="SoC (%)", domain=[0.40, 1.0], overlaying="y", side="right",
+        yaxis=dict(title="Leistung (W)", domain=[0.40, 0.95], zeroline=True),
+        yaxis2=dict(title="SoC (%)", domain=[0.40, 0.95], overlaying="y", side="right",
                     range=[0, 101], showgrid=False),
-        yaxis3=dict(title="Preis (ct/kWh)", domain=[0.40, 1.0], overlaying="y",
+        yaxis3=dict(title="Preis (ct/kWh)", domain=[0.40, 0.95], overlaying="y",
                     side="right", anchor="free", position=0.93, showgrid=False),
-        yaxis4=dict(title="Steuerung (W)", domain=[0.0, 0.30], zeroline=True),
+        yaxis4=dict(title="Steuerung (W)", domain=[0.0, 0.28], zeroline=True),
     )
 
     out = config.dashboard.output_path

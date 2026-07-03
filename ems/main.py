@@ -134,9 +134,10 @@ def run_once(config: Config) -> None:
         log.info("Steuertabelle + Prognosezustände in InfluxDB geschrieben.")
 
         # --- 6) Dashboard ----------------------------------------------- #
+        # Direkt aus der vollständigen Optimierungstabelle (jetzt -> +48 h);
+        # keine Ist-Vergangenheit vormischen (vermeidet NaN-Lücken/-Hover).
         if config.dashboard.enabled:
-            display = _build_display_table(repo, config, now, result.table)
-            build_dashboard(config, display, result.total_cost_ct)
+            build_dashboard(config, result.table, result.total_cost_ct)
     finally:
         repo.close()
 

@@ -134,6 +134,16 @@ class Optimizer:
         b_grid = [pulp.LpVariable(f"bgrid_{t}", cat="Binary") for t in range(N)]
         BIGG = 60000.0
 
+        # Eigenverbrauchs-Priorität (harte Regel): Einspeisen nur erlaubt, wenn der
+        # Akku VOLL ist (is_full) ODER mit maximaler Leistung lädt (at_max). Dadurch
+        # lädt jeder PV-Überschuss zuerst in den Akku – früh und deterministisch,
+        # erst der echte Überlauf wird eingespeist. In Arbitrage-Slots (gd_allowed)
+        # entfällt die Regel (dann darf der Akku ins Netz entladen).
+        is_full = [pulp.LpVariable(f"full_{t}", cat="Binary") for t in range(N)]
+        at_max = [pulp.LpVariable(f"atmax_{t}", cat="Binary") for t in range(N)]
+        EPS_SOC = 20.0   # Wh
+        EPS_P = 20.0     # W
+
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
             load_t = float(max(0.0, inp.house_load_w[t]))
@@ -159,10 +169,12 @@ class Optimizer:
             # physikalische Gesamt-Ladeleistung des Akkus (DC + AC zusammen)
             prob += dc[t] + ac[t] <= hb.max_total_charge_w
 
-            # Akku -> Netz nur in wirtschaftlichen Arbitrage-Slots; sonst wird nur
-            # PV eingespeist, die nicht in den Akku geladen wird (g_exp <= pv - dc).
+            # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
+            # Einspeisen nur, wenn Akku voll ODER mit Maximalleistung lädt.
+            prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
+            prob += dc[t] + ac[t] >= (hb.max_total_charge_w - EPS_P) * at_max[t]
             if not gd_allowed[t]:
-                prob += g_exp[t] <= pv_t - dc[t]
+                prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
@@ -206,22 +218,10 @@ class Optimizer:
         for t in range(N):
             cost_terms.append(0.02 * ac[t] * kwh)
 
-        # Eigenverbrauchs-Priorität: Einspeisung mit Opportunitätskosten belegen,
-        # damit PV-Überschuss zuerst den Akku füllt und erst der Überlauf ins Netz
-        # geht. Betrifft nur die Einspeise-Entscheidung, nicht den Netzbezug.
-        exp_prio = cfg.optimization.export_priority_ct_kwh
-        if exp_prio:
-            # Einspeise-Malus nur in Nicht-Arbitrage-Slots, damit die
-            # Eigenverbrauchs-Priorität das wirtschaftliche Netz-Entladen nicht
-            # blockiert.
-            for t in range(N):
-                if not gd_allowed[t]:
-                    cost_terms.append(exp_prio * g_exp[t] * kwh)
-            # Tie-Breaker: winziger Bonus auf den Ladezustand je Slot, damit der
-            # Akku bei sonst gleichwertigen Lösungen SO FRÜH WIE MÖGLICH aus PV
-            # gefüllt wird (statt spät). Zu klein, um Netzladen auszulösen.
-            for t in range(N):
-                cost_terms.append(-0.001 * soc[t + 1] / 1000.0)
+        # Hinweis: Die Eigenverbrauchs-Priorität (Akku aus PV zuerst voll laden)
+        # wird oben als HARTE Nebenbedingung erzwungen (Einspeisen nur bei vollem
+        # Akku / Maximalladung), nicht mehr über einen Einspeise-Malus. Das
+        # vermeidet Degeneration (spätes Laden) und Energievernichtung.
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ)
         tv = cfg.optimization.terminal_soc_value
@@ -267,8 +267,9 @@ class Optimizer:
             nat_charge = min(max(0.0, pv_t - load_t), hb.max_dc_charge_w)
             nat_dis = min(max(0.0, load_t - pv_t), hb.max_discharge_w)
             tol = 5.0
-            battery_full = soc_v >= hb.max_soc_wh - 1.0
-            battery_empty = soc_v <= hb.min_soc_wh + 1.0
+            full_tol = 0.02 * hb.capacity_wh   # 2 % Toleranz für "praktisch voll/leer"
+            battery_full = soc_v >= hb.max_soc_wh - full_tol
+            battery_empty = soc_v <= hb.min_soc_wh + full_tol
             # PV-Laden nur dann als "begrenzt" markieren, wenn der Akku noch Platz
             # hätte (sonst lädt er ohnehin nicht weiter -> kein Eingriff, "auto").
             if dc_v < nat_charge - tol and not battery_full:
