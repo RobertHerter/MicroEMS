@@ -1,0 +1,11 @@
+[Unit]
+Description=Woechentliche EMS-Kalibrierung (Sonntag 03:00)
+
+[Timer]
+# Jeden Sonntag um 03:00 Uhr; verpasste Laeufe (z.B. Pi war aus) nachholen.
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

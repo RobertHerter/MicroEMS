@@ -136,6 +136,8 @@ class LoadForecaster:
                 sw = w * (1 + 2 * strongly_similar)  # ähnliche Tage stärker gewichten
                 preds[i] = float(np.average(vals, weights=sw))
 
+        # Globaler Korrekturfaktor aus der Kalibrierung (kalibrierung.py)
+        preds = preds * float(getattr(self.fc, "correction_factor", 1.0))
         result = pd.Series(preds, index=future_index).clip(lower=0.0)
         return result.tz_convert(self.cfg.general.timezone)
 

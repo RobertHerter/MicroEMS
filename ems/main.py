@@ -77,6 +77,13 @@ def run_once(config: Config) -> None:
 
         # --- 2) Eingangsdaten lesen ------------------------------------- #
         pv = repo.read_slots("pv_forecast", now, opt_end).reindex(opt_index).ffill().bfill()
+        # Zeitabhängige PV-Korrektur (Monat x Stunde) aus der Kalibrierung anwenden
+        if config.calibration.enabled:
+            from .calibration import apply_pv_correction, load_profile
+            profile = load_profile(config.calibration.pv_profile)
+            if profile:
+                pv = apply_pv_correction(pv, profile, config.general.timezone)
+                log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
         price = repo.read_slots("electricity_price", now, opt_end).reindex(opt_index).ffill().bfill()
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):

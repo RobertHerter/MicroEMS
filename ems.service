@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ems
+# Kein User=ems (existiert i.d.R. nicht -> Fehler 217/USER). Läuft als root;
+# alternativ "User=<dein-login>" setzen, dem /opt/ems gehört.
 WorkingDirectory=/opt/ems
 ExecStart=/opt/ems/.venv/bin/python -m ems.main --config /opt/ems/config.yaml --loop
 Restart=on-failure

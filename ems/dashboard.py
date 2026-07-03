@@ -69,7 +69,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
                                  yaxis="y2", line=dict(color="#9467bd", width=2, dash="dot")))
     # Strompreis auf zweiter rechter Achse (y3)
     fig.add_trace(go.Scatter(x=x, y=table["price_ct_kwh"], name="Strompreis",
-                             yaxis="y3", line=dict(color="#8c564b", width=2, dash="dash")))
+                             yaxis="y3", line=dict(color="#8c564b", width=2, shape="hv")))
 
     # ================= Panel 2: Steuerbefehle ================= #
     fig.add_trace(go.Bar(x=x, y=table["batt_dc_charge_w"], name="Akku DC-Laden (PV)",
@@ -104,7 +104,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
                 j = i
                 while j + 1 < len(modes) and modes[j + 1] == m:
                     j += 1
-                fig.add_vrect(x0=x[i], x1=x[j] + slotw, layer="below", line_width=0,
+                fig.add_shape(type="rect", xref="x", yref="paper", y0=0, y1=1,
+                              x0=x[i], x1=x[j] + slotw, layer="below", line_width=0,
                               fillcolor=_MODE_FILL.get(m, "rgba(120,120,120,0.15)"))
                 seen.add(m)
                 i = j + 1
@@ -117,9 +118,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
                 marker=dict(size=11, symbol="square", color=_MODE_LEGEND_COLOR.get(m, "gray")),
                 yaxis="y", hoverinfo="skip", showlegend=True))
 
-    # "Jetzt"-Linie über beide Panels
+    # Aktuelle Uhrzeit deutlich hervorheben – als Shapes mit yref="paper", damit
+    # sie über die GESAMTE Höhe (beide Panels) laufen.
     now = pd.Timestamp.now(tz=x.tz)
-    fig.add_vline(x=now, line=dict(color="rgba(0,0,0,0.45)", dash="dot"))
+    slotw = (x[1] - x[0]) if len(x) > 1 else pd.Timedelta(hours=1)
+    fig.add_shape(type="rect", xref="x", yref="paper", y0=0, y1=1,
+                  x0=now, x1=now + slotw, line_width=0,
+                  fillcolor="rgba(13,110,253,0.10)", layer="below")
+    fig.add_shape(type="line", xref="x", yref="paper", y0=0, y1=1,
+                  x0=now, x1=now, line=dict(color="#0d6efd", width=2.5))
+    fig.add_annotation(x=now, y=1.0, xref="x", yref="paper", yanchor="bottom",
+                       text=f"● Jetzt {now.strftime('%H:%M')}", showarrow=False,
+                       font=dict(color="#0d6efd", size=13),
+                       bgcolor="rgba(255,255,255,0.75)")
 
     n_eingriffe = int((table["mode"] != "auto").sum()) if has_mode else 0
     fig.update_layout(

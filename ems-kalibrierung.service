@@ -1,0 +1,14 @@
+[Unit]
+Description=EMS Vorhersage-Kalibrierung (PV Solcast + Hausverbrauch)
+After=network-online.target influxdb.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Kein User=ems (der Benutzer existiert i.d.R. nicht). Läuft als root und kann
+# /opt/ems + venv immer ausführen. Wer als eigener Login laufen will, setzt hier
+# z.B. "User=robert" (der Benutzer, dem /opt/ems gehört).
+WorkingDirectory=/opt/ems
+# Erzeugt kalibrierung.yaml (Report) und kalibrierung_profil.yaml (PV-Profil).
+ExecStart=/opt/ems/.venv/bin/python -m kalibrierung --config /opt/ems/config.yaml --lookback-days 730 --test-days 365
+Environment=PYTHONUNBUFFERED=1

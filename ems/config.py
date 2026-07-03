@@ -172,6 +172,9 @@ class ForecastConfig:
     weight_same_month: float = 1.5
     weight_same_season: float = 1.0
     min_samples: int = 3
+    # Globaler Korrekturfaktor auf die Verbrauchsprognose (aus kalibrierung.py).
+    # 1.0 = keine Korrektur; z.B. 1.05 = Prognose 5 % anheben.
+    correction_factor: float = 1.0
 
 
 @dataclass
@@ -199,6 +202,13 @@ class DashboardConfig:
 
 
 @dataclass
+class CalibrationConfig:
+    # Zeitabhängige PV-Korrektur (Profil aus kalibrierung.py) anwenden?
+    enabled: bool = False
+    pv_profile: str = "./kalibrierung_profil.yaml"
+
+
+@dataclass
 class Config:
     general: GeneralConfig
     influxdb: InfluxConfig
@@ -210,6 +220,7 @@ class Config:
     forecast: ForecastConfig
     mqtt: MqttConfig
     dashboard: DashboardConfig
+    calibration: CalibrationConfig
 
 
 # --------------------------------------------------------------------------- #
@@ -302,6 +313,7 @@ def load_config(path: str) -> Config:
         weight_same_month=float(f.get("weight_same_month", 1.5)),
         weight_same_season=float(f.get("weight_same_season", 1.0)),
         min_samples=int(f.get("min_samples", 3)),
+        correction_factor=float(f.get("correction_factor", 1.0)),
     )
 
     m = raw.get("mqtt", {})
@@ -327,6 +339,12 @@ def load_config(path: str) -> Config:
         port=int(d.get("port", 8080)),
     )
 
+    cal = raw.get("calibration", {})
+    calibration = CalibrationConfig(
+        enabled=bool(cal.get("enabled", False)),
+        pv_profile=cal.get("pv_profile", "./kalibrierung_profil.yaml"),
+    )
+
     return Config(
         general=general,
         influxdb=influxdb,
@@ -338,4 +356,5 @@ def load_config(path: str) -> Config:
         forecast=forecast,
         mqtt=mqtt,
         dashboard=dashboard,
+        calibration=calibration,
     )
