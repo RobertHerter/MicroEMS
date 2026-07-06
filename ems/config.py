@@ -23,6 +23,9 @@ class GeneralConfig:
     forecast_horizon_hours: int = 72
     slot_minutes: int = 15
     run_interval_minutes: int = 15
+    # Neuberechnung auf das Uhr-Raster synchronisiert (:00/:15/:30/:45); dieser
+    # Versatz (Sekunden nach der Marke) gibt neuen Messwerten Zeit anzukommen.
+    run_offset_seconds: int = 10
 
     @property
     def slots_per_hour(self) -> int:
@@ -257,6 +260,7 @@ def load_config(path: str) -> Config:
         forecast_horizon_hours=int(g.get("forecast_horizon_hours", 72)),
         slot_minutes=int(g.get("slot_minutes", 15)),
         run_interval_minutes=int(g.get("run_interval_minutes", 15)),
+        run_offset_seconds=int(g.get("run_offset_seconds", 10)),
     )
     if 60 % general.slot_minutes != 0:
         raise ValueError("slot_minutes muss ein Teiler von 60 sein (z.B. 5,10,15,30,60).")

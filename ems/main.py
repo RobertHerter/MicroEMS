@@ -347,15 +347,22 @@ def main() -> None:
         start_dashboard_server(config)
 
     interval = config.general.run_interval_minutes * 60
-    log.info("Dauerbetrieb: Intervall %d min.", config.general.run_interval_minutes)
+    # Kleiner Versatz, damit die neuen 15-Minuten-Werte (Preis, Zähler) schon in
+    # der InfluxDB stehen, bevor gerechnet wird.
+    offset = float(getattr(config.general, "run_offset_seconds", 10))
+    log.info("Dauerbetrieb: Intervall %d min, auf Uhr-Raster synchronisiert "
+             "(+%.0fs Versatz).", config.general.run_interval_minutes, offset)
     while True:
-        t0 = _time.time()
         try:
             run_once(config)
         except Exception:  # pragma: no cover
             log.exception("Fehler im EMS-Zyklus – fahre fort.")
-        sleep_s = max(5.0, interval - (_time.time() - t0))
-        _time.sleep(sleep_s)
+        # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) schlafen.
+        now = _time.time()
+        next_mark = (now // interval + 1) * interval + offset
+        if next_mark - now < 5.0:      # zu knapp -> erst zur übernächsten Marke
+            next_mark += interval
+        _time.sleep(next_mark - now)
 
 
 if __name__ == "__main__":
