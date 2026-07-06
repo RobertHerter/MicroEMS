@@ -1,13 +1,12 @@
-"""Grafische Aufbereitung: heutiger Tag + Vorhersage inkl. Steuerbefehle.
+"""Dashboard: sauberes 3-Panel-Layout (Plotly make_subplots).
 
-Selbst-enthaltenes interaktives HTML (Plotly) mit zwei gekoppelten Panels:
+  Panel 1: Leistung (W, links) + Ladezustand (%, rechts) – Ist durchgezogen,
+           Prognose gestrichelt (gleiche Farbe).
+  Panel 2: Strompreis (ct/kWh) – Börsenpreis durchgezogen, Schätzung gestrichelt.
+  Panel 3: Steuerung (W) – Lade-/Entladebefehle, Ist-Akkuleistung, Limits.
 
-  Panel 1 (oben): Leistungen (W, links) + Haus-/Auto-SoC (%, rechts) +
-                  Strompreis (ct/kWh, zweite rechte Achse) in EINER Grafik.
-  Panel 2 (unten): Akku-Leistung (Balken) + Steuerbefehl-Limits (Linien).
-
-Aktive EMS-Eingriffe (mode != "auto") werden über beide Panels farblich
-hinterlegt (Entladen gesperrt / Netzladen / Laden gesperrt / gedrosselt).
+Aktive EMS-Eingriffe (mode != auto) sind über alle Panels farblich hinterlegt,
+die aktuelle Uhrzeit als blaue Linie markiert.
 """
 from __future__ import annotations
 
@@ -19,145 +18,130 @@ from .config import Config
 
 log = logging.getLogger("ems.dashboard")
 
-# Farben für die Hervorhebung aktiver Eingriffe
-_MODE_FILL = {
-    "hold": "rgba(255,140,0,0.16)",
-    "grid_charge": "rgba(31,119,180,0.16)",
-    "grid_discharge": "rgba(148,0,211,0.16)",
-    "block_charge": "rgba(214,39,40,0.13)",
-    "limit": "rgba(255,205,0,0.20)",
-}
-_MODE_LABEL = {
-    "hold": "Eingriff: Entladen gesperrt",
-    "grid_charge": "Eingriff: Netzladen",
-    "grid_discharge": "Eingriff: Netz-Entladen",
-    "block_charge": "Eingriff: Laden gesperrt",
-    "limit": "Eingriff: gedrosselt",
-}
-_MODE_LEGEND_COLOR = {
-    "hold": "rgba(255,140,0,0.6)",
-    "grid_charge": "rgba(31,119,180,0.6)",
-    "grid_discharge": "rgba(148,0,211,0.6)",
-    "block_charge": "rgba(214,39,40,0.5)",
-    "limit": "rgba(255,205,0,0.8)",
-}
+_MODE_FILL = {"hold": "rgba(255,140,0,0.14)", "grid_charge": "rgba(31,119,180,0.14)",
+              "grid_discharge": "rgba(148,0,211,0.14)", "block_charge": "rgba(214,39,40,0.12)",
+              "limit": "rgba(255,205,0,0.18)"}
+_MODE_LABEL = {"hold": "Eingriff: Entladen gesperrt", "grid_charge": "Eingriff: Netzladen",
+               "grid_discharge": "Eingriff: Netz-Entladen", "block_charge": "Eingriff: Laden gesperrt",
+               "limit": "Eingriff: gedrosselt"}
+_MODE_LEG = {"hold": "rgba(255,140,0,0.7)", "grid_charge": "rgba(31,119,180,0.7)",
+             "grid_discharge": "rgba(148,0,211,0.7)", "block_charge": "rgba(214,39,40,0.6)",
+             "limit": "rgba(255,205,0,0.9)"}
 
 
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -> str:
-    """Baut das HTML-Dashboard, speichert es und gibt den Pfad zurück."""
     import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 
-    has_car = "car_soc_percent" in table.columns
-    has_mode = "mode" in table.columns
-    x = table.index
-    fig = go.Figure()
+    t = table
+    x = t.index
+    has_car = "car_soc_percent" in t.columns
+    has_mode = "mode" in t.columns
 
-    # ================= Panel 1: Leistungen + SoC + Preis ================= #
-    fig.add_trace(go.Scatter(x=x, y=table["pv_w"], name="PV-Erzeugung", yaxis="y",
-                             fill="tozeroy", line=dict(color="#ff7f0e")))
-    fig.add_trace(go.Scatter(x=x, y=table["house_load_w"], name="Hausverbrauch",
-                             yaxis="y", line=dict(color="#d62728")))
-    fig.add_trace(go.Scatter(x=x, y=table["grid_import_w"], name="Netzbezug",
-                             yaxis="y", line=dict(color="#1f77b4")))
-    fig.add_trace(go.Scatter(x=x, y=-table["grid_export_w"], name="Einspeisung",
-                             yaxis="y", line=dict(color="#2ca02c")))
-    # SoC auf rechter Achse (y2)
-    fig.add_trace(go.Scatter(x=x, y=table["house_soc_percent"], name="Haus-Akku SoC",
-                             yaxis="y2", line=dict(color="#111111", width=3)))
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.055,
+        row_heights=[0.46, 0.20, 0.34],
+        specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]],
+        subplot_titles=("Leistung &amp; Ladezustand", "Strompreis", "Steuerung"),
+    )
+
+    def line(col, name, color, dash=None, width=2, row=1, sec=False):
+        if col in t.columns:
+            fig.add_trace(go.Scatter(x=x, y=t[col], name=name, mode="lines",
+                                     line=dict(color=color, width=width, dash=dash)),
+                          row=row, col=1, secondary_y=sec)
+
+    # ---------- Panel 1: Leistung (links) ----------
+    line("pv_w", "PV (Prognose)", "#ff7f0e", dash="dash")
+    line("actual_pv_w", "PV (Ist)", "#ff7f0e")
+    line("house_load_w", "Verbrauch (Prognose)", "#d62728", dash="dash")
+    line("actual_load_w", "Verbrauch (Ist)", "#d62728")
+    # Netz netto (Prognose = Bezug - Einspeisung) als eine Linie
+    if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
+        net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
+        net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
+        fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prognose)", mode="lines",
+                                 line=dict(color="#1f77b4", width=1.5, dash="dot")), row=1, col=1)
+    line("actual_grid_w", "Netz (Ist)", "#1f77b4", width=1.8)
+    # ---------- Panel 1: SoC (rechts) ----------
+    line("house_soc_percent", "SoC (Prognose)", "#111111", dash="dash", width=2.5, sec=True)
+    line("actual_soc_percent", "SoC (Ist)", "#111111", width=3, sec=True)
     if has_car:
-        fig.add_trace(go.Scatter(x=x, y=table["car_soc_percent"], name="Auto SoC",
-                                 yaxis="y2", line=dict(color="#9467bd", width=2, dash="dot")))
-    # Strompreis auf zweiter rechter Achse (y3)
-    fig.add_trace(go.Scatter(x=x, y=table["price_ct_kwh"], name="Strompreis",
-                             yaxis="y3", line=dict(color="#8c564b", width=2, shape="hv")))
+        line("car_soc_percent", "Auto SoC", "#9467bd", dash="dot", sec=True)
 
-    # ================= Panel 2: Steuerbefehle ================= #
-    fig.add_trace(go.Bar(x=x, y=table["batt_dc_charge_w"], name="Akku DC-Laden (PV)",
-                         marker_color="#2ca02c", yaxis="y4"))
-    fig.add_trace(go.Bar(x=x, y=table["batt_ac_charge_w"], name="Akku Netzladen",
-                         marker_color="#1f77b4", yaxis="y4"))
-    fig.add_trace(go.Bar(x=x, y=-table["batt_discharge_w"], name="Akku Entladen (Eigenverbrauch)",
-                         marker_color="#d62728", yaxis="y4"))
-    if "batt_grid_discharge_w" in table.columns:
-        fig.add_trace(go.Bar(x=x, y=-table["batt_grid_discharge_w"], name="Akku Netz-Entladen",
-                             marker_color="#9400d3", yaxis="y4"))
+    # ---------- Panel 2: Strompreis (Ist / Schätzung) ----------
+    if "price_ct_kwh" in t.columns:
+        price = t["price_ct_kwh"]
+        if "price_estimated" in t.columns:
+            est = t["price_estimated"].fillna(0) > 0.5
+            fig.add_trace(go.Scatter(x=x, y=price.mask(est), name="Strompreis", mode="lines",
+                                     line=dict(color="#8c564b", width=2, shape="hv")), row=2, col=1)
+            fig.add_trace(go.Scatter(x=x, y=price.where(est | est.shift(-1, fill_value=False)),
+                                     name="Strompreis (Schätzung)", mode="lines",
+                                     line=dict(color="#8c564b", width=2, shape="hv", dash="dash")),
+                          row=2, col=1)
+        else:
+            fig.add_trace(go.Scatter(x=x, y=price, name="Strompreis", mode="lines",
+                                     line=dict(color="#8c564b", width=2, shape="hv")), row=2, col=1)
+
+    # ---------- Panel 3: Steuerung ----------
+    def bar(col, name, color, sign=1):
+        if col in t.columns:
+            fig.add_trace(go.Bar(x=x, y=sign * t[col], name=name, marker_color=color),
+                          row=3, col=1)
+    bar("batt_dc_charge_w", "Akku DC-Laden (PV)", "#2ca02c")
+    bar("batt_ac_charge_w", "Akku Netzladen", "#1f77b4")
+    bar("batt_discharge_w", "Akku Entladen", "#d62728", sign=-1)
+    bar("batt_grid_discharge_w", "Akku Netz-Entladen", "#9400d3", sign=-1)
     if has_car:
-        fig.add_trace(go.Bar(x=x, y=table["car_charge_w"], name="Auto-Laden",
-                             marker_color="#9467bd", yaxis="y4"))
-    if "batt_charge_limit_w" in table.columns:
-        fig.add_trace(go.Scatter(x=x, y=table["batt_charge_limit_w"], name="Ladelimit (Befehl)",
-                                 yaxis="y4", mode="lines",
-                                 line=dict(color="#2ca02c", width=1, dash="dot")))
-        fig.add_trace(go.Scatter(x=x, y=-table["batt_discharge_limit_w"], name="Entladelimit (Befehl)",
-                                 yaxis="y4", mode="lines",
-                                 line=dict(color="#d62728", width=1, dash="dot")))
+        bar("car_charge_w", "Auto-Laden", "#9467bd")
+    if "actual_battery_w" in t.columns:
+        fig.add_trace(go.Scatter(x=x, y=t["actual_battery_w"], name="Akku-Leistung (Ist)",
+                                 mode="lines", line=dict(color="#111111", width=1.8)), row=3, col=1)
 
-    # ================= Eingriffe hervorheben ================= #
+    # ---------- Eingriffe hinterlegen + Jetzt-Linie (über alle Panels) ----------
+    slotw = (x[1] - x[0]) if len(x) > 1 else pd.Timedelta(hours=1)
     if has_mode:
-        modes = list(table["mode"].values)
-        slotw = (x[1] - x[0]) if len(x) > 1 else pd.Timedelta(hours=1)
-        seen = set()
-        i = 0
+        modes = list(t["mode"].values)
+        seen = set(); i = 0
         while i < len(modes):
             m = modes[i]
             if m and m != "auto":
                 j = i
                 while j + 1 < len(modes) and modes[j + 1] == m:
                     j += 1
-                fig.add_shape(type="rect", xref="x", yref="paper", y0=0, y1=1,
-                              x0=x[i], x1=x[j] + slotw, layer="below", line_width=0,
-                              fillcolor=_MODE_FILL.get(m, "rgba(120,120,120,0.15)"))
-                seen.add(m)
-                i = j + 1
+                fig.add_vrect(x0=x[i], x1=x[j] + slotw, fillcolor=_MODE_FILL.get(m, "rgba(120,120,120,0.12)"),
+                              line_width=0, layer="below", row="all", col=1)
+                seen.add(m); i = j + 1
             else:
                 i += 1
-        # Legenden-Platzhalter für die Eingriffsfarben
         for m in seen:
-            fig.add_trace(go.Scatter(
-                x=[x[0]], y=[None], mode="markers", name=_MODE_LABEL.get(m, m),
-                marker=dict(size=11, symbol="square", color=_MODE_LEGEND_COLOR.get(m, "gray")),
-                yaxis="y", hoverinfo="skip", showlegend=True))
+            fig.add_trace(go.Scatter(x=[x[0]], y=[None], mode="markers", name=_MODE_LABEL.get(m, m),
+                          marker=dict(size=11, symbol="square", color=_MODE_LEG.get(m, "gray")),
+                          hoverinfo="skip"), row=1, col=1)
 
-    # Aktuelle Uhrzeit deutlich hervorheben – als Shapes mit yref="paper", damit
-    # sie über die GESAMTE Höhe (beide Panels) laufen.
     now = pd.Timestamp.now(tz=x.tz)
-    slotw = (x[1] - x[0]) if len(x) > 1 else pd.Timedelta(hours=1)
-    fig.add_shape(type="rect", xref="x", yref="paper", y0=0, y1=1,
-                  x0=now, x1=now + slotw, line_width=0,
-                  fillcolor="rgba(13,110,253,0.10)", layer="below")
-    fig.add_shape(type="line", xref="x", yref="paper", y0=0, y1=1,
-                  x0=now, x1=now, line=dict(color="#0d6efd", width=2.5))
+    fig.add_vline(x=now, line=dict(color="#0d6efd", width=2), row="all", col=1)
     fig.add_annotation(x=now, y=1.0, xref="x", yref="paper", yanchor="bottom",
                        text=f"● Jetzt {now.strftime('%H:%M')}", showarrow=False,
-                       font=dict(color="#0d6efd", size=13),
-                       bgcolor="rgba(255,255,255,0.75)")
+                       font=dict(color="#0d6efd", size=12), bgcolor="rgba(255,255,255,0.7)")
 
-    n_eingriffe = int((table["mode"] != "auto").sum()) if has_mode else 0
+    n_eingriffe = int((t["mode"] != "auto").sum()) if has_mode else 0
+    fig.update_yaxes(title_text="Leistung (W)", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="SoC (%)", range=[0, 101], row=1, col=1, secondary_y=True,
+                     showgrid=False)
+    fig.update_yaxes(title_text="ct/kWh", row=2, col=1)
+    fig.update_yaxes(title_text="W", row=3, col=1)
     fig.update_layout(
-        height=940,
-        barmode="relative",
-        template="plotly_white",
-        hovermode="x unified",
-        title=dict(
-            text=(f"EMS Steuertabelle & Vorhersage — Netto-Kosten Horizont: "
-                  f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} aktive Eingriffe  ·  "
-                  f"Stand {now.strftime('%Y-%m-%d %H:%M')}"),
-            x=0.5, xanchor="center", y=0.985, yanchor="top",
-        ),
-        # Legende UNTEN, damit sie nicht in den Titel läuft
-        legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="left", x=0,
-                    font=dict(size=10)),
-        margin=dict(l=65, r=120, t=70, b=150),
-        # gemeinsame Zeitachse, rechts Platz für zwei zusätzliche Y-Achsen
-        xaxis=dict(domain=[0.0, 0.86], anchor="y4"),
-        yaxis=dict(title="Leistung (W)", domain=[0.40, 0.95], zeroline=True),
-        yaxis2=dict(title="SoC (%)", domain=[0.40, 0.95], overlaying="y", side="right",
-                    range=[0, 101], showgrid=False),
-        yaxis3=dict(title="Preis (ct/kWh)", domain=[0.40, 0.95], overlaying="y",
-                    side="right", anchor="free", position=0.93, showgrid=False),
-        yaxis4=dict(title="Steuerung (W)", domain=[0.0, 0.28], zeroline=True),
+        height=880, template="plotly_white", hovermode="x unified", barmode="relative",
+        title=dict(text=(f"EMS – Ist vs. Prognose & Steuerung  ·  Netto-Kosten Horizont "
+                         f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} Eingriffe  ·  "
+                         f"{now.strftime('%Y-%m-%d %H:%M')}"),
+                   x=0.5, xanchor="center", font=dict(size=15)),
+        legend=dict(orientation="h", yanchor="top", y=-0.08, xanchor="left", x=0, font=dict(size=10)),
+        margin=dict(l=60, r=30, t=70, b=110),
+        bargap=0,
     )
-
     out = config.dashboard.output_path
     fig.write_html(out, include_plotlyjs="cdn")
     log.info("Dashboard geschrieben: %s (%d Eingriffe)", out, n_eingriffe)

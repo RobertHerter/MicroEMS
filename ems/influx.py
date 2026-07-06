@@ -219,12 +219,15 @@ class InfluxRepository:
     def signal_available(self, name: str) -> bool:
         return name in self.config.influxdb.signals
 
-    def read_slots(self, name: str, start: datetime, end: datetime) -> pd.Series:
+    def read_slots(self, name: str, start: datetime, end: datetime,
+                   fill: bool = True) -> pd.Series:
         """Aggregiert ein Signal DB-seitig auf das Slot-Raster (tz-lokal).
 
         Unabhängig vom Eingangsraster: die DB bildet je Slot den konfigurierten
-        Aggregatwert (mean/last/...). Lücken werden per Zeit-Interpolation und
-        anschließendem ffill/bfill gefüllt. scale/offset werden angewandt.
+        Aggregatwert (mean/last/...). scale/offset werden angewandt.
+        fill=True: Lücken werden gefüllt (interpolate/hold + ffill/bfill).
+        fill=False: fehlende Slots bleiben NaN (um echte Datenlücken zu erkennen,
+        z.B. noch fehlende Folgetag-Preise -> separate Prognose).
         """
         spec = self._spec(name)
         if spec is None:
@@ -239,6 +242,8 @@ class InfluxRepository:
         )
         if raw.empty:
             series = pd.Series(index=index, dtype="float64")
+        elif not fill:
+            series = raw[~raw.index.duplicated(keep="last")].reindex(index)
         else:
             raw = raw[~raw.index.duplicated(keep="last")]
             if spec.fill_method == "hold":

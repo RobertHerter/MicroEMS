@@ -81,10 +81,17 @@ class LoadForecaster:
         history: pd.Series,
         start: datetime,
         horizon_slots: int,
+        clip_min=0.0,
+        apply_correction: bool = True,
+        hist_temp: "pd.Series | None" = None,
+        fut_temp: "pd.Series | None" = None,
     ) -> pd.Series:
-        """Erzeugt die Verbrauchsprognose (W) für `horizon_slots` ab `start`.
+        """Ähnliche-Tage-Prognose für `horizon_slots` ab `start`.
 
-        history: Verbrauch (W) auf Slot-Raster, tz-aware Index.
+        Generisch nutzbar: für Verbrauch (W, clip_min=0, mit Korrekturfaktor) und
+        für den Strompreis (clip_min=None, ohne Korrekturfaktor – Preise können
+        negativ sein), wenn Folgetag-Werte noch fehlen.
+        history: Werte auf Slot-Raster, tz-aware Index.
         """
         freq = f"{self.slot_minutes}min"
         future_index = pd.date_range(
@@ -96,11 +103,22 @@ class LoadForecaster:
 
         history = history.dropna()
         if history.empty:
-            log.warning("Keine Historie für Verbrauchsprognose – gebe 0 W zurück.")
+            log.warning("Keine Historie für Prognose – gebe 0 zurück.")
             return pd.Series(0.0, index=future_index.tz_convert(self.cfg.general.timezone))
 
         hist_feat = self._features(history.index)
         hist_feat["value"] = history.values
+
+        # Temperatur (optional) an Historie/Zukunft anhängen
+        w_tp = float(getattr(self.fc, "weight_same_temp", 0.0) or 0.0)
+        sigma = float(getattr(self.fc, "temp_sigma", 4.0) or 4.0)
+        use_temp = w_tp > 0 and hist_temp is not None and fut_temp is not None
+        if hist_temp is not None:
+            hist_feat["temp"] = pd.Series(hist_temp).reindex(history.index).values
+        else:
+            hist_feat["temp"] = np.nan
+        fut_temp_arr = (pd.Series(fut_temp).reindex(future_index).values
+                        if fut_temp is not None else np.full(len(future_index), np.nan))
 
         fut_feat = self._features(future_index)
 
@@ -127,6 +145,15 @@ class LoadForecaster:
             w += w_mo * (grp["month"].values == f["month"])
             w += w_se * (grp["season"].values == f["season"])
 
+            # Temperatur-Ähnlichkeit: Tage mit ähnlicher Temperatur höher gewichten
+            if use_temp:
+                tf = fut_temp_arr[i]
+                th = grp["temp"].values
+                if np.isfinite(tf):
+                    gk = np.exp(-((th - tf) ** 2) / (2.0 * sigma * sigma))
+                    gk = np.where(np.isnan(th), 0.0, gk)  # fehlende Temp -> neutral
+                    w = w * (1.0 + w_tp * gk)
+
             vals = grp["value"].values
             # Fallback: zu wenig "ähnliche" Stichproben -> reines Slot-Mittel
             strongly_similar = (grp["daytype"].values == f["daytype"])
@@ -136,9 +163,12 @@ class LoadForecaster:
                 sw = w * (1 + 2 * strongly_similar)  # ähnliche Tage stärker gewichten
                 preds[i] = float(np.average(vals, weights=sw))
 
-        # Globaler Korrekturfaktor aus der Kalibrierung (kalibrierung.py)
-        preds = preds * float(getattr(self.fc, "correction_factor", 1.0))
-        result = pd.Series(preds, index=future_index).clip(lower=0.0)
+        # Globaler Korrekturfaktor aus der Kalibrierung (nur Verbrauch)
+        if apply_correction:
+            preds = preds * float(getattr(self.fc, "correction_factor", 1.0))
+        result = pd.Series(preds, index=future_index)
+        if clip_min is not None:
+            result = result.clip(lower=clip_min)
         return result.tz_convert(self.cfg.general.timezone)
 
 

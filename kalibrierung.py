@@ -110,11 +110,20 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
     actual_test = hist[hist.index >= test_start]
     if train.empty or actual_test.empty:
         return None
+    # Temperatur (falls vorhanden) in den Backtest einbeziehen -> prüft das
+    # temperaturgewichtete Modell, konsistent zum Live-Betrieb.
+    temp = None
+    if repo.signal_available("temperature"):
+        try:
+            temp = repo.read_slots("temperature", start, now)
+        except Exception:
+            temp = None
+
     # Modell aus Trainingszeitraum, ohne bestehende Korrektur, out-of-sample prüfen
     cfg.forecast.correction_factor = 1.0
     fc = LoadForecaster(cfg)
     horizon = len(actual_test)
-    pred = fc.forecast(train, test_start, horizon)
+    pred = fc.forecast(train, test_start, horizon, hist_temp=temp, fut_temp=temp)
     idx = actual_test.index.intersection(pred.index)
     a, p = actual_test.reindex(idx), pred.reindex(idx)
     m = _metrics(a.values, p.values)
@@ -124,7 +133,20 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
         loc = i.tz_convert(cfg.general.timezone)
         return (loc.weekday >= 5).astype(int)  # 0=Werktag,1=WE
     daytype_tab = _factor_table(a, p, daytype)
+
+    # Fehler nach Temperatur-Bereich (zeigt, ob die Temperatur-Gewichtung greift)
+    temp_bins = {}
+    if temp is not None:
+        tt = pd.Series(temp).reindex(idx)
+        df = pd.DataFrame({"a": a.values, "p": p.values, "t": tt.values}).dropna()
+        if not df.empty:
+            bins = pd.cut(df["t"], bins=[-50, 0, 5, 10, 15, 20, 25, 50])
+            for b, sub in df.groupby(bins, observed=True):
+                if sub["p"].sum() > 1e-6:
+                    temp_bins[str(b)] = round(float(sub["a"].sum() / sub["p"].sum()), 3)
+
     return {"metrics": m, "hourly": hourly, "daytype": daytype_tab,
+            "temp_used": temp is not None, "by_temperature": temp_bins,
             "suggested_correction_factor": round(m.get("scale_actual_over_pred", 1.0), 4)}
 
 
@@ -173,8 +195,11 @@ def main():
     _print_block("Hausverbrauch (Modell) vs. Ist-Verbrauch (out-of-sample)", load)
     if load:
         print(f"  -> Empfehlung  forecast.correction_factor = {load['suggested_correction_factor']}")
+        print(f"     Temperatur im Modell genutzt: {load.get('temp_used', False)}")
         print(f"     stündliche Faktoren: {load['hourly']}")
         print(f"     Werktag/Wochenende:  {load['daytype']}")
+        if load.get("by_temperature"):
+            print(f"     Faktor nach Temperaturbereich: {load['by_temperature']}")
 
     out = {
         "generated": now.isoformat(),

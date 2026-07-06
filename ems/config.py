@@ -175,6 +175,11 @@ class ForecastConfig:
     # Globaler Korrekturfaktor auf die Verbrauchsprognose (aus kalibrierung.py).
     # 1.0 = keine Korrektur; z.B. 1.05 = Prognose 5 % anheben.
     correction_factor: float = 1.0
+    # Temperatur-Ähnlichkeit: historische Tage mit ähnlicher Temperatur höher
+    # gewichten (Heiz-/Kühllast). weight_same_temp = Stärke, temp_sigma = Breite
+    # (°C) des Gauß-Kerns. 0 = Temperatur ignorieren.
+    weight_same_temp: float = 2.0
+    temp_sigma: float = 4.0
 
 
 @dataclass
@@ -314,6 +319,8 @@ def load_config(path: str) -> Config:
         weight_same_season=float(f.get("weight_same_season", 1.0)),
         min_samples=int(f.get("min_samples", 3)),
         correction_factor=float(f.get("correction_factor", 1.0)),
+        weight_same_temp=float(f.get("weight_same_temp", 2.0)),
+        temp_sigma=float(f.get("temp_sigma", 4.0)),
     )
 
     m = raw.get("mqtt", {})

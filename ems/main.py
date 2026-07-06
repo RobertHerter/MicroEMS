@@ -62,8 +62,12 @@ def run_once(config: Config) -> None:
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
         history = load_history(repo, config, now)
+        forecast_end = now + timedelta(hours=config.general.forecast_horizon_hours)
+        temp = _read_temp(repo, config,
+                          now - timedelta(days=config.forecast.lookback_days), forecast_end)
         forecaster = LoadForecaster(config)
-        load_fc = forecaster.forecast(history, now, config.general.n_forecast_slots)
+        load_fc = forecaster.forecast(history, now, config.general.n_forecast_slots,
+                                      hist_temp=temp, fut_temp=temp)
         repo.write_frame(
             "load_forecast",
             pd.DataFrame({"house_load_w": load_fc.values}, index=load_fc.index),
@@ -84,7 +88,7 @@ def run_once(config: Config) -> None:
             if profile:
                 pv = apply_pv_correction(pv, profile, config.general.timezone)
                 log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
-        price = repo.read_slots("electricity_price", now, opt_end).reindex(opt_index).ffill().bfill()
+        price = _price_series(repo, config, opt_index, now)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots("feed_in_tariff", now, opt_end).reindex(opt_index)
@@ -141,37 +145,121 @@ def run_once(config: Config) -> None:
         log.info("Steuertabelle + Prognosezustände in InfluxDB geschrieben.")
 
         # --- 6) Dashboard ----------------------------------------------- #
-        # Direkt aus der vollständigen Optimierungstabelle (jetzt -> +48 h);
-        # keine Ist-Vergangenheit vormischen (vermeidet NaN-Lücken/-Hover).
+        # Anzeige ab heute 00:00: Ist-Werte (bis jetzt) und Prognose (ganzer
+        # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
-            build_dashboard(config, result.table, result.total_cost_ct)
+            display = _build_display_frame(repo, config, now, history, result)
+            build_dashboard(config, display, result.total_cost_ct)
     finally:
         repo.close()
 
 
-def _build_display_table(repo, config, now, opt_table) -> pd.DataFrame:
-    """Kombiniert die heutigen Ist-Werte (0 Uhr .. jetzt) mit der Optimierungstabelle."""
-    freq = f"{config.general.slot_minutes}min"
-    day_start = now.normalize()
-    past_index = pd.date_range(day_start, now, freq=freq, tz=config.general.timezone,
-                               inclusive="left")
-    cols = list(opt_table.columns)
-    past = pd.DataFrame(index=past_index, columns=cols, dtype="float64")
-    if len(past_index) > 0:
+def _read_temp(repo, config, start, end):
+    """Liest die Temperatur-Vorhersage (falls konfiguriert), sonst None."""
+    if not repo.signal_available("temperature"):
+        return None
+    try:
+        return repo.read_slots("temperature", start, end)
+    except Exception as exc:  # pragma: no cover
+        log.warning("Temperatur konnte nicht gelesen werden (%s).", exc)
+        return None
+
+
+def _price_series(repo, config, index, now, return_estimated=False):
+    """Strompreis über `index`: Ist-Werte wo vorhanden, sonst Ähnliche-Tage-
+    Prognose für noch fehlende (Folgetag-)Preise – statt einer flachen ffill-Linie.
+    Preise dürfen negativ sein (clip_min=None).
+    return_estimated=True: zusätzlich Bool-Maske, welche Slots geschätzt sind.
+    """
+    slot = pd.Timedelta(f"{config.general.slot_minutes}min")
+    raw = repo.read_slots("electricity_price", index[0], index[-1] + slot, fill=False).reindex(index)
+    estimated = raw.isna()   # Slots ohne echten Börsenpreis -> Schätzung
+    if estimated.any():
         try:
-            past["house_load_w"] = repo.read_slots("house_consumption", day_start, now).reindex(past_index)
-            past["pv_w"] = repo.read_slots("pv_generation", day_start, now).reindex(past_index)
-            past["price_ct_kwh"] = repo.read_slots("electricity_price", day_start, now).reindex(past_index)
-            soc = repo.read_slots("battery_soc", day_start, now).reindex(past_index)
-            past["house_soc_percent"] = soc
+            hist = repo.read_slots("electricity_price", now - timedelta(days=90), now,
+                                   fill=False).dropna()
+            if not hist.empty:
+                fc = LoadForecaster(config).forecast(
+                    hist, index[0], len(index), clip_min=None, apply_correction=False)
+                raw = raw.fillna(fc.reindex(index))
+                log.info("Fehlende Folgetag-Preise per Ähnliche-Tage-Prognose ergänzt.")
         except Exception as exc:  # pragma: no cover
-            log.warning("Ist-Werte für Dashboard unvollständig: %s", exc)
-    # Steuerbefehle in der Vergangenheit = 0
-    for c in ["batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
-              "car_charge_w", "grid_import_w", "grid_export_w"]:
-        if c in past.columns:
-            past[c] = past[c].fillna(0.0)
-    return pd.concat([past, opt_table])
+            log.warning("Preis-Prognose fehlgeschlagen (%s) – halte letzten Wert.", exc)
+    price = raw.ffill().bfill()
+    if return_estimated:
+        return price, estimated
+    return price
+
+
+def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
+    """Anzeigetabelle heute 00:00 -> Horizontende.
+
+    Enthält Prognosewerte über den gesamten Bereich (pv_w, house_load_w,
+    price_ct_kwh) sowie – zum Vergleich – die heutigen IST-Werte bis 'jetzt'
+    (actual_*). Steuerbefehle und Prognose-SoC stammen aus der Optimierung
+    (Zukunft). Fehlende Signale werden robust übersprungen.
+    """
+    freq = f"{config.general.slot_minutes}min"
+    tz = config.general.timezone
+    slot = pd.Timedelta(freq)
+    day_start = now.normalize()
+    end = result.table.index[-1]
+    full = pd.date_range(day_start, end, freq=freq, tz=tz)  # inkl. Ende
+    df = pd.DataFrame(index=full)
+
+    # ---- Prognose über den gesamten Bereich ----
+    try:
+        temp = _read_temp(repo, config,
+                          now - timedelta(days=config.forecast.lookback_days), end + slot)
+        forecaster = LoadForecaster(config)
+        pred_load = forecaster.forecast(history, day_start, len(full),
+                                        hist_temp=temp, fut_temp=temp)
+        df["house_load_w"] = pred_load.reindex(full)
+    except Exception as exc:  # pragma: no cover
+        log.warning("Verbrauchsprognose fürs Dashboard fehlgeschlagen: %s", exc)
+    try:
+        pv = repo.read_slots("pv_forecast", day_start, end + slot)
+        if config.calibration.enabled:
+            from .calibration import apply_pv_correction, load_profile
+            prof = load_profile(config.calibration.pv_profile)
+            if prof:
+                pv = apply_pv_correction(pv, prof, tz)
+        df["pv_w"] = pv.reindex(full)
+    except Exception as exc:  # pragma: no cover
+        log.warning("PV-Prognose fürs Dashboard fehlgeschlagen: %s", exc)
+    try:
+        price, estimated = _price_series(repo, config, full, now, return_estimated=True)
+        df["price_ct_kwh"] = price
+        df["price_estimated"] = estimated.astype(float)  # 1 = Schätzung, 0 = Börsenpreis
+    except Exception:
+        pass
+
+    # ---- Zukunftswerte aus der Optimierung (jetzt -> Ende) ----
+    ot = result.table
+    for c in ["house_soc_percent", "car_soc_percent", "batt_dc_charge_w",
+              "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
+              "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
+              "grid_import_w", "grid_export_w", "mode"]:
+        if c in ot.columns:
+            df[c] = ot[c].reindex(full)
+    if "mode" in df.columns:
+        df["mode"] = df["mode"].fillna("auto")
+    else:
+        df["mode"] = "auto"
+
+    # ---- Heutige IST-Werte (bis jetzt) zum Vergleich ----
+    for col, signal in [("actual_load_w", "house_consumption"),
+                        ("actual_pv_w", "pv_generation"),
+                        ("actual_soc_percent", "battery_soc"),
+                        ("actual_battery_w", "battery_power"),
+                        ("actual_grid_w", "grid_power")]:
+        try:
+            if repo.signal_available(signal):
+                s = repo.read_slots(signal, day_start, now)
+                df[col] = s.reindex(full)
+        except Exception:  # pragma: no cover
+            pass
+    return df
 
 
 def start_dashboard_server(config: Config) -> None:
