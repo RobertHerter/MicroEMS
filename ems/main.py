@@ -57,7 +57,12 @@ def run_once(config: Config) -> None:
     try:
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
-        opt_end = now + timedelta(hours=config.general.optimization_horizon_hours)
+        # Horizont bis ENDE des letzten Tages (nächste Mitternacht) aufrunden ->
+        # immer ganze Tage, kein verzerrter Teiltag am Ende.
+        _raw_end = now + timedelta(hours=config.general.optimization_horizon_hours)
+        opt_end = _raw_end.normalize()
+        if opt_end <= _raw_end:
+            opt_end = opt_end + timedelta(days=1)
 
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
@@ -74,9 +79,9 @@ def run_once(config: Config) -> None:
         )
         log.info("Verbrauchsprognose (%d Slots) in InfluxDB geschrieben.", len(load_fc))
 
-        # Optimierungshorizont = erste 48 h der Prognose
-        opt_index = pd.date_range(now, periods=config.general.n_opt_slots, freq=freq,
-                                  tz=config.general.timezone)
+        # Optimierungshorizont: jetzt bis Ende des letzten Tages (ganze Tage)
+        opt_index = pd.date_range(now, opt_end, freq=freq,
+                                  tz=config.general.timezone, inclusive="left")
         house_load = load_fc.reindex(opt_index).ffill().bfill().values
 
         # --- 2) Eingangsdaten lesen ------------------------------------- #
@@ -205,6 +210,8 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
     slot = pd.Timedelta(freq)
     day_start = now.normalize()
     end = result.table.index[-1]
+    # Horizont endet bereits an einer Tagesgrenze (Mitternacht) -> ganze Tage,
+    # kein Abschneiden nötig.
     full = pd.date_range(day_start, end, freq=freq, tz=tz)  # inkl. Ende
     df = pd.DataFrame(index=full)
 

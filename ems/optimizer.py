@@ -156,6 +156,30 @@ class Optimizer:
         _dayidx = {d: i for i, d in enumerate(_uniq)}
         slot_day = [_dayidx[k] for k in _daykey]
         export_line = [pulp.LpVariable(f"L_day_{i}", 0) for i in range(len(_uniq))]
+        # Linie nur auf Tage anwenden, deren Nachmittags-/Erzeugungsspitze im
+        # Horizont liegt. Reine Vormittags-Teiltage am Rand (letzter Tag) bekommen
+        # KEINE Linie -> keine sinnlose 0-Linie/Zwangsladung am Horizontende.
+        _day_last_hour = {}
+        for _k, _ts in zip(_daykey, _local):
+            _day_last_hour[_k] = max(_day_last_hour.get(_k, -1), _ts.hour)
+        line_day = [bool(_day_last_hour[_uniq[i]] >= 15) for i in range(len(_uniq))]
+
+        # Ladestrategie PRO TAG. "auto": Tage mit deutlich mehr PV-Überschuss als
+        # nutzbarer Akkukapazität -> peak (Spitze abschöpfen); sonst asap (verfüg-
+        # bare PV früh einsammeln). "peak"/"asap" = alle Tage gleich.
+        usable_wh = hb.max_soc_wh - hb.min_soc_wh
+        _day_surplus = [0.0] * len(_uniq)
+        for i in range(N):
+            _day_surplus[slot_day[i]] += max(0.0, float(inp.pv_w[i]) - float(inp.house_load_w[i])) * dt
+        if strategy == "auto":
+            day_mode = ["peak" if _day_surplus[i] >= usable_wh else "asap"
+                        for i in range(len(_uniq))]
+        elif strategy == "peak":
+            day_mode = ["peak"] * len(_uniq)
+        else:
+            day_mode = ["asap"] * len(_uniq)
+        log.info("Ladestrategie '%s' -> Tage: %s", strategy,
+                 {str(_uniq[i]): day_mode[i] for i in range(len(_uniq))})
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -185,16 +209,19 @@ class Optimizer:
             # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
             prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
             prob += dc[t] + ac[t] >= (hb.max_total_charge_w - EPS_P) * at_max[t]
-            # Peak-Modus: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
-            # das Terminal-Nachlade-Artefakt im letzten Slot).
-            if strategy == "peak":
+            # Strategie des jeweiligen Tages (peak/asap)
+            dm = day_mode[slot_day[t]]
+            # Peak-Tag: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
+            # das Terminal-Nachlade-Artefakt).
+            if dm == "peak":
                 prob += ac[t] == 0
             if not gd_allowed[t]:
-                if strategy == "peak":
-                    # Peak-Modus: Einspeisung auf die Tages-Linie deckeln; PV über
-                    # der Linie muss in den Akku (kein Akku->Netz-Dump).
+                if dm == "peak":
+                    # Peak-Tag: kein Akku->Netz-Dump; Einspeisung auf die Tages-
+                    # Linie deckeln – aber nur an Tagen mit Spitze im Horizont.
                     prob += g_exp[t] <= pv_t - dc[t]
-                    prob += g_exp[t] <= export_line[slot_day[t]]
+                    if line_day[slot_day[t]]:
+                        prob += g_exp[t] <= export_line[slot_day[t]]
                 else:
                     # asap: Einspeisen nur, wenn Akku voll ODER mit Max-Leistung lädt.
                     prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
@@ -241,14 +268,15 @@ class Optimizer:
         for t in range(N):
             cost_terms.append(0.02 * ac[t] * kwh)
 
-        # asap: Eigenverbrauchs-Priorität steckt in der harten Nebenbedingung oben.
-        # peak: Einspeise-Linie L minimieren -> L wird so tief wie möglich, dass
-        # der Akku gerade voll wird. Alles unter L wird eingespeist, die Spitze
-        # über L lädt den Akku (Peak-Shaving).
-        if strategy == "peak":
-            pw = cfg.optimization.peak_charge_weight
-            if pw:
-                cost_terms.append(pw * pulp.lpSum(export_line) / 1000.0)
+        # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
+        # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
+        # harte Nebenbedingung oben.
+        pw = cfg.optimization.peak_charge_weight
+        _peak_line_days = [i for i in range(len(export_line))
+                           if line_day[i] and day_mode[i] == "peak"]
+        if pw and _peak_line_days:
+            cost_terms.append(pw * pulp.lpSum(
+                [export_line[i] for i in _peak_line_days]) / 1000.0)
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ)
         tv = cfg.optimization.terminal_soc_value
@@ -274,8 +302,13 @@ class Optimizer:
         def val(v):
             return float(pulp.value(v)) if not isinstance(v, (int, float)) else float(v)
 
-        # Tages-Linien-Werte (Peak-Modus) je Slot
-        line_vals = [float(val(L)) for L in export_line] if strategy == "peak" else None
+        # Tages-Linien-Werte (Peak-Modus) je Slot. Ungenutzte L (Tage ohne Linie)
+        # bleiben None -> als NaN behandeln.
+        def _lv(L):
+            v = pulp.value(L)
+            return float(v) if v is not None else float("nan")
+        # Für Peak-Tage gesetzt, sonst NaN (asap-Tage haben keine Linie).
+        line_vals = [_lv(L) for L in export_line]
 
         rows = []
         for t in range(N):
@@ -314,7 +347,7 @@ class Optimizer:
                 dis_limit, dis_limited = hb.max_discharge_w, 0
             # Modus. Im Peak-Modus ist das geformte Laden entlang der Linie NORMAL
             # -> nicht als Eingriff werten (nur Entlade-Sperre / Netz-Entladen).
-            charge_flag = charge_limited and strategy != "peak"
+            charge_flag = charge_limited and day_mode[slot_day[t]] != "peak"
             if ac_v > tol:
                 mode = "grid_charge"
             elif charge_flag and charge_limit < tol:
@@ -353,7 +386,8 @@ class Optimizer:
                 "house_soc_wh": round(soc_v, 1),
                 "house_soc_percent": round(100.0 * soc_v / hb.capacity_wh, 2),
                 "export_line_w": (round(line_vals[slot_day[t]], 1)
-                                  if line_vals is not None else np.nan),
+                                  if (line_day[slot_day[t]] and day_mode[slot_day[t]] == "peak")
+                                  else np.nan),
                 "slot_cost_ct": round(slot_cost, 4),
             }
             if use_car:
@@ -364,7 +398,8 @@ class Optimizer:
 
         table = pd.DataFrame(rows, index=inp.index)
         total = float(table["slot_cost_ct"].sum())
-        line_w = float(line_vals[slot_day[0]]) if line_vals is not None else None
+        line_w = (float(line_vals[slot_day[0]])
+                  if (line_day[slot_day[0]] and day_mode[slot_day[0]] == "peak") else None)
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w,

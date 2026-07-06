@@ -43,7 +43,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.055,
         row_heights=[0.46, 0.20, 0.34],
         specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]],
-        subplot_titles=("Leistung &amp; Ladezustand", "Strompreis", "Steuerung"),
+        subplot_titles=("<b>Leistung &amp; Ladezustand</b>", "<b>Strompreis</b>",
+                        "<b>Steuerung</b>"),
     )
 
     def line(col, name, color, dash=None, width=2, row=1, sec=False):

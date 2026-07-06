@@ -161,10 +161,12 @@ class OptimizationConfig:
     # für Last/Auto, nie ins Netz (verhindert unwirtschaftliches "Dumpen").
     allow_grid_discharge: bool = False
     # Ladestrategie:
-    #   "asap" = Akku so früh wie möglich aus PV voll laden (Eigenverbrauch),
-    #   "peak" = Einspeise-Linie L: Einspeisung auf L deckeln (darunter einspeisen),
-    #            PV-Spitze über L lädt den Akku; L minimal, sodass Akku voll wird.
-    charge_strategy: str = "asap"
+    #   "peak" = Einspeise-Linie L (pro Tag): Einspeisung auf L deckeln (darunter
+    #            einspeisen), PV-Spitze über L lädt den Akku; L minimal, sodass
+    #            der Akku voll wird. (Standard)
+    #   "asap" = Akku so früh wie möglich aus PV voll laden (Eigenverbrauch).
+    #   "auto" = pro Tag automatisch: viel PV-Überschuss -> peak, sonst asap. (Standard)
+    charge_strategy: str = "auto"
     # Gewicht, wie stark die Einspeise-Linie L minimiert wird.
     peak_charge_weight: float = 30.0
 
@@ -313,7 +315,7 @@ def load_config(path: str) -> Config:
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
-        charge_strategy=str(o.get("charge_strategy", "asap")),
+        charge_strategy=str(o.get("charge_strategy", "auto")),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
     )
 
