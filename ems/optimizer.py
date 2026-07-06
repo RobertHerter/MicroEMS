@@ -57,6 +57,42 @@ class OptimizerResult:
     export_line_w: Optional[float] = None   # Einspeise-Linie L (nur Peak-Modus)
 
 
+def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float):
+    """Ein Slot natürliches E3DC-Eigenverbrauchsverhalten (ohne EMS-Eingriffe):
+    PV-Überschuss lädt den Akku, Defizit entlädt ihn; Rest geht ins/kommt vom Netz.
+
+    Wird für den Infeasibility-Fallback UND als "Ohne-EMS"-Baseline des
+    Ersparnis-Trackings genutzt.
+    Rückgabe: (neuer SoC Wh, Laden W, Entladen W, Netzbezug W, Einspeisung W).
+    """
+    pv_w, load_w = max(0.0, float(pv_w)), max(0.0, float(load_w))
+    surplus = pv_w - load_w
+    charge = dis = 0.0
+    if surplus >= 0.0:
+        room_w = (hb.max_soc_wh - soc_wh) / (hb.charge_efficiency * dt_hours)
+        charge = min(surplus, hb.max_dc_charge_w, max(0.0, room_w))
+        soc_wh += hb.charge_efficiency * charge * dt_hours
+    else:
+        avail_w = (soc_wh - hb.min_soc_wh) * hb.discharge_efficiency / dt_hours
+        dis = min(-surplus, hb.max_discharge_w, max(0.0, avail_w))
+        soc_wh -= dis * dt_hours / hb.discharge_efficiency
+    imp = max(0.0, load_w - pv_w - dis)
+    exp = max(0.0, pv_w - load_w - charge)
+    return soc_wh, charge, dis, imp, exp
+
+
+def make_solver(cfg: Config):
+    """CBC-Solver: bevorzugt das System-CBC (COIN_CMD, coinor-cbc), da
+    PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC."""
+    threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
+    kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
+                  threads=threads)
+    coin = pulp.COIN_CMD(**kwargs)
+    if coin.available():
+        return coin
+    return pulp.PULP_CBC_CMD(**kwargs)
+
+
 class Optimizer:
     def __init__(self, config: Config):
         self.cfg = config
@@ -91,18 +127,7 @@ class Optimizer:
             price_t = float(np.nan_to_num(inp.price_ct_kwh[t]))
             feedin_t = float(np.nan_to_num(inp.feedin_ct_kwh[t]))
             pv_t, load_t = max(0.0, pv_t), max(0.0, load_t)
-            surplus = pv_t - load_t
-            charge = dis = 0.0
-            if surplus >= 0.0:
-                room_w = (hb.max_soc_wh - soc) / (hb.charge_efficiency * dt)
-                charge = min(surplus, hb.max_dc_charge_w, max(0.0, room_w))
-                soc += hb.charge_efficiency * charge * dt
-            else:
-                avail_w = (soc - hb.min_soc_wh) * hb.discharge_efficiency / dt
-                dis = min(-surplus, hb.max_discharge_w, max(0.0, avail_w))
-                soc -= dis * dt / hb.discharge_efficiency
-            imp = max(0.0, load_t - pv_t - dis)
-            exp = max(0.0, pv_t - load_t - charge)
+            soc, charge, dis, imp, exp = natural_battery_step(soc, pv_t, load_t, hb, dt)
             row = {
                 "house_load_w": load_t, "pv_w": pv_t,
                 "price_ct_kwh": price_t, "feedin_ct_kwh": feedin_t,
@@ -369,11 +394,7 @@ class Optimizer:
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
-        threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
-        solver = pulp.PULP_CBC_CMD(
-            timeLimit=cfg.optimization.solver_time_limit_s, msg=0, threads=threads
-        )
-        prob.solve(solver)
+        prob.solve(make_solver(cfg))
         status = pulp.LpStatus[prob.status]
         if prob.status != pulp.LpStatusOptimal:
             # Keine (verlässliche) Lösung: pulp.value() liefert dann None und

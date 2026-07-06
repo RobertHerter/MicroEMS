@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time as _time
 from datetime import timedelta
 
@@ -151,6 +152,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         try:
             if one_shot:
                 publisher = HomeyMqttPublisher(config)
+            if result.infeasible:
+                publisher.publish_alert(
+                    "warning", f"Optimierung nicht optimal ({result.status}) – "
+                               f"Fallback 'auto' ohne Eingriffe aktiv.")
             publisher.publish(result.table, now)
             if one_shot:
                 publisher.close()
@@ -165,13 +170,23 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         repo.write_frame("predicted_state", pred)
         log.info("Steuertabelle + Prognosezustände in InfluxDB geschrieben.")
 
+        # --- 5b) Ersparnis-Tracking (Ist vs. Ohne-EMS-Baseline) ---------- #
+        savings_eur = None
+        if config.savings.enabled:
+            try:
+                from .savings import SavingsTracker
+                savings_eur = SavingsTracker(config).update(repo, now)
+            except Exception as exc:
+                log.warning("Ersparnis-Tracking fehlgeschlagen (%s).", exc)
+
         # --- 6) Dashboard ----------------------------------------------- #
         # Anzeige ab heute 00:00: Ist-Werte (bis jetzt) und Prognose (ganzer
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
             display = _build_display_frame(repo, config, now, history, result)
             build_dashboard(config, display, result.total_cost_ct,
-                            export_line_w=result.export_line_w)
+                            export_line_w=result.export_line_w,
+                            savings_eur=savings_eur)
     finally:
         repo.close()
 
@@ -291,6 +306,24 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
     return df
 
 
+def _sd_notify(message: str) -> None:
+    """Meldung an systemd (Type=notify / WatchdogSec); no-op ohne systemd."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    try:
+        import socket
+        if addr.startswith("@"):
+            addr = "\0" + addr[1:]
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        try:
+            s.sendto(message.encode(), addr)
+        finally:
+            s.close()
+    except Exception:  # pragma: no cover
+        pass
+
+
 def start_dashboard_server(config: Config) -> None:
     """Startet im Dienstmodus einen kleinen HTTP-Server, der das Dashboard
     im Browser abrufbar macht (http://<host>:<port>/). Läuft als Daemon-Thread."""
@@ -373,17 +406,24 @@ def main() -> None:
     # Persistente MQTT-Verbindung mit Last Will: stirbt der Prozess, setzt der
     # Broker ems/status selbst auf "offline" (Watchdog-Signal für Homey).
     publisher = HomeyMqttPublisher(config)
+    _sd_notify("READY=1")
     while True:
         try:
             run_once(config, publisher)
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
             log.exception("Fehler im EMS-Zyklus – fahre fort.")
-        # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) schlafen.
+            publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
+        # Lebenszeichen an systemd (WatchdogSec): bleibt es aus (Prozess hängt),
+        # startet systemd den Dienst neu.
+        _sd_notify("WATCHDOG=1")
+        # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) warten;
+        # ein MQTT-Kommando (ems/cmd/recalc, car_boost) bricht das Warten ab.
         now = _time.time()
         next_mark = (now // interval + 1) * interval + offset
         if next_mark - now < 5.0:      # zu knapp -> erst zur übernächsten Marke
             next_mark += interval
-        _time.sleep(next_mark - now)
+        if publisher.wait_for_recalc(next_mark - _time.time()):
+            log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
 
 
 if __name__ == "__main__":

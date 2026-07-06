@@ -6,6 +6,9 @@ config.yaml~
 # Generierte Ausgaben
 dashboard.html
 dashboard_heute.html
+plotly.min.js
+savings_state.json
+backup/
 
 # Python
 __pycache__/

@@ -1,0 +1,10 @@
+[Unit]
+Description=Woechentliches EMS-Konfigurations-Backup (Montag 03:30)
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

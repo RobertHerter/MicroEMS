@@ -4,14 +4,25 @@ After=network-online.target mosquitto.service
 Wants=network-online.target
 
 [Service]
-Type=simple
-# Kein User=ems (existiert i.d.R. nicht -> Fehler 217/USER). Läuft als root;
-# alternativ "User=<dein-login>" setzen, dem /opt/ems gehört.
+Type=notify
+User=ems
+Group=ems
 WorkingDirectory=/opt/ems
 ExecStart=/opt/ems/.venv/bin/python -m ems.main --config /opt/ems/config.yaml --loop
 Restart=on-failure
 RestartSec=15
-# System-Umgebung
+# Haenger-Watchdog: das EMS pingt einmal je Zyklus (~15 min, sd_notify).
+# Bleibt der Ping 35 min aus (Prozess haengt), startet systemd neu.
+WatchdogSec=2100
+# Haertung: laeuft als Benutzer "ems" (vorher anlegen, siehe README);
+# Port 80 (Dashboard) ueber Capability statt root. Schreibzugriff nur /opt/ems.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ems
+PrivateTmp=true
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

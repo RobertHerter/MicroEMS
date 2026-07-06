@@ -33,10 +33,11 @@ Steuerbefehle per MQTT.
 | `ems/influx.py` | InfluxDB-Abstraktion 1.x (InfluxQL) / 2.x (Flux), Lesen/Schreiben, 15-min-Resampling |
 | `ems/forecast.py` | Hausverbrauchs-Prognose per Ähnliche-Tage-Mittelung (Wochentag/Feiertag/Monat/Jahreszeit/Temperatur, Rezenz-Gewichtung) |
 | `ems/optimizer.py` | MILP-Optimierer (PuLP/CBC): Steuertabelle 48 h |
-| `ems/homey_mqtt.py` | MQTT-Ausgabe der Steuerbefehle an Homey |
+| `ems/homey_mqtt.py` | MQTT: Steuerbefehle an Homey, Status/Last-Will, Alerts, Kommandos |
+| `ems/savings.py` | Ersparnis-Tracking: Ist-Kosten vs. simulierte "Ohne-EMS"-Baseline |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard (heute + Vorhersage + Steuerbefehle) |
-| `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb) |
-| `tests/test_synthetic.py` | End-to-End-Test mit synthetischen Daten (ohne InfluxDB/MQTT) |
+| `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |
+| `tests/` | pytest-Suite (E2E synthetisch, Optimierer-Randfälle, Prognose, Ersparnis) |
 
 ## Eingangssignale (aus InfluxDB)
 
@@ -96,15 +97,28 @@ python -m ems.main --config config.yaml --log-level INFO
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin ems 2>/dev/null || true
-sudo chown -R ems /opt/ems
-sudo cp ems.service /etc/systemd/system/ems.service
+sudo chown -R ems:ems /opt/ems
+sudo cp ems.service ems-kalibrierung.service ems-kalibrierung.timer \
+        ems-backup.service ems-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now ems.service
+sudo systemctl enable --now ems.service ems-kalibrierung.timer ems-backup.timer
 journalctl -u ems -f
 ```
 
 Der Dienst rechnet im Intervall `general.run_interval_minutes` (Standard 15 min)
-neu.
+neu. Er läuft gehärtet als Benutzer `ems` (Port 80 über
+`CAP_NET_BIND_SERVICE`, Schreibzugriff nur auf `/opt/ems`) und mit
+**systemd-Watchdog**: bleibt das Lebenszeichen 35 min aus (Prozess hängt),
+startet systemd den Dienst neu.
+
+### Backup
+
+`ems-backup.timer` sichert wöchentlich die unversionierten Dateien
+(`config.yaml` mit Zugangsdaten, Kalibrierprofile, Ersparnis-Status) per
+[backup.sh](backup.sh) nach `/opt/ems/backup` (letzte 8 Stände). **Wichtig:**
+Das lokale Ziel schützt nicht vor einem Ausfall des Datenträgers – für echte
+Sicherheit in `ems-backup.service` ein externes Ziel setzen
+(`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup`).
 
 ## Homey-Anbindung (MQTT)
 
@@ -122,7 +136,19 @@ ems/setpoint/mode                     "auto" | "grid_charge" | "hold" | ...
 ems/setpoint/updated                  ISO-Zeitstempel des Slots
 ems/schedule                          komplette 48h-Tabelle als JSON (retained)
 ems/status                            "online" | "offline" (retained, Last Will)
+ems/alert                             Störungen als JSON {level, message, time}
 ```
+
+Eingehende Kommandos (von Homey an das EMS):
+
+```
+ems/cmd/recalc      sofortige Neuberechnung anstoßen (Payload egal)
+ems/cmd/car_boost   "1"/"0": Auto sofort mit Max-Leistung laden, bis der
+                    Ziel-SoC erreicht ist (überschreibt car_charge_w)
+```
+
+`ems/alert` meldet z.B. eine nicht-optimale Optimierung (Fallback aktiv) oder
+einen fehlgeschlagenen Zyklus – ideal für einen Homey-Push-Benachrichtigungs-Flow.
 
 In Homey die **MQTT Client**-App auf diese Topics abonnieren und die Werte per
 Flow auf die Geräte-Capabilities (Ladeleistung etc.) schreiben.
@@ -143,6 +169,18 @@ Zusätzlich werden geschrieben (Measurements konfigurierbar unter
 - `ems_load_forecast` – prognostizierter Hausverbrauch (72 h)
 - `ems_control` – Steuerbefehle je Slot (48 h)
 - `ems_prediction` – prognostizierte Haus-/Auto-SoCs, Netz, Slot-Kosten (48 h)
+- `ems_savings` – Ersparnis-Tracking je abgeschlossenem Slot (s.u.)
+
+## Ersparnis-Tracking
+
+Für jeden abgeschlossenen Slot vergleicht das EMS die **tatsächlichen**
+Netzkosten (gemessener Netzbezug/-einspeisung × Preis) mit einer Simulation,
+was der E3DC **ohne EMS** im reinen Eigenverbrauchsmodus getan hätte (eigener
+hypothetischer Akku-SoC wird fortgeführt, Zustand in `savings_state.json`).
+Die kumulierte Differenz erscheint im Dashboard-Titel („Ersparnis gesamt")
+und je Slot in `ems_savings` – wird sie dauerhaft negativ, stimmt etwas am
+Modell. Benötigt die Signale `pv_generation`, `house_consumption`,
+`grid_power` (positiv = Bezug) und `electricity_price`.
 
 ## Dashboard
 

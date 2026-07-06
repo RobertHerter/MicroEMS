@@ -1,0 +1,11 @@
+[Unit]
+Description=EMS Konfigurations-Backup (config.yaml, Kalibrierung, Ersparnis-Status)
+
+[Service]
+Type=oneshot
+User=ems
+Group=ems
+ExecStart=/opt/ems/backup.sh
+# Externes Ziel (USB/NAS) hier setzen - das lokale Standardziel schuetzt
+# NICHT vor einem Ausfall des Datentraegers:
+# Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup

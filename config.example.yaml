@@ -51,6 +51,9 @@ influxdb:
     # Wallbox-Status (0/1, optional): Auto wird nur mitoptimiert, wenn wirklich
     # angesteckt - sonst genügt ein alter SoC-Wert in der DB als (falsches) Indiz.
     # vehicle_connected:    { measurement: "car", field: "connected", optional: true, aggregation: "last" }
+    # Netz-Leistung (für Ersparnis-Tracking): positiv = Bezug, negativ =
+    # Einspeisung (Vorzeichen ggf. per scale: -1 drehen).
+    # grid_power:           { measurement: "power", field: "grid_w", optional: true }
     # Einspeisevergütung aus DB (nur wenn feed_in.mode == "db")
     feed_in_tariff:         { measurement: "price", field: "feedin_ct_kwh" }
 
@@ -59,6 +62,7 @@ influxdb:
     load_forecast:   "ems_load_forecast"   # prognostizierter Hausverbrauch (W)
     control_table:   "ems_control"         # Steuerbefehle (W) je Slot, 48h
     predicted_state: "ems_prediction"      # prognostizierte SoCs, Netz, Kosten je Slot
+    savings:         "ems_savings"         # Ersparnis-Tracking (Ist vs. Baseline)
 
 # -----------------------------------------------------------------------------
 # Einspeisevergütung
@@ -149,6 +153,16 @@ mqtt:
   # Gilt nur für ems/schedule (Info-Tabelle). Sollwerte werden grundsätzlich
   # NICHT retained (Fail-safe: keine veralteten Steuerbefehle nach EMS-Ausfall).
   retain: true
+
+# -----------------------------------------------------------------------------
+# Ersparnis-Tracking: vergleicht je Slot die Ist-Netzkosten (gemessen) mit der
+# simulierten "Ohne-EMS"-Baseline (E3DC-Eigenverbrauchsmodus). Kumulierte
+# Ersparnis erscheint im Dashboard-Titel und im Measurement outputs.savings.
+# Benötigt die Signale pv_generation, house_consumption, grid_power, Preis.
+# -----------------------------------------------------------------------------
+savings:
+  enabled: true
+  state_path: "./savings_state.json"
 
 # -----------------------------------------------------------------------------
 # Dashboard

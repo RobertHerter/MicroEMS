@@ -233,6 +233,14 @@ class CalibrationConfig:
 
 
 @dataclass
+class SavingsConfig:
+    # Ersparnis-Tracking: Ist-Kosten vs. simulierte "Ohne-EMS"-Baseline je Slot
+    # (braucht die Signale pv_generation, house_consumption, grid_power, Preis).
+    enabled: bool = True
+    state_path: str = "./savings_state.json"
+
+
+@dataclass
 class Config:
     general: GeneralConfig
     influxdb: InfluxConfig
@@ -245,6 +253,7 @@ class Config:
     mqtt: MqttConfig
     dashboard: DashboardConfig
     calibration: CalibrationConfig
+    savings: SavingsConfig = field(default_factory=SavingsConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -274,12 +283,14 @@ def load_config(path: str) -> Config:
 
     inf = raw["influxdb"]
     signals = {name: SignalSpec.from_dict(spec) for name, spec in inf["signals"].items()}
+    outputs = dict(inf["outputs"])
+    outputs.setdefault("savings", "ems_savings")
     influxdb = InfluxConfig(
         version=int(inf["version"]),
         v1=inf.get("v1", {}),
         v2=inf.get("v2", {}),
         signals=signals,
-        outputs=inf["outputs"],
+        outputs=outputs,
     )
     if influxdb.version not in (1, 2):
         raise ValueError("influxdb.version muss 1 oder 2 sein.")
@@ -376,6 +387,12 @@ def load_config(path: str) -> Config:
         pv_profile=cal.get("pv_profile", "./kalibrierung_profil.yaml"),
     )
 
+    sav = raw.get("savings", {})
+    savings = SavingsConfig(
+        enabled=bool(sav.get("enabled", True)),
+        state_path=sav.get("state_path", "./savings_state.json"),
+    )
+
     return Config(
         general=general,
         influxdb=influxdb,
@@ -388,4 +405,5 @@ def load_config(path: str) -> Config:
         mqtt=mqtt,
         dashboard=dashboard,
         calibration=calibration,
+        savings=savings,
     )

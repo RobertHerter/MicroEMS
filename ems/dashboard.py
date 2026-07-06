@@ -31,7 +31,7 @@ _MODE_LEG = {"hold": "rgba(255,140,0,0.7)", "grid_charge": "rgba(31,119,180,0.7)
 
 
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
-                    export_line_w=None) -> str:
+                    export_line_w=None, savings_eur=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -193,8 +193,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_layout(
         height=880, template="plotly_white", hovermode="x unified", barmode="relative",
         title=dict(text=(f"<b>EMS – Ist vs. Prognose & Steuerung</b>  ·  Netto-Kosten Horizont "
-                         f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} Eingriffe  ·  "
-                         f"{now.strftime('%Y-%m-%d %H:%M')}"),
+                         f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} Eingriffe"
+                         + (f"  ·  <b>Ersparnis gesamt {savings_eur:.2f} €</b>"
+                            if savings_eur is not None else "")
+                         + f"  ·  {now.strftime('%Y-%m-%d %H:%M')}"),
                    x=0.5, xanchor="center", font=dict(size=22)),
         legend=dict(orientation="h", yanchor="top", y=-0.08, xanchor="left", x=0, font=dict(size=10)),
         margin=dict(l=60, r=30, t=120, b=110),
