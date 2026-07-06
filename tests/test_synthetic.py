@@ -19,7 +19,7 @@ import pandas as pd
 from ems.config import (
     Config, GeneralConfig, InfluxConfig, FeedInConfig, HouseBatteryConfig,
     InverterConfig, VehicleConfig, OptimizationConfig, ForecastConfig,
-    MqttConfig, DashboardConfig,
+    MqttConfig, DashboardConfig, CalibrationConfig,
 )
 from ems.forecast import LoadForecaster
 from ems.optimizer import Optimizer, OptimizerInputs
@@ -49,6 +49,7 @@ def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
                                 holiday_subdivision="BY"),
         mqtt=MqttConfig(enabled=False),
         dashboard=DashboardConfig(enabled=True, output_path=tmp_html),
+        calibration=CalibrationConfig(enabled=False),
     )
 
 

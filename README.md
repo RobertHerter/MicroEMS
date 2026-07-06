@@ -111,17 +111,26 @@ neu.
 Das EMS publiziert bei jedem Zyklus die Sollwerte des laufenden Slots:
 
 ```
-ems/setpoint/batt_dc_charge_w     z.B. 2000
-ems/setpoint/batt_ac_charge_w     z.B. 0
-ems/setpoint/batt_discharge_w     z.B. 0
-ems/setpoint/car_charge_w         z.B. 4000
-ems/setpoint/mode                 "charge" | "discharge" | "idle"
-ems/setpoint/updated              ISO-Zeitstempel
-ems/schedule                      komplette 48h-Tabelle als JSON
+ems/setpoint/batt_charge_limit_w      Ladelimit (Hardware-Max = frei laufen)
+ems/setpoint/batt_discharge_limit_w   Entladelimit (Hardware-Max = frei laufen)
+ems/setpoint/batt_grid_charge_w       Netzladen erzwingen (Akku <- Netz)
+ems/setpoint/batt_grid_discharge_w    Netz-Entladen (Akku -> Netz)
+ems/setpoint/charge_limited           true/false
+ems/setpoint/discharge_limited        true/false
+ems/setpoint/car_charge_w             z.B. 4000
+ems/setpoint/mode                     "auto" | "grid_charge" | "hold" | ...
+ems/setpoint/updated                  ISO-Zeitstempel des Slots
+ems/schedule                          komplette 48h-Tabelle als JSON (retained)
 ```
 
 In Homey die **MQTT Client**-App auf diese Topics abonnieren und die Werte per
 Flow auf die Geräte-Capabilities (Ladeleistung etc.) schreiben.
+
+**Fail-safe:** Die Sollwerte werden ohne Retain-Flag publiziert. Fällt das EMS
+aus, hält der Broker also keine veralteten Steuerbefehle vor. Empfohlener
+Watchdog-Flow in Homey: Wenn `ems/setpoint/updated` länger als ~35 min kein
+Update bekommt, alle Limits auf Hardware-Maximum setzen (Eigenverbrauchs-
+Automatik des E3DC).
 
 ## Writeback in InfluxDB
 

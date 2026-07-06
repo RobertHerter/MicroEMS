@@ -205,6 +205,8 @@ class MqttConfig:
     publish_setpoints: bool = True
     publish_schedule_json: bool = True
     qos: int = 1
+    # Nur für ems/schedule (Info). Sollwerte werden nie retained (Fail-safe:
+    # Broker darf nach EMS-Ausfall keine veralteten Steuerbefehle ausliefern).
     retain: bool = True
 
 

@@ -137,6 +137,8 @@ mqtt:
   # Zusätzlich komplette 48h-Tabelle als JSON publizieren
   publish_schedule_json: true
   qos: 1
+  # Gilt nur für ems/schedule (Info-Tabelle). Sollwerte werden grundsätzlich
+  # NICHT retained (Fail-safe: keine veralteten Steuerbefehle nach EMS-Ausfall).
   retain: true
 
 # -----------------------------------------------------------------------------

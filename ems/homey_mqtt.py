@@ -4,6 +4,13 @@ Publiziert die Sollwerte des aktuell laufenden Slots als Einzeltopics
 (damit Homey-Flows sie über die MQTT-Client-App direkt auf Geräte-Capabilities
 mappen können) sowie optional die komplette 48-h-Steuertabelle als JSON.
 
+Fail-safe: Sollwerte werden bewusst OHNE Retain-Flag publiziert. Fällt das EMS
+aus, liefert der Broker Neu-Verbindern keine veralteten Steuerbefehle mehr aus;
+Homey erhält dann schlicht keine Updates und kann (per Flow-Watchdog auf das
+Alter von setpoint/updated) in den Eigenverbrauchs-Automatikmodus zurückfallen.
+Nur die Zeitplan-Tabelle (ems/schedule, reine Info) wird gemäß mqtt.retain
+retained.
+
 Topic-Schema (base_topic = "ems"):
   ems/setpoint/batt_dc_charge_w
   ems/setpoint/batt_ac_charge_w
@@ -51,10 +58,15 @@ class HomeyMqttPublisher:
         client.loop_start()
         return client
 
-    def _pub(self, topic: str, payload) -> None:
-        self._client.publish(
-            topic, payload, qos=self.cfg.qos, retain=self.cfg.retain
-        )
+    def _pub(self, topic: str, payload, retain: bool) -> None:
+        info = self._client.publish(topic, payload, qos=self.cfg.qos, retain=retain)
+        # Auf Zustellbestätigung warten: ohne Retain gibt es keine zweite Chance
+        # über den Broker-Speicher, daher darf disconnect() den Versand nicht
+        # abschneiden.
+        try:
+            info.wait_for_publish(timeout=5)
+        except Exception:  # pragma: no cover - ältere paho-Versionen ohne timeout
+            pass
 
     def publish(self, table: pd.DataFrame, current_ts: pd.Timestamp) -> None:
         """Publiziert Sollwerte des aktuellen Slots und optional die Tabelle."""
@@ -91,8 +103,9 @@ class HomeyMqttPublisher:
                     "mode": str(row["mode"]),
                     "updated": idx[pos].isoformat(),
                 }
+                # Fail-safe: Sollwerte NIE retainen (s. Modul-Docstring).
                 for key, value in setpoints.items():
-                    self._pub(f"{base}/setpoint/{key}", value)
+                    self._pub(f"{base}/setpoint/{key}", value, retain=False)
                 log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
 
             if self.cfg.publish_schedule_json:
@@ -108,7 +121,8 @@ class HomeyMqttPublisher:
                         for ts, r in payload.iterrows()
                     ],
                 }
-                self._pub(f"{base}/schedule", json.dumps(payload_json))
+                self._pub(f"{base}/schedule", json.dumps(payload_json),
+                          retain=self.cfg.retain)
                 log.info("MQTT Zeitplan (%d Slots) publiziert.", len(payload))
         finally:
             self._client.loop_stop()
