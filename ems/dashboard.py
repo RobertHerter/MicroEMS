@@ -145,8 +145,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        text=f"● Jetzt {now.strftime('%H:%M')}", showarrow=False,
                        font=dict(color="#0d6efd", size=12), bgcolor="rgba(255,255,255,0.7)")
 
-    # Einspeise-Linie L (Peak-Modus) waagerecht in Panel 1 einzeichnen
-    if export_line_w is not None and export_line_w > 0:
+    # Einspeise-Linie (Peak-Modus): pro Tag ein Wert -> als Treppenlinie zeichnen.
+    if "export_line_w" in t.columns and t["export_line_w"].notna().any():
+        fig.add_trace(go.Scatter(x=x, y=t["export_line_w"], name="Einspeise-Linie",
+                                 mode="lines", line=dict(color="#2ca02c", width=1.5,
+                                 dash="dash", shape="hv")), row=1, col=1)
+    elif export_line_w is not None and export_line_w > 0:
         fig.add_hline(y=float(export_line_w), row=1, col=1,
                       line=dict(color="#2ca02c", width=1.5, dash="dash"),
                       annotation_text=f"Einspeise-Linie {export_line_w:.0f} W",

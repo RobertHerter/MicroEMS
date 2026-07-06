@@ -240,7 +240,7 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
     for c in ["house_soc_percent", "car_soc_percent", "batt_dc_charge_w",
               "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
               "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
-              "grid_import_w", "grid_export_w", "mode"]:
+              "grid_import_w", "grid_export_w", "export_line_w", "mode"]:
         if c in ot.columns:
             df[c] = ot[c].reindex(full)
     if "mode" in df.columns:
@@ -249,6 +249,11 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
         df["mode"] = "auto"
 
     # ---- Heutige IST-Werte (bis jetzt) zum Vergleich ----
+    # Bis 'now' lesen (aktuellen Slot einschließen) und im Ist-Bereich vorwärts
+    # füllen, damit die Ist-Linie den Jetzt-Marker erreicht und keine Lücke zur
+    # Prognose entsteht (überbrückt Mess-Lag der Datenquelle).
+    slot = pd.Timedelta(freq)
+    past_mask = full <= now
     for col, signal in [("actual_load_w", "house_consumption"),
                         ("actual_pv_w", "pv_generation"),
                         ("actual_soc_percent", "battery_soc"),
@@ -256,8 +261,8 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
                         ("actual_grid_w", "grid_power")]:
         try:
             if repo.signal_available(signal):
-                s = repo.read_slots(signal, day_start, now)
-                df[col] = s.reindex(full)
+                s = repo.read_slots(signal, day_start, now + slot).reindex(full)
+                df[col] = s.where(past_mask).ffill().where(past_mask)
         except Exception:  # pragma: no cover
             pass
     return df

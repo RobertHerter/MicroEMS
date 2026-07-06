@@ -146,10 +146,16 @@ class Optimizer:
         EPS_P = 20.0     # W
         strategy = getattr(cfg.optimization, "charge_strategy", "asap")
         pv_max = float(max(1.0, np.max(inp.pv_w)))
-        # Peak-Modus: Einspeise-Linie L. Einspeisung wird auf L gedeckelt
-        # (alles darunter wird eingespeist), die PV-Spitze DARÜBER lädt den Akku.
-        # L wird minimiert -> so tief wie möglich, gerade so, dass der Akku voll wird.
-        export_line = pulp.LpVariable("export_line", 0)
+        # Peak-Modus: Einspeise-Linie PRO TAG. Einspeisung wird je Kalendertag auf
+        # L_tag gedeckelt (alles darunter eingespeist), die PV-Spitze DARÜBER lädt
+        # den Akku. Jedes L_tag wird minimiert -> so tief wie möglich, sodass der
+        # Akku an JEDEM Tag seine Spitze abschöpft und voll wird.
+        _local = inp.index.tz_convert(cfg.general.timezone)
+        _daykey = [ts.date() for ts in _local]
+        _uniq = sorted(set(_daykey))
+        _dayidx = {d: i for i, d in enumerate(_uniq)}
+        slot_day = [_dayidx[k] for k in _daykey]
+        export_line = [pulp.LpVariable(f"L_day_{i}", 0) for i in range(len(_uniq))]
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -179,12 +185,16 @@ class Optimizer:
             # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
             prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
             prob += dc[t] + ac[t] >= (hb.max_total_charge_w - EPS_P) * at_max[t]
+            # Peak-Modus: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
+            # das Terminal-Nachlade-Artefakt im letzten Slot).
+            if strategy == "peak":
+                prob += ac[t] == 0
             if not gd_allowed[t]:
                 if strategy == "peak":
-                    # Peak-Modus: Einspeisung auf die Linie L deckeln; PV über L
-                    # muss in den Akku (kein Akku->Netz-Dump: g_exp <= pv - dc).
+                    # Peak-Modus: Einspeisung auf die Tages-Linie deckeln; PV über
+                    # der Linie muss in den Akku (kein Akku->Netz-Dump).
                     prob += g_exp[t] <= pv_t - dc[t]
-                    prob += g_exp[t] <= export_line
+                    prob += g_exp[t] <= export_line[slot_day[t]]
                 else:
                     # asap: Einspeisen nur, wenn Akku voll ODER mit Max-Leistung lädt.
                     prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
@@ -238,7 +248,7 @@ class Optimizer:
         if strategy == "peak":
             pw = cfg.optimization.peak_charge_weight
             if pw:
-                cost_terms.append(pw * export_line / 1000.0)
+                cost_terms.append(pw * pulp.lpSum(export_line) / 1000.0)
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ)
         tv = cfg.optimization.terminal_soc_value
@@ -263,6 +273,9 @@ class Optimizer:
         # ---- Ergebnis extrahieren --------------------------------------- #
         def val(v):
             return float(pulp.value(v)) if not isinstance(v, (int, float)) else float(v)
+
+        # Tages-Linien-Werte (Peak-Modus) je Slot
+        line_vals = [float(val(L)) for L in export_line] if strategy == "peak" else None
 
         rows = []
         for t in range(N):
@@ -299,13 +312,16 @@ class Optimizer:
                 dis_limit, dis_limited = round(dis_v, 1), 1
             else:
                 dis_limit, dis_limited = hb.max_discharge_w, 0
+            # Modus. Im Peak-Modus ist das geformte Laden entlang der Linie NORMAL
+            # -> nicht als Eingriff werten (nur Entlade-Sperre / Netz-Entladen).
+            charge_flag = charge_limited and strategy != "peak"
             if ac_v > tol:
                 mode = "grid_charge"
-            elif charge_limited and charge_limit < tol:
+            elif charge_flag and charge_limit < tol:
                 mode = "block_charge"
             elif dis_limited and dis_limit < tol:
                 mode = "hold"                         # Entladen gesperrt (Akku halten)
-            elif charge_limited or dis_limited:
+            elif charge_flag or dis_limited:
                 mode = "limit"
             else:
                 mode = "auto"
@@ -336,6 +352,8 @@ class Optimizer:
                 "grid_export_w": round(exp_v, 1),
                 "house_soc_wh": round(soc_v, 1),
                 "house_soc_percent": round(100.0 * soc_v / hb.capacity_wh, 2),
+                "export_line_w": (round(line_vals[slot_day[t]], 1)
+                                  if line_vals is not None else np.nan),
                 "slot_cost_ct": round(slot_cost, 4),
             }
             if use_car:
@@ -346,7 +364,7 @@ class Optimizer:
 
         table = pd.DataFrame(rows, index=inp.index)
         total = float(table["slot_cost_ct"].sum())
-        line_w = float(val(export_line)) if strategy == "peak" else None
+        line_w = float(line_vals[slot_day[0]]) if line_vals is not None else None
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w,

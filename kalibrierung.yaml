@@ -1,21 +1,21 @@
-generated: '2026-07-06T08:30:00+02:00'
+generated: '2026-07-06T10:00:00+02:00'
 lookback_days: 730
 test_days: 365
 pv_forecast:
   metrics:
     n: 34894
-    bias_W: 530.0037200051829
-    mape_pct: 584.6178009949156
-    nmae_pct: 29.188250358967
-    rmse_W: 1493.1587746204639
-    scale_actual_over_pred: 0.871423236800334
-    corr: 0.9121865906143332
+    bias_W: 530.4969089735515
+    mape_pct: 584.6295368070857
+    nmae_pct: 29.198534137109693
+    rmse_W: 1493.3831633429693
+    scale_actual_over_pred: 0.8712974007357372
+    corr: 0.912171603432908
   hourly:
     5: 2.134
     6: 1.42
     7: 1.304
     8: 1.122
-    9: 1.022
+    9: 1.02
     10: 0.959
     11: 0.911
     12: 0.874
@@ -35,7 +35,7 @@ pv_forecast:
     4: 0.911
     5: 0.875
     6: 0.893
-    7: 0.895
+    7: 0.894
     8: 0.919
     9: 0.892
     10: 0.8
@@ -137,8 +137,8 @@ pv_forecast:
       5: 2.078
       6: 1.387
       7: 1.182
-      8: 1.067
-      9: 1.002
+      8: 1.066
+      9: 0.988
       10: 0.976
       11: 0.963
       12: 0.896
@@ -219,16 +219,16 @@ pv_forecast:
       15: 0.35
       16: 0.108
   current_scale: 1.0
-  suggested_scale: 0.8714
+  suggested_scale: 0.8713
 load_forecast:
   metrics:
     n: 35040
-    bias_W: -94.83125737250984
-    mape_pct: 29.30858988705789
-    nmae_pct: 33.63891266075906
-    rmse_W: 547.2945753599616
-    scale_actual_over_pred: 1.1019037473499258
-    corr: 0.43339940276212435
+    bias_W: -94.93011878432898
+    mape_pct: 29.31303714724282
+    nmae_pct: 33.64312263820284
+    rmse_W: 547.3752289715801
+    scale_actual_over_pred: 1.1020035009071023
+    corr: 0.4335415948831137
   hourly:
     0: 1.131
     1: 1.13
@@ -238,7 +238,7 @@ load_forecast:
     5: 1.126
     6: 1.048
     7: 1.088
-    8: 1.104
+    8: 1.105
     9: 1.108
     10: 1.129
     11: 1.062
@@ -263,10 +263,10 @@ load_forecast:
     (0, 5]: 0.993
     (5, 10]: 1.014
     (10, 15]: 1.067
-    (15, 20]: 1.197
+    (15, 20]: 1.198
     (20, 25]: 1.252
     (25, 50]: 1.45
-  suggested_correction_factor: 1.1019
+  suggested_correction_factor: 1.102
 empfohlene_config:
-  influxdb.signals.pv_forecast.scale: 0.8714
-  forecast.correction_factor: 1.1019
+  influxdb.signals.pv_forecast.scale: 0.8713
+  forecast.correction_factor: 1.102
