@@ -191,12 +191,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(title_text="W", row=3, col=1)
     fig.update_layout(
         height=880, template="plotly_white", hovermode="x unified", barmode="relative",
-        title=dict(text=(f"EMS – Ist vs. Prognose & Steuerung  ·  Netto-Kosten Horizont "
+        title=dict(text=(f"<b>EMS – Ist vs. Prognose & Steuerung</b>  ·  Netto-Kosten Horizont "
                          f"{total_cost_ct/100:.2f} €  ·  {n_eingriffe} Eingriffe  ·  "
                          f"{now.strftime('%Y-%m-%d %H:%M')}"),
-                   x=0.5, xanchor="center", font=dict(size=15)),
+                   x=0.5, xanchor="center", font=dict(size=22)),
         legend=dict(orientation="h", yanchor="top", y=-0.08, xanchor="left", x=0, font=dict(size=10)),
-        margin=dict(l=60, r=30, t=105, b=110),
+        margin=dict(l=60, r=30, t=120, b=110),
         bargap=0,
     )
     out = config.dashboard.output_path
