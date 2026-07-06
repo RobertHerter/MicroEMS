@@ -289,9 +289,28 @@ def start_dashboard_server(config: Config) -> None:
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
+            # Leichtgewichtiger Versions-Endpunkt: mtime der Dashboard-Datei.
+            # Die Seite pollt diesen und lädt bei Änderung (neue Berechnung) neu.
+            if self.path.split("?")[0] in ("/version",):
+                try:
+                    body = ("%.0f" % os.path.getmtime(out)).encode()
+                except OSError:
+                    body = b"0"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path in ("/", "/index.html", "/dashboard", "/dashboard.html"):
                 self.path = "/" + fname
             return super().do_GET()
+
+        def end_headers(self):
+            # Browser soll die HTML immer revalidieren, damit reload() die neue Datei holt.
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            super().end_headers()
 
         def log_message(self, *a):  # ruhig bleiben
             pass

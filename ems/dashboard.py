@@ -199,7 +199,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         margin=dict(l=60, r=30, t=120, b=110),
         bargap=0,
     )
+    # Auto-Reload: pollt /version (mtime der HTML-Datei) und lädt die Seite nur
+    # neu, wenn eine neue Berechnung die Datei geschrieben hat.
+    reload_js = (
+        "(function(){var base=null;function chk(){"
+        "fetch('version?_='+Date.now(),{cache:'no-store'})"
+        ".then(function(r){return r.ok?r.text():null;})"
+        ".then(function(v){if(v===null)return;"
+        "if(base===null){base=v;}else if(v!==base){location.reload();}})"
+        ".catch(function(){});}"
+        "chk();setInterval(chk,30000);})();"
+    )
     out = config.dashboard.output_path
-    fig.write_html(out, include_plotlyjs="cdn")
+    fig.write_html(out, include_plotlyjs="cdn", post_script=reload_js)
     log.info("Dashboard geschrieben: %s (%d Eingriffe)", out, n_eingriffe)
     return out
