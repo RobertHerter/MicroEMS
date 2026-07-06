@@ -1,4 +1,16 @@
+# Konfiguration mit Zugangsdaten (nie einchecken)
 config.yaml
+config.yaml~
+*~
+
+# Generierte Ausgaben
 dashboard.html
-ems/__pycache__/
-test/__pycache__/
+dashboard_heute.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Claude Code
+.claude/
