@@ -149,7 +149,8 @@ def run_once(config: Config) -> None:
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
             display = _build_display_frame(repo, config, now, history, result)
-            build_dashboard(config, display, result.total_cost_ct)
+            build_dashboard(config, display, result.total_cost_ct,
+                            export_line_w=result.export_line_w)
     finally:
         repo.close()
 

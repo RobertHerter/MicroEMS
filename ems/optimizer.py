@@ -53,6 +53,7 @@ class OptimizerResult:
     total_cost_ct: float
     status: str
     infeasible: bool = False
+    export_line_w: Optional[float] = None   # Einspeise-Linie L (nur Peak-Modus)
 
 
 class Optimizer:
@@ -143,6 +144,12 @@ class Optimizer:
         at_max = [pulp.LpVariable(f"atmax_{t}", cat="Binary") for t in range(N)]
         EPS_SOC = 20.0   # Wh
         EPS_P = 20.0     # W
+        strategy = getattr(cfg.optimization, "charge_strategy", "asap")
+        pv_max = float(max(1.0, np.max(inp.pv_w)))
+        # Peak-Modus: Einspeise-Linie L. Einspeisung wird auf L gedeckelt
+        # (alles darunter wird eingespeist), die PV-Spitze DARÜBER lädt den Akku.
+        # L wird minimiert -> so tief wie möglich, gerade so, dass der Akku voll wird.
+        export_line = pulp.LpVariable("export_line", 0)
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -170,11 +177,17 @@ class Optimizer:
             prob += dc[t] + ac[t] <= hb.max_total_charge_w
 
             # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
-            # Einspeisen nur, wenn Akku voll ODER mit Maximalleistung lädt.
             prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
             prob += dc[t] + ac[t] >= (hb.max_total_charge_w - EPS_P) * at_max[t]
             if not gd_allowed[t]:
-                prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
+                if strategy == "peak":
+                    # Peak-Modus: Einspeisung auf die Linie L deckeln; PV über L
+                    # muss in den Akku (kein Akku->Netz-Dump: g_exp <= pv - dc).
+                    prob += g_exp[t] <= pv_t - dc[t]
+                    prob += g_exp[t] <= export_line
+                else:
+                    # asap: Einspeisen nur, wenn Akku voll ODER mit Max-Leistung lädt.
+                    prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
@@ -218,10 +231,14 @@ class Optimizer:
         for t in range(N):
             cost_terms.append(0.02 * ac[t] * kwh)
 
-        # Hinweis: Die Eigenverbrauchs-Priorität (Akku aus PV zuerst voll laden)
-        # wird oben als HARTE Nebenbedingung erzwungen (Einspeisen nur bei vollem
-        # Akku / Maximalladung), nicht mehr über einen Einspeise-Malus. Das
-        # vermeidet Degeneration (spätes Laden) und Energievernichtung.
+        # asap: Eigenverbrauchs-Priorität steckt in der harten Nebenbedingung oben.
+        # peak: Einspeise-Linie L minimieren -> L wird so tief wie möglich, dass
+        # der Akku gerade voll wird. Alles unter L wird eingespeist, die Spitze
+        # über L lädt den Akku (Peak-Shaving).
+        if strategy == "peak":
+            pw = cfg.optimization.peak_charge_weight
+            if pw:
+                cost_terms.append(pw * export_line / 1000.0)
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ)
         tv = cfg.optimization.terminal_soc_value
@@ -329,6 +346,8 @@ class Optimizer:
 
         table = pd.DataFrame(rows, index=inp.index)
         total = float(table["slot_cost_ct"].sum())
+        line_w = float(val(export_line)) if strategy == "peak" else None
         return OptimizerResult(
-            table=table, total_cost_ct=total, status=status, infeasible=infeasible
+            table=table, total_cost_ct=total, status=status, infeasible=infeasible,
+            export_line_w=line_w,
         )

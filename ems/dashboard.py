@@ -29,7 +29,8 @@ _MODE_LEG = {"hold": "rgba(255,140,0,0.7)", "grid_charge": "rgba(31,119,180,0.7)
              "limit": "rgba(255,205,0,0.9)"}
 
 
-def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -> str:
+def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
+                    export_line_w=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -99,32 +100,83 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
         fig.add_trace(go.Scatter(x=x, y=t["actual_battery_w"], name="Akku-Leistung (Ist)",
                                  mode="lines", line=dict(color="#111111", width=1.8)), row=3, col=1)
 
-    # ---------- Eingriffe hinterlegen + Jetzt-Linie (über alle Panels) ----------
+    # ---------- Eingriffe als umschaltbare Bänder (per Legende ausblendbar) ----
+    # Als gefüllte Traces (nicht als Shapes), damit sie wie die Kurven per Klick
+    # ein-/ausgeblendet werden können. Pro Modus je ein Band in Panel 1 (SoC-Achse,
+    # 0..100 %) und Panel 3 (Steuerung), über legendgroup gekoppelt.
     slotw = (x[1] - x[0]) if len(x) > 1 else pd.Timedelta(hours=1)
     if has_mode:
         modes = list(t["mode"].values)
-        seen = set(); i = 0
+        segs = {}
+        i = 0
         while i < len(modes):
             m = modes[i]
             if m and m != "auto":
                 j = i
                 while j + 1 < len(modes) and modes[j + 1] == m:
                     j += 1
-                fig.add_vrect(x0=x[i], x1=x[j] + slotw, fillcolor=_MODE_FILL.get(m, "rgba(120,120,120,0.12)"),
-                              line_width=0, layer="below", row="all", col=1)
-                seen.add(m); i = j + 1
+                segs.setdefault(m, []).append((x[i], x[j] + slotw))
+                i = j + 1
             else:
                 i += 1
-        for m in seen:
-            fig.add_trace(go.Scatter(x=[x[0]], y=[None], mode="markers", name=_MODE_LABEL.get(m, m),
-                          marker=dict(size=11, symbol="square", color=_MODE_LEG.get(m, "gray")),
-                          hoverinfo="skip"), row=1, col=1)
+        ctrl_cols = ["batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
+                     "batt_grid_discharge_w", "car_charge_w"]
+        cmax = max([float(t[c].abs().max()) for c in ctrl_cols if c in t.columns
+                    and pd.notna(t[c].abs().max())] + [1.0])
+
+        def band(segments, y0, y1, color, name, group, show, row, sec=False):
+            xs, ys = [], []
+            for a, b in segments:
+                xs += [a, a, b, b, None]
+                ys += [y0, y1, y1, y0, None]
+            fig.add_trace(go.Scatter(x=xs, y=ys, fill="toself", fillcolor=color,
+                          line=dict(width=0), mode="lines", name=name, legendgroup=group,
+                          showlegend=show, hoverinfo="skip"), row=row, col=1, secondary_y=sec)
+
+        for m, segments in segs.items():
+            col = _MODE_FILL.get(m, "rgba(120,120,120,0.12)")
+            lbl = _MODE_LABEL.get(m, m)
+            band(segments, 0, 101, col, lbl, m, True, row=1, sec=True)     # Panel 1 (SoC)
+            band(segments, -cmax, cmax, col, lbl, m, False, row=3)         # Panel 3 (Steuerung)
 
     now = pd.Timestamp.now(tz=x.tz)
     fig.add_vline(x=now, line=dict(color="#0d6efd", width=2), row="all", col=1)
     fig.add_annotation(x=now, y=1.0, xref="x", yref="paper", yanchor="bottom",
                        text=f"● Jetzt {now.strftime('%H:%M')}", showarrow=False,
                        font=dict(color="#0d6efd", size=12), bgcolor="rgba(255,255,255,0.7)")
+
+    # Einspeise-Linie L (Peak-Modus) waagerecht in Panel 1 einzeichnen
+    if export_line_w is not None and export_line_w > 0:
+        fig.add_hline(y=float(export_line_w), row=1, col=1,
+                      line=dict(color="#2ca02c", width=1.5, dash="dash"),
+                      annotation_text=f"Einspeise-Linie {export_line_w:.0f} W",
+                      annotation_position="top left",
+                      annotation_font=dict(color="#2ca02c", size=11))
+
+    # Aktuelle Sollwerte der drei Akku-Steuergrößen gut lesbar (Slot ab jetzt)
+    try:
+        pos = t.index.get_indexer([now], method="bfill")[0]
+        if pos < 0:
+            pos = len(t.index) - 1
+        r = t.iloc[pos]
+
+        def _g(c):
+            return float(r[c]) if (c in t.columns and pd.notna(r[c])) else 0.0
+        mode_now = str(r["mode"]) if "mode" in t.columns else ""
+        txt = (f"<b>Sollwerte jetzt</b>  ·  DC-Laden (PV): {_g('batt_dc_charge_w'):.0f} W"
+               f"  |  Entladen: {_g('batt_discharge_w'):.0f} W"
+               f"  |  Netzladen (AC): {_g('batt_ac_charge_w'):.0f} W")
+        gd = _g("batt_grid_discharge_w")
+        if gd > 1:
+            txt += f"  |  Netz-Entladen: {gd:.0f} W"
+        if mode_now:
+            txt += f"  |  Modus: {mode_now}"
+        fig.add_annotation(xref="paper", yref="paper", x=0.0, y=1.05, xanchor="left",
+                           yanchor="bottom", showarrow=False, text=txt,
+                           font=dict(size=12, color="#222"),
+                           bgcolor="rgba(235,235,235,0.95)", bordercolor="#bbb", borderwidth=1)
+    except Exception:  # pragma: no cover
+        pass
 
     n_eingriffe = int((t["mode"] != "auto").sum()) if has_mode else 0
     fig.update_yaxes(title_text="Leistung (W)", row=1, col=1, secondary_y=False)
@@ -139,7 +191,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float) -
                          f"{now.strftime('%Y-%m-%d %H:%M')}"),
                    x=0.5, xanchor="center", font=dict(size=15)),
         legend=dict(orientation="h", yanchor="top", y=-0.08, xanchor="left", x=0, font=dict(size=10)),
-        margin=dict(l=60, r=30, t=70, b=110),
+        margin=dict(l=60, r=30, t=105, b=110),
         bargap=0,
     )
     out = config.dashboard.output_path
