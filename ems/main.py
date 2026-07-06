@@ -52,8 +52,11 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return pd.Timestamp.now(tz=config.general.timezone).floor(freq)
 
 
-def run_once(config: Config) -> None:
+def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> None:
+    """Ein Rechenzyklus. `publisher`: persistente MQTT-Verbindung im Loop-
+    Betrieb (Last Will); ohne wird pro Lauf verbunden und wieder getrennt."""
     repo = InfluxRepository(config)
+    one_shot = publisher is None
     try:
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
@@ -146,7 +149,11 @@ def run_once(config: Config) -> None:
 
         # --- 4) MQTT (best effort – darf den Lauf nicht abbrechen) ------ #
         try:
-            HomeyMqttPublisher(config).publish(result.table, now)
+            if one_shot:
+                publisher = HomeyMqttPublisher(config)
+            publisher.publish(result.table, now)
+            if one_shot:
+                publisher.close()
         except Exception as exc:
             log.warning("MQTT-Ausgabe fehlgeschlagen (%s) – InfluxDB-Writeback "
                         "und Dashboard werden trotzdem erstellt.", exc)
@@ -363,9 +370,12 @@ def main() -> None:
     offset = float(getattr(config.general, "run_offset_seconds", 10))
     log.info("Dauerbetrieb: Intervall %d min, auf Uhr-Raster synchronisiert "
              "(+%.0fs Versatz).", config.general.run_interval_minutes, offset)
+    # Persistente MQTT-Verbindung mit Last Will: stirbt der Prozess, setzt der
+    # Broker ems/status selbst auf "offline" (Watchdog-Signal für Homey).
+    publisher = HomeyMqttPublisher(config)
     while True:
         try:
-            run_once(config)
+            run_once(config, publisher)
         except Exception:  # pragma: no cover
             log.exception("Fehler im EMS-Zyklus – fahre fort.")
         # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) schlafen.

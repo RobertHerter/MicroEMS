@@ -121,15 +121,19 @@ ems/setpoint/car_charge_w             z.B. 4000
 ems/setpoint/mode                     "auto" | "grid_charge" | "hold" | ...
 ems/setpoint/updated                  ISO-Zeitstempel des Slots
 ems/schedule                          komplette 48h-Tabelle als JSON (retained)
+ems/status                            "online" | "offline" (retained, Last Will)
 ```
 
 In Homey die **MQTT Client**-App auf diese Topics abonnieren und die Werte per
 Flow auf die Geräte-Capabilities (Ladeleistung etc.) schreiben.
 
-**Fail-safe:** Die Sollwerte werden ohne Retain-Flag publiziert. Fällt das EMS
-aus, hält der Broker also keine veralteten Steuerbefehle vor. Empfohlener
-Watchdog-Flow in Homey: Wenn `ems/setpoint/updated` länger als ~35 min kein
-Update bekommt, alle Limits auf Hardware-Maximum setzen (Eigenverbrauchs-
+**Fail-safe:** Die Sollwerte werden ohne Retain-Flag publiziert – fällt das EMS
+aus, hält der Broker keine veralteten Steuerbefehle vor. Zusätzlich hält das
+EMS im Loop-Betrieb eine stehende MQTT-Verbindung mit **Last Will**: stirbt der
+Prozess (Absturz, Stromausfall, Netzverlust), setzt der Broker selbst
+`ems/status = offline`. Empfohlener Watchdog-Flow in Homey: Wenn `ems/status`
+auf `offline` wechselt (oder `ems/setpoint/updated` länger als ~35 min kein
+Update bekommt), alle Limits auf Hardware-Maximum setzen (Eigenverbrauchs-
 Automatik des E3DC).
 
 ## Writeback in InfluxDB
