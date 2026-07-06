@@ -120,6 +120,19 @@ class LoadForecaster:
         fut_temp_arr = (pd.Series(fut_temp).reindex(future_index).values
                         if fut_temp is not None else np.full(len(future_index), np.nan))
 
+        # Rezenz-Gewichtung: jüngere Historie zählt mehr (exponentieller Abfall
+        # mit Halbwertszeit half_life_days). So schlagen Verhaltensänderungen
+        # (neue Geräte, Wärmepumpe, Homeoffice) zeitnah durch, statt dass ein
+        # Tag von vor 2 Jahren gleich viel wiegt wie letzte Woche. 0 = aus.
+        hl = float(getattr(self.fc, "half_life_days", 0.0) or 0.0)
+        if hl > 0:
+            age_days = np.maximum(
+                (pd.Timestamp(start).tz_convert("UTC") - history.index.tz_convert("UTC"))
+                .total_seconds() / 86400.0, 0.0)
+            hist_feat["recency"] = np.power(0.5, np.asarray(age_days) / hl)
+        else:
+            hist_feat["recency"] = 1.0
+
         fut_feat = self._features(future_index)
 
         # Vorberechnung: Historie nach Tagesslot gruppieren (dict of DataFrames)
@@ -144,6 +157,8 @@ class LoadForecaster:
             w += w_dt * (grp["daytype"].values == f["daytype"])
             w += w_mo * (grp["month"].values == f["month"])
             w += w_se * (grp["season"].values == f["season"])
+            # Rezenz multiplikativ (1.0, falls half_life_days = 0)
+            w = w * grp["recency"].values
 
             # Temperatur-Ähnlichkeit: Tage mit ähnlicher Temperatur höher gewichten
             if use_temp:

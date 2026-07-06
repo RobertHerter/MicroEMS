@@ -1,5 +1,6 @@
 # EMS – Python dependencies (Raspberry Pi OS Trixie / Debian 13)
 # Install into a venv:  python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
+# Reproduzierbare Installation (exakt getestete Versionen): pip install -r requirements.lock
 
 PyYAML>=6.0
 pandas>=2.0
@@ -21,3 +22,6 @@ paho-mqtt>=1.6
 
 # Dashboard (selbst-enthaltenes interaktives HTML)
 plotly>=5.18
+
+# Tests (pytest im Projektverzeichnis ausführen)
+pytest>=8.0

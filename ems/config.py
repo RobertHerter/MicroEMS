@@ -153,6 +153,8 @@ class OptimizationConfig:
     terminal_soc_value: Any = "auto"      # "auto" | float (ct/kWh)
     cycle_penalty_ct_kwh: float = 0.1
     solver_time_limit_s: int = 60
+    # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
+    solver_threads: int = 0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -192,6 +194,9 @@ class ForecastConfig:
     # (°C) des Gauß-Kerns. 0 = Temperatur ignorieren.
     weight_same_temp: float = 2.0
     temp_sigma: float = 4.0
+    # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
+    # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
+    half_life_days: float = 120.0
 
 
 @dataclass
@@ -319,6 +324,7 @@ def load_config(path: str) -> Config:
         terminal_soc_value=o.get("terminal_soc_value", "auto"),
         cycle_penalty_ct_kwh=float(o.get("cycle_penalty_ct_kwh", 0.1)),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
+        solver_threads=int(o.get("solver_threads", 0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
@@ -338,6 +344,7 @@ def load_config(path: str) -> Config:
         correction_factor=float(f.get("correction_factor", 1.0)),
         weight_same_temp=float(f.get("weight_same_temp", 2.0)),
         temp_sigma=float(f.get("temp_sigma", 4.0)),
+        half_life_days=float(f.get("half_life_days", 120.0)),
     )
 
     m = raw.get("mqtt", {})

@@ -48,6 +48,9 @@ influxdb:
     pv_generation:          { measurement: "power", field: "pv_w" }
     pv_forecast:            { measurement: "forecast", field: "pv_w" }         # Zukunftswerte
     vehicle_soc:            { measurement: "car", field: "soc_percent", optional: true }
+    # Wallbox-Status (0/1, optional): Auto wird nur mitoptimiert, wenn wirklich
+    # angesteckt - sonst genügt ein alter SoC-Wert in der DB als (falsches) Indiz.
+    # vehicle_connected:    { measurement: "car", field: "connected", optional: true, aggregation: "last" }
     # Einspeisevergütung aus DB (nur wenn feed_in.mode == "db")
     feed_in_tariff:         { measurement: "price", field: "feedin_ct_kwh" }
 
@@ -104,9 +107,12 @@ optimization:
   # Verhindert, dass der Akku am Horizontende myopisch entleert wird.
   # "auto" = mittlerer Importpreis des Horizonts, oder feste Zahl in ct/kWh.
   terminal_soc_value: "auto"
-  # Kleiner Zyklus-Malus (ct/kWh Durchsatz) gegen unnötiges Laden/Entladen.
+  # Kleiner Zyklus-Malus in ct je voll zyklierter kWh (rein + raus)
+  # gegen unnötiges Laden/Entladen.
   cycle_penalty_ct_kwh: 0.1
   solver_time_limit_s: 60
+  # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
+  solver_threads: 0
 
 # -----------------------------------------------------------------------------
 # Verbrauchsprognose (Ähnliche-Tage-Mittelung)
@@ -121,6 +127,9 @@ forecast:
   weight_same_month: 1.5
   weight_same_season: 1.0
   min_samples: 3              # min. Stichproben pro Slot, sonst Fallback
+  # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
+  # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
+  half_life_days: 120
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)

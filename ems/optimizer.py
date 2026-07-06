@@ -22,6 +22,7 @@ Modellannahmen (dokumentiert):
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -201,7 +202,14 @@ class Optimizer:
         # Binär je Slot: entweder Netzbezug ODER Einspeisung – nie gleichzeitig.
         # Damit schließen sich AC-Laden (Import) und Einspeisen physikalisch aus.
         b_grid = [pulp.LpVariable(f"bgrid_{t}", cat="Binary") for t in range(N)]
-        BIGG = 60000.0
+        # Big-M aus den Anlagenwerten ableiten statt fester 60 kW: knappe obere
+        # Schranken für Import (Last + Auto + AC-Laden) und Export (PV + Ent-
+        # laden). Engere Big-Ms beschleunigen CBC und skalieren mit der Anlage.
+        load_peak = float(np.max(np.maximum(inp.house_load_w, 0.0))) if N else 0.0
+        pv_peak = float(np.max(np.maximum(inp.pv_w, 0.0))) if N else 0.0
+        car_max = veh.max_charge_w if use_car else 0.0
+        BIGG = 1.05 * max(load_peak + car_max + hb.max_ac_charge_w,
+                          pv_peak + hb.max_discharge_w, 1000.0)
 
         # Eigenverbrauchs-Priorität (harte Regel): Einspeisen nur erlaubt, wenn der
         # Akku VOLL ist (is_full) ODER mit maximaler Leistung lädt (at_max). Dadurch
@@ -324,11 +332,13 @@ class Optimizer:
             cost_terms.append(g_imp[t] * inp.price_ct_kwh[t] * kwh)
             cost_terms.append(-g_exp[t] * inp.feedin_ct_kwh[t] * kwh)
 
-        # Zyklus-Malus
+        # Zyklus-Malus: pen ist als ct je voll ZYKLIERTER kWh gemeint (einmal
+        # rein + einmal raus). Auf Lade- UND Entladeleistung angewandt daher
+        # 0.5 je Richtung, sonst würde ein Zyklus doppelt bestraft.
         pen = cfg.optimization.cycle_penalty_ct_kwh
         if pen:
             for t in range(N):
-                cost_terms.append(pen * (dc[t] + ac[t] + dis[t]) * kwh)
+                cost_terms.append(0.5 * pen * (dc[t] + ac[t] + dis[t]) * kwh)
 
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
@@ -346,19 +356,22 @@ class Optimizer:
             cost_terms.append(pw * pulp.lpSum(
                 [export_line[i] for i in _peak_line_days]) / 1000.0)
 
-        # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ)
+        # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ).
+        # Mit Entlade-Wirkungsgrad diskontiert: gespeicherte Energie ist nur zu
+        # ~96 % nutzbar - sonst wird am Horizontende systematisch zu viel geladen.
         tv = cfg.optimization.terminal_soc_value
         if tv == "auto":
             term_val = float(np.mean(inp.price_ct_kwh))
         else:
             term_val = float(tv)
-        cost_terms.append(-term_val * soc[N] / 1000.0)
+        cost_terms.append(-term_val * hb.discharge_efficiency * soc[N] / 1000.0)
 
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
+        threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
         solver = pulp.PULP_CBC_CMD(
-            timeLimit=cfg.optimization.solver_time_limit_s, msg=0
+            timeLimit=cfg.optimization.solver_time_limit_s, msg=0, threads=threads
         )
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]

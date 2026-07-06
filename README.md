@@ -31,7 +31,7 @@ Steuerbefehle per MQTT.
 |-------|---------|
 | `ems/config.py` | YAML-Konfiguration laden/validieren (typisierte Dataclasses) |
 | `ems/influx.py` | InfluxDB-Abstraktion 1.x (InfluxQL) / 2.x (Flux), Lesen/Schreiben, 15-min-Resampling |
-| `ems/forecast.py` | Hausverbrauchs-Prognose per Ähnliche-Tage-Mittelung (Wochentag/Feiertag/Monat/Jahreszeit) |
+| `ems/forecast.py` | Hausverbrauchs-Prognose per Ähnliche-Tage-Mittelung (Wochentag/Feiertag/Monat/Jahreszeit/Temperatur, Rezenz-Gewichtung) |
 | `ems/optimizer.py` | MILP-Optimierer (PuLP/CBC): Steuertabelle 48 h |
 | `ems/homey_mqtt.py` | MQTT-Ausgabe der Steuerbefehle an Homey |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard (heute + Vorhersage + Steuerbefehle) |
@@ -80,7 +80,7 @@ sudo mkdir -p /opt/ems && sudo chown $USER /opt/ems
 cd /opt/ems
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt        # oder: requirements.lock (exakt getestete Versionen)
 
 cp config.example.yaml config.yaml
 # config.yaml anpassen: InfluxDB-Version/Zugang, Signal-Mapping, Anlagenwerte, MQTT
@@ -149,11 +149,17 @@ und Preis. Eine Beispielausgabe liegt als `dashboard_beispiel.html` bei.
 ## Test
 
 ```bash
-python -m tests.test_synthetic
+pytest                            # komplette Suite
+python -m tests.test_synthetic    # nur der End-to-End-Lauf
 ```
 
-Prüft Prognose, Optimierung (Lösbarkeit + Nebenbedingungen) und
-Dashboard-Erzeugung mit synthetischen Daten – ohne InfluxDB/MQTT.
+Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
+- `tests/test_synthetic.py` – End-to-End: Prognose, Optimierung (Lösbarkeit +
+  Nebenbedingungen), Fallback bei ungültigen Eingaben, Dashboard-Erzeugung.
+- `tests/test_optimizer.py` – Randfälle: peak/asap-Strategie, negative Preise,
+  Netz-Entlade-Arbitrage, unerreichbarer Auto-Ziel-SoC (Fallback),
+  DST-Umstellungstage (92/100 Slots).
+- `tests/test_forecast.py` – Rezenz-Gewichtung, Datenlücken, leere Historie.
 
 ## Modellannahmen
 

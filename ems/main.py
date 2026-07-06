@@ -109,15 +109,24 @@ def run_once(config: Config) -> None:
             soc_pct = config.house_battery.min_soc_percent
         init_house_soc = soc_pct / 100.0 * config.house_battery.capacity_wh
 
-        # Anfangs-SoC Auto (optional)
+        # Anfangs-SoC Auto (optional). Anwesenheit: bevorzugt über den Wallbox-
+        # Status (Signal vehicle_connected, 0/1) - ein Tage alter SoC-Wert in
+        # der DB heißt sonst nicht, dass das Auto wirklich angesteckt ist.
         init_car_soc = None
         car_present = False
         if config.vehicle.enabled and repo.signal_available("vehicle_soc"):
             car_pct = repo.read_scalar_latest("vehicle_soc", lookback, now)
-            if car_pct is not None:
+            connected = None
+            if repo.signal_available("vehicle_connected"):
+                connected = repo.read_scalar_latest("vehicle_connected", lookback, now)
+            if connected is not None and connected < 0.5:
+                log.info("Auto nicht angesteckt (vehicle_connected=%.0f) – "
+                         "wird nicht mitoptimiert.", connected)
+            elif car_pct is not None:
                 init_car_soc = car_pct / 100.0 * config.vehicle.capacity_wh
                 car_present = True
-                log.info("Auto erkannt, SoC %.1f%%.", car_pct)
+                log.info("Auto erkannt, SoC %.1f%%%s.", car_pct,
+                         " (Wallbox: angesteckt)" if connected is not None else "")
 
         # --- 3) Optimierung --------------------------------------------- #
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
