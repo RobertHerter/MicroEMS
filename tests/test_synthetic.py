@@ -122,6 +122,23 @@ def main() -> int:
         print(f"[INFO] Ø Preis bei AC-Laden {float(ac_price.mean()):.1f} ct/kWh "
               f"(Gesamt-Ø {float(np.mean(np.asarray(price))):.1f})")
 
+    # --- Fallback bei ungültigen Eingaben (NaN) -> neutraler "auto"-Fahrplan ---
+    bad = OptimizerInputs(
+        index=opt_index, house_load_w=house, pv_w=np.full(N, np.nan),
+        price_ct_kwh=price, feedin_ct_kwh=feedin, initial_house_soc_wh=3000,
+    )
+    res_bad = Optimizer(cfg).solve(bad)
+    assert res_bad.infeasible, "NaN-Eingaben müssen als Fallback markiert sein"
+    tb = res_bad.table
+    assert (tb["mode"] == "auto").all(), "Fallback muss ohne Eingriffe sein"
+    assert (tb["batt_grid_charge_w"] == 0).all()
+    assert (tb["batt_charge_limit_w"] == hb.max_dc_charge_w).all()
+    assert (tb["house_soc_percent"] >= hb.min_soc_percent - 0.5).all()
+    assert (tb["house_soc_percent"] <= hb.max_soc_percent + 0.5).all()
+    assert tb.notna().drop(columns=["export_line_w"]).all().all(), \
+        "Fallback-Tabelle enthält NaN"
+    print("[OK] Fallback bei ungültigen Eingaben: neutraler 'auto'-Fahrplan")
+
     # --- Dashboard ---
     html = build_dashboard(cfg, t, res.total_cost_ct)
     import os

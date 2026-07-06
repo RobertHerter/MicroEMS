@@ -72,12 +72,80 @@ class Optimizer:
                 out.append(i)
         return out
 
+    def _neutral_result(self, inp: OptimizerInputs, status: str) -> OptimizerResult:
+        """Fallback ohne Eingriffe ("alles auto"), wenn keine Lösung vorliegt.
+
+        Der E3DC regelt dann eigenständig im Eigenverbrauchsmodus. Für plausible
+        Prognosewerte (SoC, Netz, Kosten) wird dieses natürliche Verhalten
+        simuliert: PV-Überschuss lädt den Akku, Defizit entlädt ihn.
+        """
+        hb = self.cfg.house_battery
+        dt = self.cfg.general.dt_hours
+        kwh = dt / 1000.0
+        soc = min(hb.max_soc_wh, max(hb.min_soc_wh, float(inp.initial_house_soc_wh)))
+        rows = []
+        for t in range(len(inp.index)):
+            pv_t = float(np.nan_to_num(inp.pv_w[t]))
+            load_t = float(np.nan_to_num(inp.house_load_w[t]))
+            price_t = float(np.nan_to_num(inp.price_ct_kwh[t]))
+            feedin_t = float(np.nan_to_num(inp.feedin_ct_kwh[t]))
+            pv_t, load_t = max(0.0, pv_t), max(0.0, load_t)
+            surplus = pv_t - load_t
+            charge = dis = 0.0
+            if surplus >= 0.0:
+                room_w = (hb.max_soc_wh - soc) / (hb.charge_efficiency * dt)
+                charge = min(surplus, hb.max_dc_charge_w, max(0.0, room_w))
+                soc += hb.charge_efficiency * charge * dt
+            else:
+                avail_w = (soc - hb.min_soc_wh) * hb.discharge_efficiency / dt
+                dis = min(-surplus, hb.max_discharge_w, max(0.0, avail_w))
+                soc -= dis * dt / hb.discharge_efficiency
+            imp = max(0.0, load_t - pv_t - dis)
+            exp = max(0.0, pv_t - load_t - charge)
+            row = {
+                "house_load_w": load_t, "pv_w": pv_t,
+                "price_ct_kwh": price_t, "feedin_ct_kwh": feedin_t,
+                "batt_dc_charge_w": round(charge, 1), "batt_ac_charge_w": 0.0,
+                "batt_discharge_w": round(dis, 1),
+                "batt_charge_limit_w": hb.max_dc_charge_w,
+                "batt_discharge_limit_w": hb.max_discharge_w,
+                "batt_grid_charge_w": 0.0, "batt_grid_discharge_w": 0.0,
+                "charge_limited": 0.0, "discharge_limited": 0.0,
+                "mode": "auto", "car_charge_w": 0.0,
+                "grid_import_w": round(imp, 1), "grid_export_w": round(exp, 1),
+                "house_soc_wh": round(soc, 1),
+                "house_soc_percent": round(100.0 * soc / hb.capacity_wh, 2),
+                "export_line_w": np.nan,
+                "slot_cost_ct": round((imp * price_t - exp * feedin_t) * kwh, 4),
+            }
+            if inp.car_present and inp.initial_car_soc_wh is not None:
+                row["car_soc_wh"] = round(float(inp.initial_car_soc_wh), 1)
+                row["car_soc_percent"] = round(
+                    100.0 * float(inp.initial_car_soc_wh) / self.cfg.vehicle.capacity_wh, 2)
+            rows.append(row)
+        table = pd.DataFrame(rows, index=inp.index)
+        return OptimizerResult(
+            table=table, total_cost_ct=float(table["slot_cost_ct"].sum()),
+            status=status, infeasible=True, export_line_w=None,
+        )
+
     def solve(self, inp: OptimizerInputs) -> OptimizerResult:
         cfg = self.cfg
         hb = cfg.house_battery
         veh = cfg.vehicle
         dt = cfg.general.dt_hours
         N = len(inp.index)
+
+        # Eingaben validieren: NaN/Inf (z.B. komplett fehlende PV-Vorhersage)
+        # würden das LP unbemerkt unbrauchbar machen.
+        bad = [name for name, arr in (
+            ("house_load_w", inp.house_load_w), ("pv_w", inp.pv_w),
+            ("price_ct_kwh", inp.price_ct_kwh), ("feedin_ct_kwh", inp.feedin_ct_kwh),
+        ) if not np.all(np.isfinite(np.asarray(arr, dtype=float)))]
+        if bad or not np.isfinite(inp.initial_house_soc_wh):
+            log.error("Ungültige Optimierer-Eingaben (NaN/Inf) in %s – "
+                      "Fallback 'auto' ohne Eingriffe.", bad or ["initial_house_soc_wh"])
+            return self._neutral_result(inp, "InvalidInput")
 
         use_car = bool(veh.enabled and inp.car_present and inp.initial_car_soc_wh is not None)
 
@@ -294,9 +362,15 @@ class Optimizer:
         )
         prob.solve(solver)
         status = pulp.LpStatus[prob.status]
-        infeasible = prob.status != pulp.LpStatusOptimal
-        if infeasible:
-            log.error("Optimierung nicht optimal gelöst: %s", status)
+        if prob.status != pulp.LpStatusOptimal:
+            # Keine (verlässliche) Lösung: pulp.value() liefert dann None und
+            # die Extraktion würde abstürzen. Stattdessen neutralen Fahrplan
+            # liefern, damit weiterhin publiziert wird (setzt frühere Eingriffe
+            # zurück) und Dashboard/InfluxDB konsistent bleiben.
+            log.error("Optimierung nicht optimal gelöst (%s) – "
+                      "Fallback 'auto' ohne Eingriffe.", status)
+            return self._neutral_result(inp, status)
+        infeasible = False
 
         # ---- Ergebnis extrahieren --------------------------------------- #
         def val(v):

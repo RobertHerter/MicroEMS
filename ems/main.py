@@ -308,8 +308,10 @@ def start_dashboard_server(config: Config) -> None:
             return super().do_GET()
 
         def end_headers(self):
-            # Browser soll die HTML immer revalidieren, damit reload() die neue Datei holt.
-            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            # HTML/Version immer revalidieren, damit reload() die neue Datei
+            # holt; das lokale plotly.min.js darf der Browser cachen.
+            if not self.path.endswith(".js"):
+                self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             super().end_headers()
 
         def log_message(self, *a):  # ruhig bleiben

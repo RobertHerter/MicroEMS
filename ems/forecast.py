@@ -173,6 +173,11 @@ class LoadForecaster:
 
 
 def load_history(repo, config: Config, now: datetime) -> pd.Series:
-    """Lädt die Verbrauchs-Historie über den konfigurierten Zeitraum."""
+    """Lädt die Verbrauchs-Historie über den konfigurierten Zeitraum.
+
+    fill=False: Datenlücken (Sensor-/DB-Ausfälle) bleiben NaN und werden von
+    der Prognose übersprungen, statt als interpolierte Kunstwerte in die
+    Ähnliche-Tage-Mittelung einzufließen.
+    """
     start = now - timedelta(days=config.forecast.lookback_days)
-    return repo.read_slots("house_consumption", start, now)
+    return repo.read_slots("house_consumption", start, now, fill=False)

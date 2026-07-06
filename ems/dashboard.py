@@ -11,6 +11,7 @@ die aktuelle Uhrzeit als blaue Linie markiert.
 from __future__ import annotations
 
 import logging
+import os
 
 import pandas as pd
 
@@ -211,6 +212,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         "chk();setInterval(chk,30000);})();"
     )
     out = config.dashboard.output_path
-    fig.write_html(out, include_plotlyjs="cdn", post_script=reload_js)
+    # Atomar schreiben (Temp-Datei + os.replace): der Dashboard-Server könnte
+    # sonst eine halb geschriebene Datei ausliefern bzw. das /version-Polling
+    # ein Reload mitten im Schreibvorgang auslösen.
+    # include_plotlyjs="directory": plotly.min.js liegt lokal neben der HTML
+    # (wird vom Dashboard-Server mit ausgeliefert) -> funktioniert ohne Internet.
+    tmp = out + ".tmp"
+    fig.write_html(tmp, include_plotlyjs="directory", post_script=reload_js)
+    os.replace(tmp, out)
     log.info("Dashboard geschrieben: %s (%d Eingriffe)", out, n_eingriffe)
     return out
