@@ -233,12 +233,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(visible=False, row=5, col=1)
 
     # Mini-Legende der Modus-Farben DIREKT unter der Zeitleiste (Annotation,
-    # unterhalb der Zeit-Beschriftung; die Trace-Legende rückt weiter nach unten)
+    # unterhalb der Zeit-Beschriftung; die Trace-Legende rückt weiter nach
+    # unten). Nur Modi zeigen, die im Horizont VORKOMMEN - eine vollständige
+    # Farbtafel liest sich sonst wie eine Status-Anzeige.
+    present = set(t["mode"].fillna("auto")) if "mode" in t.columns else {"auto"}
+    present.add("auto")
     mode_leg = "<b>Modus:</b>  " + "   ".join(
         f"<span style='color:{_MODE_SWATCH[m]}'>■</span> "
         f"{_MODE_LABEL[m].replace(' (kein Eingriff)', '')}"
-        for m in _MODES)
-    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.035,
+        for m in _MODES if m in present)
+    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.05,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
@@ -246,8 +250,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         hovermode="x unified", barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
-        margin=dict(l=60, r=30, t=80, b=130),
-        legend=dict(orientation="h", yanchor="top", y=-0.075, xanchor="left",
+        margin=dict(l=60, r=30, t=80, b=140),
+        legend=dict(orientation="h", yanchor="top", y=-0.09, xanchor="left",
                     x=0, font=dict(size=11), groupclick="toggleitem"),
     )
 
@@ -271,7 +275,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
               f"{config.house_battery.capacity_wh / 1000:.0f} kWh Speicher"),
         _tile("Modus jetzt", _MODE_LABEL.get(mode_now, mode_now),
               "" if pd.isna(dis_lim) else
-              f"Limits {ch_lim:.0f} / {dis_lim:.0f} W"),
+              f"Limit Laden {ch_lim:,.0f} W · Entladen {dis_lim:,.0f} W"
+              .replace(",", ".")),
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
 
