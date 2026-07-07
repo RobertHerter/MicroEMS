@@ -105,14 +105,16 @@ class Optimizer:
         self.cfg = config
 
     def _departure_slot_indices(self, index: pd.DatetimeIndex) -> List[int]:
-        """Slot-Indizes, an denen die tägliche Abfahrtzeit liegt (innerhalb Horizont)."""
+        """Slot-Indizes der Abfahrtzeiten im Horizont (je Wochentag; Tage ohne
+        Abfahrt - z.B. Wochenende - liefern keinen Slot)."""
         if not (self.cfg.vehicle.enabled):
             return []
-        dep = self.cfg.vehicle.departure_time
+        veh = self.cfg.vehicle
         local = index.tz_convert(self.cfg.general.timezone)
         out = []
         for i, ts in enumerate(local):
-            if ts.hour == dep.hour and ts.minute == dep.minute:
+            dep = veh.departure_for_weekday(ts.weekday())
+            if dep is not None and ts.hour == dep.hour and ts.minute == dep.minute:
                 out.append(i)
         return out
 
@@ -381,8 +383,10 @@ class Optimizer:
                     prob += soc_car[t] + s >= veh.target_soc_wh
                     car_short.append(s)
 
-        # Ziel-SoC am letzten Slot ebenfalls sichern, falls keine Abfahrt im Horizont
-        if use_car and not dep_slots:
+        # Ziel-SoC am letzten Slot ebenfalls sichern, falls keine Abfahrt im
+        # Horizont liegt, aber an ANDEREN Wochentagen eine kommt (Vorbereitung
+        # auf die nächste Abfahrt). Gibt es gar keine Abfahrten, entfällt das.
+        if use_car and not dep_slots and veh.has_any_departure:
             s = pulp.LpVariable("carshort_end", 0)
             prob += soc_car[N] + s >= veh.target_soc_wh
             car_short.append(s)

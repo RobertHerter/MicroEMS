@@ -110,6 +110,12 @@ vehicle:
   min_soc_percent: 20
   target_soc_percent: 80
   departure_time: "07:00"     # tägliche Abfahrtzeit (lokal)
+  # Abweichende Abfahrtzeit je Wochentag (mo..so). Nicht genannte Tage nutzen
+  # departure_time; null oder "-" = keine Abfahrt an dem Tag.
+  # departure_times:
+  #   mo: "06:30"
+  #   sa: null
+  #   so: null
   charge_efficiency: 0.92
   # Ladekurve: ab diesem SoC (%) sinkt die max. Ladeleistung linear bis auf
   # min_charge_w bei 100 % (reale Autos tapern oberhalb ~80 %). 100 = aus.

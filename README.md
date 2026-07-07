@@ -248,4 +248,9 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
 - Lade-/Entladewirkungsgrade wirken auf die SoC-Bilanz.
 - Liegt kein Fahrzeug-SoC vor, wird das Auto nicht mitoptimiert.
 - Ohne Rückkehrzeit-Info wird angenommen, dass das Auto im Horizont angesteckt
-  bleibt; der Ziel-SoC wird zu jeder Abfahrtzeit erzwungen.
+  bleibt; der Ziel-SoC wird zu jeder Abfahrtzeit angestrebt (weich, s.o.).
+- Abfahrtzeiten je Wochentag über `vehicle.departure_times` (mo..so, `null` =
+  keine Abfahrt, z.B. am Wochenende). Liegt keine Abfahrt im Horizont, wird
+  der Ziel-SoC zum Horizontende angestrebt – außer es gibt gar keine
+  Abfahrtstage. Ein MQTT-Override (`ems/cmd/departure_time`) gilt für alle
+  Wochentage.

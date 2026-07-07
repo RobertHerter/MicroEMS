@@ -154,6 +154,9 @@ class VehicleConfig:
     min_soc_percent: float
     target_soc_percent: float
     departure_time: time
+    # Abweichende Abfahrtzeit je Wochentag (0=Mo .. 6=So); Wert None = an dem
+    # Tag keine Abfahrt. None (gesamt) = departure_time gilt täglich.
+    departure_times: Optional[Dict[int, Optional[time]]] = None
     charge_efficiency: float = 0.92
     # Ladekurve: ab diesem SoC (%) sinkt die max. Ladeleistung linear bis auf
     # min_charge_w bei 100 % (reale Autos tapern oberhalb ~80 %). 100 = aus.
@@ -166,6 +169,16 @@ class VehicleConfig:
     @property
     def target_soc_wh(self) -> float:
         return self.capacity_wh * self.target_soc_percent / 100.0
+
+    def departure_for_weekday(self, weekday: int) -> Optional[time]:
+        """Abfahrtzeit für den Wochentag (0=Mo..6=So), None = keine Abfahrt."""
+        if self.departure_times is None:
+            return self.departure_time
+        return self.departure_times.get(weekday, self.departure_time)
+
+    @property
+    def has_any_departure(self) -> bool:
+        return any(self.departure_for_weekday(d) is not None for d in range(7))
 
 
 @dataclass
@@ -303,6 +316,35 @@ def _parse_time(value: str) -> time:
     return time(int(hh), int(mm))
 
 
+_WEEKDAY_KEYS = {"mo": 0, "di": 1, "mi": 2, "do": 3, "fr": 4, "sa": 5, "so": 6,
+                 "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5,
+                 "sun": 6}
+_NO_DEPARTURE = (None, "", "-", "none", "keine")
+
+
+def parse_departure_times(raw, base: time) -> Optional[Dict[int, Optional[time]]]:
+    """Parst vehicle.departure_times: Wochentag-Schlüssel (mo..so / mon..sun /
+    0..6) -> "HH:MM" oder null/"-"/"keine" (= keine Abfahrt an dem Tag).
+    Nicht genannte Tage behalten die Basis-Abfahrtzeit."""
+    if not raw:
+        return None
+    out: Dict[int, Optional[time]] = {d: base for d in range(7)}
+    for key, value in dict(raw).items():
+        k = str(key).strip().lower()
+        if k in _WEEKDAY_KEYS:
+            day = _WEEKDAY_KEYS[k]
+        elif k.isdigit() and 0 <= int(k) <= 6:
+            day = int(k)
+        else:
+            raise ValueError(f"Unbekannter Wochentag '{key}' in "
+                             f"vehicle.departure_times (mo..so erwartet).")
+        if value in _NO_DEPARTURE or str(value).strip().lower() in _NO_DEPARTURE:
+            out[day] = None
+        else:
+            out[day] = _parse_time(value)
+    return out
+
+
 def load_config(path: str) -> Config:
     """Lädt und validiert die YAML-Konfiguration."""
     with open(path, "r", encoding="utf-8") as fh:
@@ -374,6 +416,8 @@ def load_config(path: str) -> Config:
         min_soc_percent=float(v.get("min_soc_percent", 0)),
         target_soc_percent=float(v.get("target_soc_percent", 80)),
         departure_time=_parse_time(v.get("departure_time", "07:00")),
+        departure_times=parse_departure_times(
+            v.get("departure_times"), _parse_time(v.get("departure_time", "07:00"))),
         charge_efficiency=float(v.get("charge_efficiency", 0.92)),
         taper_start_soc_percent=float(v.get("taper_start_soc_percent", 100.0)),
     )

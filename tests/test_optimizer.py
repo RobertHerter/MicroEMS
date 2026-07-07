@@ -190,6 +190,42 @@ def test_car_taper_limits_power_at_high_soc():
     assert not over.any(), "Ladeleistung überschreitet die Taper-Kurve"
 
 
+def test_departure_times_per_weekday():
+    """mo-fr 07:00, Wochenende keine Abfahrt: Slots nur an Werktagen."""
+    from datetime import time
+    from ems.config import parse_departure_times
+    cfg = make_config()
+    cfg.vehicle.departure_times = parse_departure_times(
+        {"sa": None, "so": "-"}, time(7, 0))
+    # ganze Woche ab Montag 2026-01-19
+    idx = _day_index("2026-01-19", days=7)
+    slots = Optimizer(cfg)._departure_slot_indices(idx)
+    assert len(slots) == 5, "genau 5 Werktags-Abfahrten erwartet"
+    stamps = idx[slots]
+    assert all(ts.weekday() < 5 for ts in stamps)
+    assert all(ts.hour == 7 and ts.minute == 0 for ts in stamps)
+    # Parser: unbekannter Wochentag -> Fehler
+    try:
+        parse_departure_times({"xx": "07:00"}, time(7, 0))
+        assert False, "ValueError erwartet"
+    except ValueError:
+        pass
+
+
+def test_weekend_without_departures_no_forced_charging():
+    """Alle Tage ohne Abfahrt: kein erzwungenes Laden zum Horizontende."""
+    cfg = make_config()
+    cfg.vehicle.departure_times = {d: None for d in range(7)}
+    idx = _day_index("2026-01-24")               # Samstag
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=30.0,
+        initial_car_soc_wh=0.4 * cfg.vehicle.capacity_wh, car_present=True))
+    assert not res.infeasible
+    assert res.car_target_shortfall_wh == 0.0
+    assert (res.table["car_charge_w"] <= TOL).all(), \
+        "Ohne Abfahrtstage darf kein Laden erzwungen werden"
+
+
 def test_dst_spring_forward_day():
     """DST-Frühjahrstag (23 h, 92 Slots): Tages-Logik läuft ohne Fehler."""
     cfg = make_config()

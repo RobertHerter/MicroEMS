@@ -75,7 +75,8 @@ class HomeyMqttPublisher:
         self.departure_override: Optional[dtime] = None
         self.target_soc_override: Optional[float] = None
         self._veh_defaults = (config.vehicle.departure_time,
-                              config.vehicle.target_soc_percent)
+                              config.vehicle.target_soc_percent,
+                              config.vehicle.departure_times)
         self.battery = config.house_battery
         self.min_soc_override: Optional[float] = None
         self.max_soc_override: Optional[float] = None
@@ -207,8 +208,15 @@ class HomeyMqttPublisher:
 
     def apply_vehicle_overrides(self, veh) -> None:
         """Überträgt die per MQTT gesetzten Overrides (oder die Konfigurations-
-        Standardwerte) auf die Fahrzeug-Konfiguration des nächsten Laufs."""
-        veh.departure_time = self.departure_override or self._veh_defaults[0]
+        Standardwerte) auf die Fahrzeug-Konfiguration des nächsten Laufs.
+        Ein departure_time-Override gilt für ALLE Wochentage (übersteuert
+        auch die Je-Wochentag-Tabelle departure_times)."""
+        if self.departure_override is not None:
+            veh.departure_time = self.departure_override
+            veh.departure_times = None
+        else:
+            veh.departure_time = self._veh_defaults[0]
+            veh.departure_times = self._veh_defaults[2]
         veh.target_soc_percent = (self.target_soc_override
                                   if self.target_soc_override is not None
                                   else self._veh_defaults[1])
