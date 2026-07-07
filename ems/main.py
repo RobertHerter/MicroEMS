@@ -403,7 +403,8 @@ def _build_display_frame(repo, config, now, history, result,
     for c in ["house_soc_percent", "car_soc_percent", "batt_dc_charge_w",
               "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
               "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
-              "grid_import_w", "grid_export_w", "export_line_w", "mode"]:
+              "grid_import_w", "grid_export_w", "export_line_w", "mode",
+              "feedin_ct_kwh", "pv_curtail_w"]:
         if c in ot.columns:
             df[c] = ot[c].reindex(full)
     if "mode" in df.columns:

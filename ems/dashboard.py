@@ -77,16 +77,24 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                         "<b>Strompreis</b>", "<b>Steuerung</b>", ""),
     )
 
-    def line(col, name, color, row, group, dash=None, width=2, shape=None):
+    # Hover: deutsche Zahlen (1.234,5 via layout.separators) + Einheit.
+    HOVER_W = "%{y:,.0f} W"
+    HOVER_PCT = "%{y:.0f} %"
+    HOVER_CT = "%{y:.1f} ct/kWh"
+
+    def line(col, name, color, row, group, dash=None, width=2, shape=None,
+             hover=HOVER_W):
         if col in t.columns and t[col].notna().any():
             fig.add_trace(go.Scatter(
                 x=x, y=t[col], name=name, mode="lines",
                 line=dict(color=color, width=width, dash=dash,
                           shape=shape or "linear"),
+                hovertemplate=hover,
                 legendgroup=group, legendgrouptitle_text=_GROUPS[group]),
                 row=row, col=1)
 
     # ---------- Panel 1: Leistung ----------
+    # Reihenfolge = Reihenfolge im Unified-Hover: je Signal Ist vor Prognose.
     if {"pv10_w", "pv90_w"} <= set(t.columns) and t["pv10_w"].notna().any():
         fig.add_trace(go.Scatter(x=x, y=t["pv90_w"], mode="lines",
                                  line=dict(width=0), legendgroup="prog",
@@ -97,17 +105,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                  fillcolor="rgba(255,127,14,0.14)",
                                  name="PV p10–p90", legendgroup="prog",
                                  hoverinfo="skip"), row=1, col=1)
-    line("pv_w", "PV (Prognose)", "#ff7f0e", 1, "prog", dash="dash")
     line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist")
-    line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
+    line("pv_w", "PV (Prognose)", "#ff7f0e", 1, "prog", dash="dash")
     line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist")
+    line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
+    line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8)
     if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
         net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
         net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
         fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prognose)", mode="lines",
                                  line=dict(color="#1f77b4", width=1.5, dash="dot"),
+                                 hovertemplate=HOVER_W,
                                  legendgroup="prog"), row=1, col=1)
-    line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8)
     if "export_line_w" in t.columns and t["export_line_w"].notna().any():
         line("export_line_w", "Einspeise-Linie", "#2ca02c", 1, "prog",
              dash="dash", width=1.5, shape="hv")
@@ -119,10 +128,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                       annotation_font=dict(color="#2ca02c", size=11))
 
     # ---------- Panel 2: SoC (eigenes Panel, keine Doppelachse) ----------
+    line("actual_soc_percent", "Haus-SoC (Ist)", "#111111", 2, "soc", width=3,
+         hover=HOVER_PCT)
     line("house_soc_percent", "Haus-SoC (Prognose)", "#111111", 2, "soc",
-         dash="dash", width=2.5)
-    line("actual_soc_percent", "Haus-SoC (Ist)", "#111111", 2, "soc", width=3)
-    line("car_soc_percent", "Auto-SoC", "#9467bd", 2, "soc", dash="dot")
+         dash="dash", width=2.5, hover=HOVER_PCT)
+    line("car_soc_percent", "Auto-SoC", "#9467bd", 2, "soc", dash="dot",
+         hover=HOVER_PCT)
 
     # ---------- Panel 3: Preis + Vergütung ----------
     if "price_ct_kwh" in t.columns:
@@ -131,22 +142,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             if "price_estimated" in t.columns else pd.Series(False, index=x)
         fig.add_trace(go.Scatter(x=x, y=price.mask(est), name="Börsenpreis",
                                  mode="lines", legendgroup="prog",
+                                 hovertemplate=HOVER_CT,
                                  line=dict(color="#8c564b", width=2, shape="hv")),
                       row=3, col=1)
         if est.any():
             fig.add_trace(go.Scatter(
                 x=x, y=price.where(est | est.shift(-1, fill_value=False)),
                 name="Preis (Schätzung)", mode="lines", legendgroup="prog",
+                hovertemplate=HOVER_CT,
                 line=dict(color="#8c564b", width=2, shape="hv", dash="dash")),
                 row=3, col=1)
     line("feedin_ct_kwh", "Einspeisevergütung", "#2ca02c", 3, "prog",
-         width=1.2, shape="hv")
+         width=1.2, shape="hv", hover=HOVER_CT)
 
     # ---------- Panel 4: Steuerung ----------
     def bar(col, name, color, sign=1):
         if col in t.columns and t[col].abs().max() > 1:
             fig.add_trace(go.Bar(x=x, y=sign * t[col], name=name,
-                                 marker_color=color, legendgroup="ctrl",
+                                 marker_color=color, hovertemplate=HOVER_W,
+                                 legendgroup="ctrl",
                                  legendgrouptitle_text=_GROUPS["ctrl"]),
                           row=4, col=1)
 
@@ -160,6 +174,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         fig.add_trace(go.Scatter(x=x, y=t["actual_battery_w"],
                                  name="Akku-Leistung (Ist)", mode="lines",
                                  line=dict(color="#111111", width=1.8),
+                                 hovertemplate=HOVER_W,
                                  legendgroup="ctrl"), row=4, col=1)
 
     # ---------- Panel 5: Modus-Zeitleiste ----------
@@ -209,8 +224,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(title_text="W", row=4, col=1)
     fig.update_yaxes(visible=False, row=5, col=1)
     fig.update_layout(
-        height=980, template="plotly_white", hovermode="x unified",
-        barmode="relative", bargap=0, margin=dict(l=60, r=30, t=80, b=10),
+        height=980, autosize=True, template="plotly_white",
+        hovermode="x unified", barmode="relative", bargap=0,
+        # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
+        separators=",.",
+        margin=dict(l=60, r=30, t=80, b=10),
         legend=dict(orientation="h", yanchor="top", y=-0.045, xanchor="left",
                     x=0, font=dict(size=11), groupclick="toggleitem"),
     )
@@ -240,7 +258,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     ]
 
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
-                            config={"responsive": True})
+                            default_width="100%",
+                            config={"responsive": True, "displaylogo": False})
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
