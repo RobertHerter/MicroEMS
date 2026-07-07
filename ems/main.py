@@ -412,6 +412,20 @@ def _build_display_frame(repo, config, now, history, result,
     else:
         df["mode"] = "auto"
 
+    # Einspeisevergütung durchgehend anzeigen (wie der Preis): die Optimierung
+    # liefert sie nur für die Zukunft, die Vergangenheit wird aufgefüllt.
+    if "feedin_ct_kwh" in df.columns:
+        if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
+            try:
+                fi = repo.read_slots("feed_in_tariff", day_start, end + slot)
+                df["feedin_ct_kwh"] = df["feedin_ct_kwh"].fillna(fi.reindex(full))
+            except Exception:  # pragma: no cover
+                pass
+        df["feedin_ct_kwh"] = df["feedin_ct_kwh"].fillna(config.feed_in.fixed_ct_kwh)
+        if config.feed_in.zero_at_negative_price and "price_ct_kwh" in df.columns:
+            df["feedin_ct_kwh"] = df["feedin_ct_kwh"].where(
+                df["price_ct_kwh"] >= 0.0, 0.0)
+
     # ---- Heutige IST-Werte (bis jetzt) zum Vergleich ----
     # Bis 'now' lesen (aktuellen Slot einschließen) und im Ist-Bereich vorwärts
     # füllen, damit die Ist-Linie den Jetzt-Marker erreicht und keine Lücke zur

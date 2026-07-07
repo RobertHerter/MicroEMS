@@ -257,6 +257,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
 
+    # Mini-Legende für die Modus-Zeitleiste (Farben auch ohne Hover lesbar)
+    mode_legend = "".join(
+        f'<span class="mchip"><span class="mbox" '
+        f'style="background:{_MODE_COLOR[m]}"></span>{_MODE_LABEL[m]}</span>'
+        for m in _MODES)
+
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False})
@@ -276,11 +282,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .tile .v {{ font-size: 22px; font-weight: 700; }}
  .tile .l {{ font-size: 12px; color: #555; margin-top: 2px; }}
  .tile .s {{ font-size: 11px; color: #999; }}
+ .modelegend {{ font-size: 11px; color: #555; margin: 2px 0 8px 60px; }}
+ .mchip {{ margin-right: 14px; white-space: nowrap; }}
+ .mbox {{ display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+         border: 1px solid #ccc; vertical-align: -1px; margin-right: 4px; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {plot_html}
+<div class="modelegend"><b>Modus-Zeitleiste:</b> {mode_legend}</div>
 <script>{_RELOAD_JS}</script>
 </body></html>"""
 
