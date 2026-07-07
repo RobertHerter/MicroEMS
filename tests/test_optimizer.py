@@ -149,8 +149,10 @@ def test_p10_floor_forces_early_charging():
     pv = _pv_gauss(idx, 8000)
     load = 500.0
     pv10 = 0.35 * pv          # deutlich pessimistischer als der Erwartungswert
-    res = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, soc=1500,
-                                       pv10_w=pv10))
+    # realistisches Preisprofil: Abendspitze teurer als der Tag
+    price = np.where(idx.hour >= 19, 35.0, 25.0).astype(float)
+    res = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, price=price,
+                                       soc=1500, pv10_w=pv10))
     assert not res.infeasible
     t = res.table
     hb = cfg.house_battery
@@ -163,19 +165,30 @@ def test_p10_floor_forces_early_charging():
     floor = np.clip(floor, hb.min_soc_wh, hb.max_soc_wh)
     soc = t["house_soc_wh"].values
     # Weiche Nebenbedingung: nachts (keine PV, kein Netzladen am Peak-Tag)
-    # ist der Pfad unerreichbar -> Slack. Ab Vormittag muss er eingehalten sein.
-    daytime = idx.hour >= 11
-    assert (soc[daytime] >= floor[daytime] - 1.0).all(), \
+    # ist der Pfad unerreichbar -> Slack. Ab Vormittag muss er eingehalten
+    # sein - aber nur, solange noch p10-Überschuss aussteht (danach entfällt
+    # der Pfad bewusst, damit das Abendentladen frei ist).
+    active = (idx.hour >= 11) & (suffix > 0.0)
+    assert (soc[active] >= floor[active] - 1.0).all(), \
         "SoC unterschreitet den p10-Mindestpfad trotz ausreichender PV"
 
     # Vergleich: ohne p10 lädt der Plan später (SoC am Vormittag niedriger
     # oder gleich, irgendwo echt niedriger)
-    base = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, soc=1500))
+    base = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, price=price,
+                                        soc=1500))
     morning = idx.hour < 12
     soc_base = base.table["house_soc_wh"].values
     assert (soc[morning] >= soc_base[morning] - 1.0).all()
     assert (soc[morning] > soc_base[morning] + 100.0).any(), \
         "p10-Absicherung sollte früheres Laden erzwingen"
+
+    # Nach PV-Ende darf der Mindestpfad das Abendentladen NICHT blockieren
+    # (Regression: 'Entladesperre 19:00-23:45' am Peak-Tag).
+    evening = idx.hour >= 21
+    assert (t.loc[evening, "batt_discharge_w"] > TOL).any(), \
+        "Abends muss der Akku die Last decken dürfen (kein hold)"
+    assert not (t.loc[evening, "mode"] == "hold").any(), \
+        "p10-Pfad darf abends keine Entladesperre erzeugen"
 
 
 def test_export_cap_at_grid_connection():

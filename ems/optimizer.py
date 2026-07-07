@@ -481,6 +481,12 @@ class Optimizer:
                 # künftiger Tages-Überschuss NACH Slot j (exklusiv)
                 suffix = np.concatenate([np.cumsum(s10[::-1])[::-1][1:], [0.0]])
                 for j, t in enumerate(idxs):
+                    # Nur solange noch p10-Überschuss aussteht: die Grenze soll
+                    # das AUFSCHIEBEN des Ladens begrenzen. Nach PV-Ende wäre
+                    # floor = max_soc und würde das normale (teure!) Abend-
+                    # entladen blockieren - genau dann muss sie entfallen.
+                    if suffix[j] <= 0.0:
+                        continue
                     floor = hb.max_soc_wh - hb.charge_efficiency * suffix[j] * dt
                     if floor <= hb.min_soc_wh:
                         continue
