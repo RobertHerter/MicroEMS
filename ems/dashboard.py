@@ -22,13 +22,20 @@ from .config import Config
 
 log = logging.getLogger("ems.dashboard")
 
-_MODES = ["auto", "limit", "hold", "block_charge", "grid_charge", "grid_discharge"]
-_MODE_LABEL = {"auto": "auto (kein Eingriff)", "limit": "gedrosselt",
+_MODES = ["auto", "peak", "limit_charge", "limit_discharge", "hold",
+          "block_charge", "grid_charge", "grid_discharge"]
+_MODE_LABEL = {"auto": "auto (kein Eingriff)",
+               "peak": "Peak-Laden (Linie)",
+               "limit_charge": "Laden gedrosselt",
+               "limit_discharge": "Entladen gedrosselt",
                "hold": "Entladen gesperrt", "block_charge": "Laden gesperrt",
                "grid_charge": "Netzladen", "grid_discharge": "Netz-Entladen"}
-_MODE_COLOR = {"auto": "#f0f0f0", "limit": "#ffcd00", "hold": "#ff8c00",
-               "block_charge": "#d62728", "grid_charge": "#1f77b4",
-               "grid_discharge": "#9400d3"}
+_MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476",
+               "limit_charge": "#ffd92f", "limit_discharge": "#e377c2",
+               "hold": "#ff8c00", "block_charge": "#d62728",
+               "grid_charge": "#1f77b4", "grid_discharge": "#9400d3"}
+# Legenden-Swatch: auto wäre auf Weiß unsichtbar
+_MODE_SWATCH = dict(_MODE_COLOR, auto="#c8c8c8")
 _GROUPS = {"ist": "Ist", "prog": "Prognose", "soc": "Ladezustand",
            "ctrl": "Steuerung"}
 _WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
@@ -181,7 +188,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     n_eingriffe = 0
     if "mode" in t.columns:
         modes = t["mode"].fillna("auto")
-        n_eingriffe = int((modes != "auto").sum())
+        # "peak" ist geformtes Normalverhalten, kein Eingriff
+        n_eingriffe = int((~modes.isin(["auto", "peak"])).sum())
         z = [[_MODES.index(m) if m in _MODES else 0 for m in modes]]
         colorscale = []
         for i, m in enumerate(_MODES):
@@ -223,13 +231,23 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(title_text="ct/kWh", row=3, col=1)
     fig.update_yaxes(title_text="W", row=4, col=1)
     fig.update_yaxes(visible=False, row=5, col=1)
+
+    # Mini-Legende der Modus-Farben DIREKT unter der Zeitleiste (Annotation,
+    # unterhalb der Zeit-Beschriftung; die Trace-Legende rückt weiter nach unten)
+    mode_leg = "<b>Modus:</b>  " + "   ".join(
+        f"<span style='color:{_MODE_SWATCH[m]}'>■</span> "
+        f"{_MODE_LABEL[m].replace(' (kein Eingriff)', '')}"
+        for m in _MODES)
+    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.035,
+                       xanchor="left", yanchor="top", showarrow=False,
+                       text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
         height=980, autosize=True, template="plotly_white",
         hovermode="x unified", barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
-        margin=dict(l=60, r=30, t=80, b=10),
-        legend=dict(orientation="h", yanchor="top", y=-0.045, xanchor="left",
+        margin=dict(l=60, r=30, t=80, b=130),
+        legend=dict(orientation="h", yanchor="top", y=-0.075, xanchor="left",
                     x=0, font=dict(size=11), groupclick="toggleitem"),
     )
 
@@ -257,12 +275,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
 
-    # Mini-Legende für die Modus-Zeitleiste (Farben auch ohne Hover lesbar)
-    mode_legend = "".join(
-        f'<span class="mchip"><span class="mbox" '
-        f'style="background:{_MODE_COLOR[m]}"></span>{_MODE_LABEL[m]}</span>'
-        for m in _MODES)
-
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False})
@@ -282,16 +294,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .tile .v {{ font-size: 22px; font-weight: 700; }}
  .tile .l {{ font-size: 12px; color: #555; margin-top: 2px; }}
  .tile .s {{ font-size: 11px; color: #999; }}
- .modelegend {{ font-size: 11px; color: #555; margin: 2px 0 8px 60px; }}
- .mchip {{ margin-right: 14px; white-space: nowrap; }}
- .mbox {{ display: inline-block; width: 11px; height: 11px; border-radius: 2px;
-         border: 1px solid #ccc; vertical-align: -1px; margin-right: 4px; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {plot_html}
-<div class="modelegend"><b>Modus-Zeitleiste:</b> {mode_legend}</div>
 <script>{_RELOAD_JS}</script>
 </body></html>"""
 

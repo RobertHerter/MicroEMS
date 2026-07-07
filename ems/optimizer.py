@@ -587,17 +587,24 @@ class Optimizer:
                 dis_limit, dis_limited = round(dis_v, 1), 1
             else:
                 dis_limit, dis_limited = hb.max_discharge_w, 0
-            # Modus. Im Peak-Modus ist das geformte Laden entlang der Linie NORMAL
-            # -> nicht als Eingriff werten (nur Entlade-Sperre / Netz-Entladen).
-            charge_flag = charge_limited and day_mode[slot_day[t]] != "peak"
+            # Modus. Im Peak-Modus ist das geformte Laden entlang der Linie
+            # NORMAL (kein "Eingriff"), bekommt aber den eigenen Modus "peak",
+            # damit es in der Zeitleiste sichtbar ist. Gedrosseltes Laden und
+            # Entladen sind getrennte Modi.
+            peak_shaped = charge_limited and day_mode[slot_day[t]] == "peak"
+            charge_flag = charge_limited and not peak_shaped
             if ac_v > tol:
                 mode = "grid_charge"
             elif charge_flag and charge_limit < tol:
                 mode = "block_charge"
             elif dis_limited and dis_limit < tol:
                 mode = "hold"                         # Entladen gesperrt (Akku halten)
-            elif charge_flag or dis_limited:
-                mode = "limit"
+            elif dis_limited:
+                mode = "limit_discharge"              # Entladen gedrosselt
+            elif charge_flag:
+                mode = "limit_charge"                 # Laden gedrosselt
+            elif peak_shaped:
+                mode = "peak"                         # geformtes Laden (Linie)
             else:
                 mode = "auto"
             # Netz-Entladen (Akku -> Netz): der Teil der Einspeisung, der nicht aus
