@@ -55,14 +55,19 @@ class OptimizerResult:
     status: str
     infeasible: bool = False
     export_line_w: Optional[float] = None   # Einspeise-Linie L (nur Peak-Modus)
+    # Fehlmenge (Wh) zum Auto-Ziel-SoC bei Abfahrt (weiche Nebenbedingung);
+    # > 0 = Ziel im Plan nicht erreichbar -> Alarm.
+    car_target_shortfall_wh: float = 0.0
 
 
-def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float):
+def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float,
+                         max_export_w: Optional[float] = None):
     """Ein Slot natürliches E3DC-Eigenverbrauchsverhalten (ohne EMS-Eingriffe):
     PV-Überschuss lädt den Akku, Defizit entlädt ihn; Rest geht ins/kommt vom Netz.
 
     Wird für den Infeasibility-Fallback UND als "Ohne-EMS"-Baseline des
-    Ersparnis-Trackings genutzt.
+    Ersparnis-Trackings genutzt. max_export_w: Einspeisebegrenzung am
+    Netzanschluss (Überschuss darüber wird abgeregelt).
     Rückgabe: (neuer SoC Wh, Laden W, Entladen W, Netzbezug W, Einspeisung W).
     """
     pv_w, load_w = max(0.0, float(pv_w)), max(0.0, float(load_w))
@@ -78,6 +83,8 @@ def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours
         soc_wh -= dis * dt_hours / hb.discharge_efficiency
     imp = max(0.0, load_w - pv_w - dis)
     exp = max(0.0, pv_w - load_w - charge)
+    if max_export_w is not None:
+        exp = min(exp, float(max_export_w))   # Rest wird abgeregelt
     return soc_wh, charge, dis, imp, exp
 
 
@@ -127,7 +134,9 @@ class Optimizer:
             price_t = float(np.nan_to_num(inp.price_ct_kwh[t]))
             feedin_t = float(np.nan_to_num(inp.feedin_ct_kwh[t]))
             pv_t, load_t = max(0.0, pv_t), max(0.0, load_t)
-            soc, charge, dis, imp, exp = natural_battery_step(soc, pv_t, load_t, hb, dt)
+            soc, charge, dis, imp, exp = natural_battery_step(
+                soc, pv_t, load_t, hb, dt,
+                max_export_w=self.cfg.inverter.max_export_w)
             row = {
                 "house_load_w": load_t, "pv_w": pv_t,
                 "price_ct_kwh": price_t, "feedin_ct_kwh": feedin_t,
@@ -181,6 +190,9 @@ class Optimizer:
         dc = [pulp.LpVariable(f"dc_{t}", 0, hb.max_dc_charge_w) for t in range(N)]
         ac = [pulp.LpVariable(f"ac_{t}", 0, hb.max_ac_charge_w) for t in range(N)]
         dis = [pulp.LpVariable(f"dis_{t}", 0, hb.max_discharge_w) for t in range(N)]
+        # PV-Abregelung: nötig, wenn Akku voll UND Export begrenzt/wertlos ist
+        # (max_export_w, Negativpreis ohne Vergütung). Sonst via Mini-Malus 0.
+        curt = [pulp.LpVariable(f"curt_{t}", 0) for t in range(N)]
         g_imp = [pulp.LpVariable(f"gimp_{t}", 0) for t in range(N)]
         g_exp = [pulp.LpVariable(f"gexp_{t}", 0) for t in range(N)]
         is_ch = [pulp.LpVariable(f"isch_{t}", cat="Binary") for t in range(N)]
@@ -199,6 +211,7 @@ class Optimizer:
         else:
             car = [0.0] * N
             soc_car = None
+        car_short: List = []   # Slack je Abfahrt: Fehlmenge zum Ziel-SoC (Wh)
 
         # ---- Anfangszustände -------------------------------------------- #
         prob += soc[0] == max(hb.min_soc_wh, min(hb.max_soc_wh, inp.initial_house_soc_wh))
@@ -286,9 +299,9 @@ class Optimizer:
             pv_t = float(max(0.0, inp.pv_w[t]))
             load_t = float(max(0.0, inp.house_load_w[t]))
 
-            # DC-Laden nur aus PV
-            prob += dc[t] <= pv_t
-            pv_to_ac = pv_t - dc[t]   # LpAffineExpression, >= 0 durch dc<=pv
+            # DC-Laden und Abregelung nur aus PV
+            prob += dc[t] + curt[t] <= pv_t
+            pv_to_ac = pv_t - dc[t] - curt[t]   # >= 0 durch obige Schranke
 
             # Wechselrichter-Durchsatz
             prob += pv_to_ac + dis[t] + ac[t] <= cfg.inverter.max_ac_power_w
@@ -320,7 +333,7 @@ class Optimizer:
                 if dm == "peak":
                     # Peak-Tag: kein Akku->Netz-Dump; Einspeisung auf die Tages-
                     # Linie deckeln – aber nur an Tagen mit Spitze im Horizont.
-                    prob += g_exp[t] <= pv_t - dc[t]
+                    prob += g_exp[t] <= pv_to_ac
                     if line_day[slot_day[t]]:
                         prob += g_exp[t] <= export_line[slot_day[t]]
                 else:
@@ -329,6 +342,11 @@ class Optimizer:
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
+
+            # Einspeisebegrenzung am Netzanschluss (60/70%-Regel / §9 EEG):
+            # keine Erlöse einplanen, die real abgeregelt würden.
+            if cfg.inverter.max_export_w is not None:
+                prob += g_exp[t] <= cfg.inverter.max_export_w
 
             # SoC-Dynamik Haus. AC-Laden (Netz) hat einen eigenen (schlechteren)
             # Wirkungsgrad als DC-Laden aus PV - sonst rechnet sich Netzladen
@@ -354,13 +372,20 @@ class Optimizer:
                         (veh.max_charge_w - veh.min_charge_w) * \
                         (veh.capacity_wh - soc_car[t]) / denom
                 prob += soc_car[t + 1] == soc_car[t] + veh.charge_efficiency * car[t] * dt
-                # zur Abfahrtzeit Ziel-SoC erreichen
+                # Ziel-SoC zur Abfahrt: WEICH (Slack mit hoher Strafe). Ein
+                # unerreichbares Ziel (spät angesteckt, Taper) darf nicht die
+                # gesamte Optimierung unlösbar machen - stattdessen wird so
+                # viel wie möglich geladen und die Fehlmenge gemeldet.
                 if t in dep_slots:
-                    prob += soc_car[t] >= veh.target_soc_wh
+                    s = pulp.LpVariable(f"carshort_{t}", 0)
+                    prob += soc_car[t] + s >= veh.target_soc_wh
+                    car_short.append(s)
 
         # Ziel-SoC am letzten Slot ebenfalls sichern, falls keine Abfahrt im Horizont
         if use_car and not dep_slots:
-            prob += soc_car[N] >= veh.target_soc_wh
+            s = pulp.LpVariable("carshort_end", 0)
+            prob += soc_car[N] + s >= veh.target_soc_wh
+            car_short.append(s)
 
         # ---- Zielfunktion ----------------------------------------------- #
         kwh = dt / 1000.0
@@ -377,6 +402,11 @@ class Optimizer:
             for t in range(N):
                 cost_terms.append(0.5 * pen * (dc[t] + ac[t] + dis[t]) * kwh)
 
+        # Auto-Ziel-Verfehlung bestrafen (weiche Nebenbedingung, s.o.)
+        if car_short:
+            cost_terms.append(cfg.optimization.car_target_penalty_ct_kwh *
+                              pulp.lpSum(car_short) / 1000.0)
+
         # Wallbox-Schalt-Malus: jeder Einschaltvorgang (0 -> laden) kostet
         # car_switch_penalty_ct. Verhindert Dauer-Takten bei zappeligen
         # Preisen (Schützverschleiß); der erste Slot bleibt frei (Vorzustand
@@ -391,8 +421,11 @@ class Optimizer:
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
         # bringt (günstiger Netzbezug), nicht zum Wegrouten von PV-Überschuss.
+        # Abregelung minimal bestrafen: nur als letzter Ausweg (Akku voll und
+        # Export begrenzt/wertlos), nie statt Einspeisung mit Vergütung > 0.
         for t in range(N):
             cost_terms.append(0.02 * ac[t] * kwh)
+            cost_terms.append(0.01 * curt[t] * kwh)
 
         # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
         # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
@@ -448,6 +481,11 @@ class Optimizer:
         def val(v):
             return float(pulp.value(v)) if not isinstance(v, (int, float)) else float(v)
 
+        shortfall = max((val(s) for s in car_short), default=0.0)
+        if shortfall > 100.0:
+            log.warning("Auto-Ziel-SoC im Plan nicht erreichbar: es fehlen "
+                        "%.1f kWh zur Abfahrt.", shortfall / 1000.0)
+
         # Tages-Linien-Werte (Peak-Modus) je Slot. Ungenutzte L (Tage ohne Linie)
         # bleiben None -> als NaN behandeln.
         def _lv(L):
@@ -459,6 +497,7 @@ class Optimizer:
         rows = []
         for t in range(N):
             dc_v, ac_v, dis_v = val(dc[t]), val(ac[t]), val(dis[t])
+            curt_v = val(curt[t])
             car_v = val(car[t]) if use_car else 0.0
             imp_v, exp_v = val(g_imp[t]), val(g_exp[t])
             soc_v = val(soc[t + 1])
@@ -506,7 +545,7 @@ class Optimizer:
                 mode = "auto"
             # Netz-Entladen (Akku -> Netz): der Teil der Einspeisung, der nicht aus
             # PV stammt. Bei allow_grid_discharge=False ist das 0.
-            grid_discharge_v = max(0.0, exp_v - max(0.0, pv_t - dc_v))
+            grid_discharge_v = max(0.0, exp_v - max(0.0, pv_t - dc_v - curt_v))
             if grid_discharge_v > tol:
                 mode = "grid_discharge"
 
@@ -529,6 +568,7 @@ class Optimizer:
                 "car_charge_w": round(car_v, 1),
                 "grid_import_w": round(imp_v, 1),
                 "grid_export_w": round(exp_v, 1),
+                "pv_curtail_w": round(curt_v, 1),
                 "house_soc_wh": round(soc_v, 1),
                 "house_soc_percent": round(100.0 * soc_v / hb.capacity_wh, 2),
                 "export_line_w": (round(line_vals[slot_day[t]], 1)
@@ -548,5 +588,5 @@ class Optimizer:
                   if (line_day[slot_day[0]] and day_mode[slot_day[0]] == "peak") else None)
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
-            export_line_w=line_w,
+            export_line_w=line_w, car_target_shortfall_wh=round(shortfall, 1),
         )

@@ -139,6 +139,10 @@ class HouseBatteryConfig:
 @dataclass
 class InverterConfig:
     max_ac_power_w: float
+    # Einspeisebegrenzung am Netzanschlusspunkt (60/70%-Regel bzw. §9 EEG).
+    # None = keine Begrenzung. Der Optimierer plant dann keine Einspeise-
+    # Erlöse ein, die real abgeregelt würden.
+    max_export_w: Optional[float] = None
 
 
 @dataclass
@@ -175,6 +179,10 @@ class OptimizationConfig:
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
     car_switch_penalty_ct: float = 5.0
+    # Strafe (ct/kWh) je fehlender kWh zum Auto-Ziel-SoC bei Abfahrt. Das Ziel
+    # ist eine WEICHE Nebenbedingung: ist es unerreichbar, lädt der Plan so
+    # viel wie möglich statt komplett auf 'auto' zurückzufallen.
+    car_target_penalty_ct_kwh: float = 200.0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -350,7 +358,12 @@ def load_config(path: str) -> Config:
         max_charge_w=(float(hb["max_charge_w"]) if hb.get("max_charge_w") is not None else None),
     )
 
-    inverter = InverterConfig(max_ac_power_w=float(raw["inverter"]["max_ac_power_w"]))
+    inv = raw["inverter"]
+    inverter = InverterConfig(
+        max_ac_power_w=float(inv["max_ac_power_w"]),
+        max_export_w=(float(inv["max_export_w"])
+                      if inv.get("max_export_w") is not None else None),
+    )
 
     v = raw.get("vehicle", {})
     vehicle = VehicleConfig(
@@ -372,6 +385,7 @@ def load_config(path: str) -> Config:
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
+        car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),

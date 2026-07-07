@@ -120,7 +120,8 @@ class SavingsTracker:
                 feedin_t = 0.0
 
             soc, _ch, _dis, b_imp, b_exp = natural_battery_step(
-                soc, pv_t, load_t, hb, dt)
+                soc, pv_t, load_t, hb, dt,
+                max_export_w=self.cfg.inverter.max_export_w)
             baseline_ct = (b_imp * price_t - b_exp * feedin_t) * kwh
             a_imp, a_exp = max(0.0, grid_t), max(0.0, -grid_t)
             actual_ct = (a_imp * price_t - a_exp * feedin_t) * kwh

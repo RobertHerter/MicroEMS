@@ -142,10 +142,17 @@ ems/alert                             Störungen als JSON {level, message, time}
 Eingehende Kommandos (von Homey an das EMS):
 
 ```
-ems/cmd/recalc      sofortige Neuberechnung anstoßen (Payload egal)
-ems/cmd/car_boost   "1"/"0": Auto sofort mit Max-Leistung laden, bis der
-                    Ziel-SoC erreicht ist (überschreibt car_charge_w)
+ems/cmd/recalc          sofortige Neuberechnung anstoßen (Payload egal)
+ems/cmd/car_boost       "1"/"0": Auto sofort mit Max-Leistung laden, bis der
+                        Ziel-SoC erreicht ist (überschreibt car_charge_w)
+ems/cmd/departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" = Konfigwert
+ems/cmd/target_soc      Ziel-SoC in % (1..100); ""/"default" = Konfigwert
 ```
+
+Die Fahrzeug-Kommandos in Homey **mit Retain** publizieren, dann überstehen
+sie einen EMS-Neustart (der Broker liefert sie beim Reconnect erneut aus).
+Die aktuell wirksamen Werte meldet das EMS unter `ems/vehicle/departure_time`
+und `ems/vehicle/target_soc_percent` zurück.
 
 `ems/alert` meldet z.B. eine nicht-optimale Optimierung (Fallback aktiv) oder
 einen fehlgeschlagenen Zyklus – ideal für einen Homey-Push-Benachrichtigungs-Flow.
@@ -223,6 +230,13 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
 - Wallbox: Schalt-Malus je Einschaltvorgang (`car_switch_penalty_ct`) und
   optionale Ladekurve (`vehicle.taper_start_soc_percent`: Leistung sinkt
   linear bis `min_charge_w` bei 100 %).
+- Der Auto-Ziel-SoC ist eine **weiche** Nebenbedingung
+  (`car_target_penalty_ct_kwh`): Ist er nicht erreichbar, lädt der Plan so
+  viel wie möglich und meldet die Fehlmenge per `ems/alert`, statt komplett
+  auf "auto" zurückzufallen.
+- Optional `inverter.max_export_w`: Einspeisebegrenzung am Netzanschluss –
+  der Plan rechnet nicht mit Erlösen, die real abgeregelt würden (gilt auch
+  für die Ohne-EMS-Baseline des Ersparnis-Trackings).
 - Wechselrichter-Durchsatz begrenzt: `pv_to_ac + Entladung + AC-Laden ≤ WR_max`.
 - Auto lädt AC-seitig und zählt nicht in den Batterieport-Durchsatz.
 - Lade-/Entladewirkungsgrade wirken auf die SoC-Bilanz.

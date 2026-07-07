@@ -34,19 +34,29 @@ Topic-Schema (base_topic = "ems"):
   ems/cmd/recalc      EINGEHEND: sofortige Neuberechnung anstoßen (Payload egal)
   ems/cmd/car_boost   EINGEHEND: "1"/"0" - Auto sofort mit Max-Leistung laden
                       (überschreibt car_charge_w, bis Ziel-SoC erreicht/Boost aus)
+  ems/cmd/departure_time  EINGEHEND: "HH:MM" - Abfahrtzeit für die Optimierung
+                      setzen; ""/"default" = zurück auf Konfigurationswert.
+                      Von Homey mit Retain senden -> übersteht EMS-Neustarts.
+  ems/cmd/target_soc  EINGEHEND: Ziel-SoC in % (1..100); ""/"default" = zurück
+                      auf Konfigurationswert. Ebenfalls retained senden.
+  ems/vehicle/departure_time, ems/vehicle/target_soc_percent
+                      AUSGEHEND: aktuell wirksame Werte (Rückmeldung für Homey).
 """
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from typing import Dict
+from datetime import time as dtime
+from typing import Dict, Optional
 
 import pandas as pd
 
 from .config import Config
 
 log = logging.getLogger("ems.mqtt")
+
+_RESET_WORDS = ("", "-", "auto", "default", "reset")
 
 
 class HomeyMqttPublisher:
@@ -57,6 +67,10 @@ class HomeyMqttPublisher:
         # Von Homey per ems/cmd/# steuerbar:
         self.recalc_event = threading.Event()
         self.car_boost = False
+        self.departure_override: Optional[dtime] = None
+        self.target_soc_override: Optional[float] = None
+        self._veh_defaults = (config.vehicle.departure_time,
+                              config.vehicle.target_soc_percent)
 
     def _connect(self):
         import socket
@@ -110,6 +124,47 @@ class HomeyMqttPublisher:
             self.car_boost = payload in ("1", "true", "on", "an")
             log.info("MQTT-Kommando: car_boost = %s.", self.car_boost)
             self.recalc_event.set()   # Sollwerte sofort neu publizieren
+        elif msg.topic.endswith("/cmd/departure_time"):
+            if payload in _RESET_WORDS:
+                self.departure_override = None
+                log.info("MQTT-Kommando: Abfahrtzeit zurück auf Konfigwert (%s).",
+                         self._veh_defaults[0].strftime("%H:%M"))
+            else:
+                try:
+                    hh, mm = payload.split(":")[:2]
+                    self.departure_override = dtime(int(hh), int(mm))
+                except (ValueError, IndexError):
+                    log.warning("MQTT-Kommando: ungültige Abfahrtzeit '%s' "
+                                "(erwartet HH:MM).", payload)
+                    return
+                log.info("MQTT-Kommando: Abfahrtzeit = %s.",
+                         self.departure_override.strftime("%H:%M"))
+            self.recalc_event.set()
+        elif msg.topic.endswith("/cmd/target_soc"):
+            if payload in _RESET_WORDS:
+                self.target_soc_override = None
+                log.info("MQTT-Kommando: Ziel-SoC zurück auf Konfigwert (%.0f %%).",
+                         self._veh_defaults[1])
+            else:
+                try:
+                    v = float(payload.replace(",", ".").rstrip("%"))
+                except ValueError:
+                    log.warning("MQTT-Kommando: ungültiger Ziel-SoC '%s'.", payload)
+                    return
+                if not 1.0 <= v <= 100.0:
+                    log.warning("MQTT-Kommando: Ziel-SoC %.0f außerhalb 1..100 %%.", v)
+                    return
+                self.target_soc_override = v
+                log.info("MQTT-Kommando: Ziel-SoC = %.0f %%.", v)
+            self.recalc_event.set()
+
+    def apply_vehicle_overrides(self, veh) -> None:
+        """Überträgt die per MQTT gesetzten Overrides (oder die Konfigurations-
+        Standardwerte) auf die Fahrzeug-Konfiguration des nächsten Laufs."""
+        veh.departure_time = self.departure_override or self._veh_defaults[0]
+        veh.target_soc_percent = (self.target_soc_override
+                                  if self.target_soc_override is not None
+                                  else self._veh_defaults[1])
 
     def wait_for_recalc(self, timeout: float) -> bool:
         """Wartet bis zu `timeout` Sekunden; True, wenn währenddessen per
@@ -229,6 +284,15 @@ class HomeyMqttPublisher:
             for key, value in setpoints.items():
                 self._pub(f"{base}/setpoint/{key}", value, retain=False)
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
+
+            # Wirksame Fahrzeug-Parameter zurückmelden (Rückmeldung für Homey,
+            # z.B. nach ems/cmd/departure_time bzw. /target_soc).
+            self._pub(f"{base}/vehicle/departure_time",
+                      self.vehicle.departure_time.strftime("%H:%M"),
+                      retain=self.cfg.retain)
+            self._pub(f"{base}/vehicle/target_soc_percent",
+                      float(self.vehicle.target_soc_percent),
+                      retain=self.cfg.retain)
 
         if self.cfg.publish_schedule_json:
             payload = table.copy()

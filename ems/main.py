@@ -41,7 +41,7 @@ CONTROL_COLS = [
     "charge_limited", "discharge_limited",
     # rohe Optimierer-Leistungen (Referenz/Analyse):
     "batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
-    "car_charge_w", "grid_import_w", "grid_export_w",
+    "car_charge_w", "grid_import_w", "grid_export_w", "pv_curtail_w",
 ]
 PREDICTION_COLS = [
     "house_soc_wh", "house_soc_percent", "car_soc_wh", "car_soc_percent",
@@ -62,6 +62,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
     try:
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
+        # Per MQTT gesetzte Fahrzeug-Overrides (ems/cmd/departure_time,
+        # ems/cmd/target_soc) für diesen Lauf anwenden.
+        if publisher is not None:
+            publisher.apply_vehicle_overrides(config.vehicle)
         # Horizont bis ENDE des letzten Tages (nächste Mitternacht) aufrunden ->
         # immer ganze Tage, kein verzerrter Teiltag am Ende.
         _raw_end = now + timedelta(hours=config.general.optimization_horizon_hours)
@@ -197,6 +201,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                 publisher.publish_alert(
                     "warning", f"Optimierung nicht optimal ({result.status}) – "
                                f"Fallback 'auto' ohne Eingriffe aktiv.")
+            if result.car_target_shortfall_wh > 100.0:
+                publisher.publish_alert(
+                    "warning",
+                    f"Auto erreicht Ziel-SoC nicht: es fehlen "
+                    f"{result.car_target_shortfall_wh / 1000.0:.1f} kWh zur Abfahrt.")
             publisher.publish(result.table, now)
             if one_shot:
                 publisher.close()

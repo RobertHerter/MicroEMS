@@ -119,21 +119,34 @@ def test_grid_discharge_arbitrage():
         "Netz-Entladen trotz flachem Preis"
 
 
-def test_infeasible_car_target_returns_neutral_fallback():
-    """Unerreichbarer Auto-Ziel-SoC -> kein Absturz, neutraler 'auto'-Plan."""
+def test_unreachable_car_target_is_soft():
+    """Unerreichbarer Auto-Ziel-SoC -> KEIN Fallback: es wird so viel wie
+    möglich geladen und die Fehlmenge gemeldet; der Rest optimiert normal."""
     cfg = make_config()
     from datetime import time
-    cfg.vehicle.departure_time = time(2, 0)   # in 2 h; 36 kWh fehlen, max 22 kWh
+    cfg.vehicle.departure_time = time(2, 0)   # in 2 h; 36 kWh fehlen, max ~20 kWh
     idx = _day_index("2026-01-20")[:16]       # 4 h Horizont
     res = Optimizer(cfg).solve(_inputs(
         idx, initial_car_soc_wh=0.2 * cfg.vehicle.capacity_wh, car_present=True))
-    assert res.infeasible
+    assert not res.infeasible, "weiches Ziel darf nicht unlösbar machen"
+    assert res.car_target_shortfall_wh > 10000, "Fehlmenge muss gemeldet werden"
     t = res.table
-    assert (t["mode"] == "auto").all()
-    assert (t["batt_grid_charge_w"] == 0).all()
-    assert t["house_soc_percent"].between(
-        cfg.house_battery.min_soc_percent - 0.5,
-        cfg.house_battery.max_soc_percent + 0.5).all()
+    # bis zur Abfahrt wird praktisch durchgehend mit Max-Leistung geladen
+    pre = t.iloc[:8]["car_charge_w"]
+    assert float(pre.mean()) > 0.9 * cfg.vehicle.max_charge_w
+    # Ziel bei Abfahrt trotzdem verfehlt (Slack aktiv)
+    assert float(t.iloc[7]["car_soc_percent"]) < cfg.vehicle.target_soc_percent
+
+
+def test_export_cap_at_grid_connection():
+    """Einspeisebegrenzung am Netzanschluss wird nie überschritten."""
+    cfg = make_config()
+    cfg.inverter.max_export_w = 2000.0
+    idx = _day_index("2026-06-10")
+    res = Optimizer(cfg).solve(_inputs(idx, pv=_pv_gauss(idx, 8000),
+                                       load=300.0, soc=1500))
+    assert not res.infeasible
+    assert (res.table["grid_export_w"] <= 2000.0 + TOL).all()
 
 
 def test_car_switch_penalty_limits_toggling():
