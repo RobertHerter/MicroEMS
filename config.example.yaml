@@ -47,6 +47,10 @@ influxdb:
     battery_soc:            { measurement: "battery", field: "soc_percent" }   # 0..100
     pv_generation:          { measurement: "power", field: "pv_w" }
     pv_forecast:            { measurement: "forecast", field: "pv_w" }         # Zukunftswerte
+    # Solcast-Unsicherheitsband (optional): p10 macht die Einspeise-Linie an
+    # Peak-Tagen wolken-robust, p90 wird im Dashboard als Band angezeigt.
+    # pv_forecast_p10:      { measurement: "forecast", field: "pv_estimate10", optional: true }
+    # pv_forecast_p90:      { measurement: "forecast", field: "pv_estimate90", optional: true }
     vehicle_soc:            { measurement: "car", field: "soc_percent", optional: true }
     # Wallbox-Status (0/1, optional): Auto wird nur mitoptimiert, wenn wirklich
     # angesteckt - sonst genügt ein alter SoC-Wert in der DB als (falsches) Indiz.

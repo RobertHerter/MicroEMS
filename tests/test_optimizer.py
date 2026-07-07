@@ -55,6 +55,8 @@ def test_peak_strategy_shaves_and_fills_battery():
     assert (t["batt_ac_charge_w"] <= TOL).all(), "Peak-Tag darf nicht netzladen"
     assert t["export_line_w"].notna().any(), "Einspeise-Linie fehlt"
     assert t["house_soc_percent"].max() >= 99.0, "Akku sollte voll werden"
+    assert (t["pv_curtail_w"] <= TOL).all(), \
+        "Abregeln statt Linie anheben ist verboten (kein Export-Limit gesetzt)"
 
 
 def test_asap_strategy_exports_only_when_full_or_at_max():
@@ -136,6 +138,44 @@ def test_unreachable_car_target_is_soft():
     assert float(pre.mean()) > 0.9 * cfg.vehicle.max_charge_w
     # Ziel bei Abfahrt trotzdem verfehlt (Slack aktiv)
     assert float(t.iloc[7]["car_soc_percent"]) < cfg.vehicle.target_soc_percent
+
+
+def test_p10_floor_forces_early_charging():
+    """p10-Absicherung: Der Plan hält je Slot den SoC-Mindestpfad ein, sodass
+    selbst der restliche p10-Überschuss des Tages den Akku noch füllt."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "peak"
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 8000)
+    load = 500.0
+    pv10 = 0.35 * pv          # deutlich pessimistischer als der Erwartungswert
+    res = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, soc=1500,
+                                       pv10_w=pv10))
+    assert not res.infeasible
+    t = res.table
+    hb = cfg.house_battery
+    assert t["house_soc_percent"].max() >= 99.0, "Akku sollte voll werden"
+
+    # SoC-Mindestpfad nachrechnen: max_soc - eff * künftiger p10-Überschuss
+    surplus10 = np.maximum(pv10 - load, 0.0)
+    suffix = np.concatenate([np.cumsum(surplus10[::-1])[::-1][1:], [0.0]])
+    floor = hb.max_soc_wh - hb.charge_efficiency * suffix * cfg.general.dt_hours
+    floor = np.clip(floor, hb.min_soc_wh, hb.max_soc_wh)
+    soc = t["house_soc_wh"].values
+    # Weiche Nebenbedingung: nachts (keine PV, kein Netzladen am Peak-Tag)
+    # ist der Pfad unerreichbar -> Slack. Ab Vormittag muss er eingehalten sein.
+    daytime = idx.hour >= 11
+    assert (soc[daytime] >= floor[daytime] - 1.0).all(), \
+        "SoC unterschreitet den p10-Mindestpfad trotz ausreichender PV"
+
+    # Vergleich: ohne p10 lädt der Plan später (SoC am Vormittag niedriger
+    # oder gleich, irgendwo echt niedriger)
+    base = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, soc=1500))
+    morning = idx.hour < 12
+    soc_base = base.table["house_soc_wh"].values
+    assert (soc[morning] >= soc_base[morning] - 1.0).all()
+    assert (soc[morning] > soc_base[morning] + 100.0).any(), \
+        "p10-Absicherung sollte früheres Laden erzwingen"
 
 
 def test_export_cap_at_grid_connection():

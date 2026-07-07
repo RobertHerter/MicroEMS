@@ -107,19 +107,32 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         house_load = load_fc.reindex(opt_index).ffill().bfill().values
 
         # --- 2) Eingangsdaten lesen ------------------------------------- #
-        pv = repo.read_slots("pv_forecast", now, opt_end).reindex(opt_index).ffill().bfill()
-        # Zeitabhängige PV-Korrektur (Monat x Stunde) aus der Kalibrierung anwenden
+        cal_profile = None
         if config.calibration.enabled:
-            from .calibration import apply_pv_correction, load_profile
-            profile = load_profile(config.calibration.pv_profile)
-            if profile:
-                pv = apply_pv_correction(pv, profile, config.general.timezone)
-                log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
+            from .calibration import load_profile
+            cal_profile = load_profile(config.calibration.pv_profile)
+
+        def _pv_series(signal: str) -> pd.Series:
+            """PV-Signal auf den Horizont + Kalibrierprofil + Intraday-Korrektur."""
+            s = repo.read_slots(signal, now, opt_end).reindex(opt_index).ffill().bfill()
+            if cal_profile:
+                from .calibration import apply_pv_correction
+                s = apply_pv_correction(s, cal_profile, config.general.timezone)
+            if pv_ratio is not None:
+                s = s * intraday_factor_series(
+                    pv_ratio, s.index, now, config.forecast.intraday_decay_hours)
+            return s
+
+        pv = _pv_series("pv_forecast")
+        if cal_profile:
+            log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
         if pv_ratio is not None:
-            pv = pv * intraday_factor_series(
-                pv_ratio, pv.index, now, config.forecast.intraday_decay_hours)
             log.info("Intraday-Korrektur PV: x%.2f (klingt über %.0f h ab).",
                      pv_ratio, config.forecast.intraday_decay_hours)
+        # Pessimistische PV (Solcast p10, optional): dimensioniert die
+        # Einspeise-Linie an Peak-Tagen wolken-robust.
+        pv10 = (_pv_series("pv_forecast_p10")
+                if repo.signal_available("pv_forecast_p10") else None)
         price = _price_series(repo, config, opt_index, now)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
@@ -189,6 +202,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             initial_house_soc_wh=init_house_soc,
             initial_car_soc_wh=init_car_soc,
             car_present=car_present,
+            pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
         )
         result = Optimizer(config).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
@@ -351,13 +365,18 @@ def _build_display_frame(repo, config, now, history, result,
     except Exception as exc:  # pragma: no cover
         log.warning("Verbrauchsprognose fürs Dashboard fehlgeschlagen: %s", exc)
     try:
-        pv = repo.read_slots("pv_forecast", day_start, end + slot)
-        if config.calibration.enabled:
-            from .calibration import apply_pv_correction, load_profile
-            prof = load_profile(config.calibration.pv_profile)
+        from .calibration import apply_pv_correction, load_profile
+        prof = (load_profile(config.calibration.pv_profile)
+                if config.calibration.enabled else None)
+        for col, signal in (("pv_w", "pv_forecast"),
+                            ("pv10_w", "pv_forecast_p10"),
+                            ("pv90_w", "pv_forecast_p90")):
+            if not repo.signal_available(signal):
+                continue
+            pv = repo.read_slots(signal, day_start, end + slot)
             if prof:
                 pv = apply_pv_correction(pv, prof, tz)
-        df["pv_w"] = pv.reindex(full)
+            df[col] = pv.reindex(full)
     except Exception as exc:  # pragma: no cover
         log.warning("PV-Prognose fürs Dashboard fehlgeschlagen: %s", exc)
     try:
@@ -372,7 +391,8 @@ def _build_display_frame(repo, config, now, history, result,
     # sichtbar (Vergleich Ist vs. Modell).
     load_ratio, pv_ratio = intraday
     decay = config.forecast.intraday_decay_hours
-    for col, ratio in (("house_load_w", load_ratio), ("pv_w", pv_ratio)):
+    for col, ratio in (("house_load_w", load_ratio), ("pv_w", pv_ratio),
+                       ("pv10_w", pv_ratio), ("pv90_w", pv_ratio)):
         if ratio is not None and col in df.columns:
             fac = intraday_factor_series(ratio, full, now, decay)
             fac[full <= now] = 1.0

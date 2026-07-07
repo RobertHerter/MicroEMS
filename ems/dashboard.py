@@ -55,6 +55,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                           row=row, col=1, secondary_y=sec)
 
     # ---------- Panel 1: Leistung (links) ----------
+    # PV-Unsicherheitsband (Solcast p10-p90) zuerst zeichnen -> liegt hinter
+    # den Kurven. Per Legende gemeinsam ausblendbar.
+    if {"pv10_w", "pv90_w"} <= set(t.columns) and t["pv10_w"].notna().any():
+        fig.add_trace(go.Scatter(x=x, y=t["pv90_w"], mode="lines",
+                                 line=dict(width=0), legendgroup="pvband",
+                                 showlegend=False, hoverinfo="skip"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=t["pv10_w"], mode="lines",
+                                 line=dict(width=0), fill="tonexty",
+                                 fillcolor="rgba(255,127,14,0.15)",
+                                 name="PV p10–p90", legendgroup="pvband",
+                                 hoverinfo="skip"), row=1, col=1)
     line("pv_w", "PV (Prognose)", "#ff7f0e", dash="dash")
     line("actual_pv_w", "PV (Ist)", "#ff7f0e")
     line("house_load_w", "Verbrauch (Prognose)", "#d62728", dash="dash")
