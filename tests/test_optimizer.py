@@ -191,6 +191,31 @@ def test_p10_floor_forces_early_charging():
         "p10-Pfad darf abends keine Entladesperre erzeugen"
 
 
+def test_grid_charge_is_explicit_not_disguised():
+    """Billig-Laden zur Preisdelle muss als expliziter Netzlade-Befehl (ac)
+    erscheinen. DC-Laden ist auf den PV-Überschuss begrenzt - 'ganze PV in
+    den Akku + Last aus dem Netz' wäre getarntes Netzladen (nicht ausführbar,
+    umgeht den AC-Wirkungsgrad)."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "asap"
+    idx = _day_index("2026-01-20")
+    price = np.where((idx.hour >= 11) & (idx.hour < 15), 12.0, 38.0).astype(float)
+    pv = _pv_gauss(idx, 3000)
+    load = 1500.0
+    res = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, price=price,
+                                       soc=1500))
+    assert not res.infeasible
+    t = res.table
+    surplus = np.maximum(pv - load, 0.0)
+    assert (t["batt_dc_charge_w"].values <= surplus + TOL).all(), \
+        "DC-Laden über PV-Überschuss = getarntes Netzladen"
+    # das gewollte Billig-Laden erscheint als expliziter Befehl ...
+    charged = t.loc[t["batt_grid_charge_w"] > TOL]
+    assert len(charged) > 0, "Billigfenster sollte explizit netzgeladen werden"
+    # ... nur in den billigen Stunden
+    assert (charged["price_ct_kwh"] < 15.0).all()
+
+
 def test_export_cap_at_grid_connection():
     """Einspeisebegrenzung am Netzanschluss wird nie überschritten."""
     cfg = make_config()

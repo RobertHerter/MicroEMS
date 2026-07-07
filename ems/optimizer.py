@@ -324,6 +324,12 @@ class Optimizer:
             # DC-Laden und Abregelung nur aus PV
             prob += dc[t] + curt[t] <= pv_t
             pv_to_ac = pv_t - dc[t] - curt[t]   # >= 0 durch obige Schranke
+            # DC-Laden zusätzlich auf den PV-ÜBERSCHUSS begrenzen: sonst
+            # "tarnt" das LP Netzladen als DC-Laden (ganze PV in den Akku,
+            # Hauslast aus dem Netz kaufen) - das kann der E3DC im Automatik-
+            # modus nicht ausführen und es umginge den AC-Wirkungsgrad.
+            # Echtes Netzladen läuft explizit über ac (Befehl batt_grid_charge_w).
+            prob += dc[t] <= max(0.0, pv_t - load_t)
 
             # Wechselrichter-Durchsatz
             prob += pv_to_ac + dis[t] + ac[t] <= cfg.inverter.max_ac_power_w
