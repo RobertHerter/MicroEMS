@@ -34,14 +34,14 @@ Topic-Schema (base_topic = "ems"):
   ems/cmd/recalc      EINGEHEND: sofortige Neuberechnung anstoßen (Payload egal)
   ems/cmd/car_boost   EINGEHEND: "1"/"0" - Auto sofort mit Max-Leistung laden
                       (überschreibt car_charge_w, bis Ziel-SoC erreicht/Boost aus)
-  ems/cmd/departure_time  EINGEHEND: "HH:MM" - Abfahrtzeit für die Optimierung
-                      setzen; ""/"default" = zurück auf Konfigurationswert;
-                      "off"/"urlaub" = Urlaubsmodus: KEINE Abfahrten -> der
-                      Ziel-SoC wird nicht mehr erzwungen (Auto lädt nur noch,
-                      wenn es sich lohnt, z.B. bei Negativpreisen).
+  ems/cmd/car_departure_time  EINGEHEND: "HH:MM" - Abfahrtzeit für die
+                      Optimierung setzen; ""/"default" = zurück auf Konfig-
+                      wert; "off"/"urlaub" = Urlaubsmodus: KEINE Abfahrten ->
+                      der Ziel-SoC wird nicht mehr erzwungen (Auto lädt nur
+                      noch, wenn es sich lohnt, z.B. bei Negativpreisen).
                       Von Homey mit Retain senden -> übersteht EMS-Neustarts.
-  ems/cmd/target_soc  EINGEHEND: Ziel-SoC in % (1..100); ""/"default" = zurück
-                      auf Konfigurationswert. Ebenfalls retained senden.
+  ems/cmd/car_target_soc  EINGEHEND: Ziel-SoC in % (1..100); ""/"default" =
+                      zurück auf Konfigurationswert. Ebenfalls retained senden.
   ems/cmd/min_soc     EINGEHEND: Haus-Akku Minimum-SoC in % (z.B. Reserve vor
                       Sturm/Ausfall hochsetzen); ""/"default" = Konfigwert.
   ems/cmd/max_soc     EINGEHEND: Haus-Akku Maximum-SoC in % (Akku schonen);
@@ -140,7 +140,7 @@ class HomeyMqttPublisher:
             self.car_boost = payload in ("1", "true", "on", "an")
             log.info("MQTT-Kommando: car_boost = %s.", self.car_boost)
             self.recalc_event.set()   # Sollwerte sofort neu publizieren
-        elif msg.topic.endswith("/cmd/departure_time"):
+        elif msg.topic.endswith("/cmd/car_departure_time"):
             if payload in _OFF_WORDS:
                 self.departure_disabled = True
                 self.departure_override = None
@@ -163,7 +163,7 @@ class HomeyMqttPublisher:
                 self.departure_disabled = False
                 log.info("MQTT-Kommando: Abfahrtzeit = %s.", dep.strftime("%H:%M"))
             self.recalc_event.set()
-        elif msg.topic.endswith("/cmd/target_soc"):
+        elif msg.topic.endswith("/cmd/car_target_soc"):
             if payload in _RESET_WORDS:
                 self.target_soc_override = None
                 log.info("MQTT-Kommando: Ziel-SoC zurück auf Konfigwert (%.0f %%).",
@@ -357,7 +357,7 @@ class HomeyMqttPublisher:
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
 
             # Wirksame Fahrzeug-Parameter zurückmelden (Rückmeldung für Homey,
-            # z.B. nach ems/cmd/departure_time bzw. /target_soc).
+            # z.B. nach ems/cmd/car_departure_time bzw. /target_soc).
             dep_str = ("off" if not self.vehicle.has_any_departure
                        else self.vehicle.departure_time.strftime("%H:%M"))
             self._pub(f"{base}/vehicle/departure_time", dep_str,

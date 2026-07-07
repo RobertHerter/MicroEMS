@@ -62,8 +62,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
     try:
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
-        # Per MQTT gesetzte Overrides (ems/cmd/departure_time, target_soc,
-        # min_soc, max_soc) für diesen Lauf anwenden.
+        # Per MQTT gesetzte Overrides (ems/cmd/car_departure_time,
+        # car_target_soc, min_soc, max_soc) für diesen Lauf anwenden.
         if publisher is not None:
             publisher.apply_vehicle_overrides(config.vehicle)
             publisher.apply_battery_overrides(config.house_battery)

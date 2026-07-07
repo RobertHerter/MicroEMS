@@ -145,10 +145,10 @@ Eingehende Kommandos (von Homey an das EMS):
 ems/cmd/recalc          sofortige Neuberechnung anstoßen (Payload egal)
 ems/cmd/car_boost       "1"/"0": Auto sofort mit Max-Leistung laden, bis der
                         Ziel-SoC erreicht ist (überschreibt car_charge_w)
-ems/cmd/departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" = Konfigwert;
-                        "off"/"urlaub" = Urlaubsmodus: keine Abfahrten, der
-                        Ziel-SoC wird nicht mehr erzwungen
-ems/cmd/target_soc      Ziel-SoC in % (1..100); ""/"default" = Konfigwert
+ems/cmd/car_departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" =
+                        Konfigwert; "off"/"urlaub" = Urlaubsmodus: keine
+                        Abfahrten, der Ziel-SoC wird nicht mehr erzwungen
+ems/cmd/car_target_soc  Ziel-SoC in % (1..100); ""/"default" = Konfigwert
 ems/cmd/min_soc         Haus-Akku Minimum-SoC in % (z.B. Reserve vor Sturm/
                         Stromausfall hochsetzen); ""/"default" = Konfigwert
 ems/cmd/max_soc         Haus-Akku Maximum-SoC in % (Akku schonen);
@@ -254,5 +254,5 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
 - Abfahrtzeiten je Wochentag über `vehicle.departure_times` (mo..so, `null` =
   keine Abfahrt, z.B. am Wochenende). Liegt keine Abfahrt im Horizont, wird
   der Ziel-SoC zum Horizontende angestrebt – außer es gibt gar keine
-  Abfahrtstage. Ein MQTT-Override (`ems/cmd/departure_time`) gilt für alle
+  Abfahrtstage. Ein MQTT-Override (`ems/cmd/car_departure_time`) gilt für alle
   Wochentage.
