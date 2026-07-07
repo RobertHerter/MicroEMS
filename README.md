@@ -145,7 +145,9 @@ Eingehende Kommandos (von Homey an das EMS):
 ems/cmd/recalc          sofortige Neuberechnung anstoßen (Payload egal)
 ems/cmd/car_boost       "1"/"0": Auto sofort mit Max-Leistung laden, bis der
                         Ziel-SoC erreicht ist (überschreibt car_charge_w)
-ems/cmd/departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" = Konfigwert
+ems/cmd/departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" = Konfigwert;
+                        "off"/"urlaub" = Urlaubsmodus: keine Abfahrten, der
+                        Ziel-SoC wird nicht mehr erzwungen
 ems/cmd/target_soc      Ziel-SoC in % (1..100); ""/"default" = Konfigwert
 ems/cmd/min_soc         Haus-Akku Minimum-SoC in % (z.B. Reserve vor Sturm/
                         Stromausfall hochsetzen); ""/"default" = Konfigwert

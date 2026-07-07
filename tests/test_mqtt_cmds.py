@@ -47,6 +47,30 @@ def test_reset_restores_config_defaults():
     assert cfg.vehicle.departure_time == default_dep
 
 
+def test_holiday_mode_disables_departures_and_target():
+    """'off' = Urlaubsmodus: keine Abfahrten an keinem Tag -> im Optimierer
+    entfällt jeder Ziel-SoC-Zwang (has_any_departure = False)."""
+    cfg, pub = _pub()
+    pub._on_message(None, None, Msg("ems/cmd/departure_time", "urlaub"))
+    assert pub.departure_disabled and pub.recalc_event.is_set()
+    pub.apply_vehicle_overrides(cfg.vehicle)
+    assert not cfg.vehicle.has_any_departure
+    assert all(cfg.vehicle.departure_for_weekday(d) is None for d in range(7))
+
+    # neue Uhrzeit beendet den Urlaubsmodus
+    pub._on_message(None, None, Msg("ems/cmd/departure_time", "07:30"))
+    pub.apply_vehicle_overrides(cfg.vehicle)
+    assert cfg.vehicle.has_any_departure
+    assert cfg.vehicle.departure_time == dtime(7, 30)
+
+    # 'default' ebenfalls
+    pub._on_message(None, None, Msg("ems/cmd/departure_time", "off"))
+    pub._on_message(None, None, Msg("ems/cmd/departure_time", "default"))
+    pub.apply_vehicle_overrides(cfg.vehicle)
+    assert cfg.vehicle.has_any_departure
+    assert cfg.vehicle.departure_time == dtime(7, 0)   # make_config-Standard
+
+
 def test_invalid_payloads_are_ignored():
     cfg, pub = _pub()
     pub._on_message(None, None, Msg("ems/cmd/departure_time", "06:30"))
