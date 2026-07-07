@@ -58,6 +58,36 @@ def test_invalid_payloads_are_ignored():
     assert pub.target_soc_override is None
 
 
+def test_battery_soc_overrides():
+    cfg, pub = _pub()
+    pub._on_message(None, None, Msg("ems/cmd/min_soc", "40"))
+    pub._on_message(None, None, Msg("ems/cmd/max_soc", "90"))
+    pub.apply_battery_overrides(cfg.house_battery)
+    assert cfg.house_battery.min_soc_percent == 40.0
+    assert cfg.house_battery.max_soc_percent == 90.0
+    assert cfg.house_battery.min_soc_wh == 0.4 * cfg.house_battery.capacity_wh
+
+    # Reset auf Konfigwerte (make_config: 10 / 100)
+    pub._on_message(None, None, Msg("ems/cmd/min_soc", "default"))
+    pub._on_message(None, None, Msg("ems/cmd/max_soc", ""))
+    pub.apply_battery_overrides(cfg.house_battery)
+    assert cfg.house_battery.min_soc_percent == 10.0
+    assert cfg.house_battery.max_soc_percent == 100.0
+
+
+def test_battery_soc_inconsistent_pair_rejected():
+    cfg, pub = _pub()
+    pub._on_message(None, None, Msg("ems/cmd/min_soc", "80"))
+    pub._on_message(None, None, Msg("ems/cmd/max_soc", "50"))   # min >= max
+    pub.apply_battery_overrides(cfg.house_battery)
+    assert cfg.house_battery.min_soc_percent == 10.0   # Konfigwerte
+    assert cfg.house_battery.max_soc_percent == 100.0
+    # ungültige Payloads ignoriert
+    pub._on_message(None, None, Msg("ems/cmd/min_soc", "120"))
+    pub._on_message(None, None, Msg("ems/cmd/min_soc", "abc"))
+    assert pub.min_soc_override == 80.0
+
+
 def test_car_boost_and_recalc():
     cfg, pub = _pub()
     pub._on_message(None, None, Msg("ems/cmd/car_boost", "1"))

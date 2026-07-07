@@ -147,12 +147,18 @@ ems/cmd/car_boost       "1"/"0": Auto sofort mit Max-Leistung laden, bis der
                         Ziel-SoC erreicht ist (überschreibt car_charge_w)
 ems/cmd/departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" = Konfigwert
 ems/cmd/target_soc      Ziel-SoC in % (1..100); ""/"default" = Konfigwert
+ems/cmd/min_soc         Haus-Akku Minimum-SoC in % (z.B. Reserve vor Sturm/
+                        Stromausfall hochsetzen); ""/"default" = Konfigwert
+ems/cmd/max_soc         Haus-Akku Maximum-SoC in % (Akku schonen);
+                        ""/"default" = Konfigwert
 ```
 
-Die Fahrzeug-Kommandos in Homey **mit Retain** publizieren, dann überstehen
+Die Parameter-Kommandos in Homey **mit Retain** publizieren, dann überstehen
 sie einen EMS-Neustart (der Broker liefert sie beim Reconnect erneut aus).
-Die aktuell wirksamen Werte meldet das EMS unter `ems/vehicle/departure_time`
-und `ems/vehicle/target_soc_percent` zurück.
+Inkonsistente Grenzen (min ≥ max) werden verworfen. Die aktuell wirksamen
+Werte meldet das EMS unter `ems/vehicle/departure_time`,
+`ems/vehicle/target_soc_percent`, `ems/battery/min_soc_percent` und
+`ems/battery/max_soc_percent` zurück.
 
 `ems/alert` meldet z.B. eine nicht-optimale Optimierung (Fallback aktiv) oder
 einen fehlgeschlagenen Zyklus – ideal für einen Homey-Push-Benachrichtigungs-Flow.

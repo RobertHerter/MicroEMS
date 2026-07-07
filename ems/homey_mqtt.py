@@ -39,7 +39,12 @@ Topic-Schema (base_topic = "ems"):
                       Von Homey mit Retain senden -> übersteht EMS-Neustarts.
   ems/cmd/target_soc  EINGEHEND: Ziel-SoC in % (1..100); ""/"default" = zurück
                       auf Konfigurationswert. Ebenfalls retained senden.
-  ems/vehicle/departure_time, ems/vehicle/target_soc_percent
+  ems/cmd/min_soc     EINGEHEND: Haus-Akku Minimum-SoC in % (z.B. Reserve vor
+                      Sturm/Ausfall hochsetzen); ""/"default" = Konfigwert.
+  ems/cmd/max_soc     EINGEHEND: Haus-Akku Maximum-SoC in % (Akku schonen);
+                      ""/"default" = Konfigwert. min >= max wird verworfen.
+  ems/vehicle/departure_time, ems/vehicle/target_soc_percent,
+  ems/battery/min_soc_percent, ems/battery/max_soc_percent
                       AUSGEHEND: aktuell wirksame Werte (Rückmeldung für Homey).
 """
 from __future__ import annotations
@@ -71,6 +76,11 @@ class HomeyMqttPublisher:
         self.target_soc_override: Optional[float] = None
         self._veh_defaults = (config.vehicle.departure_time,
                               config.vehicle.target_soc_percent)
+        self.battery = config.house_battery
+        self.min_soc_override: Optional[float] = None
+        self.max_soc_override: Optional[float] = None
+        self._batt_defaults = (config.house_battery.min_soc_percent,
+                               config.house_battery.max_soc_percent)
 
     def _connect(self):
         import socket
@@ -157,6 +167,43 @@ class HomeyMqttPublisher:
                 self.target_soc_override = v
                 log.info("MQTT-Kommando: Ziel-SoC = %.0f %%.", v)
             self.recalc_event.set()
+        elif msg.topic.endswith("/cmd/min_soc"):
+            self._set_batt_soc_override("min", payload)
+        elif msg.topic.endswith("/cmd/max_soc"):
+            self._set_batt_soc_override("max", payload)
+
+    def _set_batt_soc_override(self, which: str, payload: str) -> None:
+        attr = f"{which}_soc_override"
+        if payload in _RESET_WORDS:
+            setattr(self, attr, None)
+            log.info("MQTT-Kommando: Haus-Akku %s_soc zurück auf Konfigwert.", which)
+        else:
+            try:
+                v = float(payload.replace(",", ".").rstrip("%"))
+            except ValueError:
+                log.warning("MQTT-Kommando: ungültiger %s_soc '%s'.", which, payload)
+                return
+            if not 0.0 <= v <= 100.0:
+                log.warning("MQTT-Kommando: %s_soc %.0f außerhalb 0..100 %%.", which, v)
+                return
+            setattr(self, attr, v)
+            log.info("MQTT-Kommando: Haus-Akku %s_soc = %.0f %%.", which, v)
+        self.recalc_event.set()
+
+    def apply_battery_overrides(self, hb) -> None:
+        """Überträgt die per MQTT gesetzten Haus-Akku-SoC-Grenzen (oder die
+        Konfigurations-Standardwerte) auf die Konfiguration des nächsten Laufs.
+        Inkonsistente Grenzen (min >= max) werden verworfen."""
+        mn = (self.min_soc_override if self.min_soc_override is not None
+              else self._batt_defaults[0])
+        mx = (self.max_soc_override if self.max_soc_override is not None
+              else self._batt_defaults[1])
+        if mn >= mx:
+            log.warning("Ungültige SoC-Grenzen (min %.0f >= max %.0f %%) – "
+                        "nutze Konfigurationswerte.", mn, mx)
+            mn, mx = self._batt_defaults
+        hb.min_soc_percent = mn
+        hb.max_soc_percent = mx
 
     def apply_vehicle_overrides(self, veh) -> None:
         """Überträgt die per MQTT gesetzten Overrides (oder die Konfigurations-
@@ -293,6 +340,10 @@ class HomeyMqttPublisher:
             self._pub(f"{base}/vehicle/target_soc_percent",
                       float(self.vehicle.target_soc_percent),
                       retain=self.cfg.retain)
+            self._pub(f"{base}/battery/min_soc_percent",
+                      float(self.battery.min_soc_percent), retain=self.cfg.retain)
+            self._pub(f"{base}/battery/max_soc_percent",
+                      float(self.battery.max_soc_percent), retain=self.cfg.retain)
 
         if self.cfg.publish_schedule_json:
             payload = table.copy()
