@@ -93,6 +93,21 @@ def test_intraday_ratio_rejects_thin_data():
     assert intraday_ratio(a2, p) is None                           # keine Ist-Werte
 
 
+def test_price_damping_pulls_estimates_to_mean():
+    from ems.forecast import dampen_estimated
+    idx = pd.date_range(START, periods=8, freq="1h")
+    price = pd.Series([20, 30, 20, 30, 10, 40, 10, 40], index=idx, dtype=float)
+    est = pd.Series([False] * 4 + [True] * 4, index=idx)
+    out = dampen_estimated(price, est, damping=0.5)
+    assert (out.iloc[:4] == price.iloc[:4]).all()       # echte Preise unberührt
+    # geschätzte Slots (Mittel 25): 10 -> 17.5, 40 -> 32.5
+    assert abs(out.iloc[4] - 17.5) < 1e-9
+    assert abs(out.iloc[5] - 32.5) < 1e-9
+    assert abs(out[est].mean() - 25.0) < 1e-9           # Mittel bleibt erhalten
+    # damping=0 -> unverändert
+    assert (dampen_estimated(price, est, 0.0) == price).all()
+
+
 def test_intraday_factor_decays_with_lead_time():
     from ems.forecast import intraday_factor_series
     idx = pd.date_range(START, periods=96, freq=FREQ)

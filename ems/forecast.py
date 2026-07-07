@@ -219,6 +219,26 @@ def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
     return pd.Series(1.0 + (float(ratio) - 1.0) * w, index=index)
 
 
+def dampen_estimated(price: pd.Series, estimated: pd.Series,
+                     damping: float) -> pd.Series:
+    """Geschätzte (unsichere) Preis-Slots zur Mitte stauchen.
+
+    p' = m + (p - m) * (1 - damping), m = Mittel der geschätzten Slots.
+    Echte Börsenpreise bleiben unverändert. Verhindert, dass der Optimierer
+    auf prognostizierte Preistäler/-spitzen, die es real evtl. nicht gibt,
+    harte Entscheidungen (Netzladen, Arbitrage) baut.
+    """
+    if damping <= 0.0:
+        return price
+    est = estimated.reindex(price.index).fillna(False).astype(bool)
+    if not est.any():
+        return price
+    m = float(price[est].mean())
+    out = price.copy()
+    out[est] = m + (price[est] - m) * (1.0 - float(damping))
+    return out
+
+
 def load_history(repo, config: Config, now: datetime) -> pd.Series:
     """Lädt die Verbrauchs-Historie über den konfigurierten Zeitraum.
 

@@ -108,6 +108,10 @@ vehicle:
   target_soc_percent: 80
   departure_time: "07:00"     # tägliche Abfahrtzeit (lokal)
   charge_efficiency: 0.92
+  # Ladekurve: ab diesem SoC (%) sinkt die max. Ladeleistung linear bis auf
+  # min_charge_w bei 100 % (reale Autos tapern oberhalb ~80 %). 100 = aus.
+  # Nur relevant, wenn target_soc_percent > taper_start_soc_percent.
+  taper_start_soc_percent: 100
 
 # -----------------------------------------------------------------------------
 # Optimierung
@@ -123,6 +127,9 @@ optimization:
   solver_time_limit_s: 60
   # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
   solver_threads: 0
+  # Malus (ct) je Wallbox-Einschaltvorgang gegen Dauer-Takten bei zappeligen
+  # Preisen (Schützverschleiß). 0 = aus.
+  car_switch_penalty_ct: 5.0
 
 # -----------------------------------------------------------------------------
 # Verbrauchsprognose (Ähnliche-Tage-Mittelung)
@@ -146,6 +153,9 @@ forecast:
   intraday_window_hours: 3.0   # Fenster für das Ist/Prognose-Verhältnis
   intraday_decay_hours: 6.0    # Halbwertszeit des Abklingens
   intraday_max_factor: 1.5     # Begrenzung des Faktors (und 1/x nach unten)
+  # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen, damit
+  # nicht auf Phantom-Preistäler spekuliert wird. 0 = aus, 1 = flach.
+  price_damping: 0.3
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)

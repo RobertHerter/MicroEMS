@@ -214,6 +214,15 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
   PV-Prognose angewandt.
 - Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung
   wird in Negativpreis-Stunden mit 0 ct bewertet.
+- Geschätzte Folgetag-Preise werden zur Mitte gestaucht
+  (`forecast.price_damping`) – keine Spekulation auf Phantom-Preistäler.
+- Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten (oberes
+  Preisquartil / Mittel / max(unteres Quartil, Einspeisung)) statt
+  Einheitspreis – die letzte gespeicherte kWh ist weniger wert als die erste.
+- Slot 0 wird mit Live-Messwerten (Last, PV der letzten Slot-Länge) verankert.
+- Wallbox: Schalt-Malus je Einschaltvorgang (`car_switch_penalty_ct`) und
+  optionale Ladekurve (`vehicle.taper_start_soc_percent`: Leistung sinkt
+  linear bis `min_charge_w` bei 100 %).
 - Wechselrichter-Durchsatz begrenzt: `pv_to_ac + Entladung + AC-Laden ≤ WR_max`.
 - Auto lädt AC-seitig und zählt nicht in den Batterieport-Durchsatz.
 - Lade-/Entladewirkungsgrade wirken auf die SoC-Bilanz.

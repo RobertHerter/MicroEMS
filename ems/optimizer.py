@@ -344,6 +344,15 @@ class Optimizer:
                 # semikontinuierlich: 0 oder [min,max]
                 prob += car[t] <= veh.max_charge_w * is_car[t]
                 prob += car[t] >= veh.min_charge_w * is_car[t]
+                # Ladekurve (Taper): oberhalb taper_start sinkt die maximale
+                # Leistung linear bis min_charge_w bei 100 %. Unterhalb ist die
+                # Schranke lockerer als max_charge_w -> nicht bindend.
+                if veh.taper_start_soc_percent < 100.0:
+                    taper_wh = veh.capacity_wh * veh.taper_start_soc_percent / 100.0
+                    denom = max(veh.capacity_wh - taper_wh, 1.0)
+                    prob += car[t] <= veh.min_charge_w + \
+                        (veh.max_charge_w - veh.min_charge_w) * \
+                        (veh.capacity_wh - soc_car[t]) / denom
                 prob += soc_car[t + 1] == soc_car[t] + veh.charge_efficiency * car[t] * dt
                 # zur Abfahrtzeit Ziel-SoC erreichen
                 if t in dep_slots:
@@ -368,6 +377,17 @@ class Optimizer:
             for t in range(N):
                 cost_terms.append(0.5 * pen * (dc[t] + ac[t] + dis[t]) * kwh)
 
+        # Wallbox-Schalt-Malus: jeder Einschaltvorgang (0 -> laden) kostet
+        # car_switch_penalty_ct. Verhindert Dauer-Takten bei zappeligen
+        # Preisen (Schützverschleiß); der erste Slot bleibt frei (Vorzustand
+        # unbekannt).
+        pen_sw = cfg.optimization.car_switch_penalty_ct
+        if use_car and pen_sw:
+            car_start = [pulp.LpVariable(f"carstart_{t}", 0, 1) for t in range(1, N)]
+            for t in range(1, N):
+                prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
+            cost_terms.append(pen_sw * pulp.lpSum(car_start))
+
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
         # bringt (günstiger Netzbezug), nicht zum Wegrouten von PV-Überschuss.
@@ -384,15 +404,30 @@ class Optimizer:
             cost_terms.append(pw * pulp.lpSum(
                 [export_line[i] for i in _peak_line_days]) / 1000.0)
 
-        # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ).
-        # Mit Entlade-Wirkungsgrad diskontiert: gespeicherte Energie ist nur zu
-        # ~96 % nutzbar - sonst wird am Horizontende systematisch zu viel geladen.
+        # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ),
+        # mit Entlade-Wirkungsgrad diskontiert. Bei "auto" als FALLENDE
+        # Grenzwert-Kurve in drei Segmenten: die ersten kWh über min_soc
+        # ersetzen mit hoher Sicherheit teuren Import (oberes Preisquartil),
+        # die mittleren den Durchschnitt, die letzten konkurrieren evtl. nur
+        # mit der Einspeisung (morgen füllt PV ohnehin nach). Konkav fallend
+        # -> das LP füllt automatisch das wertvollste Segment zuerst, keine
+        # Binärvariablen nötig. Fester Zahlenwert = flache Kurve (wie bisher).
         tv = cfg.optimization.terminal_soc_value
         if tv == "auto":
-            term_val = float(np.mean(inp.price_ct_kwh))
+            p = np.asarray(inp.price_ct_kwh, dtype=float)
+            seg_values = sorted([
+                float(np.percentile(p, 75)),
+                float(np.mean(p)),
+                max(float(np.percentile(p, 25)), float(np.mean(inp.feedin_ct_kwh))),
+            ], reverse=True)
         else:
-            term_val = float(tv)
-        cost_terms.append(-term_val * hb.discharge_efficiency * soc[N] / 1000.0)
+            seg_values = [float(tv)] * 3
+        usable_cap = hb.max_soc_wh - hb.min_soc_wh
+        term_seg = [pulp.LpVariable(f"termseg_{i}", 0, usable_cap / 3.0)
+                    for i in range(3)]
+        prob += pulp.lpSum(term_seg) <= soc[N] - hb.min_soc_wh
+        for i, v in enumerate(seg_values):
+            cost_terms.append(-v * hb.discharge_efficiency * term_seg[i] / 1000.0)
 
         prob += pulp.lpSum(cost_terms)
 

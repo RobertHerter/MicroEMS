@@ -151,6 +151,9 @@ class VehicleConfig:
     target_soc_percent: float
     departure_time: time
     charge_efficiency: float = 0.92
+    # Ladekurve: ab diesem SoC (%) sinkt die max. Ladeleistung linear bis auf
+    # min_charge_w bei 100 % (reale Autos tapern oberhalb ~80 %). 100 = aus.
+    taper_start_soc_percent: float = 100.0
 
     @property
     def min_soc_wh(self) -> float:
@@ -168,6 +171,10 @@ class OptimizationConfig:
     solver_time_limit_s: int = 60
     # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
     solver_threads: int = 0
+    # Malus (ct) je Einschaltvorgang der Wallbox: verhindert, dass das Auto
+    # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
+    # 0 = aus.
+    car_switch_penalty_ct: float = 5.0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -217,6 +224,10 @@ class ForecastConfig:
     intraday_window_hours: float = 3.0     # Fenster für das Ist/Prognose-Verhältnis
     intraday_decay_hours: float = 6.0      # Halbwertszeit des Abklingens
     intraday_max_factor: float = 1.5       # Faktor-Begrenzung (und 1/x nach unten)
+    # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen:
+    # p' = m + (p - m) * (1 - price_damping). Verhindert, dass auf
+    # prognostizierte Preistäler/-spitzen spekuliert wird. 0 = aus, 1 = flach.
+    price_damping: float = 0.3
 
 
 @dataclass
@@ -351,6 +362,7 @@ def load_config(path: str) -> Config:
         target_soc_percent=float(v.get("target_soc_percent", 80)),
         departure_time=_parse_time(v.get("departure_time", "07:00")),
         charge_efficiency=float(v.get("charge_efficiency", 0.92)),
+        taper_start_soc_percent=float(v.get("taper_start_soc_percent", 100.0)),
     )
 
     o = raw.get("optimization", {})
@@ -359,6 +371,7 @@ def load_config(path: str) -> Config:
         cycle_penalty_ct_kwh=float(o.get("cycle_penalty_ct_kwh", 0.1)),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
+        car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
@@ -383,6 +396,7 @@ def load_config(path: str) -> Config:
         intraday_window_hours=float(f.get("intraday_window_hours", 3.0)),
         intraday_decay_hours=float(f.get("intraday_decay_hours", 6.0)),
         intraday_max_factor=float(f.get("intraday_max_factor", 1.5)),
+        price_damping=float(f.get("price_damping", 0.3)),
     )
 
     m = raw.get("mqtt", {})

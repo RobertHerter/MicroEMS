@@ -26,8 +26,8 @@ import pandas as pd
 
 from .config import Config, load_config
 from .dashboard import build_dashboard
-from .forecast import (LoadForecaster, intraday_factor_series, intraday_ratio,
-                       load_history)
+from .forecast import (LoadForecaster, dampen_estimated,
+                       intraday_factor_series, intraday_ratio, load_history)
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
@@ -126,6 +126,25 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         # Anlagen) keine Einspeisevergütung -> Export dort mit 0 ct bewerten.
         if config.feed_in.zero_at_negative_price:
             feedin = feedin.where(price >= 0.0, 0.0)
+
+        # Slot-0-Anker: für den unmittelbar laufenden Slot schlägt die
+        # Live-Messung (Mittel der letzten Slot-Länge) die Prognose - der
+        # publizierte Sollwert basiert damit auf dem echten Ist-Zustand.
+        try:
+            slot_td = pd.Timedelta(freq)
+            m = repo.read_slots("house_consumption", now - slot_td, now,
+                                fill=False).mean()
+            if np.isfinite(m):
+                house_load[0] = max(0.0, float(m))
+            if repo.signal_available("pv_generation"):
+                m = repo.read_slots("pv_generation", now - slot_td, now,
+                                    fill=False).mean()
+                if np.isfinite(m):
+                    pv.iloc[0] = max(0.0, float(m))
+            log.debug("Slot-0-Anker: Last %.0f W, PV %.0f W.",
+                      house_load[0], pv.iloc[0])
+        except Exception as exc:  # pragma: no cover
+            log.debug("Slot-0-Anker fehlgeschlagen (%s).", exc)
 
         # Anfangs-SoC Haus
         lookback = now - timedelta(hours=6)
@@ -284,6 +303,9 @@ def _price_series(repo, config, index, now, return_estimated=False):
         except Exception as exc:  # pragma: no cover
             log.warning("Preis-Prognose fehlgeschlagen (%s) – halte letzten Wert.", exc)
     price = raw.ffill().bfill()
+    # Unsicherheits-Dämpfung: geschätzte Slots zur Mitte stauchen, damit auf
+    # Phantom-Preistäler/-spitzen nicht spekuliert wird.
+    price = dampen_estimated(price, estimated, config.forecast.price_damping)
     if return_estimated:
         return price, estimated
     return price

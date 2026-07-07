@@ -136,6 +136,47 @@ def test_infeasible_car_target_returns_neutral_fallback():
         cfg.house_battery.max_soc_percent + 0.5).all()
 
 
+def test_car_switch_penalty_limits_toggling():
+    """Hoher Schalt-Malus: Auto lädt in EINEM zusammenhängenden Block, auch
+    wenn die Preise zappeln."""
+    cfg = make_config()
+    cfg.optimization.car_switch_penalty_ct = 1000.0
+    idx = _day_index("2026-01-20")
+    price = np.where(idx.hour % 2 == 0, 10.0, 40.0).astype(float)  # Zickzack
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=price,
+        initial_car_soc_wh=0.4 * cfg.vehicle.capacity_wh, car_present=True))
+    assert not res.infeasible
+    on = (res.table["car_charge_w"].values > TOL).astype(int)
+    starts = int(np.sum(np.diff(on) == 1) + on[0])
+    assert on.sum() > 0, "Auto muss laden (Ziel-SoC)"
+    assert starts == 1, f"Erwartet 1 Ladeblock, {starts} Starts gefunden"
+
+
+def test_car_taper_limits_power_at_high_soc():
+    """Ladekurve: oberhalb taper_start sinkt die zulässige Leistung linear."""
+    cfg = make_config()
+    from datetime import time
+    cfg.vehicle.target_soc_percent = 100.0
+    cfg.vehicle.taper_start_soc_percent = 50.0
+    cfg.optimization.car_switch_penalty_ct = 0.0
+    # Mit Taper dauert 40 -> 100 % ca. 7.6 h -> Abfahrt 20:00 statt 07:00.
+    cfg.vehicle.departure_time = time(20, 0)
+    idx = _day_index("2026-01-20")
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=20.0,
+        initial_car_soc_wh=0.4 * cfg.vehicle.capacity_wh, car_present=True))
+    assert not res.infeasible
+    t = res.table
+    veh = cfg.vehicle
+    assert t["car_soc_percent"].max() >= 99.5, "Ziel 100 % nicht erreicht"
+    soc_start = np.r_[40.0, t["car_soc_percent"].values[:-1]]  # SoC am Slot-Anfang
+    limit = veh.min_charge_w + (veh.max_charge_w - veh.min_charge_w) * \
+        (100.0 - soc_start) / (100.0 - veh.taper_start_soc_percent)
+    over = t["car_charge_w"].values > np.minimum(limit, veh.max_charge_w) + 5.0
+    assert not over.any(), "Ladeleistung überschreitet die Taper-Kurve"
+
+
 def test_dst_spring_forward_day():
     """DST-Frühjahrstag (23 h, 92 Slots): Tages-Logik läuft ohne Fehler."""
     cfg = make_config()
