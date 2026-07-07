@@ -62,3 +62,44 @@ def test_empty_history_returns_zeros():
                       index=pd.DatetimeIndex([], tz=TZ))
     fc = LoadForecaster(cfg).forecast(empty, START, 96)
     assert len(fc) == 96 and (fc == 0).all()
+
+
+# ---------------------------------------------------------------------- #
+# Intraday-Korrektur
+# ---------------------------------------------------------------------- #
+def _window(hours=3.0, actual=600.0, predicted=400.0):
+    idx = pd.date_range(START - pd.Timedelta(hours=hours), START,
+                        freq=FREQ, inclusive="left")
+    return pd.Series(actual, index=idx), pd.Series(predicted, index=idx)
+
+
+def test_intraday_ratio_basic_and_clipping():
+    from ems.forecast import intraday_ratio
+    a, p = _window(actual=600.0, predicted=400.0)
+    assert abs(intraday_ratio(a, p) - 1.5) < 1e-9
+    a, p = _window(actual=2000.0, predicted=400.0)     # Verhältnis 5 -> Kappe
+    assert intraday_ratio(a, p, max_factor=1.5) == 1.5
+    a, p = _window(actual=100.0, predicted=400.0)      # 0.25 -> 1/1.5
+    assert abs(intraday_ratio(a, p, max_factor=1.5) - (1 / 1.5)) < 1e-9
+
+
+def test_intraday_ratio_rejects_thin_data():
+    from ems.forecast import intraday_ratio
+    a, p = _window()
+    assert intraday_ratio(a.iloc[:2], p.iloc[:2]) is None          # zu wenig Slots
+    a, p = _window(actual=50.0, predicted=10.0)
+    assert intraday_ratio(a, p, min_mean=200.0) is None            # PV-Nacht
+    a2 = a.copy(); a2[:] = float("nan")
+    assert intraday_ratio(a2, p) is None                           # keine Ist-Werte
+
+
+def test_intraday_factor_decays_with_lead_time():
+    from ems.forecast import intraday_factor_series
+    idx = pd.date_range(START, periods=96, freq=FREQ)
+    fac = intraday_factor_series(1.4, idx, START, decay_hours=6.0)
+    assert abs(fac.iloc[0] - 1.4) < 1e-9                 # jetzt: volle Korrektur
+    at6h = fac.iloc[24]                                  # 6 h später: halber Weg
+    assert abs(at6h - 1.2) < 1e-9
+    assert fac.iloc[-1] < 1.1                            # weit voraus: fast 1.0
+    # ratio None -> neutral
+    assert (intraday_factor_series(None, idx, START) == 1.0).all()

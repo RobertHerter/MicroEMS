@@ -187,6 +187,38 @@ class LoadForecaster:
         return result.tz_convert(self.cfg.general.timezone)
 
 
+def intraday_ratio(actual: pd.Series, predicted: pd.Series,
+                   min_mean: float = 0.0, min_samples: int = 4,
+                   max_factor: float = 1.5):
+    """Ist/Prognose-Verhältnis über das jüngste Zeitfenster.
+
+    Fängt Tagesabweichungen (Besuch, Homeoffice, Wetter), die das
+    Ähnliche-Tage-Modell nicht sehen kann. None, wenn zu wenig Daten oder die
+    Prognose zu klein für ein stabiles Verhältnis ist (z.B. PV nachts).
+    Das Ergebnis ist auf [1/max_factor, max_factor] begrenzt.
+    """
+    df = pd.DataFrame({"a": actual, "p": predicted}).dropna()
+    if len(df) < min_samples:
+        return None
+    mean_a, mean_p = float(df["a"].mean()), float(df["p"].mean())
+    if mean_p <= min_mean or mean_a < 0.0:
+        return None
+    return float(np.clip(mean_a / mean_p, 1.0 / max_factor, max_factor))
+
+
+def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
+                           decay_hours: float = 6.0) -> pd.Series:
+    """Korrekturfaktor je Zukunfts-Slot: volle Korrektur jetzt, exponentiell
+    abklingend mit der Lead-Time (Halbwertszeit decay_hours) - weit voraus
+    gilt wieder das Ähnliche-Tage-Modell."""
+    if ratio is None:
+        return pd.Series(1.0, index=index)
+    lead_h = np.maximum(
+        (index - pd.Timestamp(now)).total_seconds() / 3600.0, 0.0)
+    w = np.power(0.5, np.asarray(lead_h) / max(decay_hours, 0.1))
+    return pd.Series(1.0 + (float(ratio) - 1.0) * w, index=index)
+
+
 def load_history(repo, config: Config, now: datetime) -> pd.Series:
     """Lädt die Verbrauchs-Historie über den konfigurierten Zeitraum.
 

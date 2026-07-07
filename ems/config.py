@@ -93,6 +93,9 @@ class InfluxConfig:
 class FeedInConfig:
     mode: str = "fixed"           # "fixed" | "db"
     fixed_ct_kwh: float = 8.0
+    # Solarspitzengesetz (§51 EEG, Neuanlagen): keine Vergütung in Stunden mit
+    # negativem Börsenpreis. True = Einspeisung wird dort mit 0 ct bewertet.
+    zero_at_negative_price: bool = False
 
 
 @dataclass
@@ -105,8 +108,18 @@ class HouseBatteryConfig:
     max_soc_percent: float
     charge_efficiency: float = 0.96
     discharge_efficiency: float = 0.96
+    # AC-Laden (Netz) läuft zusätzlich durch den Wechselrichter und ist real
+    # schlechter als DC-Laden aus PV (~0.92 statt ~0.96). None -> wie
+    # charge_efficiency (altes Verhalten).
+    ac_charge_efficiency: Optional[float] = None
     # physikalische Gesamt-Ladeleistung (DC + AC zusammen). None -> max(dc, ac)
     max_charge_w: Optional[float] = None
+
+    @property
+    def eff_ac_charge(self) -> float:
+        if self.ac_charge_efficiency is not None:
+            return self.ac_charge_efficiency
+        return self.charge_efficiency
 
     @property
     def max_total_charge_w(self) -> float:
@@ -197,6 +210,13 @@ class ForecastConfig:
     # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
     # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
     half_life_days: float = 120.0
+    # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf die
+    # Zukunft anwenden (mit Lead-Time abklingend). Fängt Tagesabweichungen
+    # (Besuch, Wetter), die das Ähnliche-Tage-Modell nicht sehen kann.
+    intraday_enabled: bool = True
+    intraday_window_hours: float = 3.0     # Fenster für das Ist/Prognose-Verhältnis
+    intraday_decay_hours: float = 6.0      # Halbwertszeit des Abklingens
+    intraday_max_factor: float = 1.5       # Faktor-Begrenzung (und 1/x nach unten)
 
 
 @dataclass
@@ -299,6 +319,7 @@ def load_config(path: str) -> Config:
     feed_in = FeedInConfig(
         mode=fi.get("mode", "fixed"),
         fixed_ct_kwh=float(fi.get("fixed_ct_kwh", 8.0)),
+        zero_at_negative_price=bool(fi.get("zero_at_negative_price", False)),
     )
     if feed_in.mode not in ("fixed", "db"):
         raise ValueError("feed_in.mode muss 'fixed' oder 'db' sein.")
@@ -313,6 +334,8 @@ def load_config(path: str) -> Config:
         max_soc_percent=float(hb["max_soc_percent"]),
         charge_efficiency=float(hb.get("charge_efficiency", 0.96)),
         discharge_efficiency=float(hb.get("discharge_efficiency", 0.96)),
+        ac_charge_efficiency=(float(hb["ac_charge_efficiency"])
+                              if hb.get("ac_charge_efficiency") is not None else None),
         max_charge_w=(float(hb["max_charge_w"]) if hb.get("max_charge_w") is not None else None),
     )
 
@@ -356,6 +379,10 @@ def load_config(path: str) -> Config:
         weight_same_temp=float(f.get("weight_same_temp", 2.0)),
         temp_sigma=float(f.get("temp_sigma", 4.0)),
         half_life_days=float(f.get("half_life_days", 120.0)),
+        intraday_enabled=bool(f.get("intraday_enabled", True)),
+        intraday_window_hours=float(f.get("intraday_window_hours", 3.0)),
+        intraday_decay_hours=float(f.get("intraday_decay_hours", 6.0)),
+        intraday_max_factor=float(f.get("intraday_max_factor", 1.5)),
     )
 
     m = raw.get("mqtt", {})

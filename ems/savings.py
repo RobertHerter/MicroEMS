@@ -115,6 +115,9 @@ class SavingsTracker:
             if any(v is None or not np.isfinite(v) for v in vals):
                 continue  # Datenlücke: Slot überspringen, Baseline-SoC halten
             pv_t, load_t, grid_t, price_t, feedin_t = (float(v) for v in vals)
+            # Solarspitzengesetz: keine Vergütung in Negativpreis-Stunden
+            if self.cfg.feed_in.zero_at_negative_price and price_t < 0.0:
+                feedin_t = 0.0
 
             soc, _ch, _dis, b_imp, b_exp = natural_battery_step(
                 soc, pv_t, load_t, hb, dt)

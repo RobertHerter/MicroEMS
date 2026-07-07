@@ -70,6 +70,9 @@ influxdb:
 feed_in:
   mode: "fixed"          # "fixed" oder "db"
   fixed_ct_kwh: 8.11     # gilt nur bei mode == "fixed"
+  # Solarspitzengesetz (§51 EEG, Neuanlagen ab 2025): keine Vergütung in
+  # Stunden mit negativem Börsenpreis -> Export dort mit 0 ct bewerten.
+  zero_at_negative_price: false
 
 # -----------------------------------------------------------------------------
 # Haus-Batteriespeicher
@@ -81,8 +84,11 @@ house_battery:
   max_discharge_w: 5000       # max. Entladeleistung
   min_soc_percent: 10
   max_soc_percent: 100
-  charge_efficiency: 0.96     # 0..1
+  charge_efficiency: 0.96     # DC-Laden aus PV, 0..1
   discharge_efficiency: 0.96  # 0..1
+  # AC-Laden (Netz) läuft zusätzlich durch den Wechselrichter -> real
+  # schlechter als DC-Laden. Weglassen = wie charge_efficiency.
+  ac_charge_efficiency: 0.92
 
 # -----------------------------------------------------------------------------
 # Wechselrichter
@@ -134,6 +140,12 @@ forecast:
   # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
   # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
   half_life_days: 120
+  # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf die
+  # Zukunft anwenden (mit Lead-Time abklingend) - für Last und PV.
+  intraday_enabled: true
+  intraday_window_hours: 3.0   # Fenster für das Ist/Prognose-Verhältnis
+  intraday_decay_hours: 6.0    # Halbwertszeit des Abklingens
+  intraday_max_factor: 1.5     # Begrenzung des Faktors (und 1/x nach unten)
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)

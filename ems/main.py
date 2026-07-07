@@ -26,7 +26,8 @@ import pandas as pd
 
 from .config import Config, load_config
 from .dashboard import build_dashboard
-from .forecast import LoadForecaster, load_history
+from .forecast import (LoadForecaster, intraday_factor_series, intraday_ratio,
+                       load_history)
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
@@ -77,6 +78,18 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         forecaster = LoadForecaster(config)
         load_fc = forecaster.forecast(history, now, config.general.n_forecast_slots,
                                       hist_temp=temp, fut_temp=temp)
+
+        # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf
+        # die Zukunft anwenden (abklingend) - fängt Tagesabweichungen, die das
+        # Ähnliche-Tage-Modell nicht sehen kann (Besuch, Wetter).
+        load_ratio, pv_ratio = _intraday_ratios(repo, config, forecaster,
+                                                history, temp, now)
+        if load_ratio is not None:
+            load_fc = load_fc * intraday_factor_series(
+                load_ratio, load_fc.index, now, config.forecast.intraday_decay_hours)
+            log.info("Intraday-Korrektur Last: x%.2f (klingt über %.0f h ab).",
+                     load_ratio, config.forecast.intraday_decay_hours)
+
         repo.write_frame(
             "load_forecast",
             pd.DataFrame({"house_load_w": load_fc.values}, index=load_fc.index),
@@ -97,6 +110,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             if profile:
                 pv = apply_pv_correction(pv, profile, config.general.timezone)
                 log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
+        if pv_ratio is not None:
+            pv = pv * intraday_factor_series(
+                pv_ratio, pv.index, now, config.forecast.intraday_decay_hours)
+            log.info("Intraday-Korrektur PV: x%.2f (klingt über %.0f h ab).",
+                     pv_ratio, config.forecast.intraday_decay_hours)
         price = _price_series(repo, config, opt_index, now)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
@@ -104,6 +122,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             feedin = feedin.ffill().bfill().fillna(config.feed_in.fixed_ct_kwh)
         else:
             feedin = pd.Series(config.feed_in.fixed_ct_kwh, index=opt_index)
+        # Solarspitzengesetz: in Negativpreis-Stunden gibt es (für betroffene
+        # Anlagen) keine Einspeisevergütung -> Export dort mit 0 ct bewerten.
+        if config.feed_in.zero_at_negative_price:
+            feedin = feedin.where(price >= 0.0, 0.0)
 
         # Anfangs-SoC Haus
         lookback = now - timedelta(hours=6)
@@ -183,12 +205,51 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         # Anzeige ab heute 00:00: Ist-Werte (bis jetzt) und Prognose (ganzer
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
-            display = _build_display_frame(repo, config, now, history, result)
+            display = _build_display_frame(repo, config, now, history, result,
+                                           intraday=(load_ratio, pv_ratio))
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur)
     finally:
         repo.close()
+
+
+def _intraday_ratios(repo, config, forecaster, history, temp, now):
+    """Ist/Prognose-Verhältnisse der letzten Stunden (Last, PV) für die
+    Intraday-Korrektur. None = keine Korrektur (zu wenig Daten, PV-Nacht, aus)."""
+    fc = config.forecast
+    if not fc.intraday_enabled:
+        return None, None
+    win_start = now - timedelta(hours=fc.intraday_window_hours)
+    load_ratio = pv_ratio = None
+    try:
+        act = repo.read_slots("house_consumption", win_start, now, fill=False)
+        # Prognose für das Fenster aus der Historie DAVOR (sonst fließen die
+        # Ist-Werte des Fensters in ihre eigene Prognose ein).
+        hist_before = history[history.index < win_start]
+        pred = forecaster.forecast(hist_before, win_start, len(act),
+                                   hist_temp=temp, fut_temp=temp)
+        load_ratio = intraday_ratio(act, pred.reindex(act.index), min_mean=50.0,
+                                    max_factor=fc.intraday_max_factor)
+    except Exception as exc:
+        log.warning("Intraday-Korrektur Last fehlgeschlagen (%s).", exc)
+    try:
+        if repo.signal_available("pv_generation"):
+            act_pv = repo.read_slots("pv_generation", win_start, now, fill=False)
+            pred_pv = repo.read_slots("pv_forecast", win_start, now)
+            if config.calibration.enabled:
+                from .calibration import apply_pv_correction, load_profile
+                prof = load_profile(config.calibration.pv_profile)
+                if prof:
+                    pred_pv = apply_pv_correction(pred_pv, prof,
+                                                  config.general.timezone)
+            # min_mean 200 W: nachts/dämmerungs ist das Verhältnis instabil.
+            pv_ratio = intraday_ratio(act_pv, pred_pv.reindex(act_pv.index),
+                                      min_mean=200.0,
+                                      max_factor=fc.intraday_max_factor)
+    except Exception as exc:
+        log.warning("Intraday-Korrektur PV fehlgeschlagen (%s).", exc)
+    return load_ratio, pv_ratio
 
 
 def _read_temp(repo, config, start, end):
@@ -228,7 +289,8 @@ def _price_series(repo, config, index, now, return_estimated=False):
     return price
 
 
-def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
+def _build_display_frame(repo, config, now, history, result,
+                         intraday=(None, None)) -> pd.DataFrame:
     """Anzeigetabelle heute 00:00 -> Horizontende.
 
     Enthält Prognosewerte über den gesamten Bereich (pv_w, house_load_w,
@@ -272,6 +334,17 @@ def _build_display_frame(repo, config, now, history, result) -> pd.DataFrame:
         df["price_estimated"] = estimated.astype(float)  # 1 = Schätzung, 0 = Börsenpreis
     except Exception:
         pass
+
+    # Intraday-Korrektur nur auf den ZUKUNFTS-Teil anwenden (konsistent mit
+    # der Optimierung); im Vergangenheits-Teil bleibt die rohe Modellprognose
+    # sichtbar (Vergleich Ist vs. Modell).
+    load_ratio, pv_ratio = intraday
+    decay = config.forecast.intraday_decay_hours
+    for col, ratio in (("house_load_w", load_ratio), ("pv_w", pv_ratio)):
+        if ratio is not None and col in df.columns:
+            fac = intraday_factor_series(ratio, full, now, decay)
+            fac[full <= now] = 1.0
+            df[col] = df[col] * fac
 
     # ---- Zukunftswerte aus der Optimierung (jetzt -> Ende) ----
     ot = result.table

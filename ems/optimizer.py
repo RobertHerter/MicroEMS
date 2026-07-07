@@ -330,10 +330,13 @@ class Optimizer:
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
 
-            # SoC-Dynamik Haus (Wirkungsgrade)
+            # SoC-Dynamik Haus. AC-Laden (Netz) hat einen eigenen (schlechteren)
+            # Wirkungsgrad als DC-Laden aus PV - sonst rechnet sich Netzladen
+            # systematisch zu günstig.
             prob += soc[t + 1] == (
                 soc[t]
-                + hb.charge_efficiency * (dc[t] + ac[t]) * dt
+                + hb.charge_efficiency * dc[t] * dt
+                + hb.eff_ac_charge * ac[t] * dt
                 - (1.0 / hb.discharge_efficiency) * dis[t] * dt
             )
 
