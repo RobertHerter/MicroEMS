@@ -199,6 +199,8 @@ Modell. Benötigt die Signale `pv_generation`, `house_consumption`,
 
 ## Dashboard
 
+![EMS Dashboard (Beispielausgabe mit synthetischen Daten)](dashboard_beispiel.png)
+
 Nach jedem Lauf entsteht `dashboard.html` (Pfad konfigurierbar, im Loop-Betrieb
 per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
 
@@ -211,10 +213,15 @@ per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
   gesperrt/Netzladen/Netz-Entladen) mit Legende und Hover-Klartext
 - Vergangenheit grau hinterlegt, Tagesgrenzen mit Wochentag, Jetzt-Linie
 
-Eine Beispielausgabe mit **synthetischen Daten** liegt als
+Die interaktive Beispielausgabe (Bild oben, **synthetische Daten**) liegt als
 [dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
 `python beispiel_dashboard.py` (nutzt Plotly vom CDN, das produktive Dashboard
-läuft dagegen offline mit lokalem `plotly.min.js`).
+läuft dagegen offline mit lokalem `plotly.min.js`). Screenshot erneuern:
+
+```bash
+chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
+  --screenshot=dashboard_beispiel.png dashboard_beispiel.html
+```
 
 ## Test
 

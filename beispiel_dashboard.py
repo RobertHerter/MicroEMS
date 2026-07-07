@@ -83,11 +83,13 @@ def main() -> None:
                           export_line_w=res.export_line_w, savings_eur=42.17)
 
     # Fürs Repo eigenständig lauffähig: Plotly vom CDN statt lokaler Datei
-    import plotly
+    # (Version der JS-Bibliothek, nicht des Python-Pakets!)
+    from plotly.offline import get_plotlyjs_version
     html = open(out, encoding="utf-8").read()
     html = html.replace(
         '<script src="plotly.min.js"></script>',
-        f'<script src="https://cdn.plot.ly/plotly-{plotly.__version__}.min.js"></script>')
+        f'<script src="https://cdn.plot.ly/plotly-{get_plotlyjs_version()}.min.js">'
+        f'</script>')
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(html)
     print(f"Beispiel-Dashboard geschrieben: {out}")
