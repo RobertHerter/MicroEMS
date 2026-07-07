@@ -199,9 +199,22 @@ Modell. Benötigt die Signale `pv_generation`, `house_consumption`,
 
 ## Dashboard
 
-Nach jedem Lauf entsteht `dashboard.html` (Pfad konfigurierbar): heutiger Tag
-(Ist-Werte) plus 48-h-Vorhersage mit Leistungen, Steuerbefehlen, SoC-Verläufen
-und Preis. Eine Beispielausgabe liegt als `dashboard_beispiel.html` bei.
+Nach jedem Lauf entsteht `dashboard.html` (Pfad konfigurierbar, im Loop-Betrieb
+per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
+
+- **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt, Akku-SoC,
+  Modus jetzt (mit Limits), Eingriffe im Plan
+- **Leistung** (PV mit Solcast-p10–p90-Band, Verbrauch, Netz, Einspeise-Linie;
+  Ist durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
+  Einspeisevergütung, **Steuerung** (Ladebefehle, Abregelung, Ist-Akkuleistung)
+- **Modus-Zeitleiste**: Eingriffe als Farbstreifen (auto/Peak-Laden/gedrosselt/
+  gesperrt/Netzladen/Netz-Entladen) mit Legende und Hover-Klartext
+- Vergangenheit grau hinterlegt, Tagesgrenzen mit Wochentag, Jetzt-Linie
+
+Eine Beispielausgabe mit **synthetischen Daten** liegt als
+[dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
+`python beispiel_dashboard.py` (nutzt Plotly vom CDN, das produktive Dashboard
+läuft dagegen offline mit lokalem `plotly.min.js`).
 
 ## Test
 
