@@ -216,6 +216,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                 publisher.publish_alert(
                     "warning", f"Optimierung nicht optimal ({result.status}) – "
                                f"Fallback 'auto' ohne Eingriffe aktiv.")
+            if result.solver_hit_limit:
+                publisher.publish_alert(
+                    "warning", "Solver-Zeitlimit erreicht – Plan kann "
+                               "suboptimal sein (solver_time_limit_s prüfen).")
             if result.car_target_shortfall_wh > 100.0:
                 publisher.publish_alert(
                     "warning",

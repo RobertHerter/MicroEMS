@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -62,6 +63,10 @@ class OptimizerResult:
     # Fehlmenge (Wh) zum Auto-Ziel-SoC bei Abfahrt (weiche Nebenbedingung);
     # > 0 = Ziel im Plan nicht erreichbar -> Alarm.
     car_target_shortfall_wh: float = 0.0
+    # Solver hat das Zeitlimit erreicht: CBC liefert dann den besten
+    # Zwischenstand und PuLP meldet trotzdem "Optimal" - der Plan kann
+    # deutlich suboptimal sein (z.B. sinnlose Dumps/Sperren) -> Alarm.
+    solver_hit_limit: bool = False
 
 
 def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float,
@@ -528,7 +533,16 @@ class Optimizer:
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
+        _t0 = time.monotonic()
         prob.solve(make_solver(cfg))
+        solve_s = time.monotonic() - _t0
+        hit_limit = solve_s >= cfg.optimization.solver_time_limit_s - 2.0
+        if hit_limit:
+            log.warning("Solver-Zeitlimit erreicht (%.0fs von %ds) – Lösung "
+                        "kann deutlich suboptimal sein.", solve_s,
+                        cfg.optimization.solver_time_limit_s)
+        else:
+            log.info("Solver fertig in %.1f s.", solve_s)
         status = pulp.LpStatus[prob.status]
         if prob.status != pulp.LpStatusOptimal:
             # Keine (verlässliche) Lösung: pulp.value() liefert dann None und
@@ -659,4 +673,5 @@ class Optimizer:
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w, car_target_shortfall_wh=round(shortfall, 1),
+            solver_hit_limit=hit_limit,
         )

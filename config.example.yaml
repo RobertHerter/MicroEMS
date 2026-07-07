@@ -137,7 +137,10 @@ optimization:
   # Kleiner Zyklus-Malus in ct je voll zyklierter kWh (rein + raus)
   # gegen unnötiges Laden/Entladen.
   cycle_penalty_ct_kwh: 0.1
-  solver_time_limit_s: 60
+  # Muss die reale Löszeit sicher abdecken! Erreicht CBC das Limit, wird der
+  # beste Zwischenstand publiziert (Alarm auf ems/alert) - der kann deutlich
+  # suboptimal sein. Läuft alle 15 min -> 300 s sind unkritisch.
+  solver_time_limit_s: 300
   # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
   solver_threads: 0
   # Malus (ct) je Wallbox-Einschaltvorgang gegen Dauer-Takten bei zappeligen
