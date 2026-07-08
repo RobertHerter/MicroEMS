@@ -19,6 +19,14 @@ class FakeE3DC:
     def poll(self):
         return self._poll
 
+    def get_db_data_timestamp(self, startTimestamp, timespanSeconds, keepAlive=False):
+        # Energie Wh je 15-min-Fenster (konstant für den Test):
+        # Last = solar + bat_out + grid_in(import) - bat_in - grid_out(export)
+        #      = 500 + 300 + 250 - 100 - 50 = 900 Wh -> *4 = 3600 W
+        return {"solarProduction": 500.0, "bat_power_out": 300.0,
+                "grid_power_out": 250.0, "bat_power_in": 100.0,
+                "grid_power_in": 50.0, "stateOfCharge": 50.0}
+
     def set_power_limits(self, enable=None, max_charge=None, max_discharge=None):
         self.limits = {"enable": enable, "max_charge": max_charge,
                        "max_discharge": max_discharge}
@@ -88,3 +96,37 @@ def test_control_free_running_disables_limit():
                           "batt_discharge_limit_w": hb.max_discharge_w,
                           "batt_grid_charge_w": 0})
     assert link._e3dc.limits["enable"] is False
+
+
+def test_house_load_15min_balance_and_keys():
+    import pandas as pd
+    cfg, link = _link()
+    start = pd.Timestamp("2026-07-01 10:00", tz="Europe/Berlin")
+    end = start + pd.Timedelta(hours=1)
+    data = link.read_house_load_15min(start, end)
+    assert len(data) == 4                       # 4 Fenster
+    # Bilanz 900 Wh -> 3600 W
+    assert all(abs(v - 3600.0) < 1e-6 for v in data.values())
+    # Schlüssel = UTC-ISO
+    assert all(k.endswith("+00:00") for k in data)
+
+
+def test_local_history_roundtrip(tmp_path):
+    import pandas as pd
+    from ems.local_history import (write_house_load, read_house_load,
+                                   last_timestamp, count)
+    db = str(tmp_path / "h.sqlite")
+    tz = "Europe/Berlin"
+    idx = pd.date_range("2026-07-01 00:00", periods=8, freq="15min", tz=tz)
+    mapping = {t.tz_convert("UTC").isoformat(): 1000.0 + i * 10
+               for i, t in enumerate(idx)}
+    assert write_house_load(db, mapping) == 8
+    assert count(db) == 8
+    s = read_house_load(db, idx[0], idx[-1] + pd.Timedelta(minutes=15), tz)
+    assert len(s) == 8 and str(s.index.tz) == tz
+    assert s.iloc[0] == 1000.0 and s.iloc[-1] == 1070.0
+    assert last_timestamp(db).tz_convert(tz) == idx[-1]
+    # UPSERT: gleicher Slot überschreibt
+    write_house_load(db, {idx[0].tz_convert("UTC").isoformat(): 5.0})
+    assert count(db) == 8
+    assert read_house_load(db, idx[0], idx[1], tz).iloc[0] == 5.0

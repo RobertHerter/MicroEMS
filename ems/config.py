@@ -319,7 +319,10 @@ class E3DCRscpConfig:
     control_enabled: bool = False        # Steuerung per RSCP (greift real ein!)
     grid_sign: float = 1.0               # Vorzeichen Netz (+ = Bezug)
     batt_sign: float = 1.0               # Vorzeichen Akku (+ = Laden)
+    # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.
+    history_source: bool = False
     history_db_path: str = "./e3dc_history.sqlite"
+    history_backfill_days: int = 730     # Tiefe des einmaligen Backfills
 
 
 @dataclass
@@ -564,7 +567,9 @@ def load_config(path: str) -> Config:
         control_enabled=bool(e.get("control_enabled", False)),
         grid_sign=float(e.get("grid_sign", 1.0)),
         batt_sign=float(e.get("batt_sign", 1.0)),
+        history_source=bool(e.get("history_source", False)),
         history_db_path=e.get("history_db_path", "./e3dc_history.sqlite"),
+        history_backfill_days=int(e.get("history_backfill_days", 730)),
     )
 
     return Config(

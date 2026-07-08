@@ -252,7 +252,12 @@ e3dc_rscp:
   control_enabled: false
   grid_sign: 1.0
   batt_sign: 1.0
+  # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.
+  # Erstbefüllung: python rscp_import.py --config config.yaml --days 730
+  # (danach hält der Dienst sie zyklisch aktuell). Schritt Richtung Standalone.
+  history_source: false
   history_db_path: "./e3dc_history.sqlite"
+  history_backfill_days: 730
 
 # -----------------------------------------------------------------------------
 # Dashboard

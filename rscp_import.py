@@ -1,44 +1,41 @@
-"""Historische E3DC-Daten per RSCP einlesen und lokal in SQLite speichern.
+"""Einmaliger Backfill der 15-min-Hauslast per RSCP in die lokale SQLite.
 
-Nutzt die optionale RSCP-Anbindung (config.e3dc_rscp, Bibliothek pye3dc) und
-holt die Tagesbilanzen (Energie) der letzten Tage in eine lokale SQLite-DB
-(config.e3dc_rscp.history_db_path). RSCP liefert Tages-/Monatsaggregate – kein
-15-min-Raster; für die 15-min-Prognose bleibt InfluxDB die Quelle.
+Füllt die Verbrauchs-Historie, aus der die Prognose liest, wenn
+config.e3dc_rscp.history_source aktiv ist (Schritt Richtung Standalone).
+Die Hauslast (W) wird je 15-min-Fenster aus der E3DC-Energiebilanz berechnet.
+
+ACHTUNG: 1 RSCP-Aufruf je Fenster -> 96/Tag (ein Jahr ≈ 35 000, ~1-3 h). Am
+besten im Hintergrund laufen lassen. Idempotent (UPSERT); erneuter Aufruf
+aktualisiert vorhandene Fenster. Der Dienst führt danach zyklisch nur die
+neuen Fenster nach.
 
 Aufruf:
-    python rscp_import.py --config config.yaml --days 365
-
-Idempotent: bereits vorhandene Tage werden aktualisiert (UPSERT). Es wird
-nichts am laufenden Dienst geändert.
+    python rscp_import.py --config config.yaml            # forecast.lookback_days
+    python rscp_import.py --config config.yaml --days 90
 """
 from __future__ import annotations
 
 import argparse
-import json
 import logging
-import sqlite3
+from datetime import timedelta
+
+import pandas as pd
 
 from ems.config import load_config
+from ems.local_history import count, write_house_load
 from ems.rscp import E3DCLink
 
 log = logging.getLogger("ems.rscp_import")
 
 
-def _ensure_table(con: sqlite3.Connection, table: str, key: str) -> None:
-    con.execute(
-        f"CREATE TABLE IF NOT EXISTS {table} ("
-        f" {key} TEXT PRIMARY KEY,"
-        f" data_json TEXT NOT NULL)")
-    con.commit()
-
-
 def main() -> int:
-    ap = argparse.ArgumentParser(description="E3DC-Historie per RSCP -> SQLite")
+    ap = argparse.ArgumentParser(description="E3DC 15-min-Hauslast -> SQLite")
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--days", type=int, default=365)
-    ap.add_argument("--resolution", choices=["day", "15min"], default="day",
-                    help="Tagesbilanzen (day) oder 15-min-Bilanzen (15min). "
-                         "15min: 96 RSCP-Aufrufe/Tag -> --days begrenzen.")
+    ap.add_argument("--days", type=int, default=None,
+                    help="Backfill-Tiefe in Tagen (Default: e3dc_rscp."
+                         "history_backfill_days)")
+    ap.add_argument("--chunk-days", type=int, default=7,
+                    help="in Blöcken schreiben (Fortschritt/Robustheit)")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -46,35 +43,31 @@ def main() -> int:
 
     config = load_config(args.config)
     if not config.e3dc_rscp.enabled:
-        print("e3dc_rscp.enabled=false – bitte in der Config aktivieren und "
-              "Zugang (host/username/password/key) eintragen.")
+        print("e3dc_rscp.enabled=false – bitte aktivieren und Zugang eintragen.")
         return 2
+    days = args.days if args.days is not None else config.e3dc_rscp.history_backfill_days
+    tz = config.general.timezone
+    now = pd.Timestamp.now(tz=tz).floor("15min")
+    start = now - timedelta(days=days)
+    db = config.e3dc_rscp.history_db_path
+    print(f"Backfill 15-min-Hauslast {start.date()} .. {now.date()} "
+          f"({days} Tage, ~{days*96} RSCP-Abrufe) -> {db}")
 
     link = E3DCLink(config)
-    if args.resolution == "15min":
-        table, key = "e3dc_15min", "ts"
-        rows = link.read_history_15min(args.days)
-    else:
-        table, key = "e3dc_daily", "date"
-        rows = link.read_history_daily(args.days)
-    link.close()
-    if not rows:
-        print("Keine Historie erhalten (Verbindung/pye3dc prüfen, siehe Log).")
-        return 1
-
-    con = sqlite3.connect(config.e3dc_rscp.history_db_path)
-    _ensure_table(con, table, key)
-    n = 0
-    for row in rows:
-        con.execute(
-            f"INSERT INTO {table}({key}, data_json) VALUES(?, ?) "
-            f"ON CONFLICT({key}) DO UPDATE SET data_json=excluded.data_json",
-            (row[key], json.dumps(row, ensure_ascii=False)))
-        n += 1
-    con.commit()
-    con.close()
-    unit = "15-min-Bilanzen" if args.resolution == "15min" else "Tagesbilanzen"
-    print(f"{n} {unit} -> {config.e3dc_rscp.history_db_path} ({table})")
+    total = 0
+    t = start
+    step = timedelta(days=args.chunk_days)
+    try:
+        while t < now:
+            chunk_end = min(t + step, now)
+            data = link.read_house_load_15min(t, chunk_end)
+            total += write_house_load(db, data)
+            print(f"  {t.date()} .. {chunk_end.date()}: +{len(data)} "
+                  f"(gesamt {total})", flush=True)
+            t = chunk_end
+    finally:
+        link.close()
+    print(f"Fertig: {count(db)} Fenster in der DB.")
     return 0
 
 

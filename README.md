@@ -61,21 +61,22 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
 - **`control_enabled`**: setzt die Lade-/Entladelimits direkt per RSCP
   (`set_power_limits`) statt nur per MQTT an Homey. **Greift real in den
   Speicher ein** – erst nach Prüfung der gelesenen Werte scharfschalten.
-- **Historie** in lokale SQLite (`ems/rscp.py` + `rscp_import.py`), zwei
-  Auflösungen:
-  - `--resolution day` – Tagesbilanzen (PV-Ertrag, Akku rein/raus, Netz
-    rein/raus, Verbrauch, Autarkie) → Tabelle `e3dc_daily`.
-  - `--resolution 15min` – echte 15-min-Bilanzen (Wh je Fenster) via
-    `get_db_data_timestamp` → Tabelle `e3dc_15min`. **1 RSCP-Aufruf je Fenster**
-    (96/Tag, ein Jahr ≈ 35 000) – für den Erstimport `--days` bewusst begrenzen.
-  - Erstimport einmalig manuell, z.B. `python rscp_import.py --resolution
-    15min --days 90`. Laufend hält **`ems-history.timer`** (täglich 03:45) die
-    letzten 2 Tage in 15-min idempotent aktuell (fängt auch Lücken).
+- **`history_source`**: die Verbrauchsprognose liest die 15-min-Hauslast aus
+  einer lokalen SQLite (`ems/local_history.py`) statt aus der InfluxDB. Die
+  Hauslast je Fenster wird aus der E3DC-Energiebilanz berechnet
+  (`PV + Akku-Entladung + Netzbezug − Akku-Ladung − Einspeisung`; gegen
+  InfluxDB verifiziert: Bias ~−44 W, Fenster-Rauschen mittelt sich in der
+  Ähnliche-Tage-Prognose heraus). Ablauf:
+  1. **Einmaliger Backfill** (Hintergrund): `python rscp_import.py --config
+     config.yaml --days 730` – 1 RSCP-Aufruf je 15-min-Fenster (2 Jahre
+     ≈ 70 000, mehrere Stunden). Danach `history_source: true` setzen.
+  2. **Zyklisch**: der Dienst führt vor jeder Prognose die neuen Fenster nach
+     (auf 3 Tage gekappt, damit ein Lauf nie den ganzen Backfill zieht).
+  3. **`ems-history.timer`** (täglich) ist das Sicherheitsnetz für Lücken.
 
-  Wichtig: Dieses SQLite-Archiv ist **unabhängig** von der InfluxDB. Die
-  15-min-Daten, die Prognose/Backtest nutzen, kommen weiterhin aus der
-  InfluxDB (via openHAB). Das RSCP-Archiv dient als zweite, geräteeigene
-  Quelle (Auswertung, Backup, Lückenfüllung).
+  Damit kann die Verbrauchs-Historie ohne InfluxDB/openHAB laufen. Preis,
+  PV-Vorhersage und Temperatur kann der E3DC nicht liefern – deren
+  Direktabruf aus den Quellen ist der nächste Standalone-Schritt.
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist

@@ -242,9 +242,16 @@ def dampen_estimated(price: pd.Series, estimated: pd.Series,
 def load_history(repo, config: Config, now: datetime) -> pd.Series:
     """Lädt die Verbrauchs-Historie über den konfigurierten Zeitraum.
 
-    fill=False: Datenlücken (Sensor-/DB-Ausfälle) bleiben NaN und werden von
-    der Prognose übersprungen, statt als interpolierte Kunstwerte in die
-    Ähnliche-Tage-Mittelung einzufließen.
+    Quelle: standardmäßig InfluxDB (house_consumption). Ist
+    e3dc_rscp.history_source aktiv, kommt sie aus der lokalen SQLite (per RSCP
+    aus dem E3DC gefüllt) - Schritt Richtung Standalone.
+
+    fill=False: Datenlücken bleiben NaN und werden von der Prognose übersprungen,
+    statt als interpolierte Kunstwerte in die Ähnliche-Tage-Mittelung einzugehen.
     """
     start = now - timedelta(days=config.forecast.lookback_days)
+    if config.e3dc_rscp.history_source:
+        from .local_history import read_house_load
+        return read_house_load(config.e3dc_rscp.history_db_path, start, now,
+                               config.general.timezone)
     return repo.read_slots("house_consumption", start, now, fill=False)

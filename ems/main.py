@@ -83,6 +83,28 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         if opt_end <= _raw_end:
             opt_end = opt_end + timedelta(days=1)
 
+        # --- 0) Lokale Hauslast-Historie aus dem E3DC nachführen --------- #
+        # Vor der Prognose die seit dem letzten Stand fehlenden 15-min-Fenster
+        # holen (gekappt auf 3 Tage, damit run_once nie den ganzen Backfill zieht
+        # - die Tiefe macht rscp_import.py im Hintergrund).
+        if e3dc and config.e3dc_rscp.history_source:
+            try:
+                from .local_history import last_timestamp, write_house_load, count
+                slot_td = pd.Timedelta(freq)
+                last = last_timestamp(config.e3dc_rscp.history_db_path)
+                frm = (last + slot_td) if last is not None else now - timedelta(days=1)
+                frm = max(frm, now - timedelta(days=3))   # Kappung
+                data = e3dc.read_house_load_15min(frm, now)
+                n = write_house_load(config.e3dc_rscp.history_db_path, data)
+                total = count(config.e3dc_rscp.history_db_path)
+                log.info("Hauslast-Historie aktualisiert: +%d Fenster (gesamt %d).",
+                         n, total)
+                if total == 0:
+                    log.warning("Lokale Hauslast-Historie ist leer – Backfill "
+                                "starten: python rscp_import.py --config config.yaml")
+            except Exception as exc:
+                log.warning("Hauslast-Nachführung fehlgeschlagen (%s).", exc)
+
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
         history = load_history(repo, config, now)

@@ -23,8 +23,9 @@ WICHTIG (nicht gegen echte Hardware getestet):
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, Optional
+
+import pandas as pd
 
 from .config import Config
 
@@ -103,58 +104,42 @@ class E3DCLink:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
             return None
 
-    def read_history_15min(self, days: int) -> List[dict]:
-        """15-min-Bilanzen (Energie Wh je Fenster) über die letzten `days` Tage
-        via get_db_data_timestamp (900-s-Fenster). ACHTUNG: 1 RSCP-Aufruf je
-        Fenster -> 96/Tag (ein Jahr ≈ 35 000). Für Backfill `days` bewusst
-        begrenzen; der Timer holt nur die letzten Tage nach."""
-        out: List[dict] = []
+    @staticmethod
+    def _house_load_w(x: dict) -> float:
+        """Hauslast (W) aus den Energie-Aggregaten eines 15-min-Fensters.
+        Energiebilanz (Wh/15min -> W, *4):
+          Last = PV + Akku-Entladung + Netzbezug - Akku-Ladung - Einspeisung.
+        (Gegen InfluxDB verifiziert: Bias ~-44 W, Fenster-MAE ~520 W - mittelt
+        sich in der Ähnliche-Tage-Prognose heraus.)"""
+        wh = (x.get("solarProduction", 0.0) + x.get("bat_power_out", 0.0)
+              + x.get("grid_power_out", 0.0) - x.get("bat_power_in", 0.0)
+              - x.get("grid_power_in", 0.0))
+        return max(0.0, wh * 4.0)
+
+    def read_house_load_15min(self, start, end) -> Dict[str, float]:
+        """15-min-Hauslast (W) je Fenster in [start, end) als {UTC-ISO -> W}.
+        Ein RSCP-Aufruf je 15-min-Fenster -> Zeitraum bewusst begrenzen
+        (Backfill: eigenes Skript; zyklisch: nur wenige Fenster)."""
+        out: Dict[str, float] = {}
         try:
             e = self._connect()
         except Exception as exc:
-            log.warning("RSCP-Verbindung für 15-min-Historie fehlgeschlagen (%s).", exc)
+            log.warning("RSCP-Verbindung für Hauslast-Historie fehlgeschlagen (%s).", exc)
             return out
-        now = datetime.now().replace(second=0, microsecond=0)
-        now = now.replace(minute=(now.minute // 15) * 15)
-        t = now - timedelta(days=days)
-        while t < now:
-            ts = int(t.timestamp())
+        t = pd.Timestamp(start).floor("15min")
+        end = pd.Timestamp(end).floor("15min")
+        while t < end:
             try:
-                d = e.get_db_data_timestamp(startTimestamp=ts, timespanSeconds=900,
-                                            keepAlive=True)
+                d = e.get_db_data_timestamp(
+                    startTimestamp=int(t.timestamp()), timespanSeconds=900,
+                    keepAlive=True)
             except Exception as exc:  # pragma: no cover
-                log.debug("RSCP 15-min %s nicht lesbar (%s).", t, exc)
-                t += timedelta(minutes=15)
+                log.debug("RSCP Hauslast %s nicht lesbar (%s).", t, exc)
+                t += pd.Timedelta(minutes=15)
                 continue
             if d:
-                row = {"ts": t.isoformat()}
-                row.update({k: v for k, v in d.items()
-                            if isinstance(v, (int, float))})
-                out.append(row)
-            t += timedelta(minutes=15)
-        return out
-
-    def read_history_daily(self, days: int) -> List[dict]:
-        """Historische Tagesbilanzen (Energie) über die letzten `days` Tage.
-        RSCP liefert Tages-/Monatsaggregate – kein 15-min-Raster."""
-        out: List[dict] = []
-        try:
-            e = self._connect()
-        except Exception as exc:
-            log.warning("RSCP-Verbindung für Historie fehlgeschlagen (%s).", exc)
-            return out
-        today = date.today()
-        for d in range(days, 0, -1):
-            day = today - timedelta(days=d)
-            try:
-                data = e.get_db_data(startDate=day, timespan="DAY")
-            except Exception as exc:  # pragma: no cover
-                log.debug("RSCP-Historie %s nicht lesbar (%s).", day, exc)
-                continue
-            row = {"date": day.isoformat()}
-            row.update({k: v for k, v in (data or {}).items()
-                        if isinstance(v, (int, float))})
-            out.append(row)
+                out[t.tz_convert("UTC").isoformat()] = self._house_load_w(d)
+            t += pd.Timedelta(minutes=15)
         return out
 
     def apply_setpoints(self, row) -> bool:
