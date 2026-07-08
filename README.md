@@ -237,6 +237,31 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
   Netz-Entlade-Arbitrage, unerreichbarer Auto-Ziel-SoC (Fallback),
   DST-Umstellungstage (92/100 Slots).
 - `tests/test_forecast.py` – Rezenz-Gewichtung, Datenlücken, leere Historie.
+- `tests/test_validate.py` – Invarianten-Validator (`ems/validate.py`).
+
+## Modell-Prüfung: Invarianten & Backtest
+
+Modellfehler zeigen sich oft nur als „das sieht komisch aus" im Dashboard.
+Zwei Werkzeuge machen die Suche systematisch:
+
+- **`ems/validate.py`** – prüft einen fertigen Plan gegen Invarianten, die
+  immer gelten müssen (SoC-/Leistungsgrenzen, Energiebilanz, kein
+  gleichzeitiges Laden/Entladen, DC-Laden nur aus PV-Überschuss, kein Entladen
+  bei PV-Überschuss, Einspeisebegrenzung) plus ökonomische Plausibilität
+  (Plan nie teurer als die Ohne-EMS-Baseline). Reines Prüfmodul – nutzbar in
+  Tests, im Backtest und (optional) live auf `ems/alert`.
+- **`backtest.py`** – spielt vergangene Tage aus der InfluxDB durch den
+  Optimierer (perfekte Voraussicht) und prüft jeden Plan. Findet Modellfehler
+  über Monate echter Daten in Minuten, statt monatelang zuzuschauen:
+
+  ```bash
+  python backtest.py --config config.yaml --days 120
+  python backtest.py --config config.yaml --start 2026-01-01 --end 2026-03-01
+  ```
+
+  Schreibt nichts in die DB. Nach jeder Modelländerung als Regressions-Sweep
+  laufen lassen: erwartet werden 0 Fehler und 0 (terminalwert-bereinigt)
+  negative Ersparnis-Tage.
 
 ## Modellannahmen
 
