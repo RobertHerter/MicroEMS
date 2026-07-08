@@ -265,6 +265,13 @@ class MqttConfig:
     # Nur für ems/schedule (Info). Sollwerte werden nie retained (Fail-safe:
     # Broker darf nach EMS-Ausfall keine veralteten Steuerbefehle ausliefern).
     retain: bool = True
+    # ems/schedule schlank halten (Homey kappt große Payloads): nur diese
+    # Felder je Slot und höchstens so viele Stunden. schedule_max_hours=0 = alle.
+    schedule_fields: list = field(default_factory=lambda: [
+        "batt_charge_limit_w", "batt_discharge_limit_w", "batt_grid_charge_w",
+        "batt_grid_discharge_w", "car_charge_w", "mode", "house_soc_percent",
+        "price_ct_kwh"])
+    schedule_max_hours: int = 24
 
 
 @dataclass
@@ -505,6 +512,10 @@ def load_config(path: str) -> Config:
         publish_schedule_json=bool(m.get("publish_schedule_json", True)),
         qos=int(m.get("qos", 1)),
         retain=bool(m.get("retain", True)),
+        schedule_fields=(list(m["schedule_fields"])
+                         if m.get("schedule_fields") is not None
+                         else MqttConfig().schedule_fields),
+        schedule_max_hours=int(m.get("schedule_max_hours", 24)),
     )
 
     d = raw.get("dashboard", {})

@@ -371,18 +371,29 @@ class HomeyMqttPublisher:
                       float(self.battery.max_soc_percent), retain=self.cfg.retain)
 
         if self.cfg.publish_schedule_json:
-            payload = table.copy()
+            # Schlank halten: Homey kappt große Payloads. Nur konfigurierte
+            # Felder, optional auf schedule_max_hours begrenzt, kompaktes JSON.
+            payload = table
+            if self.cfg.schedule_max_hours and len(payload) > 1:
+                end = current_ts + pd.Timedelta(hours=self.cfg.schedule_max_hours)
+                payload = payload[payload.index <= end]
+            cols = [c for c in self.cfg.schedule_fields if c in payload.columns]
 
             def _conv(v):
-                return v if isinstance(v, str) else float(v)
+                if isinstance(v, str):
+                    return v
+                fv = float(v)
+                return round(fv, 1) if pd.notna(fv) else None
 
             payload_json = {
                 "generated": pd.Timestamp.now(tz=idx.tz).isoformat(),
                 "slots": [
-                    {"time": ts.isoformat(), **{k: _conv(v) for k, v in r.items()}}
+                    {"time": ts.isoformat(),
+                     **{c: _conv(r[c]) for c in cols}}
                     for ts, r in payload.iterrows()
                 ],
             }
-            self._pub(f"{base}/schedule", json.dumps(payload_json),
-                      retain=self.cfg.retain)
-            log.info("MQTT Zeitplan (%d Slots) publiziert.", len(payload))
+            data = json.dumps(payload_json, separators=(",", ":"))
+            self._pub(f"{base}/schedule", data, retain=self.cfg.retain)
+            log.info("MQTT Zeitplan (%d Slots, %d Felder, %.0f KB) publiziert.",
+                     len(payload), len(cols), len(data) / 1024)
