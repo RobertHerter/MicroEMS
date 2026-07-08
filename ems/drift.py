@@ -34,11 +34,14 @@ class DriftMonitor:
     def check(self, repo, now: pd.Timestamp) -> Optional[float]:
         """Vergleicht Prognose- und Ist-SoC im zurückliegenden Fenster.
         Rückgabe: MAE in Prozentpunkten, oder None (zu wenig Daten)."""
-        if not repo.signal_available("battery_soc"):
+        if not (repo.signal_available("battery_soc")
+                or self.cfg.e3dc_rscp.history_source):
             return None
         start = now - timedelta(hours=self.window_h)
         try:
-            actual = repo.read_slots("battery_soc", start, now, fill=False).dropna()
+            from .local_history import read_actual_signal
+            actual = read_actual_signal(self.cfg, repo, "battery_soc",
+                                        start, now).dropna()
             pred = repo.read_slots_output("predicted_state", "house_soc_percent",
                                           start, now)
         except Exception as exc:  # pragma: no cover

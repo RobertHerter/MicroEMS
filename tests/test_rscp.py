@@ -168,6 +168,35 @@ def test_house_load_15min_balance_and_keys():
     assert all(k.endswith("+00:00") for k in data)
 
 
+def test_actuals_roundtrip_and_routing(tmp_path):
+    import pandas as pd
+    from ems.local_history import (write_actuals, read_actual, read_actual_signal)
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    tz = "Europe/Berlin"
+    t0 = pd.Timestamp("2026-07-01 12:00", tz=tz)
+    for i in range(4):
+        write_actuals(cfg.e3dc_rscp.history_db_path, t0 + pd.Timedelta(minutes=15*i),
+                      {"pv_w": 1000 + i, "house_load_w": 500 + i, "grid_w": -100 - i,
+                       "battery_w": 600 + i, "soc_percent": 50 + i})
+    s = read_actual(cfg.e3dc_rscp.history_db_path, "pv_w", t0,
+                    t0 + pd.Timedelta(hours=1), tz)
+    assert len(s) == 4 and s.iloc[0] == 1000 and str(s.index.tz) == tz
+
+    class Repo:  # InfluxDB darf im Standalone nicht angefragt werden
+        def read_slots(self, *a, **k):
+            raise AssertionError("InfluxDB nicht nutzen, wenn history_source")
+
+    cfg.e3dc_rscp.history_source = True
+    g = read_actual_signal(cfg, Repo(), "grid_power", t0,
+                           t0 + pd.Timedelta(hours=1))
+    assert g.iloc[0] == -100
+    # nicht-natives Signal (Preis) geht weiter an die InfluxDB
+    import pytest
+    with pytest.raises(AssertionError):
+        read_actual_signal(cfg, Repo(), "electricity_price", t0, t0)
+
+
 def test_local_history_roundtrip(tmp_path):
     import pandas as pd
     from ems.local_history import (write_house_load, read_house_load,

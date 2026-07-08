@@ -84,9 +84,16 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
      längeren Ausfall (> 3 Tage) den Backfill einmal manuell erneut laufen
      lassen.
 
-  Damit kann die Verbrauchs-Historie ohne InfluxDB/openHAB laufen. Preis,
-  PV-Vorhersage und Temperatur kann der E3DC nicht liefern – deren
-  Direktabruf aus den Quellen ist der nächste Standalone-Schritt.
+  Damit kann die Verbrauchs-Historie ohne InfluxDB/openHAB laufen.
+- **Ist-Werte lokal** (`ems/local_history.py`, Tabelle `actuals`): bei aktivem
+  `history_source` protokolliert der Dienst jeden Zyklus den E3DC-Live-Snapshot
+  (SoC/PV/Last/Netz/Akku). Alle Funktionen, die bisher die jüngsten Ist-Werte
+  aus der InfluxDB lasen – Intraday-Korrektur, Ersparnis-Tracking, Drift-Monitor
+  und die Ist-Kurven im Dashboard – lesen dann aus dieser lokalen Tabelle
+  (zentrale Weiche `read_actual_signal`).
+- **Noch InfluxDB-gebunden:** Preis, PV-Vorhersage und Temperatur kann der E3DC
+  nicht liefern – deren Direktabruf aus den Quellen ist der nächste
+  Standalone-Schritt.
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist

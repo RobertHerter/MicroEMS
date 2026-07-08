@@ -21,8 +21,64 @@ def _con(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(path, timeout=10)
     con.execute("CREATE TABLE IF NOT EXISTS house_load ("
                 " ts TEXT PRIMARY KEY, w REAL NOT NULL)")
+    # Live-Ist-Werte des E3DC je Zyklus (Ersatz für die InfluxDB-Ist-Signale).
+    con.execute("CREATE TABLE IF NOT EXISTS actuals ("
+                " ts TEXT PRIMARY KEY, pv_w REAL, house_w REAL, grid_w REAL,"
+                " battery_w REAL, soc REAL)")
     con.commit()
     return con
+
+
+# Signalname (InfluxDB-Konvention) -> Spalte in der actuals-Tabelle
+_ACTUAL_FIELD = {"pv_generation": "pv_w", "house_consumption": "house_w",
+                 "grid_power": "grid_w", "battery_power": "battery_w",
+                 "battery_soc": "soc"}
+
+
+def write_actuals(path: str, ts, live: dict) -> None:
+    """Einen Live-Snapshot (aus rscp.read_live) beim Slot-Zeitstempel ablegen."""
+    if not live:
+        return
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT INTO actuals(ts, pv_w, house_w, grid_w, battery_w, soc) "
+        "VALUES(?,?,?,?,?,?) ON CONFLICT(ts) DO UPDATE SET "
+        "pv_w=excluded.pv_w, house_w=excluded.house_w, grid_w=excluded.grid_w, "
+        "battery_w=excluded.battery_w, soc=excluded.soc",
+        (key, live.get("pv_w"), live.get("house_load_w"), live.get("grid_w"),
+         live.get("battery_w"), live.get("soc_percent")))
+    con.commit()
+    con.close()
+
+
+def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
+    """Ist-Wert-Spalte [start, end) als tz-lokale Serie (leer, wenn nichts da)."""
+    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            f"SELECT ts, {field} FROM actuals WHERE ts >= ? AND ts < ? "
+            f"AND {field} IS NOT NULL ORDER BY ts", (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+
+
+def read_actual_signal(config, repo, signal: str, start, end):
+    """Ist-Signal aus dem lokalen E3DC-Speicher (wenn history_source aktiv und
+    das Signal E3DC-nativ ist), sonst aus der InfluxDB. Zentrale Weiche für den
+    Standalone-Betrieb."""
+    field = _ACTUAL_FIELD.get(signal)
+    if config.e3dc_rscp.history_source and field:
+        return read_actual(config.e3dc_rscp.history_db_path, field, start, end,
+                           config.general.timezone)
+    return repo.read_slots(signal, start, end, fill=False)
 
 
 def write_house_load(path: str, mapping: Dict[str, float]) -> int:

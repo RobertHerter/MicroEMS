@@ -28,6 +28,7 @@ from .config import Config, load_config
 from .dashboard import build_dashboard
 from .forecast import (LoadForecaster, dampen_estimated,
                        intraday_factor_series, intraday_ratio, load_history)
+from .local_history import read_actual_signal, write_actuals
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
@@ -186,6 +187,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             log.info("RSCP live: SoC %.0f%%, PV %.0f W, Last %.0f W.",
                      live.get("soc_percent") or -1, live.get("pv_w") or 0,
                      live.get("house_load_w") or 0)
+            # Ist-Werte lokal protokollieren (Ersatz für die InfluxDB-Ist-Signale).
+            if config.e3dc_rscp.history_source:
+                try:
+                    write_actuals(config.e3dc_rscp.history_db_path, now, live)
+                except Exception as exc:
+                    log.warning("Ist-Wert-Protokollierung fehlgeschlagen (%s).", exc)
 
         # Slot-0-Anker: für den unmittelbar laufenden Slot schlägt die
         # Live-Messung (RSCP direkt, sonst Mittel der letzten Slot-Länge aus
@@ -364,7 +371,7 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now):
     win_start = now - timedelta(hours=fc.intraday_window_hours)
     load_ratio = pv_ratio = None
     try:
-        act = repo.read_slots("house_consumption", win_start, now, fill=False)
+        act = read_actual_signal(config, repo, "house_consumption", win_start, now)
         # Prognose für das Fenster aus der Historie DAVOR (sonst fließen die
         # Ist-Werte des Fensters in ihre eigene Prognose ein).
         hist_before = history[history.index < win_start]
@@ -375,8 +382,8 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now):
     except Exception as exc:
         log.warning("Intraday-Korrektur Last fehlgeschlagen (%s).", exc)
     try:
-        if repo.signal_available("pv_generation"):
-            act_pv = repo.read_slots("pv_generation", win_start, now, fill=False)
+        if config.e3dc_rscp.history_source or repo.signal_available("pv_generation"):
+            act_pv = read_actual_signal(config, repo, "pv_generation", win_start, now)
             pred_pv = repo.read_slots("pv_forecast", win_start, now)
             if config.calibration.enabled:
                 from .calibration import apply_pv_correction, load_profile
@@ -536,8 +543,9 @@ def _build_display_frame(repo, config, now, history, result,
                         ("actual_battery_w", "battery_power"),
                         ("actual_grid_w", "grid_power")]:
         try:
-            if repo.signal_available(signal):
-                s = repo.read_slots(signal, day_start, now + slot).reindex(full)
+            if config.e3dc_rscp.history_source or repo.signal_available(signal):
+                s = read_actual_signal(config, repo, signal,
+                                       day_start, now + slot).reindex(full)
                 df[col] = s.where(past_mask).ffill().where(past_mask)
         except Exception:  # pragma: no cover
             pass

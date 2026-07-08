@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
+from .local_history import read_actual_signal
 from .optimizer import natural_battery_step
 
 log = logging.getLogger("ems.savings")
@@ -53,6 +54,14 @@ class SavingsTracker:
             json.dump(state, fh, indent=2)
         os.replace(tmp, self.path)
 
+    def _soc_latest(self, repo, now):
+        """Aktuellster Haus-SoC (%) – lokal (Standalone) oder aus InfluxDB."""
+        if self.cfg.e3dc_rscp.history_source:
+            s = read_actual_signal(self.cfg, repo, "battery_soc",
+                                    now - timedelta(hours=6), now).dropna()
+            return float(s.iloc[-1]) if not s.empty else None
+        return repo.read_scalar_latest("battery_soc", now - timedelta(hours=6), now)
+
     # ------------------------------------------------------------------ #
     def update(self, repo, now: pd.Timestamp) -> Optional[float]:
         """Verrechnet alle seit dem letzten Lauf abgeschlossenen Slots.
@@ -63,7 +72,11 @@ class SavingsTracker:
         """
         if not self.cfg.savings.enabled:
             return None
-        missing = [s for s in REQUIRED_SIGNALS if not repo.signal_available(s)]
+        # Im Standalone (history_source) kommen pv/last/grid/soc aus der lokalen
+        # SQLite; nur der Preis muss noch aus der InfluxDB kommen.
+        required = (["electricity_price"] if self.cfg.e3dc_rscp.history_source
+                    else REQUIRED_SIGNALS)
+        missing = [s for s in required if not repo.signal_available(s)]
         if missing:
             log.info("Ersparnis-Tracking: Signale %s fehlen – übersprungen.", missing)
             return None
@@ -74,8 +87,7 @@ class SavingsTracker:
 
         state = self._load_state()
         if state is None:
-            soc_pct = repo.read_scalar_latest("battery_soc",
-                                              now - timedelta(hours=6), now)
+            soc_pct = self._soc_latest(repo, now)
             soc = (soc_pct / 100.0 * hb.capacity_wh
                    if soc_pct is not None else hb.min_soc_wh)
             state = {"last_ts": now.isoformat(), "baseline_soc_wh": float(soc),
@@ -98,9 +110,9 @@ class SavingsTracker:
                         (now - pd.Timedelta(days=7)).isoformat())
             last = now - pd.Timedelta(days=7)
 
-        pv = repo.read_slots("pv_generation", last, now, fill=False)
-        load = repo.read_slots("house_consumption", last, now, fill=False)
-        grid = repo.read_slots("grid_power", last, now, fill=False)
+        pv = read_actual_signal(self.cfg, repo, "pv_generation", last, now)
+        load = read_actual_signal(self.cfg, repo, "house_consumption", last, now)
+        grid = read_actual_signal(self.cfg, repo, "grid_power", last, now)
         price = repo.read_slots("electricity_price", last, now, fill=False)
         if self.cfg.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots("feed_in_tariff", last, now, fill=False)
