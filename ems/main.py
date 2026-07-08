@@ -270,7 +270,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                                            intraday=(load_ratio, pv_ratio))
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
-                            savings_eur=savings_eur)
+                            savings_eur=savings_eur,
+                            violations=violations)
     finally:
         repo.close()
 

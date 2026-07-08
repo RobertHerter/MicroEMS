@@ -53,9 +53,32 @@ _RELOAD_JS = (
 )
 
 
-def _tile(label: str, value: str, sub: str = "") -> str:
-    return (f'<div class="tile"><div class="v">{value}</div>'
+def _tile(label: str, value: str, sub: str = "", color: str = "") -> str:
+    style = f' style="color:{color}"' if color else ""
+    return (f'<div class="tile"><div class="v"{style}>{value}</div>'
             f'<div class="l">{label}</div><div class="s">{sub}</div></div>')
+
+
+def _esc(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def _alert_banner(violations) -> str:
+    """HTML-Banner der Planprüfung (ems/validate). Grün wenn sauber, sonst
+    rot (Fehler) bzw. gelb (nur Warnungen) mit den einzelnen Meldungen."""
+    if violations is None:
+        return ""
+    errs = [v for v in violations if getattr(v, "severity", "") == "error"]
+    warns = [v for v in violations if getattr(v, "severity", "") == "warning"]
+    if not errs and not warns:
+        return ('<div class="banner ok">✓ Planprüfung: keine Verstöße – '
+                'alle Invarianten erfüllt.</div>')
+    cls = "err" if errs else "warn"
+    head = (f"✗ Planprüfung: {len(errs)} Fehler"
+            + (f", {len(warns)} Warnungen" if warns else "")) if errs \
+        else f"⚠ Planprüfung: {len(warns)} Warnungen"
+    items = "".join(f"<li>{_esc(v)}</li>" for v in (errs + warns))
+    return (f'<div class="banner {cls}"><b>{head}</b><ul>{items}</ul></div>')
 
 
 def _ensure_plotlyjs(out_path: str) -> None:
@@ -69,7 +92,7 @@ def _ensure_plotlyjs(out_path: str) -> None:
 
 
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
-                    export_line_w=None, savings_eur=None) -> str:
+                    export_line_w=None, savings_eur=None, violations=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -279,6 +302,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
               .replace(",", ".")),
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
+    # Prüf-Status als eigene Kachel (grün/gelb/rot)
+    if violations is not None:
+        v_err = sum(1 for v in violations if getattr(v, "severity", "") == "error")
+        v_warn = sum(1 for v in violations if getattr(v, "severity", "") == "warning")
+        if v_err:
+            tiles.append(_tile("Planprüfung", f"{v_err} Fehler",
+                              f"{v_warn} Warnungen", color="#d62728"))
+        elif v_warn:
+            tiles.append(_tile("Planprüfung", f"{v_warn} Warnungen",
+                              "keine Fehler", color="#e6a700"))
+        else:
+            tiles.append(_tile("Planprüfung", "✓ OK", "alle Invarianten erfüllt",
+                              color="#2ca02c"))
 
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
@@ -299,10 +335,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .tile .v {{ font-size: 22px; font-weight: 700; }}
  .tile .l {{ font-size: 12px; color: #555; margin-top: 2px; }}
  .tile .s {{ font-size: 11px; color: #999; }}
+ .banner {{ border-radius: 8px; padding: 8px 14px; margin-bottom: 10px;
+           font-size: 13px; border: 1px solid; }}
+ .banner ul {{ margin: 6px 0 0; padding-left: 20px; }}
+ .banner li {{ margin: 2px 0; }}
+ .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
+ .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
+ .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
+{_alert_banner(violations)}
 {plot_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""

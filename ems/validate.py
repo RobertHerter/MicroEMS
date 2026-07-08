@@ -164,11 +164,21 @@ def validate_plan(config: Config, result: OptimizerResult,
         f"Netzladen über Median-Preis ({med_price:.1f} ct/kWh)"))
 
     if "discharge_limited" in t.columns:
+        # "Keine teurere Stunde mehr voraus": dann gibt es keinen Grund, die
+        # Ladung weiter zu halten und stattdessen teuer zu importieren. Das ist
+        # die echte Bug-Signatur (z.B. die frühere p10-Abend-Sperre). Das
+        # legitime "Sparen für eine spätere, noch teurere Spitze" wird dadurch
+        # NICHT gemeldet - das war die Ursache des Winter-Rauschens.
+        pa = price.values.astype(float)
+        suffix_max = np.maximum.accumulate(pa[::-1])[::-1]
+        fut_max = np.concatenate([suffix_max[1:], [-np.inf]])  # max(price[t+1:])
+        no_pricier_ahead = pd.Series(pa >= fut_max - 1e-9, index=t.index)
         add(_mask_violation("econ.hold_while_expensive", "warning",
             (col("discharge_limited") > 0.5) & (imp > TOL_W)
-            & (price > med_price) & (soc > hb.min_soc_wh + 0.05 * hb.capacity_wh)
-            & (~tail),
-            "Entladesperre bei teurem Netzbezug trotz verfügbarer Ladung"))
+            & (price >= float(price.quantile(0.75)))
+            & (soc > hb.min_soc_wh + 0.05 * hb.capacity_wh)
+            & no_pricier_ahead & (~tail),
+            "Entladesperre bei teurem Netzbezug, obwohl keine teurere Stunde folgt"))
 
     # Plan vs. Ohne-EMS-Baseline (terminalwert-bereinigt): der perfekt
     # informierte MILP darf nie teurer sein als das naive Eigenverbrauchs-

@@ -98,12 +98,20 @@ def main() -> int:
     config = load_config(args.config)
     tz = config.general.timezone
     today = pd.Timestamp.now(tz=tz).normalize()
+    # Nur Tage, deren KOMPLETTER Horizont in der Vergangenheit liegt - sonst
+    # streckt ffill nicht existierende Zukunftsdaten zu konstanten Werten
+    # (perfekte Voraussicht setzt echte Ist-Daten über den ganzen Horizont voraus).
+    latest = today - timedelta(days=config.general.optimization_horizon_hours // 24 + 1)
     if args.start:
         start = pd.Timestamp(args.start, tz=tz)
-        end = pd.Timestamp(args.end, tz=tz) if args.end else today
+        end = pd.Timestamp(args.end, tz=tz) if args.end else latest
     else:
-        end = today
+        end = latest
         start = end - timedelta(days=args.days)
+    if end > latest:
+        print(f"Hinweis: Enddatum auf {latest.date()} begrenzt "
+              f"(Horizont braucht vollständige Ist-Daten).\n")
+        end = latest
     days = pd.date_range(start, end, freq="D", tz=tz)
 
     repo = InfluxRepository(config)
