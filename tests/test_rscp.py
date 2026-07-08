@@ -121,6 +121,20 @@ def test_control_limit_uses_power_limits_not_mode3():
     assert not link._e3dc.power_calls        # kein SET_POWER/Mode 3
 
 
+def test_control_grid_discharge_not_executed():
+    """Sicherheit: geplantes Netz-Entladen wird NICHT per Mode 4 gesendet
+    (Mode 4 lud im Test statt zu entladen). Fällt auf auto/Limits zurück."""
+    cfg, link = _link(control_enabled=True)
+    cfg.optimization.allow_grid_discharge = True
+    hb = cfg.house_battery
+    link.apply_control({"batt_grid_charge_w": 0, "batt_grid_discharge_w": 3000,
+                        "batt_discharge_w": 3000,
+                        "batt_charge_limit_w": hb.max_dc_charge_w,
+                        "batt_discharge_limit_w": hb.max_discharge_w})
+    # kein SET_POWER-Mode-4-Befehl
+    assert all(m != 4 for m, _ in link._e3dc.power_calls)
+
+
 def test_control_free_running_disables_limit():
     cfg, link = _link(control_enabled=True)
     hb = cfg.house_battery
