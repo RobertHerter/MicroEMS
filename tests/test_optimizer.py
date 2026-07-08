@@ -57,6 +57,11 @@ def test_peak_strategy_shaves_and_fills_battery():
     assert t["house_soc_percent"].max() >= 99.0, "Akku sollte voll werden"
     assert (t["pv_curtail_w"] <= TOL).all(), \
         "Abregeln statt Linie anheben ist verboten (kein Export-Limit gesetzt)"
+    # Kein Entladen, solange PV die Last deckt (wäre Akku->Netz in Tarnung,
+    # z.B. um die Linie des Folgetags zu drücken - nicht ausführbar)
+    surplus_slots = t["pv_w"] > t["house_load_w"]
+    assert (t.loc[surplus_slots, "batt_discharge_w"] <= TOL).all(), \
+        "Entladen trotz PV-Überschuss"
 
 
 def test_asap_strategy_exports_only_when_full_or_at_max():

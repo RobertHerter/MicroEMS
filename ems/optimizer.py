@@ -350,6 +350,14 @@ class Optimizer:
             prob += dis[t] <= hb.max_discharge_w * is_di[t]
             prob += is_ch[t] + is_di[t] <= 1
 
+            # Entladen nur zur Deckung der Restlast (+ Auto). Bei PV-Überschuss
+            # kann der E3DC im Automatikmodus nicht "für den Export" entladen -
+            # das wäre Akku->Netz und braucht den expliziten grid_discharge-
+            # Pfad (gd_allowed). Verhindert zudem, dass die Linien-Minimierung
+            # des Folgetags den Akku abends zur Einspeisevergütung leerverkauft.
+            if not gd_allowed[t]:
+                prob += dis[t] <= max(0.0, load_t - pv_t) + car[t]
+
             # physikalische Gesamt-Ladeleistung des Akkus (DC + AC zusammen)
             prob += dc[t] + ac[t] <= hb.max_total_charge_w
 
