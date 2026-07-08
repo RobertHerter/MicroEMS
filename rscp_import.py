@@ -24,11 +24,11 @@ from ems.rscp import E3DCLink
 log = logging.getLogger("ems.rscp_import")
 
 
-def _ensure_table(con: sqlite3.Connection) -> None:
+def _ensure_table(con: sqlite3.Connection, table: str, key: str) -> None:
     con.execute(
-        "CREATE TABLE IF NOT EXISTS e3dc_daily ("
-        " date TEXT PRIMARY KEY,"
-        " data_json TEXT NOT NULL)")
+        f"CREATE TABLE IF NOT EXISTS {table} ("
+        f" {key} TEXT PRIMARY KEY,"
+        f" data_json TEXT NOT NULL)")
     con.commit()
 
 
@@ -36,6 +36,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="E3DC-Historie per RSCP -> SQLite")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--days", type=int, default=365)
+    ap.add_argument("--resolution", choices=["day", "15min"], default="day",
+                    help="Tagesbilanzen (day) oder 15-min-Bilanzen (15min). "
+                         "15min: 96 RSCP-Aufrufe/Tag -> --days begrenzen.")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -48,24 +51,30 @@ def main() -> int:
         return 2
 
     link = E3DCLink(config)
-    rows = link.read_history_daily(args.days)
+    if args.resolution == "15min":
+        table, key = "e3dc_15min", "ts"
+        rows = link.read_history_15min(args.days)
+    else:
+        table, key = "e3dc_daily", "date"
+        rows = link.read_history_daily(args.days)
     link.close()
     if not rows:
         print("Keine Historie erhalten (Verbindung/pye3dc prüfen, siehe Log).")
         return 1
 
     con = sqlite3.connect(config.e3dc_rscp.history_db_path)
-    _ensure_table(con)
+    _ensure_table(con, table, key)
     n = 0
     for row in rows:
         con.execute(
-            "INSERT INTO e3dc_daily(date, data_json) VALUES(?, ?) "
-            "ON CONFLICT(date) DO UPDATE SET data_json=excluded.data_json",
-            (row["date"], json.dumps(row, ensure_ascii=False)))
+            f"INSERT INTO {table}({key}, data_json) VALUES(?, ?) "
+            f"ON CONFLICT({key}) DO UPDATE SET data_json=excluded.data_json",
+            (row[key], json.dumps(row, ensure_ascii=False)))
         n += 1
     con.commit()
     con.close()
-    print(f"{n} Tagesbilanzen -> {config.e3dc_rscp.history_db_path}")
+    unit = "15-min-Bilanzen" if args.resolution == "15min" else "Tagesbilanzen"
+    print(f"{n} {unit} -> {config.e3dc_rscp.history_db_path} ({table})")
     return 0
 
 

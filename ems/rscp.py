@@ -103,6 +103,37 @@ class E3DCLink:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
             return None
 
+    def read_history_15min(self, days: int) -> List[dict]:
+        """15-min-Bilanzen (Energie Wh je Fenster) über die letzten `days` Tage
+        via get_db_data_timestamp (900-s-Fenster). ACHTUNG: 1 RSCP-Aufruf je
+        Fenster -> 96/Tag (ein Jahr ≈ 35 000). Für Backfill `days` bewusst
+        begrenzen; der Timer holt nur die letzten Tage nach."""
+        out: List[dict] = []
+        try:
+            e = self._connect()
+        except Exception as exc:
+            log.warning("RSCP-Verbindung für 15-min-Historie fehlgeschlagen (%s).", exc)
+            return out
+        now = datetime.now().replace(second=0, microsecond=0)
+        now = now.replace(minute=(now.minute // 15) * 15)
+        t = now - timedelta(days=days)
+        while t < now:
+            ts = int(t.timestamp())
+            try:
+                d = e.get_db_data_timestamp(startTimestamp=ts, timespanSeconds=900,
+                                            keepAlive=True)
+            except Exception as exc:  # pragma: no cover
+                log.debug("RSCP 15-min %s nicht lesbar (%s).", t, exc)
+                t += timedelta(minutes=15)
+                continue
+            if d:
+                row = {"ts": t.isoformat()}
+                row.update({k: v for k, v in d.items()
+                            if isinstance(v, (int, float))})
+                out.append(row)
+            t += timedelta(minutes=15)
+        return out
+
     def read_history_daily(self, days: int) -> List[dict]:
         """Historische Tagesbilanzen (Energie) über die letzten `days` Tage.
         RSCP liefert Tages-/Monatsaggregate – kein 15-min-Raster."""
