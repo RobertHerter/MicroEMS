@@ -83,12 +83,13 @@ def save_snapshot(config: Config, now, inputs, result, violations,
                                    if inputs.initial_car_soc_wh is not None else None),
             "car_present": bool(inputs.car_present),
         },
-        "plan": {c: arr(t[c]) for c in t.columns if t[c].dtype != object},
-        "plan_mode": list(t["mode"]) if "mode" in t.columns else None,
+        "plan": {c: arr(t[c]) for c in t.columns
+                 if pd.api.types.is_numeric_dtype(t[c])},
+        "plan_mode": [str(m) for m in t["mode"]] if "mode" in t.columns else None,
     }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(snap, fh, ensure_ascii=False, indent=1)
+        json.dump(snap, fh, ensure_ascii=False, indent=1, default=str)
     os.replace(tmp, path)
     return path
 

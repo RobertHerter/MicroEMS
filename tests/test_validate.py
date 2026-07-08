@@ -78,3 +78,18 @@ def test_detects_export_cap_violation():
     # sauber gelöst -> jetzt künstlich überschreiten
     res.table.loc[res.table.index[50], "grid_export_w"] = 9000
     assert "grid.export_cap" in _rules(validate_plan(cfg, res, inp), "error")
+
+
+def test_debug_snapshot_roundtrip(tmp_path):
+    """Snapshot muss valide JSON sein (auch mit mode-Spalte und time-Objekten)."""
+    import json
+    from ems.debugdump import save_snapshot
+    cfg = make_config()
+    cfg.report.snapshot_path = str(tmp_path / "snap.json")
+    inp, res = _solve(cfg)
+    viols = validate_plan(cfg, res, inp)
+    path = save_snapshot(cfg, res.table.index[0], inp, res, viols, drift_mae=1.2)
+    snap = json.load(open(path))
+    assert snap["inputs"]["pv_w"] and snap["plan"]["house_soc_wh"]
+    assert snap["drift_soc_mae_pp"] == 1.2
+    assert "config" in snap and "optimization" in snap["config"]
