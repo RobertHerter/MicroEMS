@@ -62,8 +62,11 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   (`set_power_limits`) statt nur per MQTT an Homey. **Greift real in den
   Speicher ein** – erst nach Prüfung der gelesenen Werte scharfschalten.
 - **Historie**: `python rscp_import.py --config config.yaml --days 365` liest
-  die Tagesbilanzen in eine lokale SQLite-DB (RSCP liefert Tagesaggregate, kein
-  15-min-Raster – die feine Prognose bleibt auf InfluxDB).
+  die Tagesbilanzen (PV-Ertrag, Akku rein/raus, Netz rein/raus, Verbrauch,
+  Autarkie) in eine lokale SQLite-DB (RSCP liefert Tagesaggregate, kein
+  15-min-Raster – die feine Prognose bleibt auf InfluxDB). Der Erstimport läuft
+  einmalig manuell; **laufend hält `ems-history.timer` die DB täglich aktuell**
+  (holt idempotent die letzten Tage nach, fängt auch Lücken).
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist
@@ -119,9 +122,12 @@ python -m ems.main --config config.yaml --log-level INFO
 sudo useradd -r -s /usr/sbin/nologin ems 2>/dev/null || true
 sudo chown -R ems:ems /opt/ems
 sudo cp ems.service ems-kalibrierung.service ems-kalibrierung.timer \
-        ems-backup.service ems-backup.timer /etc/systemd/system/
+        ems-backup.service ems-backup.timer \
+        ems-history.service ems-history.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ems.service ems-kalibrierung.timer ems-backup.timer
+# Nur bei aktiver RSCP-Anbindung (config.e3dc_rscp): täglicher Historie-Import
+sudo systemctl enable --now ems-history.timer
 journalctl -u ems -f
 ```
 

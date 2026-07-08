@@ -1,0 +1,11 @@
+[Unit]
+Description=Taeglicher E3DC-Historie-Import (RSCP), 03:45
+
+[Timer]
+# Taeglich um 03:45; verpasste Laeufe nachholen (Pi war aus).
+OnCalendar=*-*-* 03:45:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
