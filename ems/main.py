@@ -60,6 +60,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
     Betrieb (Last Will); ohne wird pro Lauf verbunden und wieder getrennt."""
     repo = InfluxRepository(config)
     one_shot = publisher is None
+    # Optionale direkte E3DC-Anbindung (RSCP); None wenn deaktiviert.
+    e3dc = None
+    if config.e3dc_rscp.enabled:
+        try:
+            from .rscp import E3DCLink
+            e3dc = E3DCLink(config)
+        except Exception as exc:
+            log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
@@ -146,16 +154,28 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         if config.feed_in.zero_at_negative_price:
             feedin = feedin.where(price >= 0.0, 0.0)
 
+        # Live-Werte optional direkt vom E3DC (RSCP) statt aus der InfluxDB.
+        live = e3dc.read_live() if (e3dc and config.e3dc_rscp.read_live) else None
+        if live:
+            log.info("RSCP live: SoC %.0f%%, PV %.0f W, Last %.0f W.",
+                     live.get("soc_percent") or -1, live.get("pv_w") or 0,
+                     live.get("house_load_w") or 0)
+
         # Slot-0-Anker: für den unmittelbar laufenden Slot schlägt die
-        # Live-Messung (Mittel der letzten Slot-Länge) die Prognose - der
-        # publizierte Sollwert basiert damit auf dem echten Ist-Zustand.
+        # Live-Messung (RSCP direkt, sonst Mittel der letzten Slot-Länge aus
+        # InfluxDB) die Prognose - der Sollwert basiert auf dem echten Zustand.
         try:
             slot_td = pd.Timedelta(freq)
-            m = repo.read_slots("house_consumption", now - slot_td, now,
-                                fill=False).mean()
-            if np.isfinite(m):
-                house_load[0] = max(0.0, float(m))
-            if repo.signal_available("pv_generation"):
+            if live and live.get("house_load_w") is not None:
+                house_load[0] = max(0.0, float(live["house_load_w"]))
+            else:
+                m = repo.read_slots("house_consumption", now - slot_td, now,
+                                    fill=False).mean()
+                if np.isfinite(m):
+                    house_load[0] = max(0.0, float(m))
+            if live and live.get("pv_w") is not None:
+                pv.iloc[0] = max(0.0, float(live["pv_w"]))
+            elif repo.signal_available("pv_generation"):
                 m = repo.read_slots("pv_generation", now - slot_td, now,
                                     fill=False).mean()
                 if np.isfinite(m):
@@ -165,9 +185,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         except Exception as exc:  # pragma: no cover
             log.debug("Slot-0-Anker fehlgeschlagen (%s).", exc)
 
-        # Anfangs-SoC Haus
+        # Anfangs-SoC Haus: bevorzugt RSCP-Live, sonst InfluxDB.
         lookback = now - timedelta(hours=6)
-        soc_pct = repo.read_scalar_latest("battery_soc", lookback, now)
+        soc_pct = live.get("soc_percent") if live else None
+        if soc_pct is None:
+            soc_pct = repo.read_scalar_latest("battery_soc", lookback, now)
         if soc_pct is None:
             log.warning("Kein Haus-SoC gefunden – nehme min_soc an.")
             soc_pct = config.house_battery.min_soc_percent
@@ -267,6 +289,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             log.warning("MQTT-Ausgabe fehlgeschlagen (%s) – InfluxDB-Writeback "
                         "und Dashboard werden trotzdem erstellt.", exc)
 
+        # --- 4b) Steuerung optional direkt per RSCP an den E3DC ---------- #
+        if e3dc and config.e3dc_rscp.control_enabled and not result.infeasible:
+            try:
+                pos = result.table.index.get_indexer([now], method="ffill")[0]
+                e3dc.apply_setpoints(result.table.iloc[max(pos, 0)])
+            except Exception as exc:
+                log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+
         # --- 5) InfluxDB-Writeback -------------------------------------- #
         ctrl = result.table[[c for c in CONTROL_COLS if c in result.table.columns]]
         repo.write_frame("control_table", ctrl)
@@ -295,6 +325,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                             violations=violations)
     finally:
         repo.close()
+        if e3dc is not None:
+            e3dc.close()
 
 
 def _intraday_ratios(repo, config, forecaster, history, temp, now):

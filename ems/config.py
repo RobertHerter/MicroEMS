@@ -301,6 +301,21 @@ class MonitoringConfig:
 
 
 @dataclass
+class E3DCRscpConfig:
+    # Optionale direkte RSCP-Anbindung des E3DC (Bibliothek pye3dc).
+    enabled: bool = False
+    host: str = ""                       # IP des E3DC im LAN
+    username: str = ""                   # E3DC-Portal-Login
+    password: str = ""
+    key: str = ""                        # RSCP-Passwort (im E3DC gesetzt)
+    read_live: bool = True               # Live-SoC/PV/Last für den Lauf nutzen
+    control_enabled: bool = False        # Steuerung per RSCP (greift real ein!)
+    grid_sign: float = 1.0               # Vorzeichen Netz (+ = Bezug)
+    batt_sign: float = 1.0               # Vorzeichen Akku (+ = Laden)
+    history_db_path: str = "./e3dc_history.sqlite"
+
+
+@dataclass
 class ReportConfig:
     # Debug-Report-Button im Dashboard: lädt den Schnappschuss herunter und
     # öffnet das Mailprogramm vorausgefüllt (Anhang manuell). Kein SMTP nötig.
@@ -325,6 +340,7 @@ class Config:
     savings: SavingsConfig = field(default_factory=SavingsConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
+    e3dc_rscp: E3DCRscpConfig = field(default_factory=E3DCRscpConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -526,6 +542,20 @@ def load_config(path: str) -> Config:
         snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
     )
 
+    e = raw.get("e3dc_rscp", {})
+    e3dc_rscp = E3DCRscpConfig(
+        enabled=bool(e.get("enabled", False)),
+        host=e.get("host", ""),
+        username=e.get("username", ""),
+        password=e.get("password", ""),
+        key=e.get("key", ""),
+        read_live=bool(e.get("read_live", True)),
+        control_enabled=bool(e.get("control_enabled", False)),
+        grid_sign=float(e.get("grid_sign", 1.0)),
+        batt_sign=float(e.get("batt_sign", 1.0)),
+        history_db_path=e.get("history_db_path", "./e3dc_history.sqlite"),
+    )
+
     return Config(
         general=general,
         influxdb=influxdb,
@@ -541,4 +571,5 @@ def load_config(path: str) -> Config:
         savings=savings,
         monitoring=monitoring,
         report=report,
+        e3dc_rscp=e3dc_rscp,
     )

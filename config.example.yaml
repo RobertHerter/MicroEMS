@@ -227,6 +227,28 @@ report:
   snapshot_path: "./last_run_debug.json"
 
 # -----------------------------------------------------------------------------
+# Optionale DIREKTE E3DC-Anbindung per RSCP (Bibliothek pye3dc, siehe
+# requirements). Default aus; ändert nichts am InfluxDB/MQTT-Weg.
+#   read_live       : Live-SoC/PV/Last direkt vom E3DC statt aus InfluxDB
+#   control_enabled : Lade-/Entladelimits direkt per RSCP setzen (GREIFT REAL
+#                     in den Speicher ein - erst nach Prüfung aktivieren!)
+#   key             : RSCP-Passwort (im E3DC unter Einstellungen gesetzt)
+#   grid_sign/batt_sign: Vorzeichen anpassen (+ = Netzbezug bzw. Laden)
+# Historie separat importieren: python rscp_import.py --config config.yaml
+# -----------------------------------------------------------------------------
+e3dc_rscp:
+  enabled: false
+  host: ""              # IP des E3DC im LAN
+  username: ""          # E3DC-Portal-Login
+  password: ""
+  key: ""               # RSCP-Passwort
+  read_live: true
+  control_enabled: false
+  grid_sign: 1.0
+  batt_sign: 1.0
+  history_db_path: "./e3dc_history.sqlite"
+
+# -----------------------------------------------------------------------------
 # Dashboard
 # -----------------------------------------------------------------------------
 dashboard:
