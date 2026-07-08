@@ -10,6 +10,8 @@ class FakeE3DC:
     # Akku steht unter consumption.battery (+ = Laden), PV unter production.solar.
     def __init__(self):
         self.limits = None
+        self.last_power = None
+        self.power_calls = []
         self._poll = {
             "stateOfCharge": 63.0,
             "production": {"solar": 4200.0, "add": 0.0, "grid": -1500.0},
@@ -27,9 +29,24 @@ class FakeE3DC:
                 "grid_power_out": 250.0, "bat_power_in": 100.0,
                 "grid_power_in": 50.0, "stateOfCharge": 50.0}
 
-    def set_power_limits(self, enable=None, max_charge=None, max_discharge=None):
+    def set_power_limits(self, enable=None, max_charge=None, max_discharge=None,
+                         keepAlive=False):
         self.limits = {"enable": enable, "max_charge": max_charge,
                        "max_discharge": max_discharge}
+
+    def sendRequest(self, req, retries=3, keepAlive=False):
+        # Erwartet SET_POWER-Container -> Mode/Value mitschreiben
+        tag, typ, val = req
+        rec = {}
+        if isinstance(val, list):
+            for c in val:
+                ct, cty, cv = c
+                rec[getattr(ct, "name", str(ct))] = cv
+        self.last_power = (rec.get("EMS_REQ_SET_POWER_MODE"),
+                           rec.get("EMS_REQ_SET_POWER_VALUE"))
+        self.power_calls.append(self.last_power)
+        from e3dc._rscpTags import RscpTag, RscpType
+        return (RscpTag.EMS_SET_POWER, RscpType.Uint32, rec.get("EMS_REQ_SET_POWER_VALUE", 0))
 
 
 def _link(**rscp):
@@ -72,29 +89,44 @@ def test_read_live_graceful_failure():
 
 def test_control_disabled_is_noop():
     cfg, link = _link(control_enabled=False)
-    assert link.apply_setpoints({"batt_charge_limit_w": 1000,
-                                 "batt_discharge_limit_w": 1000}) is False
-    assert link._e3dc.limits is None
+    link.apply_control({"batt_charge_limit_w": 1000, "batt_discharge_limit_w": 1000})
+    assert link._e3dc.limits is None and not link._e3dc.power_calls
 
 
-def test_control_sets_limits_when_deviating():
+def test_control_grid_charge_uses_mode3():
     cfg, link = _link(control_enabled=True)
     hb = cfg.house_battery
-    # Ladelimit < Hardware-Max -> Begrenzung aktiv
-    ok = link.apply_setpoints({"batt_charge_limit_w": 1200,
-                               "batt_discharge_limit_w": hb.max_discharge_w,
-                               "batt_grid_charge_w": 0})
-    assert ok and link._e3dc.limits["enable"] is True
+    link.apply_control({"batt_grid_charge_w": 3000, "batt_dc_charge_w": 2000,
+                        "batt_ac_charge_w": 3000, "batt_grid_discharge_w": 0,
+                        "batt_charge_limit_w": hb.max_dc_charge_w,
+                        "batt_discharge_limit_w": hb.max_discharge_w})
+    # Mode 3, Wert = dc+gc = 5000; Limits deaktiviert (Mode regelt)
+    fake = link._e3dc
+    assert fake.last_power == (3, 5000)
+    assert fake.limits["enable"] is False
+    link.close()   # Watchdog stoppen, zurück auf auto (Mode 0)
+    assert fake.power_calls[-1][0] == 0
+
+
+def test_control_limit_uses_power_limits_not_mode3():
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    # Ladelimit < Hardware-Max, kein Netzladen -> auto + persistentes Limit,
+    # KEIN Mode-3-Befehl.
+    link.apply_control({"batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+                        "batt_discharge_limit_w": hb.max_discharge_w,
+                        "batt_grid_discharge_w": 0})
+    assert link._e3dc.limits["enable"] is True
     assert link._e3dc.limits["max_charge"] == 1200
+    assert not link._e3dc.power_calls        # kein SET_POWER/Mode 3
 
 
 def test_control_free_running_disables_limit():
     cfg, link = _link(control_enabled=True)
     hb = cfg.house_battery
-    # beide Limits = Hardware-Max -> "frei laufen", Begrenzung deaktiviert
-    link.apply_setpoints({"batt_charge_limit_w": hb.max_dc_charge_w,
-                          "batt_discharge_limit_w": hb.max_discharge_w,
-                          "batt_grid_charge_w": 0})
+    link.apply_control({"batt_charge_limit_w": hb.max_dc_charge_w,
+                        "batt_discharge_limit_w": hb.max_discharge_w,
+                        "batt_grid_charge_w": 0, "batt_grid_discharge_w": 0})
     assert link._e3dc.limits["enable"] is False
 
 

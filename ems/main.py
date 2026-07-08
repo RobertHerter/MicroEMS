@@ -55,14 +55,17 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return pd.Timestamp.now(tz=config.general.timezone).floor(freq)
 
 
-def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> None:
-    """Ein Rechenzyklus. `publisher`: persistente MQTT-Verbindung im Loop-
-    Betrieb (Last Will); ohne wird pro Lauf verbunden und wieder getrennt."""
+def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
+             e3dc=None) -> None:
+    """Ein Rechenzyklus. `publisher`/`e3dc`: persistente Verbindungen im Loop-
+    Betrieb (MQTT Last Will bzw. RSCP-Watchdog-Thread); ohne werden sie pro Lauf
+    erzeugt und wieder geschlossen."""
     repo = InfluxRepository(config)
     one_shot = publisher is None
-    # Optionale direkte E3DC-Anbindung (RSCP); None wenn deaktiviert.
-    e3dc = None
-    if config.e3dc_rscp.enabled:
+    # Optionale direkte E3DC-Anbindung (RSCP); im Loop von main() übergeben,
+    # sonst pro Lauf erzeugen (own_e3dc -> am Ende schließen).
+    own_e3dc = e3dc is None
+    if own_e3dc and config.e3dc_rscp.enabled:
         try:
             from .rscp import E3DCLink
             e3dc = E3DCLink(config)
@@ -177,7 +180,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             feedin = feedin.where(price >= 0.0, 0.0)
 
         # Live-Werte optional direkt vom E3DC (RSCP) statt aus der InfluxDB.
-        live = e3dc.read_live() if (e3dc and config.e3dc_rscp.read_live) else None
+        # force=True: im Loop-Betrieb frisch pollen (kein Zyklus-übergreifender Cache).
+        live = e3dc.read_live(force=True) if (e3dc and config.e3dc_rscp.read_live) else None
         if live:
             log.info("RSCP live: SoC %.0f%%, PV %.0f W, Last %.0f W.",
                      live.get("soc_percent") or -1, live.get("pv_w") or 0,
@@ -315,7 +319,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         if e3dc and config.e3dc_rscp.control_enabled and not result.infeasible:
             try:
                 pos = result.table.index.get_indexer([now], method="ffill")[0]
-                e3dc.apply_setpoints(result.table.iloc[max(pos, 0)])
+                e3dc.apply_control(result.table.iloc[max(pos, 0)])
             except Exception as exc:
                 log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
 
@@ -347,7 +351,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                             violations=violations)
     finally:
         repo.close()
-        if e3dc is not None:
+        if own_e3dc and e3dc is not None:
             e3dc.close()
 
 
@@ -657,10 +661,20 @@ def main() -> None:
     # Persistente MQTT-Verbindung mit Last Will: stirbt der Prozess, setzt der
     # Broker ems/status selbst auf "offline" (Watchdog-Signal für Homey).
     publisher = HomeyMqttPublisher(config)
+    # Persistente RSCP-Verbindung: hält den Steuer-Watchdog-Thread über die
+    # Zyklen (Mode 3/4 alle 5 s). Stirbt der Prozess, fällt der E3DC nach 10 s
+    # selbst auf auto zurück (Fail-safe).
+    e3dc = None
+    if config.e3dc_rscp.enabled:
+        try:
+            from .rscp import E3DCLink
+            e3dc = E3DCLink(config)
+        except Exception as exc:
+            log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     _sd_notify("READY=1")
     while True:
         try:
-            run_once(config, publisher)
+            run_once(config, publisher, e3dc)
         except Exception as exc:  # pragma: no cover
             log.exception("Fehler im EMS-Zyklus – fahre fort.")
             publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")

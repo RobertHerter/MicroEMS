@@ -58,9 +58,17 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
 
 - **`read_live`**: aktueller SoC/PV/Last direkt vom Gerät (frischer als der
   DB-Umweg) für Anfangs-SoC und Slot-0-Anker – mit Fallback auf InfluxDB.
-- **`control_enabled`**: setzt die Lade-/Entladelimits direkt per RSCP
-  (`set_power_limits`) statt nur per MQTT an Homey. **Greift real in den
-  Speicher ein** – erst nach Prüfung der gelesenen Werte scharfschalten.
+- **`control_enabled`**: steuert den Speicher direkt per RSCP (zusätzlich zur
+  MQTT-Ausgabe an Homey, die parallel weiterläuft). **Greift real ein** – gegen
+  echte Hardware verifiziert:
+  - *Netzladen* (`batt_grid_charge_w>0`) → `EMS_REQ_SET_POWER` Mode 3, Wert =
+    geplante Gesamt-Ladeleistung; ein Watchdog-Thread sendet alle 5 s neu
+    (sonst fällt der E3DC nach 10 s auf auto). Netz-Entladen (Mode 4) analog,
+    nur bei `allow_grid_discharge` – noch nicht ohne PV gegengeprüft.
+  - *reine Lade-/Entlade-Begrenzung* (Peak-Shaving, Sperren) → persistente
+    Limits (`set_power_limits`), kein Watchdog.
+  - Beim Beenden schaltet der Dienst aktiv auf auto (Mode 0) zurück; stirbt der
+    Prozess, tut es der 10-s-Watchdog des E3DC selbst (Fail-safe).
 - **`history_source`**: die Verbrauchsprognose liest die 15-min-Hauslast aus
   einer lokalen SQLite (`ems/local_history.py`) statt aus der InfluxDB. Die
   Hauslast je Fenster wird aus der E3DC-Energiebilanz berechnet

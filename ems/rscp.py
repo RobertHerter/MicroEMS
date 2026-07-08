@@ -5,24 +5,31 @@ implementieren, kapselt dieses Modul die etablierte Bibliothek ``pye3dc``
 (``pip install pye3dc``) hinter einer schlanken, für dieses EMS passenden
 Schnittstelle:
 
-  * read_live()          – aktuelle Werte (SoC, PV, Last, Netz, Akku-Leistung)
-  * read_history_daily() – historische Tagesbilanzen (Energie)
-  * apply_setpoints()    – Steuerung: Lade-/Entladeleistung begrenzen
+  * read_live()             – aktuelle Werte (SoC, PV, Last, Netz, Akku)
+  * read_house_load_15min() – 15-min-Hauslast (Energiebilanz) für die Historie
+  * apply_control()         – Steuerung: Netzladen/-entladen (Mode 3/4, mit
+                              10-s-Watchdog) bzw. Lade-/Entlade-Limits
 
 ALLES OPTIONAL und per config.e3dc_rscp abschaltbar (Default aus). Ist die
 Bibliothek nicht installiert oder die Verbindung nicht möglich, wird das ruhig
 geloggt und der bisherige Weg (InfluxDB lesen, MQTT/Homey steuern) läuft weiter.
 
-WICHTIG (nicht gegen echte Hardware getestet):
-  * Die Feldnamen aus pye3dc.poll() können je Version/Modell abweichen – das
-    Mapping ist in _map_live() zentralisiert und leicht anzupassen.
-  * Vorzeichen von Netz/Akku ggf. über e3dc_rscp.grid_sign / batt_sign drehen.
-  * Steuerung (apply_setpoints) NUR mit control_enabled: true und nach Prüfung
-    auf dem Gerät aktivieren – sie greift real in den Speicher ein.
+Verifiziert gegen echte Hardware (pye3dc 0.10):
+  * poll(): production.solar(+add)=PV, consumption.house=Last,
+    consumption.battery=Akku (+Laden), production.grid=Netz (+Bezug).
+  * EMS_REQ_SET_POWER Mode 3=Laden / 4=Entladen / 0=auto; Wert = Gesamt-
+    Leistung (PV zuerst, Netz für den Rest). Watchdog: ~alle 5 s neu senden,
+    sonst fällt der E3DC nach 10 s auf auto zurück. Anlaufzeit bis ~30 s.
+  * Reine Lade-/Entlade-BEGRENZUNG läuft über set_power_limits (persistent,
+    kein Watchdog) – NICHT über Mode 3/4.
+  * Steuerung NUR mit control_enabled: true – sie greift real in den Speicher
+    ein. Mode 4 (Netz-Entladen) ist noch nicht ohne PV gegengeprüft.
 """
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Dict, Optional
 
 import pandas as pd
@@ -30,6 +37,8 @@ import pandas as pd
 from .config import Config
 
 log = logging.getLogger("ems.rscp")
+
+WATCHDOG_RESEND_S = 5.0   # < 10 s E3DC-Watchdog
 
 
 class E3DCLink:
@@ -40,6 +49,14 @@ class E3DCLink:
         self.rc = config.e3dc_rscp
         self._e3dc = None
         self._live_cache: Optional[dict] = None
+        # Alle RSCP-I/O über eine Verbindung -> mit Lock serialisieren
+        # (Watchdog-Thread und Hauptthread greifen sonst gleichzeitig zu).
+        self._lock = threading.Lock()
+        # Watchdog-Steuerung (Mode 3/4 alle 5 s neu senden)
+        self._wd_thread: Optional[threading.Thread] = None
+        self._wd_stop = threading.Event()
+        self._wd_mode = 0
+        self._wd_value = 0
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -61,6 +78,18 @@ class E3DCLink:
         return self._e3dc
 
     def close(self) -> None:
+        # Watchdog stoppen und – falls Steuerung aktiv war – auf auto zurück,
+        # damit der Akku nach dem Beenden nicht in einem Manuell-Modus hängt.
+        self._wd_stop.set()
+        if self._wd_thread is not None:
+            self._wd_thread.join(timeout=2)
+            self._wd_thread = None
+        try:
+            if self._e3dc is not None and self.rc.control_enabled and self._wd_mode != 0:
+                self._set_power(0, 0)
+        except Exception:  # pragma: no cover
+            pass
+        self._wd_mode = 0
         try:
             if self._e3dc is not None and hasattr(self._e3dc, "disconnect"):
                 self._e3dc.disconnect()
@@ -97,8 +126,10 @@ class E3DCLink:
         if self._live_cache is not None and not force:
             return self._live_cache
         try:
-            e = self._connect()
-            self._live_cache = self._map_live(e.poll())
+            with self._lock:
+                e = self._connect()
+                poll = e.poll()
+            self._live_cache = self._map_live(poll)
             return self._live_cache
         except Exception as exc:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
@@ -121,18 +152,15 @@ class E3DCLink:
         Ein RSCP-Aufruf je 15-min-Fenster -> Zeitraum bewusst begrenzen
         (Backfill: eigenes Skript; zyklisch: nur wenige Fenster)."""
         out: Dict[str, float] = {}
-        try:
-            e = self._connect()
-        except Exception as exc:
-            log.warning("RSCP-Verbindung für Hauslast-Historie fehlgeschlagen (%s).", exc)
-            return out
         t = pd.Timestamp(start).floor("15min")
         end = pd.Timestamp(end).floor("15min")
         while t < end:
             try:
-                d = e.get_db_data_timestamp(
-                    startTimestamp=int(t.timestamp()), timespanSeconds=900,
-                    keepAlive=True)
+                with self._lock:
+                    e = self._connect()
+                    d = e.get_db_data_timestamp(
+                        startTimestamp=int(t.timestamp()), timespanSeconds=900,
+                        keepAlive=True)
             except Exception as exc:  # pragma: no cover
                 log.debug("RSCP Hauslast %s nicht lesbar (%s).", t, exc)
                 t += pd.Timedelta(minutes=15)
@@ -142,37 +170,78 @@ class E3DCLink:
             t += pd.Timedelta(minutes=15)
         return out
 
-    def apply_setpoints(self, row) -> bool:
-        """Steuerung per RSCP: Lade-/Entladeleistung begrenzen.
-
-        Nur mit control_enabled=true. Greift REAL in den Speicher ein. Bildet
-        die EMS-Befehle auf pye3dc.set_power_limits ab:
-          charge_limit  -> maxChargePower
-          discharge_limit-> maxDischargePower
-        Netzladen (grid_charge_w > 0) über set_power_limits nicht direkt
-        möglich -> Hinweis; wer es braucht, ergänzt set_manual_charge.
-        """
-        if not self.rc.control_enabled:
-            return False
-        try:
+    # ---- Steuerung ---------------------------------------------------- #
+    def _set_power(self, mode: int, value: int) -> None:
+        """Roh-Befehl EMS_REQ_SET_POWER (verifiziert: Mode 3=Laden, 4=Entladen,
+        0=auto; Wert = Gesamt-Leistung, PV zuerst, Netz für den Rest)."""
+        from e3dc._rscpTags import RscpTag, RscpType
+        with self._lock:
             e = self._connect()
-            cl = float(row.get("batt_charge_limit_w", 0.0))
-            dl = float(row.get("batt_discharge_limit_w", 0.0))
-            hb = self.cfg.house_battery
-            # "frei laufen" (Limit = Hardware-Max) -> Begrenzung deaktivieren.
-            limit_active = (cl < hb.max_dc_charge_w - 1 or dl < hb.max_discharge_w - 1)
-            e.set_power_limits(
-                enable=bool(limit_active),
-                max_charge=int(cl) if limit_active else None,
-                max_discharge=int(dl) if limit_active else None,
-            )
-            gc = float(row.get("batt_grid_charge_w", 0.0))
-            if gc > 1.0:
-                log.info("RSCP: Netzladen %.0f W angefordert – set_power_limits "
-                         "deckt das nicht ab (ggf. set_manual_charge ergänzen).", gc)
-            log.info("RSCP-Steuerung gesetzt: Limit aktiv=%s, Laden≤%.0f, "
-                     "Entladen≤%.0f W.", limit_active, cl, dl)
-            return True
+            e.sendRequest((RscpTag.EMS_REQ_SET_POWER, RscpType.Container, [
+                (RscpTag.EMS_REQ_SET_POWER_MODE, RscpType.UChar8, int(mode)),
+                (RscpTag.EMS_REQ_SET_POWER_VALUE, RscpType.Int32, int(value))]),
+                keepAlive=True)
+
+    def _set_limits(self, enable: bool, max_charge=None, max_discharge=None) -> None:
+        with self._lock:
+            e = self._connect()
+            e.set_power_limits(enable=bool(enable),
+                               max_charge=(int(max_charge) if enable else None),
+                               max_discharge=(int(max_discharge) if enable else None),
+                               keepAlive=True)
+
+    def _watchdog_loop(self) -> None:
+        """Sendet Mode 3/4 alle ~5 s neu (E3DC-Watchdog 10 s). Bei Mode 0 still."""
+        while not self._wd_stop.wait(WATCHDOG_RESEND_S):
+            mode, value = self._wd_mode, self._wd_value
+            if mode in (3, 4):
+                try:
+                    self._set_power(mode, value)
+                except Exception as exc:  # pragma: no cover
+                    log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s).", exc)
+
+    def _ensure_watchdog(self) -> None:
+        if self._wd_thread is None or not self._wd_thread.is_alive():
+            self._wd_stop.clear()
+            self._wd_thread = threading.Thread(target=self._watchdog_loop,
+                                               name="rscp-watchdog", daemon=True)
+            self._wd_thread.start()
+
+    def apply_control(self, row) -> None:
+        """Plan-Slot -> E3DC-Steuerung. Nur mit control_enabled=true.
+        Aktives Netzladen/-entladen über Mode 3/4 (mit 10-s-Watchdog);
+        reine Lade-/Entlade-BEGRENZUNG über persistente Limits (kein Watchdog).
+        GREIFT REAL IN DEN SPEICHER EIN."""
+        if not self.rc.control_enabled:
+            return
+        hb = self.cfg.house_battery
+        gc = float(row.get("batt_grid_charge_w", 0.0))
+        gd = float(row.get("batt_grid_discharge_w", 0.0))
+        try:
+            if gc > 5.0:
+                total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
+                self._set_limits(False)          # Limits aus, Mode 3 regelt
+                self._wd_mode, self._wd_value = 3, total
+                self._ensure_watchdog()
+                self._set_power(3, total)
+                log.info("RSCP: Netzladen aktiv, Mode 3, %d W (Watchdog).", total)
+            elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
+                total = round(float(row.get("batt_discharge_w", 0.0)))
+                self._set_limits(False)
+                self._wd_mode, self._wd_value = 4, total
+                self._ensure_watchdog()
+                self._set_power(4, total)
+                log.info("RSCP: Netz-Entladen aktiv, Mode 4, %d W (Watchdog).", total)
+            else:
+                # auto + persistente Lade-/Entlade-Limits gemäß Plan
+                if self._wd_mode != 0:
+                    self._wd_mode, self._wd_value = 0, 0
+                    self._set_power(0, 0)        # aktiv auf auto zurück
+                cl = float(row.get("batt_charge_limit_w", hb.max_dc_charge_w))
+                dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
+                limited = cl < hb.max_dc_charge_w - 1 or dl < hb.max_discharge_w - 1
+                self._set_limits(limited, cl, dl)
+                log.debug("RSCP: auto, Limit aktiv=%s (Laden≤%.0f, Entladen≤%.0f).",
+                          limited, cl, dl)
         except Exception as exc:
             log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
-            return False
