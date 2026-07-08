@@ -70,9 +70,11 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   1. **Einmaliger Backfill** (Hintergrund): `python rscp_import.py --config
      config.yaml --days 730` – 1 RSCP-Aufruf je 15-min-Fenster (2 Jahre
      ≈ 70 000, mehrere Stunden). Danach `history_source: true` setzen.
-  2. **Zyklisch**: der Dienst führt vor jeder Prognose die neuen Fenster nach
-     (auf 3 Tage gekappt, damit ein Lauf nie den ganzen Backfill zieht).
-  3. **`ems-history.timer`** (täglich) ist das Sicherheitsnetz für Lücken.
+  2. **Zyklisch**: der Dienst führt vor jeder Prognose (alle 15 min) die neuen
+     Fenster nach – idempotent und auf 3 Tage gekappt, sodass ein Lauf nie den
+     ganzen Backfill zieht und kurze Lücken sich selbst heilen. Nach einem
+     längeren Ausfall (> 3 Tage) den Backfill einmal manuell erneut laufen
+     lassen.
 
   Damit kann die Verbrauchs-Historie ohne InfluxDB/openHAB laufen. Preis,
   PV-Vorhersage und Temperatur kann der E3DC nicht liefern – deren
@@ -132,12 +134,9 @@ python -m ems.main --config config.yaml --log-level INFO
 sudo useradd -r -s /usr/sbin/nologin ems 2>/dev/null || true
 sudo chown -R ems:ems /opt/ems
 sudo cp ems.service ems-kalibrierung.service ems-kalibrierung.timer \
-        ems-backup.service ems-backup.timer \
-        ems-history.service ems-history.timer /etc/systemd/system/
+        ems-backup.service ems-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ems.service ems-kalibrierung.timer ems-backup.timer
-# Nur bei aktiver RSCP-Anbindung (config.e3dc_rscp): täglicher Historie-Import
-sudo systemctl enable --now ems-history.timer
 journalctl -u ems -f
 ```
 
