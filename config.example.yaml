@@ -216,18 +216,13 @@ monitoring:
   drift_alert_percent: 8
 
 # -----------------------------------------------------------------------------
-# Debug-Report per Mail (Button im Dashboard). Bei einer Implausibilität
-# schickt der Button die Eingaben + den Plan des letzten Laufs als JSON-Anhang,
-# mit dem sich der Fehler offline reproduzieren lässt. SMTP-Zugang eintragen.
+# Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer
+# Implausibilität lädt der Button den Schnappschuss (Eingaben + Plan des letzten
+# Laufs, zum Reproduzieren) herunter und öffnet das Mailprogramm vorausgefüllt
+# an mail_to - die JSON hängt man manuell an (kein SMTP-Server nötig).
 # -----------------------------------------------------------------------------
 report:
   enabled: false
-  smtp_host: ""
-  smtp_port: 587
-  smtp_user: ""
-  smtp_password: ""
-  use_tls: true
-  mail_from: ""
   mail_to: ""
   snapshot_path: "./last_run_debug.json"
 

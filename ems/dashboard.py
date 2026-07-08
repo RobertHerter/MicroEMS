@@ -91,6 +91,44 @@ def _ensure_plotlyjs(out_path: str) -> None:
             fh.write(get_plotlyjs())
 
 
+def _report_block(config: Config, now, violations) -> str:
+    """Debug-Button (nur wenn report.enabled): lädt den Schnappschuss und
+    öffnet das Mailprogramm vorausgefüllt. mailto kann keine Datei anhängen ->
+    Nutzer hängt die geladene last_run_debug.json manuell an."""
+    import urllib.parse
+    if not getattr(config, "report", None) or not config.report.enabled:
+        return ""
+    errs = sum(1 for v in (violations or []) if getattr(v, "severity", "") == "error")
+    warns = sum(1 for v in (violations or []) if getattr(v, "severity", "") == "warning")
+    hot = "hot" if errs else ""
+    subj = f"EMS Debug-Report {now.strftime('%Y-%m-%d %H:%M')} ({errs} Fehler, {warns} Warn.)"
+    body = ("Auffälligkeit im EMS.\n\n"
+            "Bitte die zuvor heruntergeladene Datei last_run_debug.json an "
+            "diese Mail anhängen (sie enthält Eingaben + Plan zum Reproduzieren, "
+            "keine Zugangsdaten).\n\nNotiz:\n")
+    mailto = "mailto:" + urllib.parse.quote(config.report.mail_to) + "?" + \
+        urllib.parse.urlencode({"subject": subj, "body": body})
+    return (
+        '<div class="report">'
+        f'<button class="{hot}" onclick="emsReport()">'
+        '✉ Debug-Daten herunterladen &amp; Mail öffnen</button>'
+        '<span class="msg" id="rmsg">bei Implausibilität: JSON laden, dann im '
+        'Mailprogramm anhängen</span></div>'
+        '<script>function emsReport(){'
+        "var a=document.createElement('a');a.href='report.json';"
+        "a.download='last_run_debug.json';document.body.appendChild(a);a.click();"
+        "a.remove();"
+        "document.getElementById('rmsg').textContent="
+        "'JSON geladen – Mailprogramm öffnet sich, Datei bitte anhängen.';"
+        f"setTimeout(function(){{window.location.href={_js_str(mailto)};}},600);"
+        '}</script>')
+
+
+def _js_str(s: str) -> str:
+    import json as _j
+    return _j.dumps(s)
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None) -> str:
     import plotly.graph_objects as go
@@ -319,9 +357,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False})
-    # Report-Button bei Verstößen hervorheben (rot)
-    report_btn_class = "hot" if any(
-        getattr(v, "severity", "") == "error" for v in (violations or [])) else ""
+    report_html = _report_block(config, now, violations)
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -356,24 +392,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {_alert_banner(violations)}
-<div class="report">
- <button id="rbtn" class="{report_btn_class}" onclick="sendReport()">
-  ✉ Debug-Daten per Mail senden</button>
- <span class="msg" id="rmsg">bei Implausibilität: schickt Eingaben + Plan zum Reproduzieren</span>
-</div>
-<script>
- function sendReport() {{
-   var b = document.getElementById('rbtn'), m = document.getElementById('rmsg');
-   var note = prompt('Optionale Notiz (was ist auffällig?):', '') || '';
-   b.disabled = true; m.textContent = 'sende ...';
-   fetch('report', {{method: 'POST',
-     headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
-     body: 'note=' + encodeURIComponent(note)}})
-    .then(function(r) {{ return r.text(); }})
-    .then(function(t) {{ m.textContent = t; b.disabled = false; }})
-    .catch(function(e) {{ m.textContent = 'Fehler: ' + e; b.disabled = false; }});
- }}
-</script>
+{report_html}
 {plot_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""

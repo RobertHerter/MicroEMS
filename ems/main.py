@@ -515,6 +515,7 @@ def start_dashboard_server(config: Config) -> None:
     out = os.path.abspath(config.dashboard.output_path)
     directory = os.path.dirname(out) or "."
     fname = os.path.basename(out)
+    snap_path = os.path.abspath(config.report.snapshot_path)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
@@ -532,36 +533,25 @@ def start_dashboard_server(config: Config) -> None:
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            # Debug-Schnappschuss als Download (Button im Dashboard).
+            if self.path.split("?")[0] == "/report.json":
+                try:
+                    with open(snap_path, "rb") as fh:
+                        body = fh.read()
+                except OSError:
+                    self.send_error(404, "Noch kein Debug-Schnappschuss vorhanden")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Disposition",
+                                 'attachment; filename="last_run_debug.json"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path in ("/", "/index.html", "/dashboard", "/dashboard.html"):
                 self.path = "/" + fname
             return super().do_GET()
-
-        def do_POST(self):
-            # Debug-Report per Mail anfordern (Button im Dashboard).
-            if self.path.split("?")[0] != "/report":
-                self.send_error(404)
-                return
-            length = int(self.headers.get("Content-Length", 0) or 0)
-            note = ""
-            if length:
-                try:
-                    import urllib.parse
-                    raw = self.rfile.read(min(length, 4000)).decode("utf-8", "replace")
-                    note = urllib.parse.parse_qs(raw).get("note", [""])[0]
-                except Exception:
-                    pass
-            try:
-                from .debugdump import send_report
-                msg = send_report(config, note=note)
-                code = 200
-            except Exception as exc:  # pragma: no cover
-                msg, code = f"Fehler: {exc}", 500
-            body = msg.encode("utf-8")
-            self.send_response(code)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
         def end_headers(self):
             # HTML/Version immer revalidieren, damit reload() die neue Datei

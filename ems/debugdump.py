@@ -1,17 +1,13 @@
-"""Debug-Schnappschuss + Mail-Versand.
+"""Debug-Schnappschuss zum Reproduzieren eines Laufs.
 
-save_snapshot() sichert je Zyklus alles, was zum REPRODUZIEREN eines Laufs
-nötig ist: die Optimierer-Eingaben (PV/Last/Preis/Einspeisung/SoC), die
-modellrelevante Konfiguration (ohne Zugangsdaten), den Plan, die Verstöße der
-Planprüfung und die SoC-Drift - als eine JSON-Datei.
+save_snapshot() sichert je Zyklus alles, was zum REPRODUZIEREN nötig ist: die
+Optimierer-Eingaben (PV/Last/Preis/Einspeisung/SoC), die modellrelevante
+Konfiguration (ohne Zugangsdaten), den Plan, die Verstöße der Planprüfung und
+die SoC-Drift - als eine JSON-Datei.
 
-send_report() hängt diese Datei an eine Mail (SMTP) und schickt sie an die in
-config.report konfigurierte Adresse. Über den Button im Dashboard kann man so
-bei einer Implausibilität die vollständigen Debugdaten anfordern, mit denen
-sich der Fehler offline exakt nachstellen lässt (backtest / Optimizer).
-
-Keine Zugangsdaten im Snapshot: die Konfiguration wird auf die Modell-Parameter
-reduziert.
+Der Debug-Button im Dashboard lädt diese Datei herunter und öffnet das
+Mailprogramm vorausgefüllt (Anhang manuell) - kein Server-SMTP nötig. Mit dem
+JSON lässt sich der Fehler offline exakt nachstellen (backtest / Optimizer).
 """
 from __future__ import annotations
 
@@ -19,7 +15,7 @@ import json
 import logging
 import os
 from dataclasses import asdict, is_dataclass
-from typing import List, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -92,67 +88,3 @@ def save_snapshot(config: Config, now, inputs, result, violations,
         json.dump(snap, fh, ensure_ascii=False, indent=1, default=str)
     os.replace(tmp, path)
     return path
-
-
-def send_report(config: Config, note: str = "") -> str:
-    """Verschickt den zuletzt gesicherten Schnappschuss per Mail.
-    Rückgabe: Statustext (für die Dashboard-Rückmeldung)."""
-    import smtplib
-    from email.message import EmailMessage
-
-    r = config.report
-    if not r.enabled:
-        return "Mail-Report ist deaktiviert (report.enabled=false in config.yaml)."
-    if not (r.smtp_host and r.mail_to and r.mail_from):
-        return "SMTP unvollständig konfiguriert (smtp_host/mail_from/mail_to)."
-    path = r.snapshot_path
-    if not os.path.exists(path):
-        return "Noch kein Debug-Schnappschuss vorhanden (erster Lauf abwarten)."
-
-    with open(path, "rb") as fh:
-        data = fh.read()
-    try:
-        meta = json.loads(data)
-        vio = meta.get("violations", [])
-        errs = sum(1 for v in vio if v["severity"] == "error")
-        warns = sum(1 for v in vio if v["severity"] == "warning")
-        summary = (f"Status {meta.get('status')}, {errs} Fehler, {warns} Warnungen, "
-                   f"Drift {meta.get('drift_soc_mae_pp')} pp, "
-                   f"Kosten {meta.get('total_cost_eur')} €")
-        stamp = meta.get("generated", "")
-    except Exception:
-        summary, stamp = "(Schnappschuss nicht lesbar)", ""
-
-    msg = EmailMessage()
-    msg["Subject"] = f"EMS Debug-Report {stamp} – {summary}"
-    msg["From"] = r.mail_from
-    msg["To"] = r.mail_to
-    body = ["EMS Debug-Report (per Dashboard-Button angefordert).", "",
-            summary, ""]
-    if note:
-        body += [f"Notiz: {note}", ""]
-    for v in (vio if 'vio' in dir() else []):
-        body.append(f"  [{v['severity']}] {v['rule']}: {v['detail']}")
-    body += ["", "Anhang last_run_debug.json enthält Eingaben + Plan zum "
-             "Reproduzieren (backtest/Optimizer). Keine Zugangsdaten enthalten."]
-    msg.set_content("\n".join(body))
-    msg.add_attachment(data, maintype="application", subtype="json",
-                       filename="last_run_debug.json")
-
-    try:
-        if r.use_tls:
-            with smtplib.SMTP(r.smtp_host, r.smtp_port, timeout=20) as s:
-                s.starttls()
-                if r.smtp_user:
-                    s.login(r.smtp_user, r.smtp_password)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(r.smtp_host, r.smtp_port, timeout=20) as s:
-                if r.smtp_user:
-                    s.login(r.smtp_user, r.smtp_password)
-                s.send_message(msg)
-    except Exception as exc:
-        log.warning("Debug-Report-Mail fehlgeschlagen (%s).", exc)
-        return f"Mailversand fehlgeschlagen: {exc}"
-    log.info("Debug-Report an %s gesendet.", r.mail_to)
-    return f"Debug-Report an {r.mail_to} gesendet."

@@ -258,9 +258,11 @@ Zwei Werkzeuge machen die Suche systematisch:
   prognostizierten mit dem gemessenen Haus-SoC (MAE in Prozentpunkten ->
   Measurement `ems_drift`), Warnung über der Schwelle. Deckt Modellfehler auf,
   die kein einzelner Plan zeigt (Wirkungsgrade, Standby, Alterung).
-- **Debug-Report-Button** (Dashboard): schickt bei einer Implausibilität die
-  Eingaben + den Plan des letzten Laufs per Mail (SMTP unter `report:`), als
-  JSON-Anhang zum Reproduzieren im Backtest/Optimizer. Ohne Zugangsdaten.
+- **Debug-Report-Button** (Dashboard, nur bei `report.enabled: true`): lädt bei
+  einer Implausibilität den Schnappschuss des letzten Laufs (Eingaben + Plan,
+  ohne Zugangsdaten) herunter und öffnet das Mailprogramm vorausgefüllt an
+  `report.mail_to` – die JSON hängt man manuell an. Damit lässt sich der Fehler
+  offline im Backtest/Optimizer exakt nachstellen. Kein SMTP-Server nötig.
 - **`backtest.py`** – spielt vergangene Tage aus der InfluxDB durch den
   Optimierer (perfekte Voraussicht) und prüft jeden Plan. Findet Modellfehler
   über Monate echter Daten in Minuten, statt monatelang zuzuschauen:

@@ -302,15 +302,10 @@ class MonitoringConfig:
 
 @dataclass
 class ReportConfig:
-    # Debug-Report per Mail (Button im Dashboard). SMTP-Zugang selbst eintragen.
+    # Debug-Report-Button im Dashboard: lädt den Schnappschuss herunter und
+    # öffnet das Mailprogramm vorausgefüllt (Anhang manuell). Kein SMTP nötig.
     enabled: bool = False
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    use_tls: bool = True
-    mail_from: str = ""
-    mail_to: str = ""
+    mail_to: str = ""                    # Vorbelegung im Mailprogramm
     snapshot_path: str = "./last_run_debug.json"
 
 
@@ -527,12 +522,6 @@ def load_config(path: str) -> Config:
     rep = raw.get("report", {})
     report = ReportConfig(
         enabled=bool(rep.get("enabled", False)),
-        smtp_host=rep.get("smtp_host", ""),
-        smtp_port=int(rep.get("smtp_port", 587)),
-        smtp_user=rep.get("smtp_user", ""),
-        smtp_password=rep.get("smtp_password", ""),
-        use_tls=bool(rep.get("use_tls", True)),
-        mail_from=rep.get("mail_from", ""),
         mail_to=rep.get("mail_to", ""),
         snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
     )
