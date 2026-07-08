@@ -17,15 +17,15 @@ geloggt und der bisherige Weg (InfluxDB lesen, MQTT/Homey steuern) läuft weiter
 Verifiziert gegen echte Hardware (pye3dc 0.10):
   * poll(): production.solar(+add)=PV, consumption.house=Last,
     consumption.battery=Akku (+Laden), production.grid=Netz (+Bezug).
-  * EMS_REQ_SET_POWER Mode 3=Laden / 0=auto; Wert = Gesamt-Ladeleistung (PV
-    zuerst, Netz für den Rest). Watchdog: ~alle 5 s neu senden, sonst fällt der
-    E3DC nach 10 s auf auto zurück. Anlaufzeit bis ~30 s. Bei 8 kW verifiziert.
-  * Mode 4 (Netz-Entladen) NICHT nutzbar: im Test lud der Akku bei Mode 4 mit
-    voller Leistung statt zu entladen (Gegenteil!). apply_control() führt
-    geplantes Netz-Entladen daher NICHT aus (Sicherheit) – erst nach Klärung
-    ohne PV / korrekter Konvention aktivieren.
-  * Reine Lade-/Entlade-BEGRENZUNG läuft über set_power_limits (persistent,
-    kein Watchdog) – NICHT über Mode 3/4.
+  * EMS_REQ_SET_POWER-Modi (Referenz RSCP-MQTT-Bridge, an Hardware verifiziert):
+    0=auto, 1=idle, 2=discharge, 3=charge(PV), 4=grid_charge. Wert = Leistung
+    in W (Gesamt; PV zuerst, Netz für den Rest). Watchdog: ~alle 5 s neu senden,
+    sonst fällt der E3DC nach 10 s auf auto zurück. Anlaufzeit bis ~30 s.
+    Verifiziert: Mode 4 Netzladen @8 kW (Netzbezug), Mode 2 Entladen @3 kW
+    (Akku -3 kW, Export).
+  * apply_control(): Netzladen -> Mode 4, Netz-Entladen -> Mode 2 (nur bei
+    allow_grid_discharge). Reine Lade-/Entlade-BEGRENZUNG über set_power_limits
+    (persistent, kein Watchdog) – NICHT über die Modi.
   * Steuerung NUR mit control_enabled: true – sie greift real in den Speicher ein.
 """
 from __future__ import annotations
@@ -194,10 +194,10 @@ class E3DCLink:
                                keepAlive=True)
 
     def _watchdog_loop(self) -> None:
-        """Sendet Mode 3/4 alle ~5 s neu (E3DC-Watchdog 10 s). Bei Mode 0 still."""
+        """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
             mode, value = self._wd_mode, self._wd_value
-            if mode in (3, 4):
+            if mode in (2, 3, 4):
                 try:
                     self._set_power(mode, value)
                 except Exception as exc:  # pragma: no cover
@@ -222,23 +222,24 @@ class E3DCLink:
         gd = float(row.get("batt_grid_discharge_w", 0.0))
         try:
             if gc > 5.0:
+                # Netzladen: Mode 4 (grid_charge), Wert = Gesamt-Ladeleistung
+                # (PV zuerst, Netz für den Rest). Verifiziert @8 kW.
                 total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
-                self._set_limits(False)          # Limits aus, Mode 3 regelt
-                self._wd_mode, self._wd_value = 3, total
+                self._set_limits(False)          # Limits aus, Mode regelt
+                self._wd_mode, self._wd_value = 4, total
                 self._ensure_watchdog()
-                self._set_power(3, total)
-                log.info("RSCP: Netzladen aktiv, Mode 3, %d W (Watchdog).", total)
+                self._set_power(4, total)
+                log.info("RSCP: Netzladen aktiv, Mode 4, %d W (Watchdog).", total)
+            elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
+                # Netz-Entladen: Mode 2 (discharge), Wert = Entladeleistung.
+                # Verifiziert @3 kW (Akku -3042 W, Export).
+                val = round(float(row.get("batt_discharge_w", 0.0)))
+                self._set_limits(False)
+                self._wd_mode, self._wd_value = 2, val
+                self._ensure_watchdog()
+                self._set_power(2, val)
+                log.info("RSCP: Netz-Entladen aktiv, Mode 2, %d W (Watchdog).", val)
             else:
-                # SICHERHEIT: Mode 4 (Netz-Entladen) ist an dieser Firmware
-                # NICHT verifiziert - im Test lud der Akku bei Mode 4 mit voller
-                # Leistung, statt zu entladen (Gegenteil!). Daher wird geplantes
-                # Netz-Entladen NICHT per RSCP ausgeführt, sondern ignoriert
-                # (fällt auf auto/Limits zurück). Erst nach Verifikation ohne PV
-                # aktivieren.
-                if gd > 5.0:
-                    log.warning("RSCP: geplantes Netz-Entladen (%.0f W) wird NICHT "
-                                "per RSCP ausgeführt (Mode 4 unverifiziert/lädt "
-                                "statt zu entladen) – auto/Limits.", gd)
                 # auto + persistente Lade-/Entlade-Limits gemäß Plan
                 if self._wd_mode != 0:
                     self._wd_mode, self._wd_value = 0, 0

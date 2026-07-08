@@ -93,16 +93,16 @@ def test_control_disabled_is_noop():
     assert link._e3dc.limits is None and not link._e3dc.power_calls
 
 
-def test_control_grid_charge_uses_mode3():
+def test_control_grid_charge_uses_mode4():
     cfg, link = _link(control_enabled=True)
     hb = cfg.house_battery
     link.apply_control({"batt_grid_charge_w": 3000, "batt_dc_charge_w": 2000,
                         "batt_ac_charge_w": 3000, "batt_grid_discharge_w": 0,
                         "batt_charge_limit_w": hb.max_dc_charge_w,
                         "batt_discharge_limit_w": hb.max_discharge_w})
-    # Mode 3, Wert = dc+gc = 5000; Limits deaktiviert (Mode regelt)
+    # Mode 4 (grid_charge), Wert = dc+gc = 5000; Limits deaktiviert (Mode regelt)
     fake = link._e3dc
-    assert fake.last_power == (3, 5000)
+    assert fake.last_power == (4, 5000)
     assert fake.limits["enable"] is False
     link.close()   # Watchdog stoppen, zurück auf auto (Mode 0)
     assert fake.power_calls[-1][0] == 0
@@ -121,9 +121,8 @@ def test_control_limit_uses_power_limits_not_mode3():
     assert not link._e3dc.power_calls        # kein SET_POWER/Mode 3
 
 
-def test_control_grid_discharge_not_executed():
-    """Sicherheit: geplantes Netz-Entladen wird NICHT per Mode 4 gesendet
-    (Mode 4 lud im Test statt zu entladen). Fällt auf auto/Limits zurück."""
+def test_control_grid_discharge_uses_mode2():
+    """Netz-Entladen -> Mode 2 (discharge), Wert = Entladeleistung."""
     cfg, link = _link(control_enabled=True)
     cfg.optimization.allow_grid_discharge = True
     hb = cfg.house_battery
@@ -131,8 +130,20 @@ def test_control_grid_discharge_not_executed():
                         "batt_discharge_w": 3000,
                         "batt_charge_limit_w": hb.max_dc_charge_w,
                         "batt_discharge_limit_w": hb.max_discharge_w})
-    # kein SET_POWER-Mode-4-Befehl
-    assert all(m != 4 for m, _ in link._e3dc.power_calls)
+    assert link._e3dc.last_power == (2, 3000)
+    assert link._e3dc.limits["enable"] is False
+
+
+def test_control_grid_discharge_blocked_when_not_allowed():
+    """Ohne allow_grid_discharge kein Mode 2 (fällt auf auto/Limits)."""
+    cfg, link = _link(control_enabled=True)
+    cfg.optimization.allow_grid_discharge = False
+    hb = cfg.house_battery
+    link.apply_control({"batt_grid_charge_w": 0, "batt_grid_discharge_w": 3000,
+                        "batt_discharge_w": 3000,
+                        "batt_charge_limit_w": hb.max_dc_charge_w,
+                        "batt_discharge_limit_w": hb.max_discharge_w})
+    assert all(m != 2 for m, _ in link._e3dc.power_calls)
 
 
 def test_control_free_running_disables_limit():
