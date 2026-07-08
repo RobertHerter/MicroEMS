@@ -220,6 +220,22 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
             (log.error if v.severity == "error" else log.warning)("Planprüfung: %s", v)
         log.info("Planprüfung: %s.", summarize(violations))
 
+        # --- 3c) SoC-Drift (Modell gegen Realität) ---------------------- #
+        drift_mae = None
+        if config.monitoring.drift_enabled:
+            try:
+                from .drift import DriftMonitor
+                drift_mae = DriftMonitor(config).check(repo, now)
+            except Exception as exc:
+                log.warning("Drift-Check fehlgeschlagen (%s).", exc)
+
+        # --- 3d) Debug-Schnappschuss (für den Mail-Report-Button) ------- #
+        try:
+            from .debugdump import save_snapshot
+            save_snapshot(config, now, inputs, result, violations, drift_mae)
+        except Exception as exc:
+            log.warning("Debug-Schnappschuss fehlgeschlagen (%s).", exc)
+
         # --- 4) MQTT (best effort – darf den Lauf nicht abbrechen) ------ #
         try:
             if one_shot:
@@ -239,6 +255,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
                     "warning",
                     f"Auto erreicht Ziel-SoC nicht: es fehlen "
                     f"{result.car_target_shortfall_wh / 1000.0:.1f} kWh zur Abfahrt.")
+            if drift_mae is not None and drift_mae > config.monitoring.drift_alert_percent:
+                publisher.publish_alert(
+                    "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
+                               f"({config.monitoring.drift_alert_percent:.0f} pp) – "
+                               f"Modell weicht von der Realität ab.")
             publisher.publish(result.table, now)
             if one_shot:
                 publisher.close()
@@ -514,6 +535,33 @@ def start_dashboard_server(config: Config) -> None:
             if self.path in ("/", "/index.html", "/dashboard", "/dashboard.html"):
                 self.path = "/" + fname
             return super().do_GET()
+
+        def do_POST(self):
+            # Debug-Report per Mail anfordern (Button im Dashboard).
+            if self.path.split("?")[0] != "/report":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            note = ""
+            if length:
+                try:
+                    import urllib.parse
+                    raw = self.rfile.read(min(length, 4000)).decode("utf-8", "replace")
+                    note = urllib.parse.parse_qs(raw).get("note", [""])[0]
+                except Exception:
+                    pass
+            try:
+                from .debugdump import send_report
+                msg = send_report(config, note=note)
+                code = 200
+            except Exception as exc:  # pragma: no cover
+                msg, code = f"Fehler: {exc}", 500
+            body = msg.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def end_headers(self):
             # HTML/Version immer revalidieren, damit reload() die neue Datei

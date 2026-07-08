@@ -319,6 +319,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False})
+    # Report-Button bei Verstößen hervorheben (rot)
+    report_btn_class = "hot" if any(
+        getattr(v, "severity", "") == "error" for v in (violations or [])) else ""
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -342,11 +345,35 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
  .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
  .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
+ .report {{ margin: 4px 0 12px; }}
+ .report button {{ font-size: 13px; padding: 7px 14px; border-radius: 7px;
+        border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
+ .report button.hot {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e;
+        font-weight: 600; }}
+ .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {_alert_banner(violations)}
+<div class="report">
+ <button id="rbtn" class="{report_btn_class}" onclick="sendReport()">
+  ✉ Debug-Daten per Mail senden</button>
+ <span class="msg" id="rmsg">bei Implausibilität: schickt Eingaben + Plan zum Reproduzieren</span>
+</div>
+<script>
+ function sendReport() {{
+   var b = document.getElementById('rbtn'), m = document.getElementById('rmsg');
+   var note = prompt('Optionale Notiz (was ist auffällig?):', '') || '';
+   b.disabled = true; m.textContent = 'sende ...';
+   fetch('report', {{method: 'POST',
+     headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+     body: 'note=' + encodeURIComponent(note)}})
+    .then(function(r) {{ return r.text(); }})
+    .then(function(t) {{ m.textContent = t; b.disabled = false; }})
+    .catch(function(e) {{ m.textContent = 'Fehler: ' + e; b.disabled = false; }});
+ }}
+</script>
 {plot_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""

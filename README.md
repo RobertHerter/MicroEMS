@@ -238,6 +238,8 @@ Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
   DST-Umstellungstage (92/100 Slots).
 - `tests/test_forecast.py` – Rezenz-Gewichtung, Datenlücken, leere Historie.
 - `tests/test_validate.py` – Invarianten-Validator (`ems/validate.py`).
+- `tests/test_fuzz.py` – Fuzz (zufällige Szenarien × Invarianten) + metamorphe
+  Relationen (Preis-Offset, höhere Vergütung, mehr PV).
 
 ## Modell-Prüfung: Invarianten & Backtest
 
@@ -247,9 +249,18 @@ Zwei Werkzeuge machen die Suche systematisch:
 - **`ems/validate.py`** – prüft einen fertigen Plan gegen Invarianten, die
   immer gelten müssen (SoC-/Leistungsgrenzen, Energiebilanz, kein
   gleichzeitiges Laden/Entladen, DC-Laden nur aus PV-Überschuss, kein Entladen
-  bei PV-Überschuss, Einspeisebegrenzung) plus ökonomische Plausibilität
-  (Plan nie teurer als die Ohne-EMS-Baseline). Reines Prüfmodul – nutzbar in
-  Tests, im Backtest und (optional) live auf `ems/alert`.
+  bei PV-Überschuss, Einspeisebegrenzung, **Ausführbarkeit**: die an Homey
+  gesendeten Befehle passen zu den geplanten Flüssen) plus ökonomische
+  Plausibilität (Plan nie teurer als die Ohne-EMS-Baseline). Läuft in Tests,
+  im Backtest UND live: nach jeder Optimierung, mit Anzeige im Dashboard
+  (Banner + Kachel) und Alarm auf `ems/alert`.
+- **`ems/drift.py`** – Predicted-vs-Actual: vergleicht je Lauf den
+  prognostizierten mit dem gemessenen Haus-SoC (MAE in Prozentpunkten ->
+  Measurement `ems_drift`), Warnung über der Schwelle. Deckt Modellfehler auf,
+  die kein einzelner Plan zeigt (Wirkungsgrade, Standby, Alterung).
+- **Debug-Report-Button** (Dashboard): schickt bei einer Implausibilität die
+  Eingaben + den Plan des letzten Laufs per Mail (SMTP unter `report:`), als
+  JSON-Anhang zum Reproduzieren im Backtest/Optimizer. Ohne Zugangsdaten.
 - **`backtest.py`** – spielt vergangene Tage aus der InfluxDB durch den
   Optimierer (perfekte Voraussicht) und prüft jeden Plan. Findet Modellfehler
   über Monate echter Daten in Minuten, statt monatelang zuzuschauen:

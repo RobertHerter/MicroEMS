@@ -206,6 +206,32 @@ savings:
   state_path: "./savings_state.json"
 
 # -----------------------------------------------------------------------------
+# Monitoring: Predicted-vs-Actual-SoC-Drift (Modell gegen Realität).
+# MAE (Prozentpunkte) Prognose-SoC vs. gemessener SoC im Fenster -> ems_drift;
+# über der Schwelle Warnung auf ems/alert.
+# -----------------------------------------------------------------------------
+monitoring:
+  drift_enabled: true
+  drift_window_hours: 12
+  drift_alert_percent: 8
+
+# -----------------------------------------------------------------------------
+# Debug-Report per Mail (Button im Dashboard). Bei einer Implausibilität
+# schickt der Button die Eingaben + den Plan des letzten Laufs als JSON-Anhang,
+# mit dem sich der Fehler offline reproduzieren lässt. SMTP-Zugang eintragen.
+# -----------------------------------------------------------------------------
+report:
+  enabled: false
+  smtp_host: ""
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  use_tls: true
+  mail_from: ""
+  mail_to: ""
+  snapshot_path: "./last_run_debug.json"
+
+# -----------------------------------------------------------------------------
 # Dashboard
 # -----------------------------------------------------------------------------
 dashboard:

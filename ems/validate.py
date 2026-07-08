@@ -129,6 +129,22 @@ def validate_plan(config: Config, result: OptimizerResult,
             exp > config.inverter.max_export_w + TOL_W,
             f"Einspeisung über Netzanschluss-Limit {config.inverter.max_export_w:.0f} W"))
 
+    # ---- Ausführbarkeit: Befehl <-> Fluss (error) ----------------------- #
+    # Homey bekommt Limits + grid_charge; wenn diese Befehle nicht zu den
+    # geplanten Flüssen passen, tut der E3DC etwas anderes als der Plan meint.
+    ch_lim = col("batt_charge_limit_w", hb.max_dc_charge_w)
+    dis_lim = col("batt_discharge_limit_w", hb.max_discharge_w)
+    add(_mask_violation("exec.grid_charge_cmd", "error",
+        (ac - col("batt_grid_charge_w")).abs() > 2 * TOL_W,
+        "AC-Ladeleistung ≠ Netzlade-Befehl (batt_grid_charge_w)"))
+    add(_mask_violation("exec.dc_over_charge_limit", "error", dc > ch_lim + TOL_W,
+        "DC-Laden über dem an Homey gesendeten Ladelimit"))
+    add(_mask_violation("exec.dis_over_limit", "error", dis > dis_lim + TOL_W,
+        "Entladen über dem an Homey gesendeten Entladelimit"))
+    add(_mask_violation("exec.grid_discharge_in_export", "error",
+        col("batt_grid_discharge_w") > exp + TOL_W,
+        "Netz-Entladung größer als die geplante Gesamteinspeisung"))
+
     # Energiebilanz je Slot (muss per Konstruktion ~0 sein)
     pv_to_ac = pv - dc - curt
     balance = imp - exp - (load + car + ac - pv_to_ac - dis)

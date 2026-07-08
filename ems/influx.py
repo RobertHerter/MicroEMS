@@ -270,5 +270,19 @@ class InfluxRepository:
         measurement = self.config.influxdb.outputs[output_key]
         self.backend.write_frame(measurement, df, tags=tags)
 
+    def read_slots_output(self, output_key: str, field: str,
+                          start: datetime, end: datetime) -> Optional[pd.Series]:
+        """Liest ein selbst geschriebenes Output-Measurement (z.B.
+        predicted_state) auf dem Slot-Raster zurück. Für die Drift-Prüfung
+        (Prognose vs. Ist). Ohne scale/offset (interne Einheiten)."""
+        measurement = self.config.influxdb.outputs.get(output_key)
+        if measurement is None:
+            return None
+        spec = SignalSpec(measurement=measurement, field=field, aggregation="last")
+        raw = self.backend.read_slots(spec, start, end, self.slot_seconds)
+        if raw.empty:
+            return None
+        return raw.tz_convert(self.tz)
+
     def close(self) -> None:
         self.backend.close()

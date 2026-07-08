@@ -293,6 +293,28 @@ class SavingsConfig:
 
 
 @dataclass
+class MonitoringConfig:
+    # Predicted-vs-Actual-SoC-Drift (ems/drift.py).
+    drift_enabled: bool = True
+    drift_window_hours: float = 12.0
+    drift_alert_percent: float = 8.0     # Warnung ab dieser MAE (Prozentpunkte)
+
+
+@dataclass
+class ReportConfig:
+    # Debug-Report per Mail (Button im Dashboard). SMTP-Zugang selbst eintragen.
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    use_tls: bool = True
+    mail_from: str = ""
+    mail_to: str = ""
+    snapshot_path: str = "./last_run_debug.json"
+
+
+@dataclass
 class Config:
     general: GeneralConfig
     influxdb: InfluxConfig
@@ -306,6 +328,8 @@ class Config:
     dashboard: DashboardConfig
     calibration: CalibrationConfig
     savings: SavingsConfig = field(default_factory=SavingsConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    report: ReportConfig = field(default_factory=ReportConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -366,6 +390,7 @@ def load_config(path: str) -> Config:
     signals = {name: SignalSpec.from_dict(spec) for name, spec in inf["signals"].items()}
     outputs = dict(inf["outputs"])
     outputs.setdefault("savings", "ems_savings")
+    outputs.setdefault("drift", "ems_drift")
     influxdb = InfluxConfig(
         version=int(inf["version"]),
         v1=inf.get("v1", {}),
@@ -492,6 +517,26 @@ def load_config(path: str) -> Config:
         state_path=sav.get("state_path", "./savings_state.json"),
     )
 
+    mon = raw.get("monitoring", {})
+    monitoring = MonitoringConfig(
+        drift_enabled=bool(mon.get("drift_enabled", True)),
+        drift_window_hours=float(mon.get("drift_window_hours", 12.0)),
+        drift_alert_percent=float(mon.get("drift_alert_percent", 8.0)),
+    )
+
+    rep = raw.get("report", {})
+    report = ReportConfig(
+        enabled=bool(rep.get("enabled", False)),
+        smtp_host=rep.get("smtp_host", ""),
+        smtp_port=int(rep.get("smtp_port", 587)),
+        smtp_user=rep.get("smtp_user", ""),
+        smtp_password=rep.get("smtp_password", ""),
+        use_tls=bool(rep.get("use_tls", True)),
+        mail_from=rep.get("mail_from", ""),
+        mail_to=rep.get("mail_to", ""),
+        snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
+    )
+
     return Config(
         general=general,
         influxdb=influxdb,
@@ -505,4 +550,6 @@ def load_config(path: str) -> Config:
         dashboard=dashboard,
         calibration=calibration,
         savings=savings,
+        monitoring=monitoring,
+        report=report,
     )
