@@ -31,6 +31,7 @@ from .forecast import (LoadForecaster, dampen_estimated,
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
+from .validate import summarize, validate_plan
 
 log = logging.getLogger("ems.main")
 
@@ -208,18 +209,31 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None) -> Non
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
 
+        # --- 3b) Planprüfung (Invarianten) ------------------------------ #
+        # Fängt Modellfehler ("das darf nie passieren") automatisch ab, statt
+        # sich auf den Blick ins Dashboard zu verlassen. Errors = echter Bug,
+        # Warnungen = verdächtig (siehe ems/validate.py).
+        violations = validate_plan(config, result, inputs)
+        plan_errors = [v for v in violations if v.severity == "error"]
+        plan_warnings = [v for v in violations if v.severity == "warning"]
+        for v in violations:
+            (log.error if v.severity == "error" else log.warning)("Planprüfung: %s", v)
+        log.info("Planprüfung: %s.", summarize(violations))
+
         # --- 4) MQTT (best effort – darf den Lauf nicht abbrechen) ------ #
         try:
             if one_shot:
                 publisher = HomeyMqttPublisher(config)
-            if result.infeasible:
+            # Ein konsolidierter Alarm aus der Planprüfung (deckt infeasible und
+            # Solver-Zeitlimit mit ab); Errors haben Vorrang vor Warnungen.
+            if plan_errors:
                 publisher.publish_alert(
-                    "warning", f"Optimierung nicht optimal ({result.status}) – "
-                               f"Fallback 'auto' ohne Eingriffe aktiv.")
-            if result.solver_hit_limit:
+                    "error", "Planprüfung: " + "; ".join(
+                        f"{v.rule} ({v.count})" for v in plan_errors[:5]))
+            elif plan_warnings:
                 publisher.publish_alert(
-                    "warning", "Solver-Zeitlimit erreicht – Plan kann "
-                               "suboptimal sein (solver_time_limit_s prüfen).")
+                    "warning", "Planprüfung: " + "; ".join(
+                        f"{v.rule} ({v.count})" for v in plan_warnings[:5]))
             if result.car_target_shortfall_wh > 100.0:
                 publisher.publish_alert(
                     "warning",
