@@ -68,23 +68,27 @@ class E3DCLink:
         self._e3dc = None
 
     # ------------------------------------------------------------------ #
-    def _map_live(self, poll: dict, batt: Optional[dict]) -> dict:
-        """poll()/get_battery_data() -> interne Einheiten (W, %).
-        Zentralisiert, damit Feldnamen-Abweichungen hier korrigierbar sind."""
+    def _map_live(self, poll: dict) -> dict:
+        """pye3dc.poll() -> interne Einheiten (W, %).
+        Gegen echte Hardware (pye3dc 0.10) verifiziert:
+          production.solar (+ .add) = PV, consumption.house = Hauslast,
+          consumption.battery = Akku (+ = Laden, - = Entladen),
+          production.grid = Netz (+ = Bezug, - = Einspeisung).
+        Zentralisiert, damit Abweichungen je Modell/Version hier korrigierbar."""
         prod = poll.get("production", {}) or {}
         cons = poll.get("consumption", {}) or {}
         gs = float(self.rc.grid_sign)
         bs = float(self.rc.batt_sign)
         grid = prod.get("grid")
-        batt_p = prod.get("battery")
-        if batt_p is None and batt:
-            batt_p = batt.get("power")
+        batt = cons.get("battery")
+        pv = (prod.get("solar") or 0.0) + (prod.get("add") or 0.0)
         return {
             "soc_percent": poll.get("stateOfCharge"),
-            "pv_w": prod.get("solar"),
+            "pv_w": pv,
             "house_load_w": cons.get("house"),
             "grid_w": (gs * grid if grid is not None else None),
-            "battery_w": (bs * batt_p if batt_p is not None else None),
+            "battery_w": (bs * batt if batt is not None else None),
+            "wallbox_w": cons.get("wallbox"),
         }
 
     def read_live(self, force: bool = False) -> Optional[dict]:
@@ -93,13 +97,7 @@ class E3DCLink:
             return self._live_cache
         try:
             e = self._connect()
-            poll = e.poll()
-            batt = None
-            try:
-                batt = e.get_battery_data()
-            except Exception:  # pragma: no cover - optional
-                pass
-            self._live_cache = self._map_live(poll, batt)
+            self._live_cache = self._map_live(e.poll())
             return self._live_cache
         except Exception as exc:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)

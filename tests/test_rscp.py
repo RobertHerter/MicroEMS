@@ -6,19 +6,18 @@ from tests.test_synthetic import make_config
 
 
 class FakeE3DC:
+    # Struktur wie pye3dc 0.10 poll() gegen echte Hardware verifiziert:
+    # Akku steht unter consumption.battery (+ = Laden), PV unter production.solar.
     def __init__(self):
         self.limits = None
         self._poll = {
             "stateOfCharge": 63.0,
-            "production": {"solar": 4200.0, "grid": -1500.0, "battery": 900.0},
-            "consumption": {"house": 1800.0, "wallbox": 0.0},
+            "production": {"solar": 4200.0, "add": 0.0, "grid": -1500.0},
+            "consumption": {"house": 1800.0, "wallbox": 0.0, "battery": 900.0},
         }
 
     def poll(self):
         return self._poll
-
-    def get_battery_data(self):
-        return {"power": 900.0}
 
     def set_power_limits(self, enable=None, max_charge=None, max_discharge=None):
         self.limits = {"enable": enable, "max_charge": max_charge,
