@@ -125,8 +125,8 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
         for t in range(N):
             prob += on[t] <= req_on[t]
     _switch_penalty(prob, on, N, ld.switch_penalty_ct, cost_terms, f"cl_{sg}")
-    if ld.mqtt_topic:
-        mqtt_map.append((ld.mqtt_topic, f"load_{sg}_w"))
+    mqtt_map.append({"label": ld.name, "column": f"load_{sg}_w",
+                     "topic": ld.mqtt_topic})
 
 
 def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
@@ -174,6 +174,6 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
                         cost_terms, f"cl_{sg}_{ssg}")
         col = f"load_{sg}_{ssg}_w"
         outputs[col] = [st.power_w * stage_on[st.name][t] for t in range(N)]
-        if st.mqtt_topic:
-            mqtt_map.append((st.mqtt_topic, col))
+        mqtt_map.append({"label": f"{ld.name}/{st.name}", "column": col,
+                         "topic": st.mqtt_topic})
     outputs[f"load_{sg}_temp_c"] = [T[t] for t in range(N)]

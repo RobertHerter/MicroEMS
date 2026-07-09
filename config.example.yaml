@@ -144,13 +144,14 @@ solcast:
 # Steuerbare / verschiebbare Lasten (optional)
 # -----------------------------------------------------------------------------
 # Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die
-# günstigsten/PV-reichsten Slots. MQTT-Sollwert (on/off) je Slot optional.
+# günstigsten/PV-reichsten Slots. Sollwerte (on/off je Slot) gehen an das
+# jeweilige mqtt_topic UND unter ems/loads/<name> + als JSON-Liste ems/loads.
 #   type: "deferrable" – muss `runtime_minutes` im Fenster laufen; Leistung
 #         konstant (power_w) ODER als 15-min-Kurve (power_profile_w, Startzyklus).
 #   type: "thermal"    – thermischer Speicher (Pool/Puffer): Pooltemperatur ist
 #         MILP-Zustand, gehalten im Band [min_c, max_c]; geheizt über `stages`
 #         (on/off, ggf. gekoppelt via requires); Verlust ~ loss_w_per_k·(T−T_außen).
-#         Ist-Temperatur aus `temp_signal` (InfluxDB) oder Config-Ziel als Start.
+#         Ist-Temperatur aus `temp_signal` (MQTT-Topic) oder Config-Ziel als Start.
 controllable_loads: []
   # Beispiel Pool (zwei Wärmepumpen, große nur zusammen mit kleiner):
   # - name: "Pool"
@@ -160,19 +161,19 @@ controllable_loads: []
   #   min_c: 27            # der Optimierer hält die Temperatur >= min_c
   #   max_c: 29
   #   loss_w_per_k: 120    # Wärmeverlust je K (T_pool - T_außen); ggf. kalibrieren
-  #   temp_signal: "pool_temperature"   # InfluxDB-Signal der Ist-Temperatur
+  #   temp_signal: "pool/temperature"   # MQTT-Topic der Ist-Temperatur (°C)
   #   season: {from: "04-15", to: "10-15"}
   #   switch_penalty_ct: 5
   #   stages:
   #     - {name: "WP klein", power_w: 400, heat_w: 3000, mqtt_topic: "pool/wp_klein"}
   #     - {name: "WP groß",  power_w: 650, heat_w: 4000, requires: "WP klein", mqtt_topic: "pool/wp_gross"}
-  # Beispiel verschiebbare Last (feste Laufzeit im Fenster):
-  # - name: "Poolpumpe"
+  # Beispiel verschiebbare Waschmaschine (15-min-Lastkurve als Startzyklus):
+  # - name: "Waschmaschine"
   #   type: "deferrable"
-  #   power_w: 800
-  #   runtime_minutes: 240
-  #   window: {from: 8, to: 20}
-  #   mqtt_topic: "pool/pumpe"
+  #   power_profile_w: [2100, 300, 150, 150, 2000, 250, 200, 100]   # 2 h Zyklus
+  #   runtime_minutes: 120          # = Profillänge -> ein Zyklus
+  #   window: {from: 8, to: 22}
+  #   mqtt_topic: "waschmaschine/start"
 
 # -----------------------------------------------------------------------------
 # Haus-Batteriespeicher

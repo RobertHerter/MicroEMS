@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from datetime import time as dtime
 from typing import Dict, Optional
@@ -63,6 +64,10 @@ import pandas as pd
 from .config import Config
 
 log = logging.getLogger("ems.mqtt")
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower() or "load"
 
 _RESET_WORDS = ("", "-", "auto", "default", "reset")
 _OFF_WORDS = ("off", "aus", "keine", "none", "urlaub", "holiday")
@@ -87,6 +92,12 @@ class HomeyMqttPublisher:
         self.max_soc_override: Optional[float] = None
         self._batt_defaults = (config.house_battery.min_soc_percent,
                                config.house_battery.max_soc_percent)
+        # Steuerbare Lasten: MQTT-Ist-Temperaturen (thermische Lasten) cachen.
+        self.loads = getattr(config, "controllable_loads", [])
+        self._tz = config.general.timezone
+        self.load_temps: Dict[str, float] = {}
+        self._temp_topics = [ld.temp_signal for ld in self.loads
+                             if ld.enabled and ld.type == "thermal" and ld.temp_signal]
 
     def _connect(self):
         import socket
@@ -124,15 +135,27 @@ class HomeyMqttPublisher:
                  status_topic)
         return client
 
+    def get_load_temp(self, topic: str) -> Optional[float]:
+        """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None)."""
+        return self.load_temps.get(topic)
+
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).
         client.subscribe(f"{self.cfg.base_topic}/cmd/#", qos=1)
+        for topic in self._temp_topics:      # Pool-/Puffer-Ist-Temperatur
+            client.subscribe(topic, qos=1)
 
     def _on_message(self, client, userdata, msg):
         try:
             payload = msg.payload.decode("utf-8", "replace").strip().lower()
         except Exception:  # pragma: no cover
             payload = ""
+        if msg.topic in self._temp_topics:   # Ist-Temperatur einer thermischen Last
+            try:
+                self.load_temps[msg.topic] = float(payload.replace(",", "."))
+            except ValueError:
+                pass
+            return
         if msg.topic.endswith("/cmd/recalc"):
             log.info("MQTT-Kommando: sofortige Neuberechnung angefordert.")
             self.recalc_event.set()
@@ -357,15 +380,20 @@ class HomeyMqttPublisher:
                 self._pub(f"{base}/setpoint/{key}", value, retain=False)
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
 
-            # Steuerbare Lasten (controllable_loads): on/off je konfiguriertem
-            # Topic (Fail-safe: nie retained).
+            # Steuerbare Lasten (controllable_loads): on/off je Slot -> externes
+            # Schalt-Topic (falls gesetzt) UND unter ems/loads/<name>. Fail-safe:
+            # nie retained.
             if load_mqtt_map:
                 loadsp = {}
-                for topic, col in load_mqtt_map:
-                    if col in table.columns:
-                        on = 1 if float(row[col]) > 5.0 else 0
-                        self._pub(topic, on, retain=False)
-                        loadsp[topic] = on
+                for e in load_mqtt_map:
+                    col = e["column"]
+                    if col not in table.columns:
+                        continue
+                    on = 1 if float(row[col]) > 5.0 else 0
+                    self._pub(f"{base}/loads/{_slug(e['label'])}", on, retain=False)
+                    if e.get("topic"):
+                        self._pub(e["topic"], on, retain=False)
+                    loadsp[e["label"]] = on
                 if loadsp:
                     log.info("MQTT Last-Sollwerte publiziert: %s", loadsp)
 
@@ -410,3 +438,27 @@ class HomeyMqttPublisher:
             self._pub(f"{base}/schedule", data, retain=self.cfg.retain)
             log.info("MQTT Zeitplan (%d Slots, %d Felder, %.0f KB) publiziert.",
                      len(payload), len(cols), len(data) / 1024)
+
+            # Steuerbare Lasten als eigene JSON-Liste (wie schedule): aktueller
+            # Sollwert + Zeitplan (on/off) je Last.
+            if load_mqtt_map:
+                entries = [e for e in load_mqtt_map if e["column"] in table.columns]
+                lp = table
+                if self.cfg.schedule_max_hours and len(lp) > 1:
+                    end = current_ts + pd.Timedelta(hours=self.cfg.schedule_max_hours)
+                    lp = lp[lp.index <= end]
+                loads_json = {
+                    "generated": pd.Timestamp.now(tz=idx.tz).isoformat(),
+                    "current": [
+                        {"name": e["label"], "topic": e.get("topic"),
+                         "on": 1 if float(row[e["column"]]) > 5.0 else 0,
+                         "power_w": round(float(row[e["column"]]), 1)}
+                        for e in entries],
+                    "slots": [
+                        {"time": ts.isoformat(),
+                         **{_slug(e["label"]): (1 if float(r[e["column"]]) > 5.0 else 0)
+                            for e in entries}}
+                        for ts, r in lp.iterrows()],
+                }
+                self._pub(f"{base}/loads", json.dumps(loads_json, separators=(",", ":")),
+                          retain=self.cfg.retain)

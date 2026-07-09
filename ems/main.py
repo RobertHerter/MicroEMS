@@ -277,7 +277,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
             ambient_temp_c=(temp.reindex(opt_index).ffill().bfill().values.astype(float)
                             if temp is not None else None),
-            load_state=_read_load_state(repo, config, now),
+            load_state=_read_load_state(config, publisher),
         )
         result = Optimizer(config).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
@@ -492,19 +492,18 @@ def _refresh_spot(config):
         log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
 
 
-def _read_load_state(repo, config, now):
+def _read_load_state(config, publisher):
     """Ist-Temperatur thermischer steuerbarer Lasten (für T[0] im Optimierer),
-    aus dem konfigurierten InfluxDB-Signal. None, wenn nichts vorhanden."""
+    aus dem MQTT-Cache des Publishers (temp_signal = MQTT-Topic). None, wenn noch
+    kein Wert empfangen -> der Optimierer startet dann von target_c."""
+    if publisher is None:
+        return None
     st = {}
     for ld in getattr(config, "controllable_loads", []):
         if ld.enabled and ld.type == "thermal" and ld.temp_signal:
-            try:
-                s = repo.read_slots(ld.temp_signal, now - timedelta(hours=6), now,
-                                    fill=False).dropna()
-                if not s.empty:
-                    st[ld.name] = float(s.iloc[-1])
-            except Exception as exc:  # pragma: no cover
-                log.warning("Ist-Temperatur '%s' nicht lesbar (%s).", ld.temp_signal, exc)
+            t = publisher.get_load_temp(ld.temp_signal)
+            if t is not None:
+                st[ld.name] = float(t)
     return st or None
 
 

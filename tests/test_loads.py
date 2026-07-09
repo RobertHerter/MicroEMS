@@ -92,6 +92,41 @@ def test_thermal_recovers_from_low_start():
     assert ((gross <= 1.0) | (klein > 1.0)).all()      # Kopplung auch hier
 
 
+def test_deferrable_profile_cycle_runs_once_in_cheap_slots():
+    """15-min-Kurve: der ganze Zyklus wird einmal gestartet, bevorzugt günstig."""
+    cfg = make_config()
+    prof = [2000.0, 500.0, 500.0, 2000.0]           # 4×15 min = 1 h
+    cfg.controllable_loads = [ControllableLoad(
+        name="wm", type="deferrable", power_profile_w=prof, runtime_minutes=60.0,
+        switch_penalty_ct=0.0)]
+    idx = _day_index("2026-01-15")
+    n = len(idx)
+    price = np.full(n, 40.0)
+    price[:8] = 5.0
+    res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=300.0, price=price,
+                                       soc=cfg.house_battery.min_soc_wh))
+    assert not res.infeasible
+    w = res.table["load_wm_w"]
+    energy = float(w.sum()) * DT_H
+    assert abs(energy - sum(prof) * DT_H) < 1.0, "kein vollständiger Zyklus"
+    assert float(w.iloc[:8].sum()) > float(w.iloc[8:].sum()), "Zyklus nicht in günstigen Slots"
+
+
+def test_load_mqtt_map_shape():
+    """load_mqtt_map liefert Dicts mit label/column/topic für die Ausgabe."""
+    cfg = make_config()
+    cfg.controllable_loads = [_pool_load()]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=30.0, soc=cfg.house_battery.min_soc_wh,
+        ambient_temp_c=np.full(n, 20.0), load_state={"pool": 27.0}))
+    labels = {e["label"] for e in res.load_mqtt_map}
+    assert {"pool/klein", "pool/gross"} <= labels
+    for e in res.load_mqtt_map:
+        assert e["column"] in res.table.columns
+
+
 def test_empty_loads_is_noop():
     cfg = make_config()
     idx = _day_index("2026-06-10")
