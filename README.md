@@ -338,6 +338,18 @@ chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
   --screenshot=dashboard_beispiel.png dashboard_beispiel.html
 ```
 
+### Webserver & API (Basic Auth)
+
+Der eingebaute HTTP-Server liefert das Dashboard aus und bietet zusätzlich einen
+**JSON-API-Endpunkt**. Unter `http://<host>:<port>/api/data.json` kann der
+vollständige Optimierungs-Zustand (Ist-Werte und Zukunftspläne für alle Slots) als
+maschinenlesbares JSON abgerufen werden – ideal zur Anbindung an Drittsysteme
+(Grafana, Node-RED, etc.).
+
+**Sicherheit:** Die gesamte Weboberfläche (Dashboard, Report-Download und API) kann 
+mit Basic Authentication abgesichert werden. Dazu in der `config.yaml` unter `dashboard`
+die Felder `username` und `password` setzen. (Bleiben sie leer, ist der Zugriff ungeschützt).
+
 ## Test
 
 ```bash

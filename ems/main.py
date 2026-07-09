@@ -372,6 +372,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
                             violations=violations)
+            if getattr(config.dashboard, "api_enabled", False):
+                api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
+                try:
+                    display.reset_index().rename(columns={"index": "timestamp"}).to_json(
+                        api_file, orient="records", date_format="iso"
+                    )
+                except Exception as exc:
+                    log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
     finally:
         repo.close()
         if own_e3dc and e3dc is not None:
@@ -644,6 +652,7 @@ def start_dashboard_server(config: Config) -> None:
     import http.server
     import os
     import threading
+    import base64
 
     out = os.path.abspath(config.dashboard.output_path)
     directory = os.path.dirname(out) or "."
@@ -652,6 +661,35 @@ def start_dashboard_server(config: Config) -> None:
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
+            # Basic Auth prüfen
+            if config.dashboard.username and config.dashboard.password:
+                auth = self.headers.get("Authorization")
+                expected = "Basic " + base64.b64encode(
+                    f"{config.dashboard.username}:{config.dashboard.password}".encode()
+                ).decode()
+                if auth != expected:
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="EMS Dashboard"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+
+            # API Endpunkt für Optimierungsdaten
+            if getattr(config.dashboard, "api_enabled", False) and self.path.split("?")[0] == "/api/data.json":
+                api_path = os.path.join(directory, "api_data.json")
+                try:
+                    with open(api_path, "rb") as fh:
+                        body = fh.read()
+                except OSError:
+                    self.send_error(404, "Noch keine API-Daten vorhanden")
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             # Leichtgewichtiger Versions-Endpunkt: mtime der Dashboard-Datei.
             # Die Seite pollt diesen und lädt bei Änderung (neue Berechnung) neu.
             if self.path.split("?")[0] in ("/version",):

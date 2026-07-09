@@ -343,3 +343,6 @@ e3dc_rscp:
 dashboard:
   enabled: true
   output_path: "./dashboard.html"
+  api_enabled: true
+  username: ""
+  password: ""

@@ -284,6 +284,9 @@ class DashboardConfig:
     serve: bool = True
     host: str = "0.0.0.0"
     port: int = 8080
+    api_enabled: bool = True
+    username: str = ""
+    password: str = ""
 
 
 @dataclass
