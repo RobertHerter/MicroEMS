@@ -123,10 +123,11 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   **Mehrere Keys und Resourcen**: `combine: "sum"` addiert verschiedene Arrays
   (Ost/West), `"mean"` mittelt redundante Quellen (dieselbe Anlage über mehrere
   Keys). **Abruf-Budget** `calls_per_key_per_day` (Free-Tier 10/Key) wird je Quelle
-  gleichmäßig über das Tageslicht-Fenster `[window_start_hour, window_end_hour)`
-  verteilt (key_budget / Quellen-je-Key Abrufe/Tag), sodass Solcasts Nowcasting
-  tagsüber laufend einfließt; nachts/zwischen Abrufen wird der letzte Forecast
-  gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
+  gleichmäßig verteilt (key_budget / Quellen-je-Key Abrufe/Tag). `distribution`
+  steuert wie: `"daytime"` konzentriert aufs lokale Fenster `[window_start_hour,
+  window_end_hour)` (PV-Nowcasting im Fokus), `"24h"` verteilt rund um die Uhr
+  (hält auch den Folgetag-Forecast frisch); zwischen Abrufen wird der letzte
+  Forecast gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
   beim Auslesen aufs Slot-Raster gehalten.
 - **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
   laufen ohne InfluxDB. Die InfluxDB bleibt optional (Fallback je Signal + Writeback).

@@ -129,7 +129,10 @@ solcast:
   enabled: false
   combine: "sum"
   calls_per_key_per_day: 10
-  window_start_hour: 5
+  # distribution: "daytime" = hauptsächlich tagsüber (Fenster unten) |
+  #               "24h"     = rund um die Uhr gleichmäßig (Folgetag bleibt frisch)
+  distribution: "daytime"
+  window_start_hour: 5       # nur bei distribution="daytime"
   window_end_hour: 22
   sources:
     - {api_key: "DEIN_KEY_1", resource_id: "aaaa-bbbb-cccc-dddd"}   # z.B. Ost-Dach

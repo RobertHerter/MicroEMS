@@ -97,6 +97,16 @@ def test_available():
     assert solcast.available(c, FakeRepo(), "temperature") is False
 
 
+def test_window_distribution_modes():
+    # daytime: nur im Fenster, window_secs = Fensterlänge
+    sc = SolcastConfig(distribution="daytime", window_start_hour=5, window_end_hour=22)
+    s, e, full, secs = solcast._window(sc)
+    assert (s, e, full, secs) == (5, 22, False, 17 * 3600)
+    # 24h: rund um die Uhr
+    sc24 = SolcastConfig(distribution="24h", window_start_hour=5, window_end_hour=22)
+    assert solcast._window(sc24) == (0, 24, True, 24 * 3600)
+
+
 def test_refresh_budget_and_spacing(tmp_path, monkeypatch):
     """Erster Aufruf holt; sofortiger zweiter nicht (Spacing); Budget wird geachtet."""
     cfg = _cfg(tmp_path, combine="sum", calls_per_key_per_day=1,

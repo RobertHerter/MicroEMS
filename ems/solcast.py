@@ -73,6 +73,17 @@ def fetch_forecast(api_key: str, resource_id: str,
     return out
 
 
+def _window(sc):
+    """(start_h, end_h, full_day, window_secs) je nach distribution.
+    distribution="24h" -> rund um die Uhr; sonst das Tageslicht-Fenster."""
+    if sc.distribution == "24h":
+        return 0, 24, True, 24 * 3600
+    start_h, end_h = sc.window_start_hour, sc.window_end_hour
+    full_day = (start_h == 0 and end_h == 24) or not (0 <= start_h < end_h <= 24)
+    window_secs = 24 * 3600 if full_day else (end_h - start_h) * 3600
+    return start_h, end_h, full_day, window_secs
+
+
 def refresh(config) -> None:
     """Fällige Quellen abrufen (Budget + gleichmäßige Verteilung im Fenster)."""
     sc = config.solcast
@@ -81,11 +92,9 @@ def refresh(config) -> None:
     db = config.e3dc_rscp.history_db_path
     tz = config.general.timezone
     now = pd.Timestamp.now(tz=tz)
-    start_h, end_h = sc.window_start_hour, sc.window_end_hour
-    full_day = not (0 <= start_h < end_h <= 24) or (start_h == 0 and end_h == 24)
+    start_h, end_h, full_day, window_secs = _window(sc)
     if not full_day and not (start_h <= now.hour < end_h):
         return                                   # außerhalb des Abruf-Fensters
-    window_secs = 24 * 3600 if full_day else (end_h - start_h) * 3600
     since_iso = now.normalize().tz_convert("UTC").isoformat()   # lokaler Tagesbeginn
     # Quellen je Key (fürs anteilige Budget)
     per_key: Dict[str, int] = {}

@@ -332,9 +332,12 @@ class SolcastConfig:
     combine: str = "sum"
     calls_per_key_per_day: int = 10       # Free-Tier: 10/Key/Tag
     sources: list = field(default_factory=list)   # [SolcastSource]
-    # Abruf-Verteilung: gleichmäßig über dieses lokale Stundenfenster (Tageslicht).
-    # 0..24 = ganzer Tag. Je Quelle wird key_budget/(Quellen je Key) mal abgerufen.
-    window_start_hour: int = 5
+    # Abruf-Verteilung:
+    #   "daytime" = hauptsächlich tagsüber, gleichmäßig über das lokale Fenster
+    #               [window_start_hour, window_end_hour) (PV-Nowcasting im Fokus)
+    #   "24h"     = rund um die Uhr gleichmäßig (hält auch den Folgetag frisch)
+    distribution: str = "daytime"
+    window_start_hour: int = 5            # nur bei distribution="daytime"
     window_end_hour: int = 22
 
 
@@ -692,11 +695,14 @@ def load_config(path: str) -> Config:
         sources=[SolcastSource(api_key=str(s["api_key"]),
                                resource_id=str(s["resource_id"]))
                  for s in (sc.get("sources") or [])],
+        distribution=str(sc.get("distribution", "daytime")),
         window_start_hour=int(sc.get("window_start_hour", 5)),
         window_end_hour=int(sc.get("window_end_hour", 22)),
     )
     if solcast.combine not in ("sum", "mean"):
         raise ValueError("solcast.combine muss 'sum' oder 'mean' sein.")
+    if solcast.distribution not in ("daytime", "24h"):
+        raise ValueError("solcast.distribution muss 'daytime' oder '24h' sein.")
 
     e = raw.get("e3dc_rscp", {})
     e3dc_rscp = E3DCRscpConfig(
