@@ -138,7 +138,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # die Zukunft anwenden (abklingend) - fängt Tagesabweichungen, die das
         # Ähnliche-Tage-Modell nicht sehen kann (Besuch, Wetter).
         load_ratio, pv_ratio = _intraday_ratios(repo, config, forecaster,
-                                                history, temp, now)
+                                                history, temp, now, hist_pv=hist_pv)
         if load_ratio is not None:
             load_fc = load_fc * intraday_factor_series(
                 load_ratio, load_fc.index, now, config.forecast.intraday_decay_hours)
@@ -367,7 +367,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
             display = _build_display_frame(repo, config, now, history, result,
-                                           intraday=(load_ratio, pv_ratio))
+                                           intraday=(load_ratio, pv_ratio),
+                                           hist_pv=hist_pv, fut_pv=fut_pv)
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
@@ -386,7 +387,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             e3dc.close()
 
 
-def _intraday_ratios(repo, config, forecaster, history, temp, now):
+def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None):
     """Ist/Prognose-Verhältnisse der letzten Stunden (Last, PV) für die
     Intraday-Korrektur. None = keine Korrektur (zu wenig Daten, PV-Nacht, aus)."""
     fc = config.forecast
@@ -400,11 +401,12 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now):
         # Ist-Werte des Fensters in ihre eigene Prognose ein).
         hist_before = history[history.index < win_start]
         pred = forecaster.forecast(hist_before, win_start, len(act),
-                                   hist_temp=temp, fut_temp=temp)
+                                   hist_temp=temp, fut_temp=temp,
+                                   hist_pv=hist_pv, fut_pv=hist_pv)
         load_ratio = intraday_ratio(act, pred.reindex(act.index), min_mean=50.0,
                                     max_factor=fc.intraday_max_factor)
     except Exception as exc:
-        log.warning("Intraday-Korrektur Last fehlgeschlagen (%s).", exc)
+        log.warning("Intraday-Korrektur Last fehlgeschlagen (%s).", exc, exc_info=True)
     try:
         if config.e3dc_rscp.history_source or repo.signal_available("pv_generation"):
             act_pv = read_actual_signal(config, repo, "pv_generation", win_start, now)
@@ -516,7 +518,7 @@ def _price_series(repo, config, index, now, return_estimated=False):
 
 
 def _build_display_frame(repo, config, now, history, result,
-                         intraday=(None, None)) -> pd.DataFrame:
+                         intraday=(None, None), hist_pv=None, fut_pv=None) -> pd.DataFrame:
     """Anzeigetabelle heute 00:00 -> Horizontende.
 
     Enthält Prognosewerte über den gesamten Bereich (pv_w, house_load_w,
@@ -540,7 +542,8 @@ def _build_display_frame(repo, config, now, history, result,
                           now - timedelta(days=config.forecast.lookback_days), end + slot)
         forecaster = LoadForecaster(config)
         pred_load = forecaster.forecast(history, day_start, len(full),
-                                        hist_temp=temp, fut_temp=temp)
+                                        hist_temp=temp, fut_temp=temp,
+                                        hist_pv=hist_pv, fut_pv=fut_pv)
         df["house_load_w"] = pred_load.reindex(full)
     except Exception as exc:  # pragma: no cover
         log.warning("Verbrauchsprognose fürs Dashboard fehlgeschlagen: %s", exc)
