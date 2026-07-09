@@ -11,6 +11,7 @@ savings_state.json
 last_run_debug.json
 e3dc_history.sqlite
 backup/
+*.log
 
 # Python
 __pycache__/
