@@ -99,10 +99,22 @@ def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours
 
 def make_solver(cfg: Config):
     """CBC-Solver: bevorzugt das System-CBC (COIN_CMD, coinor-cbc), da
-    PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC."""
+    PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC.
+    Optional: HiGHS-Solver falls in der Konfiguration gewählt."""
     threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
     kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
                   threads=threads)
+                  
+    solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
+    if solver_name == "highs":
+        try:
+            highs = pulp.HiGHS_CMD(**kwargs)
+            if highs.available():
+                return highs
+            log.warning("HiGHS-Solver ist nicht verfügbar (ist 'highspy' installiert?). Fallback auf CBC.")
+        except Exception as exc:
+            log.warning("Fehler beim Laden des HiGHS-Solvers: %s. Fallback auf CBC.", exc)
+
     coin = pulp.COIN_CMD(**kwargs)
     if coin.available():
         return coin

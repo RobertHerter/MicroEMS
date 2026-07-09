@@ -185,6 +185,7 @@ class VehicleConfig:
 class OptimizationConfig:
     terminal_soc_value: Any = "auto"      # "auto" | float (ct/kWh)
     cycle_penalty_ct_kwh: float = 0.1
+    solver: str = "cbc"                   # "cbc" oder "highs"
     solver_time_limit_s: int = 60
     # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
     solver_threads: int = 0
@@ -578,6 +579,7 @@ def load_config(path: str) -> Config:
     optimization = OptimizationConfig(
         terminal_soc_value=o.get("terminal_soc_value", "auto"),
         cycle_penalty_ct_kwh=float(o.get("cycle_penalty_ct_kwh", 0.1)),
+        solver=str(o.get("solver", "cbc")),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
