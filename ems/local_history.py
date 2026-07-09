@@ -25,6 +25,9 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS actuals ("
                 " ts TEXT PRIMARY KEY, pv_w REAL, house_w REAL, grid_w REAL,"
                 " battery_w REAL, soc REAL)")
+    # Stündliche Temperatur (Open-Meteo) für die Prognose-Gewichtung.
+    con.execute("CREATE TABLE IF NOT EXISTS temperature ("
+                " ts TEXT PRIMARY KEY, temp_c REAL NOT NULL)")
     con.commit()
     return con
 
@@ -68,6 +71,49 @@ def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
         return pd.Series(dtype="float64")
     idx = pd.to_datetime([r[0] for r in rows], utc=True)
     return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+
+
+def write_temperature(path: str, mapping: Dict[str, float]) -> int:
+    """UPSERT stündlicher Temperaturen {UTC-ISO -> °C}."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO temperature(ts, temp_c) VALUES(?, ?) "
+        "ON CONFLICT(ts) DO UPDATE SET temp_c=excluded.temp_c",
+        [(k, float(v)) for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
+def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
+    """Temperatur [start, end) auf das Slot-Raster interpoliert (wie zuvor
+    read_slots('temperature')). Leer, wenn nichts vorhanden."""
+    # etwas Rand mitlesen, damit die Interpolation an den Kanten greift
+    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    e_utc = (pd.Timestamp(end) + pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, temp_c FROM temperature WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+    # tz aus den (bereits tz-bewussten) Endpunkten ableiten, NICHT zusätzlich
+    # tz= übergeben (sonst pytz/zoneinfo-Konflikt in date_range).
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz), freq=freq,
+                         inclusive="left")
+    if len(grid) == 0:
+        return hourly
+    return (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
+            .reindex(grid))
 
 
 def read_actual_signal(config, repo, signal: str, start, end):

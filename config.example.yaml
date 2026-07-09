@@ -233,6 +233,19 @@ report:
   snapshot_path: "./last_run_debug.json"
 
 # -----------------------------------------------------------------------------
+# Temperatur direkt von Open-Meteo (kostenlos, kein API-Key) statt InfluxDB.
+# latitude/longitude des Standorts setzen. Der Dienst frischt je Zyklus die
+# letzten past_days (max 92) + forecast_days auf; tiefe Historie einmalig:
+#   python weather_backfill.py --config config.yaml --days 730
+# -----------------------------------------------------------------------------
+weather:
+  enabled: false
+  latitude: 0.0
+  longitude: 0.0
+  past_days: 92
+  forecast_days: 4
+
+# -----------------------------------------------------------------------------
 # Optionale DIREKTE E3DC-Anbindung per RSCP (Bibliothek pye3dc, siehe
 # requirements). Default aus; ändert nichts am InfluxDB/MQTT-Weg.
 #   read_live       : Live-SoC/PV/Last direkt vom E3DC statt aus InfluxDB

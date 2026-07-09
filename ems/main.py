@@ -400,8 +400,34 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now):
     return load_ratio, pv_ratio
 
 
+_last_temp_fetch = 0.0
+
+
 def _read_temp(repo, config, start, end):
-    """Liest die Temperatur-Vorhersage (falls konfiguriert), sonst None."""
+    """Temperatur fürs Ähnlichkeits-Gewicht. Quelle: Open-Meteo (lokaler
+    SQLite-Cache) wenn weather.enabled, sonst InfluxDB. None wenn nicht da."""
+    if config.weather.enabled:
+        global _last_temp_fetch
+        w, db = config.weather, config.e3dc_rscp.history_db_path
+        freq = f"{config.general.slot_minutes}min"
+        # HTTP-Abruf höchstens einmal je ~5 min (pro Zyklus, nicht je Aufruf).
+        if _time.time() - _last_temp_fetch > 300:
+            try:
+                from .weather import fetch_forecast
+                from .local_history import write_temperature
+                n = write_temperature(db, fetch_forecast(
+                    w.latitude, w.longitude, w.past_days, w.forecast_days))
+                _last_temp_fetch = _time.time()
+                log.info("Open-Meteo: %d Temperatur-Stundenwerte aktualisiert.", n)
+            except Exception as exc:
+                log.warning("Open-Meteo-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+        try:
+            from .local_history import read_temperature
+            s = read_temperature(db, start, end, config.general.timezone, freq)
+            return s if not s.empty else None
+        except Exception as exc:  # pragma: no cover
+            log.warning("Lokale Temperatur nicht lesbar (%s).", exc)
+            return None
     if not repo.signal_available("temperature"):
         return None
     try:

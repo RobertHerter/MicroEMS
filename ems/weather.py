@@ -1,0 +1,66 @@
+"""Temperatur-Vorhersage/-Historie direkt von Open-Meteo (kostenlos, kein Key).
+
+Ersetzt für den Standalone-Betrieb das InfluxDB-Signal `temperature` (das nur
+als Ähnlichkeits-Gewicht in der Verbrauchsprognose dient). Zwei Endpunkte:
+
+  * Forecast-API: letzte `past_days` (max 92) + `forecast_days` Zukunft,
+    stündlich – je Zyklus abgerufen und in die lokale SQLite gecacht.
+  * Archive-API (ERA5): tiefe Historie in einem Call – für den einmaligen
+    Backfill (weather_backfill.py).
+
+Stündliche Werte werden beim Auslesen auf das Slot-Raster interpoliert (wie
+zuvor read_slots), damit sie 1:1 als hist_temp/fut_temp taugen.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import urllib.parse
+import urllib.request
+from typing import Dict
+
+log = logging.getLogger("ems.weather")
+
+_FORECAST = "https://api.open-meteo.com/v1/forecast"
+_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
+
+
+def _get(url: str, params: dict, timeout: float = 20.0) -> dict:
+    full = url + "?" + urllib.parse.urlencode(params)
+    with urllib.request.urlopen(full, timeout=timeout) as r:
+        return json.load(r)
+
+
+def _to_map(payload: dict) -> Dict[str, float]:
+    """Open-Meteo hourly (UTC) -> {UTC-ISO-Stunde: °C}, NaN übersprungen."""
+    h = payload.get("hourly", {}) or {}
+    times = h.get("time", []) or []
+    temps = h.get("temperature_2m", []) or []
+    out: Dict[str, float] = {}
+    for t, v in zip(times, temps):
+        if v is None:
+            continue
+        # Open-Meteo liefert "YYYY-MM-DDTHH:MM" in UTC (timezone=UTC) -> +00:00
+        out[t + ":00+00:00" if len(t) == 16 else t] = float(v)
+    return out
+
+
+def fetch_forecast(lat: float, lon: float, past_days: int = 92,
+                   forecast_days: int = 4) -> Dict[str, float]:
+    """Stündliche Temperatur: jüngste Vergangenheit + Zukunft."""
+    d = _get(_FORECAST, {
+        "latitude": lat, "longitude": lon, "hourly": "temperature_2m",
+        "past_days": max(0, min(92, int(past_days))),
+        "forecast_days": max(1, min(16, int(forecast_days))),
+        "timezone": "UTC"})
+    return _to_map(d)
+
+
+def fetch_archive(lat: float, lon: float, start_date: str,
+                  end_date: str) -> Dict[str, float]:
+    """Stündliche Temperatur aus dem ERA5-Archiv (tiefe Historie), ein Call."""
+    d = _get(_ARCHIVE, {
+        "latitude": lat, "longitude": lon, "hourly": "temperature_2m",
+        "start_date": start_date, "end_date": end_date, "timezone": "UTC"},
+        timeout=60.0)
+    return _to_map(d)

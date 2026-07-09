@@ -91,9 +91,15 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   aus der InfluxDB lasen – Intraday-Korrektur, Ersparnis-Tracking, Drift-Monitor
   und die Ist-Kurven im Dashboard – lesen dann aus dieser lokalen Tabelle
   (zentrale Weiche `read_actual_signal`).
-- **Noch InfluxDB-gebunden:** Preis, PV-Vorhersage und Temperatur kann der E3DC
-  nicht liefern – deren Direktabruf aus den Quellen ist der nächste
-  Standalone-Schritt.
+- **Temperatur direkt von Open-Meteo** (`ems/weather.py`, `weather.enabled`,
+  kostenlos, kein API-Key): je Zyklus werden die letzten `past_days` (max 92) +
+  `forecast_days` stündlich abgerufen und in die lokale SQLite (Tabelle
+  `temperature`) gecacht; `_read_temp` liefert daraus (auf Slot-Raster
+  interpoliert) statt aus InfluxDB. Tiefe Historie einmalig via
+  `weather_backfill.py` (ERA5-Archiv, ein Call/Jahr). Fällt der Abruf aus, wird
+  der Cache genutzt.
+- **Noch InfluxDB-gebunden:** nur noch **Strompreis** und **PV-Vorhersage** –
+  deren Direktabruf (Energy-Charts, Solcast) ist der letzte Standalone-Schritt.
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist

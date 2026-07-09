@@ -308,6 +308,16 @@ class MonitoringConfig:
 
 
 @dataclass
+class WeatherConfig:
+    # Temperatur direkt von Open-Meteo (kostenlos, kein Key) statt InfluxDB.
+    enabled: bool = False
+    latitude: float = 0.0
+    longitude: float = 0.0
+    past_days: int = 92          # Forecast-API-Fenster (max 92)
+    forecast_days: int = 4
+
+
+@dataclass
 class E3DCRscpConfig:
     # Optionale direkte RSCP-Anbindung des E3DC (Bibliothek pye3dc).
     enabled: bool = False
@@ -351,6 +361,7 @@ class Config:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     e3dc_rscp: E3DCRscpConfig = field(default_factory=E3DCRscpConfig)
+    weather: WeatherConfig = field(default_factory=WeatherConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -556,6 +567,15 @@ def load_config(path: str) -> Config:
         snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
     )
 
+    w = raw.get("weather", {})
+    weather = WeatherConfig(
+        enabled=bool(w.get("enabled", False)),
+        latitude=float(w.get("latitude", 0.0)),
+        longitude=float(w.get("longitude", 0.0)),
+        past_days=int(w.get("past_days", 92)),
+        forecast_days=int(w.get("forecast_days", 4)),
+    )
+
     e = raw.get("e3dc_rscp", {})
     e3dc_rscp = E3DCRscpConfig(
         enabled=bool(e.get("enabled", False)),
@@ -588,4 +608,5 @@ def load_config(path: str) -> Config:
         monitoring=monitoring,
         report=report,
         e3dc_rscp=e3dc_rscp,
+        weather=weather,
     )
