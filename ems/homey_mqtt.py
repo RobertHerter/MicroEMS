@@ -304,7 +304,8 @@ class HomeyMqttPublisher:
         except Exception:  # pragma: no cover - ältere paho-Versionen ohne timeout
             pass
 
-    def publish(self, table: pd.DataFrame, current_ts: pd.Timestamp) -> None:
+    def publish(self, table: pd.DataFrame, current_ts: pd.Timestamp,
+                load_mqtt_map=None) -> None:
         """Publiziert Sollwerte des aktuellen Slots und optional die Tabelle."""
         if not self.cfg.enabled:
             log.info("MQTT deaktiviert – überspringe Publish.")
@@ -355,6 +356,18 @@ class HomeyMqttPublisher:
             for key, value in setpoints.items():
                 self._pub(f"{base}/setpoint/{key}", value, retain=False)
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
+
+            # Steuerbare Lasten (controllable_loads): on/off je konfiguriertem
+            # Topic (Fail-safe: nie retained).
+            if load_mqtt_map:
+                loadsp = {}
+                for topic, col in load_mqtt_map:
+                    if col in table.columns:
+                        on = 1 if float(row[col]) > 5.0 else 0
+                        self._pub(topic, on, retain=False)
+                        loadsp[topic] = on
+                if loadsp:
+                    log.info("MQTT Last-Sollwerte publiziert: %s", loadsp)
 
             # Wirksame Fahrzeug-Parameter zurückmelden (Rückmeldung für Homey,
             # z.B. nach ems/cmd/car_departure_time bzw. /target_soc).

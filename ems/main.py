@@ -275,6 +275,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             initial_car_soc_wh=init_car_soc,
             car_present=car_present,
             pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
+            ambient_temp_c=(temp.reindex(opt_index).ffill().bfill().values.astype(float)
+                            if temp is not None else None),
+            load_state=_read_load_state(repo, config, now),
         )
         result = Optimizer(config).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
@@ -331,7 +334,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
-            publisher.publish(result.table, now)
+            publisher.publish(result.table, now, result.load_mqtt_map)
             if one_shot:
                 publisher.close()
         except Exception as exc:
@@ -487,6 +490,22 @@ def _refresh_spot(config):
         log.info("Energy-Charts: %d Spot-Preiswerte aktualisiert.", n)
     except Exception as exc:
         log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+
+
+def _read_load_state(repo, config, now):
+    """Ist-Temperatur thermischer steuerbarer Lasten (für T[0] im Optimierer),
+    aus dem konfigurierten InfluxDB-Signal. None, wenn nichts vorhanden."""
+    st = {}
+    for ld in getattr(config, "controllable_loads", []):
+        if ld.enabled and ld.type == "thermal" and ld.temp_signal:
+            try:
+                s = repo.read_slots(ld.temp_signal, now - timedelta(hours=6), now,
+                                    fill=False).dropna()
+                if not s.empty:
+                    st[ld.name] = float(s.iloc[-1])
+            except Exception as exc:  # pragma: no cover
+                log.warning("Ist-Temperatur '%s' nicht lesbar (%s).", ld.temp_signal, exc)
+    return st or None
 
 
 def _price_series(repo, config, index, now, return_estimated=False):

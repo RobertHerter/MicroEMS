@@ -51,6 +51,11 @@ class OptimizerInputs:
     # Einspeise-Linie an Peak-Tagen dagegen dimensioniert: der Akku wird auch
     # dann voll, wenn der Tag bewölkter ausfällt als der Erwartungswert.
     pv10_w: Optional[np.ndarray] = None
+    # Außentemperatur (°C) je Slot – Wärmeverlust thermischer Lasten (Pool).
+    ambient_temp_c: Optional[np.ndarray] = None
+    # Ist-Zustand steuerbarer Lasten beim Start: {load_name: aktuelle Temperatur °C}
+    # für thermische Lasten (T[0]). Fehlt ein Wert -> target_c als Startwert.
+    load_state: Optional[dict] = None
 
 
 @dataclass
@@ -67,6 +72,8 @@ class OptimizerResult:
     # Zwischenstand und PuLP meldet trotzdem "Optimal" - der Plan kann
     # deutlich suboptimal sein (z.B. sinnlose Dumps/Sperren) -> Alarm.
     solver_hit_limit: bool = False
+    # Steuerbare Lasten: [(mqtt_topic, Ergebnis-Spaltenname)] für die Sollwert-Ausgabe.
+    load_mqtt_map: Optional[list] = None
 
 
 def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float,
@@ -293,7 +300,18 @@ class Optimizer:
         load_peak = float(np.max(np.maximum(inp.house_load_w, 0.0))) if N else 0.0
         pv_peak = float(np.max(np.maximum(inp.pv_w, 0.0))) if N else 0.0
         car_max = veh.max_charge_w if use_car else 0.0
-        BIGG = 1.05 * max(load_peak + car_max + hb.max_ac_charge_w,
+        # max. gleichzeitige Leistung der steuerbaren Lasten (fürs Import-Big-M)
+        cl_peak = 0.0
+        for _ld in getattr(cfg, "controllable_loads", []):
+            if not _ld.enabled:
+                continue
+            if _ld.type == "thermal":
+                cl_peak += sum(st.power_w for st in _ld.stages)
+            elif _ld.power_profile_w:
+                cl_peak += max(_ld.power_profile_w)
+            else:
+                cl_peak += _ld.power_w
+        BIGG = 1.05 * max(load_peak + car_max + hb.max_ac_charge_w + cl_peak,
                           pv_peak + hb.max_discharge_w, 1000.0)
 
         # Eigenverbrauchs-Priorität (harte Regel): Einspeisen nur erlaubt, wenn der
@@ -347,6 +365,10 @@ class Optimizer:
                  " (p10-basiert)" if pv10 is not None else "",
                  {str(_uniq[i]): day_mode[i] for i in range(len(_uniq))})
 
+        # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
+        from .loads import add_controllable_loads
+        cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
+            prob, cfg, inp, N, dt)
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -365,10 +387,11 @@ class Optimizer:
             # Wechselrichter-Durchsatz (mit Leistungs-Reserve #2)
             prob += pv_to_ac + dis[t] + ac[t] <= max_inv
 
-            # AC-Knotenbilanz: Import - Export = Last + Auto + AC-Laden - PV_AC - Entladung
+            # AC-Knotenbilanz: Import - Export = Last + Auto + steuerbare Lasten
+            #                  + AC-Laden - PV_AC - Entladung
             prob += (
                 g_imp[t] - g_exp[t]
-                == load_t + car[t] + ac[t] - pv_to_ac - dis[t]
+                == load_t + car[t] + cl_power[t] + ac[t] - pv_to_ac - dis[t]
             )
 
             # kein gleichzeitiges Laden/Entladen
@@ -569,6 +592,7 @@ class Optimizer:
         for i, v in enumerate(seg_values):
             cost_terms.append(-v * hb.discharge_efficiency * term_seg[i] / 1000.0)
 
+        cost_terms.extend(cl_cost)          # Schalt-Malus + Komfort der Lasten
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
@@ -703,6 +727,8 @@ class Optimizer:
                 soc_car_v = val(soc_car[t + 1])
                 row["car_soc_wh"] = round(soc_car_v, 1)
                 row["car_soc_percent"] = round(100.0 * soc_car_v / veh.capacity_wh, 2)
+            for _col, _exprs in cl_outputs.items():   # steuerbare Lasten (W / °C)
+                row[_col] = round(val(_exprs[t]), 2)
             rows.append(row)
 
         table = pd.DataFrame(rows, index=inp.index)
@@ -712,5 +738,5 @@ class Optimizer:
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w, car_target_shortfall_wh=round(shortfall, 1),
-            solver_hit_limit=hit_limit,
+            solver_hit_limit=hit_limit, load_mqtt_map=cl_mqtt,
         )

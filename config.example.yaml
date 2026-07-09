@@ -141,6 +141,40 @@ solcast:
     # - {api_key: "DEIN_KEY_2", resource_id: "..."}
 
 # -----------------------------------------------------------------------------
+# Steuerbare / verschiebbare Lasten (optional)
+# -----------------------------------------------------------------------------
+# Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die
+# günstigsten/PV-reichsten Slots. MQTT-Sollwert (on/off) je Slot optional.
+#   type: "deferrable" – muss `runtime_minutes` im Fenster laufen; Leistung
+#         konstant (power_w) ODER als 15-min-Kurve (power_profile_w, Startzyklus).
+#   type: "thermal"    – thermischer Speicher (Pool/Puffer): Pooltemperatur ist
+#         MILP-Zustand, gehalten im Band [min_c, max_c]; geheizt über `stages`
+#         (on/off, ggf. gekoppelt via requires); Verlust ~ loss_w_per_k·(T−T_außen).
+#         Ist-Temperatur aus `temp_signal` (InfluxDB) oder Config-Ziel als Start.
+controllable_loads: []
+  # Beispiel Pool (zwei Wärmepumpen, große nur zusammen mit kleiner):
+  # - name: "Pool"
+  #   type: "thermal"
+  #   volume_l: 7000
+  #   target_c: 28
+  #   min_c: 27            # der Optimierer hält die Temperatur >= min_c
+  #   max_c: 29
+  #   loss_w_per_k: 120    # Wärmeverlust je K (T_pool - T_außen); ggf. kalibrieren
+  #   temp_signal: "pool_temperature"   # InfluxDB-Signal der Ist-Temperatur
+  #   season: {from: "04-15", to: "10-15"}
+  #   switch_penalty_ct: 5
+  #   stages:
+  #     - {name: "WP klein", power_w: 400, heat_w: 3000, mqtt_topic: "pool/wp_klein"}
+  #     - {name: "WP groß",  power_w: 650, heat_w: 4000, requires: "WP klein", mqtt_topic: "pool/wp_gross"}
+  # Beispiel verschiebbare Last (feste Laufzeit im Fenster):
+  # - name: "Poolpumpe"
+  #   type: "deferrable"
+  #   power_w: 800
+  #   runtime_minutes: 240
+  #   window: {from: 8, to: 20}
+  #   mqtt_topic: "pool/pumpe"
+
+# -----------------------------------------------------------------------------
 # Haus-Batteriespeicher
 # -----------------------------------------------------------------------------
 house_battery:

@@ -46,6 +46,7 @@ Steuerbefehle per MQTT.
 | `ems/weather.py` | Temperatur direkt von Open-Meteo (kein Key) |
 | `ems/energycharts.py` + `ems/tariff.py` | Spotpreis von Energy-Charts + Tarifmodell → Endkunden-Bezugspreis (§14a EnWG) |
 | `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) |
+| `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher, z.B. Pool) |
 | `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |
 | `tests/` | pytest-Suite (E2E synthetisch, Optimierer-Randfälle, Prognose, Ersparnis) |
 
@@ -184,6 +185,22 @@ Nebenbedingungen: SoC-Grenzen Haus/Auto, Leistungsgrenzen, Wechselrichter-
 Durchsatz, **kein gleichzeitiges Laden/Entladen** (per Binärvariablen erzwungen),
 **Auto-Ziel-SoC zur Abfahrtzeit**. Ziel: Minimierung der Netto-Stromkosten
 (Import·Preis − Export·Einspeisevergütung) inkl. Terminalwert des Akku-Inhalts.
+
+## Steuerbare / verschiebbare Lasten (`controllable_loads`)
+
+Optionale Liste zusätzlicher Lasten, die der Optimierer mitplant und in die
+günstigsten/PV-reichsten Slots legt (Sollwert on/off je Slot optional per MQTT).
+Zwei Typen (`ems/loads.py`):
+- **`deferrable`** – muss `runtime_minutes` im Zeitfenster laufen; Leistung
+  konstant (`power_w`) oder als 15-min-Kurve (`power_profile_w`, Startzyklus).
+- **`thermal`** – thermischer Speicher (z.B. Pool): die Temperatur ist ein
+  **MILP-Zustand**, gehalten im Band `[min_c, max_c]`, geheizt über `stages`
+  (on/off-Wärmepumpen, per `requires` koppelbar – z.B. „große WP nur mit
+  kleiner"); Wärmeverlust `~ loss_w_per_k·(T−T_außen)` (Außentemp aus dem
+  Wetter-Feed), Ist-Temperatur aus `temp_signal`. So wird vorausschauend in
+  PV-Überschuss/günstige Slots vorgeheizt statt grob „PV>X → an".
+
+Leere Liste (Default) = keine zusätzlichen Variablen, Optimierer unverändert.
 
 ## Installation auf dem Pi (Trixie)
 

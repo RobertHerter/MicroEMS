@@ -182,6 +182,52 @@ class VehicleConfig:
 
 
 @dataclass
+class LoadStage:
+    """Eine Schaltstufe einer steuerbaren Last (z.B. eine der Pool-Wärmepumpen)."""
+    name: str
+    power_w: float                       # elektrische Leistung (W)
+    heat_w: float = 0.0                  # thermische Leistung (W), nur type=thermal
+    requires: Optional[str] = None       # Name einer anderen Stufe (Kopplung: nur an, wenn jene an)
+    mqtt_topic: Optional[str] = None     # Schaltbefehl (0/1) je Slot
+
+
+@dataclass
+class ControllableLoad:
+    """Steuerbare/verschiebbare Last. type="deferrable": muss `runtime_minutes`
+    im Zeitfenster laufen (Leistung konstant oder als 15-min-Kurve). type="thermal":
+    thermischer Speicher (z.B. Pool) mit Temperatur als MILP-Zustand, geheizt über
+    `stages`, gehalten im Band [min_c, max_c]. Der Optimierer legt die Laufzeit in
+    die günstigsten/PV-reichsten Slots."""
+    name: str
+    type: str = "deferrable"
+    enabled: bool = True
+    switch_penalty_ct: float = 5.0       # Malus je Einschaltvorgang (Anti-Takten)
+    mqtt_topic: Optional[str] = None
+    # -- deferrable --
+    power_w: float = 0.0
+    power_profile_w: Optional[list] = None   # 15-min-Kurve (überschreibt power_w)
+    runtime_minutes: float = 0.0
+    window_from_hour: int = 0
+    window_to_hour: int = 24
+    requires: Optional[str] = None
+    # -- thermal --
+    volume_l: float = 0.0                # Wasservolumen -> Wärmekapazität
+    target_c: float = 28.0
+    min_c: float = 27.0
+    max_c: float = 29.0
+    loss_w_per_k: float = 0.0            # Wärmeverlust je K (T_pool - T_außen)
+    temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
+    stages: list = field(default_factory=list)   # [LoadStage]
+    season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
+    season_to: Optional[str] = None
+
+    @property
+    def capacity_wh_per_k(self) -> float:
+        # Wasser: 1.163 Wh/(L·K)
+        return self.volume_l * 1.163
+
+
+@dataclass
 class OptimizationConfig:
     terminal_soc_value: Any = "auto"      # "auto" | float (ct/kWh)
     cycle_penalty_ct_kwh: float = 0.1
@@ -441,6 +487,7 @@ class Config:
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     tariff: TariffConfig = field(default_factory=TariffConfig)
     solcast: SolcastConfig = field(default_factory=SolcastConfig)
+    controllable_loads: list = field(default_factory=list)   # [ControllableLoad]
 
 
 # --------------------------------------------------------------------------- #
@@ -510,6 +557,52 @@ def parse_grid_fee_windows(raw) -> list:
             date_to=(str(w["date_to"]) if w.get("date_to") else None),
             weekdays=[int(d) for d in w["weekdays"]] if w.get("weekdays") else None,
         ))
+    return out
+
+
+def parse_controllable_loads(raw) -> list:
+    """controllable_loads aus der YAML-Liste in ControllableLoad-Objekte."""
+    if not raw:
+        return []
+    out = []
+    for w in raw:
+        stages = [LoadStage(
+            name=str(s["name"]), power_w=float(s["power_w"]),
+            heat_w=float(s.get("heat_w", 0.0)),
+            requires=(str(s["requires"]) if s.get("requires") else None),
+            mqtt_topic=(str(s["mqtt_topic"]) if s.get("mqtt_topic") else None),
+        ) for s in (w.get("stages") or [])]
+        prof = w.get("power_profile_w")
+        win = w.get("window", {}) or {}
+        seas = w.get("season", {}) or {}
+        load = ControllableLoad(
+            name=str(w["name"]),
+            type=str(w.get("type", "deferrable")),
+            enabled=bool(w.get("enabled", True)),
+            switch_penalty_ct=float(w.get("switch_penalty_ct", 5.0)),
+            mqtt_topic=(str(w["mqtt_topic"]) if w.get("mqtt_topic") else None),
+            power_w=float(w.get("power_w", 0.0)),
+            power_profile_w=([float(x) for x in prof] if prof else None),
+            runtime_minutes=float(w.get("runtime_minutes", 0.0)),
+            window_from_hour=int(win.get("from", w.get("window_from_hour", 0))),
+            window_to_hour=int(win.get("to", w.get("window_to_hour", 24))),
+            requires=(str(w["requires"]) if w.get("requires") else None),
+            volume_l=float(w.get("volume_l", 0.0)),
+            target_c=float(w.get("target_c", 28.0)),
+            min_c=float(w.get("min_c", 27.0)),
+            max_c=float(w.get("max_c", 29.0)),
+            loss_w_per_k=float(w.get("loss_w_per_k", 0.0)),
+            temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
+            stages=stages,
+            season_from=(str(w.get("season_from") or seas.get("from"))
+                         if (w.get("season_from") or seas.get("from")) else None),
+            season_to=(str(w.get("season_to") or seas.get("to"))
+                       if (w.get("season_to") or seas.get("to")) else None),
+        )
+        if load.type not in ("deferrable", "thermal"):
+            raise ValueError(f"controllable_loads['{load.name}'].type muss "
+                             f"'deferrable' oder 'thermal' sein.")
+        out.append(load)
     return out
 
 
@@ -730,6 +823,8 @@ def load_config(path: str) -> Config:
     )
     if solcast.combine not in ("sum", "mean"):
         raise ValueError("solcast.combine muss 'sum' oder 'mean' sein.")
+
+    controllable_loads = parse_controllable_loads(raw.get("controllable_loads"))
     if solcast.distribution not in ("daytime", "24h"):
         raise ValueError("solcast.distribution muss 'daytime' oder '24h' sein.")
 
@@ -769,4 +864,5 @@ def load_config(path: str) -> Config:
         weather=weather,
         tariff=tariff,
         solcast=solcast,
+        controllable_loads=controllable_loads,
     )
