@@ -128,7 +128,9 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   window_end_hour)` (PV-Nowcasting im Fokus), `"24h"` verteilt rund um die Uhr
   (hält auch den Folgetag-Forecast frisch); zwischen Abrufen wird der letzte
   Forecast gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
-  beim Auslesen aufs Slot-Raster gehalten.
+  beim Auslesen aufs Slot-Raster gehalten. Tiefe PV-Historie einmalig via
+  `solcast_import.py` (aus der InfluxDB, Quelle `influx_hist`, nur für Zeitstempel
+  VOR dem Live-Beginn → keine Überlappung mit Ost/West beim `sum`).
 - **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
   laufen ohne InfluxDB. Die InfluxDB bleibt optional (Fallback je Signal + Writeback).
 
