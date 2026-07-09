@@ -214,6 +214,18 @@ optimization:
   # Strafe (ct/kWh) je fehlender kWh zum Auto-Ziel-SoC bei Abfahrt (weiche
   # Nebenbedingung: unerreichbares Ziel -> so viel wie möglich laden + Alarm).
   car_target_penalty_ct_kwh: 200.0
+  # WR-Sockellast (W): fixer Verlust, der bei JEDEM Entlade-Slot dem Akku
+  # entnommen wird (Wechselrichter-Eigenverbrauch). Macht Kleinstleistungs-
+  # Entladen unwirtschaftlich. 0 = aus, real z.B. 30-50 W.
+  standby_discharge_w: 0.0
+  # Mindest-Entladeleistung (W): Entladen ist 0 ODER >= diesem Wert - verhindert
+  # stundenlanges Trickle-Entladen. 0 = aus, z.B. 150-300 W.
+  min_discharge_w: 0.0
+  # Leistungs-Reserve (%): plant Akku-Lade/-Entladung und WR-Durchsatz nur bis
+  # (100 - x) % der Nennwerte -> Reserve für Sub-Slot-Lastspitzen (die 15-min-
+  # Mittelung sieht diese nicht). Kann an sonnigen Tagen minimale PV-Abregelung
+  # verursachen. 0 = aus, z.B. 10.
+  power_headroom_percent: 0.0
 
 # -----------------------------------------------------------------------------
 # Verbrauchsprognose (Ähnliche-Tage-Mittelung)

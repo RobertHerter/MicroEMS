@@ -216,6 +216,18 @@ class OptimizationConfig:
     charge_strategy: str = "auto"
     # Gewicht, wie stark die Einspeise-Linie L minimiert wird.
     peak_charge_weight: float = 30.0
+    # WR-Sockellast: fixer Verlust (W), der bei JEDEM Entlade-Slot dem Akku
+    # entnommen wird (Wechselrichter-Eigenverbrauch). Macht Kleinstleistungs-
+    # Entladen unwirtschaftlich. 0 = aus.
+    standby_discharge_w: float = 0.0
+    # Mindest-Entladeleistung (W): Entladen ist 0 ODER >= diesem Wert (semi-
+    # kontinuierlich) - verhindert stundenlanges Trickle-Entladen. 0 = aus.
+    min_discharge_w: float = 0.0
+    # Leistungs-Reserve (%): plant Akku-Lade/-Entladeleistung und WR-Durchsatz
+    # nur bis (100 - x) % der Nennwerte. Lässt dem Echtzeit-Regler Reserve für
+    # Sub-Slot-Lastspitzen (15-min-Mittelung sieht diese nicht). Hinweis: kann an
+    # sonnigen Tagen minimale PV-Abregelung verursachen. 0 = aus.
+    power_headroom_percent: float = 0.0
 
 
 @dataclass
@@ -588,6 +600,9 @@ def load_config(path: str) -> Config:
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
+        standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
+        min_discharge_w=float(o.get("min_discharge_w", 0.0)),
+        power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),
     )
 
     f = raw.get("forecast", {})

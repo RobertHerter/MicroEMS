@@ -220,10 +220,23 @@ class Optimizer:
 
         prob = pulp.LpProblem("EMS", pulp.LpMinimize)
 
+        # ---- Leistungs-Reserve (#2): Nennleistungen fürs Planen deraten, damit
+        # dem Echtzeit-Regler Reserve für Sub-Slot-Lastspitzen bleibt (Default
+        # hedge=1.0 -> unverändert). Betrifft Akku-Lade/-Entlade + WR-Durchsatz.
+        hedge = max(0.0, min(1.0, 1.0 - cfg.optimization.power_headroom_percent / 100.0))
+        max_dc = hb.max_dc_charge_w * hedge
+        max_ac = hb.max_ac_charge_w * hedge
+        max_dis = hb.max_discharge_w * hedge
+        max_tot_ch = hb.max_total_charge_w * hedge
+        max_inv = cfg.inverter.max_ac_power_w * hedge
+        # Mindest-Entladung (#1): 0 oder >= min_dis (auf die Max-Entladung gekappt).
+        min_dis = min(cfg.optimization.min_discharge_w, max_dis)
+        standby_w = cfg.optimization.standby_discharge_w   # WR-Sockellast (#1)
+
         # ---- Entscheidungsvariablen ------------------------------------- #
-        dc = [pulp.LpVariable(f"dc_{t}", 0, hb.max_dc_charge_w) for t in range(N)]
-        ac = [pulp.LpVariable(f"ac_{t}", 0, hb.max_ac_charge_w) for t in range(N)]
-        dis = [pulp.LpVariable(f"dis_{t}", 0, hb.max_discharge_w) for t in range(N)]
+        dc = [pulp.LpVariable(f"dc_{t}", 0, max_dc) for t in range(N)]
+        ac = [pulp.LpVariable(f"ac_{t}", 0, max_ac) for t in range(N)]
+        dis = [pulp.LpVariable(f"dis_{t}", 0, max_dis) for t in range(N)]
         # PV-Abregelung: nötig, wenn Akku voll UND Export begrenzt/wertlos ist
         # (max_export_w, Negativpreis ohne Vergütung). Sonst via Mini-Malus 0.
         curt = [pulp.LpVariable(f"curt_{t}", 0) for t in range(N)]
@@ -256,7 +269,7 @@ class Optimizer:
 
         dep_slots = set(self._departure_slot_indices(inp.index)) if use_car else set()
 
-        M_ch = hb.max_dc_charge_w + hb.max_ac_charge_w
+        M_ch = max_dc + max_ac
 
         # Netz-Entladen (Akku -> Netz) nur wirtschaftlich sinnvoll: erlaubt in
         # Slot t, wenn der künftige Importpreis unter die Einspeisung fällt (jetzt
@@ -349,8 +362,8 @@ class Optimizer:
             # Echtes Netzladen läuft explizit über ac (Befehl batt_grid_charge_w).
             prob += dc[t] <= max(0.0, pv_t - load_t)
 
-            # Wechselrichter-Durchsatz
-            prob += pv_to_ac + dis[t] + ac[t] <= cfg.inverter.max_ac_power_w
+            # Wechselrichter-Durchsatz (mit Leistungs-Reserve #2)
+            prob += pv_to_ac + dis[t] + ac[t] <= max_inv
 
             # AC-Knotenbilanz: Import - Export = Last + Auto + AC-Laden - PV_AC - Entladung
             prob += (
@@ -360,8 +373,11 @@ class Optimizer:
 
             # kein gleichzeitiges Laden/Entladen
             prob += dc[t] + ac[t] <= M_ch * is_ch[t]
-            prob += dis[t] <= hb.max_discharge_w * is_di[t]
+            prob += dis[t] <= max_dis * is_di[t]
             prob += is_ch[t] + is_di[t] <= 1
+            # Mindest-Entladeleistung (#1): 0 oder >= min_dis
+            if min_dis > 0.0:
+                prob += dis[t] >= min_dis * is_di[t]
 
             # Entladen nur zur Deckung der Restlast (+ Auto). Bei PV-Überschuss
             # kann der E3DC im Automatikmodus nicht "für den Export" entladen -
@@ -372,11 +388,11 @@ class Optimizer:
                 prob += dis[t] <= max(0.0, load_t - pv_t) + car[t]
 
             # physikalische Gesamt-Ladeleistung des Akkus (DC + AC zusammen)
-            prob += dc[t] + ac[t] <= hb.max_total_charge_w
+            prob += dc[t] + ac[t] <= max_tot_ch
 
             # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
             prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
-            prob += dc[t] + ac[t] >= (hb.max_total_charge_w - EPS_P) * at_max[t]
+            prob += dc[t] + ac[t] >= (max_tot_ch - EPS_P) * at_max[t]
             # Strategie des jeweiligen Tages (peak/asap)
             dm = day_mode[slot_day[t]]
             # Peak-Tag: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
@@ -412,6 +428,8 @@ class Optimizer:
                 + hb.charge_efficiency * dc[t] * dt
                 + hb.eff_ac_charge * ac[t] * dt
                 - (1.0 / hb.discharge_efficiency) * dis[t] * dt
+                # WR-Sockellast (#1): fixer Entnahmeverlust je aktivem Entlade-Slot
+                - standby_w * is_di[t] * dt
             )
 
             if use_car:
