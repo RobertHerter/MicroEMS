@@ -6,8 +6,15 @@ Auf dem Pi ausführen (mit DB-Zugang):
 
 Vergleicht:
   * PV-Vorhersage (Solcast, pv_forecast) vs. Ist-Erzeugung (pv_generation)
-  * Hausverbrauchs-Modell (Ähnliche-Tage) vs. Ist-Verbrauch (house_consumption)
+  * Hausverbrauchs-Modell (Ähnliche-Tage) vs. Ist-Verbrauch
     – out-of-sample (Modell aus Trainingszeitraum, geprüft auf Testzeitraum)
+
+Datenquellen der Verbrauchs-Kalibrierung folgen derselben Weiche wie der
+Live-Betrieb: bei e3dc_rscp.history_source die tiefe lokale RSCP-house_load,
+bei weather.enabled die Open-Meteo-Temperatur – sonst InfluxDB. So wird der
+correction_factor gegen exakt die Daten kalibriert, mit denen das Live-Modell
+rechnet. Die PV-Kalibrierung bleibt InfluxDB-gebunden (Solcast-pv_forecast und
+tiefe Ist-PV-Historie liegen noch nicht lokal vor).
 
 Ausgabe:
   * Konsolen-Report (MAPE, Bias, Korrektur global/stündlich/monatlich)
@@ -98,11 +105,43 @@ def calibrate_pv(repo, cfg, now, lookback_days):
             "suggested_scale": round(cur_scale * m.get("scale_actual_over_pred", 1.0), 4)}
 
 
+def _load_hist(repo, cfg, start, now):
+    """Verbrauchs-Historie über dieselbe Weiche wie der Live-Forecaster:
+    lokale RSCP-house_load bei history_source, sonst InfluxDB-house_consumption."""
+    if cfg.e3dc_rscp.history_source:
+        from ems.local_history import read_house_load
+        return read_house_load(cfg.e3dc_rscp.history_db_path, start, now,
+                               cfg.general.timezone)
+    return repo.read_slots("house_consumption", start, now)
+
+
+def _temp_hist(repo, cfg, start, now):
+    """Temperatur wie im Live-Betrieb: Open-Meteo-Cache bei weather.enabled,
+    sonst InfluxDB. None, wenn nichts da."""
+    if cfg.weather.enabled:
+        from ems.local_history import read_temperature
+        try:
+            t = read_temperature(cfg.e3dc_rscp.history_db_path, start, now,
+                                  cfg.general.timezone, f"{cfg.general.slot_minutes}min")
+            return t if not t.empty else None
+        except Exception:
+            return None
+    if repo.signal_available("temperature"):
+        try:
+            return repo.read_slots("temperature", start, now)
+        except Exception:
+            return None
+    return None
+
+
 def calibrate_load(repo, cfg, now, lookback_days, test_days):
-    if not repo.signal_available("house_consumption"):
+    use_local = cfg.e3dc_rscp.history_source
+    if not use_local and not repo.signal_available("house_consumption"):
         return None
     start = now - timedelta(days=lookback_days)
-    hist = repo.read_slots("house_consumption", start, now).dropna()
+    hist = _load_hist(repo, cfg, start, now).dropna()
+    if hist.empty:
+        return None
     if len(hist) < 96 * (test_days + 14):
         print("  [Hinweis] Wenig Historie – Ergebnis nur eingeschränkt aussagekräftig.")
     test_start = now - timedelta(days=test_days)
@@ -111,13 +150,8 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
     if train.empty or actual_test.empty:
         return None
     # Temperatur (falls vorhanden) in den Backtest einbeziehen -> prüft das
-    # temperaturgewichtete Modell, konsistent zum Live-Betrieb.
-    temp = None
-    if repo.signal_available("temperature"):
-        try:
-            temp = repo.read_slots("temperature", start, now)
-        except Exception:
-            temp = None
+    # temperaturgewichtete Modell, konsistent zum Live-Betrieb (gleiche Quelle).
+    temp = _temp_hist(repo, cfg, start, now)
 
     # Modell aus Trainingszeitraum, ohne bestehende Korrektur, out-of-sample prüfen
     cfg.forecast.correction_factor = 1.0
@@ -147,6 +181,10 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
 
     return {"metrics": m, "hourly": hourly, "daytype": daytype_tab,
             "temp_used": temp is not None, "by_temperature": temp_bins,
+            "load_source": ("lokal (RSCP house_load)" if use_local
+                            else "InfluxDB (house_consumption)"),
+            "temp_source": ("Open-Meteo (lokal)" if (temp is not None and cfg.weather.enabled)
+                            else "InfluxDB" if temp is not None else "—"),
             "suggested_correction_factor": round(m.get("scale_actual_over_pred", 1.0), 4)}
 
 
@@ -195,6 +233,8 @@ def main():
     _print_block("Hausverbrauch (Modell) vs. Ist-Verbrauch (out-of-sample)", load)
     if load:
         print(f"  -> Empfehlung  forecast.correction_factor = {load['suggested_correction_factor']}")
+        print(f"     Quelle Verbrauch: {load.get('load_source', '?')} | "
+              f"Temperatur: {load.get('temp_source', '?')}")
         print(f"     Temperatur im Modell genutzt: {load.get('temp_used', False)}")
         print(f"     stündliche Faktoren: {load['hourly']}")
         print(f"     Werktag/Wochenende:  {load['daytype']}")
