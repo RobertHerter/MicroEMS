@@ -237,15 +237,23 @@ def test_read_system_limits_maps_device_fields():
     }
 
 
-def test_apply_system_limits_overrides_config_but_not_capacity():
+def test_apply_system_limits_overrides_config():
     from ems.main import _apply_system_limits
     cfg = make_config()
-    cap_before = cfg.house_battery.capacity_wh
     _apply_system_limits(cfg, {
-        "inverter_max_ac_power_w": 12000.0, "max_charge_w": 12480.0,
-        "max_discharge_w": 12120.0, "min_discharge_w": 100.0})
+        "capacity_wh": 22344.0, "inverter_max_ac_power_w": 12000.0,
+        "max_charge_w": 12480.0, "max_discharge_w": 12120.0, "min_discharge_w": 100.0})
+    assert cfg.house_battery.capacity_wh == 22344.0
     assert cfg.inverter.max_ac_power_w == 12000.0
     assert cfg.house_battery.max_discharge_w == 12120.0
     assert cfg.house_battery.max_charge_w == 12480.0
     assert cfg.optimization.min_discharge_w == 100.0
-    assert cfg.house_battery.capacity_wh == cap_before      # Kapazität unberührt
+
+
+def test_apply_system_limits_leaves_unlisted_fields():
+    from ems.main import _apply_system_limits
+    cfg = make_config()
+    cap_before = cfg.house_battery.capacity_wh
+    _apply_system_limits(cfg, {"min_discharge_w": 100.0})   # nur min_discharge
+    assert cfg.optimization.min_discharge_w == 100.0
+    assert cfg.house_battery.capacity_wh == cap_before      # Rest unberührt

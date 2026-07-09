@@ -147,7 +147,10 @@ class E3DCLink:
             e = self._connect()
             info = e.get_system_info() or {}
             ps = e.get_power_settings() or {}
+            cap = self._specified_capacity_wh(e)
         out: dict = {}
+        if cap:
+            out["capacity_wh"] = cap
         if info.get("maxAcPower"):
             out["inverter_max_ac_power_w"] = float(info["maxAcPower"])
         if info.get("maxBatChargePower"):
@@ -157,6 +160,24 @@ class E3DCLink:
         if ps.get("dischargeStartPower") is not None:
             out["min_discharge_w"] = float(ps["dischargeStartPower"])
         return out
+
+    @staticmethod
+    def _specified_capacity_wh(e):
+        """Nominale Akkukapazität (Wh) aus BAT_SPECIFICATION -> BAT_SPECIFIED_CAPACITY.
+        Verlässlich in Wh; die usable-Felder aus get_battery_data sind Ah-basiert
+        und daher mehrdeutig. None bei Fehler."""
+        try:
+            from e3dc._rscpLib import rscpFindTag, rscpFindTagIndex
+            from e3dc._rscpTags import RscpTag, RscpType
+            req = e.sendRequest((RscpTag.BAT_REQ_DATA, RscpType.Container, [
+                (RscpTag.BAT_INDEX, RscpType.Uint16, 0),
+                (RscpTag.BAT_REQ_SPECIFICATION, RscpType.NoneType, None),
+            ]), keepAlive=True)
+            spec = rscpFindTag(req, "BAT_SPECIFICATION")
+            cap = float(rscpFindTagIndex(spec, "BAT_SPECIFIED_CAPACITY"))
+            return cap if cap > 0 else None
+        except Exception:
+            return None
 
     @staticmethod
     def _house_load_w(x: dict) -> float:

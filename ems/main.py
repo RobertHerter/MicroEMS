@@ -754,6 +754,9 @@ def _apply_system_limits(config: Config, lim: dict) -> None:
     if not lim:
         return
     changes = []
+    if "capacity_wh" in lim:
+        config.house_battery.capacity_wh = lim["capacity_wh"]
+        changes.append(f"capacity={lim['capacity_wh']:.0f} Wh")
     if "inverter_max_ac_power_w" in lim:
         config.inverter.max_ac_power_w = lim["inverter_max_ac_power_w"]
         changes.append(f"WR max_ac={lim['inverter_max_ac_power_w']:.0f} W")
