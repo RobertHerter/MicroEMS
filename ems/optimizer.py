@@ -108,7 +108,7 @@ def make_solver(cfg: Config):
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":
         try:
-            highs = pulp.HiGHS_CMD(**kwargs)
+            highs = pulp.HiGHS(**kwargs)
             if highs.available():
                 return highs
             log.warning("HiGHS-Solver ist nicht verfügbar (ist 'highspy' installiert?). Fallback auf CBC.")
