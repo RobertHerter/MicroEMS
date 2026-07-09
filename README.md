@@ -98,8 +98,26 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   interpoliert) statt aus InfluxDB. Tiefe Historie einmalig via
   `weather_backfill.py` (ERA5-Archiv, ein Call/Jahr). Fällt der Abruf aus, wird
   der Cache genutzt.
-- **Noch InfluxDB-gebunden:** nur noch **Strompreis** und **PV-Vorhersage** –
-  deren Direktabruf (Energy-Charts, Solcast) ist der letzte Standalone-Schritt.
+- **Bezugspreis direkt von Energy-Charts + Tarifmodell** (`ems/energycharts.py`,
+  `ems/tariff.py`, `tariff.enabled`, kostenlos, kein API-Key): je Zyklus wird der
+  Day-Ahead-Spot der Gebotszone (EUR/MWh → ct/kWh) geholt und in die lokale SQLite
+  (Tabelle `spot_price`) gecacht. Beim Auslesen rechnet das Tarifmodell daraus den
+  **Endkunden-Bezugspreis** (ct/kWh brutto):
+
+  ```
+  netto  = spot·(1+markup_percent/100) + markup_ct_kwh + levies_ct_kwh + netzentgelt
+  brutto = netto·(1+vat_percent/100)          # MwSt auf alles
+  ```
+
+  Tarifart `dynamic`/`fixed`; Netzentgelt `static` (konstant), `included` (=0) oder
+  `14a` (§14a EnWG zeitvariabel: Fensterliste nach Uhrzeit/Monat/Datum/Wochentag,
+  erstes passendes Fenster gewinnt, sonst Default). Zentrale Weiche
+  `tariff.read_price_signal` (nutzen `_price_series` und das Ersparnis-Tracking).
+  Tiefe Preishistorie einmalig via `energycharts_backfill.py` (90-Tage-Blöcke).
+  Fällt der Abruf aus, wird der Cache genutzt; fehlende Folgetag-Preise ergänzt
+  weiterhin die Ähnliche-Tage-Schätzung.
+- **Noch InfluxDB-gebunden:** nur noch die **PV-Vorhersage** – deren Direktabruf
+  (Solcast) ist der letzte Standalone-Schritt.
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist

@@ -28,6 +28,10 @@ def _con(path: str) -> sqlite3.Connection:
     # Stündliche Temperatur (Open-Meteo) für die Prognose-Gewichtung.
     con.execute("CREATE TABLE IF NOT EXISTS temperature ("
                 " ts TEXT PRIMARY KEY, temp_c REAL NOT NULL)")
+    # Day-Ahead-Spotpreis (Energy-Charts) in ct/kWh netto. Das Tarifmodell
+    # (ems/tariff.py) rechnet daraus beim Auslesen den Bezugspreis (brutto).
+    con.execute("CREATE TABLE IF NOT EXISTS spot_price ("
+                " ts TEXT PRIMARY KEY, ct REAL NOT NULL)")
     con.commit()
     return con
 
@@ -114,6 +118,66 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
         return hourly
     return (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
             .reindex(grid))
+
+
+def write_spot(path: str, mapping: Dict[str, float]) -> int:
+    """UPSERT von Spotpreisen {UTC-ISO -> ct/kWh netto}."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO spot_price(ts, ct) VALUES(?, ?) "
+        "ON CONFLICT(ts) DO UPDATE SET ct=excluded.ct",
+        [(k, float(v)) for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
+def last_spot_timestamp(path: str) -> Optional[pd.Timestamp]:
+    """Jüngster gespeicherter Spot-Slot (tz-aware UTC), oder None."""
+    try:
+        con = _con(path)
+        row = con.execute("SELECT max(ts) FROM spot_price").fetchone()
+        con.close()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return pd.Timestamp(row[0])
+
+
+def read_spot(path: str, start, end, tz: str, slot_minutes: int = 15) -> pd.Series:
+    """Spotpreis [start, end) auf das Slot-Raster (ct/kWh netto). Gröbere Quell-
+    schritte (stündlich) werden gehalten; Slots NACH dem letzten vorhandenen
+    Punkt bleiben NaN (-> lösen die Folgetag-Preisschätzung aus). Leer, wenn
+    nichts vorhanden."""
+    # etwas Rand links, damit der zuletzt vor `start` bekannte Preis gehalten wird
+    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, ct FROM spot_price WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    src = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz),
+                         freq=f"{slot_minutes}min", inclusive="left")
+    if len(grid) == 0:
+        return src
+    spl = max(1, 60 // slot_minutes)      # Slots je Stunde
+    # stündliche Quelle auf die Sub-Slots halten (limit), aber nicht über das
+    # Ende der Historie hinaus (dort NaN -> Schätzung).
+    allidx = src.index.union(grid)
+    held = src.reindex(allidx).ffill(limit=spl - 1)
+    return held.reindex(grid)
 
 
 def read_actual_signal(config, repo, signal: str, start, end):

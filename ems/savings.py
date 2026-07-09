@@ -24,6 +24,7 @@ import pandas as pd
 from .config import Config
 from .local_history import read_actual_signal
 from .optimizer import natural_battery_step
+from .tariff import read_price_signal
 
 log = logging.getLogger("ems.savings")
 
@@ -72,10 +73,14 @@ class SavingsTracker:
         """
         if not self.cfg.savings.enabled:
             return None
-        # Im Standalone (history_source) kommen pv/last/grid/soc aus der lokalen
-        # SQLite; nur der Preis muss noch aus der InfluxDB kommen.
-        required = (["electricity_price"] if self.cfg.e3dc_rscp.history_source
-                    else REQUIRED_SIGNALS)
+        # Im Standalone kommen pv/last/grid/soc aus der lokalen SQLite
+        # (history_source) und der Preis aus Energy-Charts (tariff.enabled);
+        # nur die noch aus der InfluxDB bezogenen Signale müssen dort vorliegen.
+        required = []
+        if not self.cfg.e3dc_rscp.history_source:
+            required += ["pv_generation", "house_consumption", "grid_power"]
+        if not self.cfg.tariff.enabled:
+            required += ["electricity_price"]
         missing = [s for s in required if not repo.signal_available(s)]
         if missing:
             log.info("Ersparnis-Tracking: Signale %s fehlen – übersprungen.", missing)
@@ -113,7 +118,7 @@ class SavingsTracker:
         pv = read_actual_signal(self.cfg, repo, "pv_generation", last, now)
         load = read_actual_signal(self.cfg, repo, "house_consumption", last, now)
         grid = read_actual_signal(self.cfg, repo, "grid_power", last, now)
-        price = repo.read_slots("electricity_price", last, now, fill=False)
+        price = read_price_signal(self.cfg, repo, last, now)
         if self.cfg.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots("feed_in_tariff", last, now, fill=False)
         else:

@@ -318,6 +318,37 @@ class WeatherConfig:
 
 
 @dataclass
+class GridFeeWindow:
+    """Ein §14a-EnWG-Zeitfenster: Netzentgelt (ct/kWh netto) für die Slots, die
+    ALLE gesetzten Filter erfüllen. Nicht gesetzte Filter (None) = egal.
+    Ausgewertet in lokaler Zeit. Das erste passende Fenster der Liste gewinnt."""
+    ct_kwh: float
+    hours: Optional[list] = None       # Stunden 0..23 (lokale Zeit)
+    months: Optional[list] = None      # Monate 1..12
+    date_from: Optional[str] = None    # "MM-DD" inkl.; mit date_to (Wrap Jahresende ok)
+    date_to: Optional[str] = None      # "MM-DD" inkl.
+    weekdays: Optional[list] = None    # 0=Mo .. 6=So
+
+
+@dataclass
+class TariffConfig:
+    # Bezugspreis direkt aus Energy-Charts (Spot) + Tarifmodell statt InfluxDB.
+    enabled: bool = False
+    type: str = "dynamic"              # "dynamic" (spotbasiert) | "fixed" (konstant)
+    fixed_ct_kwh: float = 30.0         # bei type=fixed: konstanter BRUTTO-Preis
+    bidding_zone: str = "DE-LU"        # Energy-Charts-Gebotszone
+    markup_percent: float = 0.0        # Aufschlag auf den Spot in %
+    markup_ct_kwh: float = 0.0         # zusätzlicher fixer Marge-Aufschlag (netto ct/kWh)
+    levies_ct_kwh: float = 0.0         # Steuern & Abgaben (netto ct/kWh, additiv)
+    vat_percent: float = 19.0          # MwSt auf die Nettosumme
+    grid_fee_mode: str = "included"    # "static" | "included" | "14a"
+    grid_fee_ct_kwh: float = 0.0       # bei static: konstantes Netzentgelt (netto)
+    grid_fee_default_ct_kwh: float = 0.0  # bei 14a: Fallback, wenn kein Fenster passt
+    grid_fee_windows: list = field(default_factory=list)  # bei 14a: [GridFeeWindow]
+    history_backfill_days: int = 400   # Tiefe des einmaligen Spot-Backfills
+
+
+@dataclass
 class E3DCRscpConfig:
     # Optionale direkte RSCP-Anbindung des E3DC (Bibliothek pye3dc).
     enabled: bool = False
@@ -362,6 +393,7 @@ class Config:
     report: ReportConfig = field(default_factory=ReportConfig)
     e3dc_rscp: E3DCRscpConfig = field(default_factory=E3DCRscpConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
+    tariff: TariffConfig = field(default_factory=TariffConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +430,39 @@ def parse_departure_times(raw, base: time) -> Optional[Dict[int, Optional[time]]
             out[day] = None
         else:
             out[day] = _parse_time(value)
+    return out
+
+
+def _parse_hours(raw) -> Optional[list]:
+    """Stundenliste: akzeptiert Ints und Bereiche "H-H" (Ende exklusiv, Wanduhr).
+    Beispiel: [22, "6-9", "16-20"] -> {22, 6,7,8, 16,17,18,19}."""
+    if raw is None:
+        return None
+    hours: set = set()
+    for item in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        if isinstance(item, str) and "-" in item:
+            a, b = item.split("-", 1)
+            a, b = int(a), int(b)
+            hours.update(range(a, b) if b > a else list(range(a, 24)) + list(range(0, b)))
+        else:
+            hours.add(int(item))
+    return sorted(h % 24 for h in hours)
+
+
+def parse_grid_fee_windows(raw) -> list:
+    """§14a-Fenster aus der YAML-Liste in GridFeeWindow-Objekte überführen."""
+    if not raw:
+        return []
+    out = []
+    for w in raw:
+        out.append(GridFeeWindow(
+            ct_kwh=float(w["ct_kwh"]),
+            hours=_parse_hours(w.get("hours")),
+            months=[int(m) for m in w["months"]] if w.get("months") else None,
+            date_from=(str(w["date_from"]) if w.get("date_from") else None),
+            date_to=(str(w["date_to"]) if w.get("date_to") else None),
+            weekdays=[int(d) for d in w["weekdays"]] if w.get("weekdays") else None,
+        ))
     return out
 
 
@@ -576,6 +641,27 @@ def load_config(path: str) -> Config:
         forecast_days=int(w.get("forecast_days", 4)),
     )
 
+    t = raw.get("tariff", {})
+    tariff = TariffConfig(
+        enabled=bool(t.get("enabled", False)),
+        type=str(t.get("type", "dynamic")),
+        fixed_ct_kwh=float(t.get("fixed_ct_kwh", 30.0)),
+        bidding_zone=str(t.get("bidding_zone", "DE-LU")),
+        markup_percent=float(t.get("markup_percent", 0.0)),
+        markup_ct_kwh=float(t.get("markup_ct_kwh", 0.0)),
+        levies_ct_kwh=float(t.get("levies_ct_kwh", 0.0)),
+        vat_percent=float(t.get("vat_percent", 19.0)),
+        grid_fee_mode=str(t.get("grid_fee_mode", "included")),
+        grid_fee_ct_kwh=float(t.get("grid_fee_ct_kwh", 0.0)),
+        grid_fee_default_ct_kwh=float(t.get("grid_fee_default_ct_kwh", 0.0)),
+        grid_fee_windows=parse_grid_fee_windows(t.get("grid_fee_windows")),
+        history_backfill_days=int(t.get("history_backfill_days", 400)),
+    )
+    if tariff.type not in ("dynamic", "fixed"):
+        raise ValueError("tariff.type muss 'dynamic' oder 'fixed' sein.")
+    if tariff.grid_fee_mode not in ("static", "included", "14a"):
+        raise ValueError("tariff.grid_fee_mode muss 'static', 'included' oder '14a' sein.")
+
     e = raw.get("e3dc_rscp", {})
     e3dc_rscp = E3DCRscpConfig(
         enabled=bool(e.get("enabled", False)),
@@ -609,4 +695,5 @@ def load_config(path: str) -> Config:
         report=report,
         e3dc_rscp=e3dc_rscp,
         weather=weather,
+        tariff=tariff,
     )

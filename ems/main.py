@@ -32,6 +32,7 @@ from .local_history import read_actual_signal, write_actuals
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
+from .tariff import read_price_signal
 from .validate import summarize, validate_plan
 
 log = logging.getLogger("ems.main")
@@ -108,6 +109,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                 "starten: python rscp_import.py --config config.yaml")
             except Exception as exc:
                 log.warning("Hauslast-Nachführung fehlgeschlagen (%s).", exc)
+
+        # --- 0b) Day-Ahead-Spotpreis (Energy-Charts) nachführen ---------- #
+        _refresh_spot(config)
 
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
@@ -437,6 +441,32 @@ def _read_temp(repo, config, start, end):
         return None
 
 
+_last_spot_fetch = 0.0
+
+
+def _refresh_spot(config):
+    """Day-Ahead-Spotpreis von Energy-Charts holen und lokal cachen (throttled,
+    höchstens einmal je ~5 min). Holt jüngste Historie + Folgetag (Day-Ahead),
+    damit der Optimierungshorizont echte Preise hat. Nur bei dynamischem Tarif."""
+    if not (config.tariff.enabled and config.tariff.type == "dynamic"):
+        return
+    global _last_spot_fetch
+    if _time.time() - _last_spot_fetch <= 300:
+        return
+    try:
+        from .energycharts import fetch_spot
+        from .local_history import write_spot
+        today = pd.Timestamp.now(tz=config.general.timezone).normalize()
+        start = (today - pd.Timedelta(days=3)).date().isoformat()
+        end = (today + pd.Timedelta(days=2)).date().isoformat()
+        n = write_spot(config.e3dc_rscp.history_db_path,
+                       fetch_spot(config.tariff.bidding_zone, start, end))
+        _last_spot_fetch = _time.time()
+        log.info("Energy-Charts: %d Spot-Preiswerte aktualisiert.", n)
+    except Exception as exc:
+        log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+
+
 def _price_series(repo, config, index, now, return_estimated=False):
     """Strompreis über `index`: Ist-Werte wo vorhanden, sonst Ähnliche-Tage-
     Prognose für noch fehlende (Folgetag-)Preise – statt einer flachen ffill-Linie.
@@ -444,12 +474,11 @@ def _price_series(repo, config, index, now, return_estimated=False):
     return_estimated=True: zusätzlich Bool-Maske, welche Slots geschätzt sind.
     """
     slot = pd.Timedelta(f"{config.general.slot_minutes}min")
-    raw = repo.read_slots("electricity_price", index[0], index[-1] + slot, fill=False).reindex(index)
+    raw = read_price_signal(config, repo, index[0], index[-1] + slot).reindex(index)
     estimated = raw.isna()   # Slots ohne echten Börsenpreis -> Schätzung
     if estimated.any():
         try:
-            hist = repo.read_slots("electricity_price", now - timedelta(days=90), now,
-                                   fill=False).dropna()
+            hist = read_price_signal(config, repo, now - timedelta(days=90), now).dropna()
             if not hist.empty:
                 fc = LoadForecaster(config).forecast(
                     hist, index[0], len(index), clip_min=None, apply_correction=False)

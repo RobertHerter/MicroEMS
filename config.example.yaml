@@ -79,6 +79,42 @@ feed_in:
   zero_at_negative_price: false
 
 # -----------------------------------------------------------------------------
+# Bezugspreis / Tarifmodell (Energy-Charts statt InfluxDB)
+# -----------------------------------------------------------------------------
+# enabled: true = Bezugspreis wird aus dem Energy-Charts-Spotpreis (kostenlos,
+# kein Key) über das Tarifmodell berechnet, statt aus der InfluxDB gelesen.
+# Aufbau je Slot (dynamisch):
+#   netto  = spot*(1+markup_percent/100) + markup_ct_kwh + levies_ct_kwh + netzentgelt
+#   brutto = netto*(1+vat_percent/100)                    <- MwSt auf alles
+# Der Spot wird lokal in der SQLite (e3dc_rscp.history_db_path) gecacht; einmaliger
+# Backfill der Historie: python energycharts_backfill.py --config config.yaml
+tariff:
+  enabled: false
+  type: "dynamic"          # "dynamic" (spotbasiert) | "fixed" (konstant)
+  fixed_ct_kwh: 30.0        # nur bei type=fixed: konstanter BRUTTO-Preis
+  bidding_zone: "DE-LU"     # Energy-Charts-Gebotszone
+  markup_percent: 3.0       # Aufschlag auf den Spot in %
+  markup_ct_kwh: 0.0        # zusätzlicher fixer Marge-Aufschlag (netto ct/kWh)
+  levies_ct_kwh: 15.0       # Steuern & Abgaben zusammengefasst (netto ct/kWh):
+                            # Stromsteuer + KWKG/§19/Offshore/Konzessionsabgabe ...
+  vat_percent: 19.0         # MwSt
+  history_backfill_days: 400
+  # Netzentgelt:
+  #   "included" – schon in markup/levies enthalten (nichts zusätzlich)
+  #   "static"   – konstant grid_fee_ct_kwh (netto)
+  #   "14a"      – §14a EnWG zeitvariabel (Fensterliste unten)
+  grid_fee_mode: "static"
+  grid_fee_ct_kwh: 8.0
+  # Bei grid_fee_mode: "14a" – erstes passendes Fenster gewinnt, sonst Default.
+  # Filter (alle optional, in lokaler Zeit): hours (Ints oder "H-H", Ende exkl.),
+  # months [1..12], date_from/date_to "MM-DD" (Wrap über Jahreswechsel ok),
+  # weekdays [0=Mo..6=So]. Werte vom eigenen Netzbetreiber übernehmen!
+  grid_fee_default_ct_kwh: 8.0
+  grid_fee_windows:
+    - {ct_kwh: 12.0, hours: ["16-20"]}                       # HT nachmittags
+    - {ct_kwh: 3.0,  hours: ["0-6"], date_from: "11-01", date_to: "02-28"}  # NT Winter-Nacht
+
+# -----------------------------------------------------------------------------
 # Haus-Batteriespeicher
 # -----------------------------------------------------------------------------
 house_battery:
