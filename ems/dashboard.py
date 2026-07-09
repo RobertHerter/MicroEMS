@@ -138,11 +138,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     x = t.index
     now = pd.Timestamp.now(tz=x.tz)
 
+    loads_cfg = list(getattr(config, "controllable_loads", []) or [])
+    has_loads = len(loads_cfg) > 0
+    if has_loads:
+        n_rows = 6
+        row_heights = [0.33, 0.14, 0.14, 0.24, 0.045, 0.105]
+        titles = ("<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
+                  "<b>Steuerung</b>", "", "<b>Steuerbare Lasten</b>")
+    else:
+        n_rows = 5
+        row_heights = [0.36, 0.15, 0.15, 0.26, 0.045]
+        titles = ("<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
+                  "<b>Steuerung</b>", "")
     fig = make_subplots(
-        rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.035,
-        row_heights=[0.36, 0.15, 0.15, 0.26, 0.045],
-        subplot_titles=("<b>Leistung</b>", "<b>Ladezustand</b>",
-                        "<b>Strompreis</b>", "<b>Steuerung</b>", ""),
+        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.035,
+        row_heights=row_heights, subplot_titles=titles,
     )
 
     # Hover: deutsche Zahlen (1.234,5 via layout.separators) + Einheit.
@@ -263,6 +273,35 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             hovertemplate="%{x|%H:%M} – %{customdata}<extra>Modus</extra>"),
             row=5, col=1)
 
+    # ---------- Panel 6: Steuerbare Lasten (on/off je Slot) ----------
+    if has_loads:
+        from .loads import _slug as _lslug
+        lanes = []   # (label, column, enabled)
+        for ld in loads_cfg:
+            if ld.type == "thermal":
+                sg = _lslug(ld.name)
+                for st in ld.stages:
+                    lanes.append((f"{ld.name} / {st.name}",
+                                  f"load_{sg}_{_lslug(st.name)}_w", ld.enabled))
+            else:
+                lanes.append((ld.name, f"load_{_lslug(ld.name)}_w", ld.enabled))
+        ylabels, z = [], []
+        for label, col, enabled in lanes:
+            ylabels.append(label)
+            if enabled and col in t.columns:
+                z.append([1 if float(v) > 5.0 else 0 for v in t[col].fillna(0.0)])
+            else:                                   # deaktiviert -> graue Leiste
+                z.append([2] * len(x))
+        _lab = {0: "aus", 1: "AN", 2: "deaktiviert"}
+        fig.add_trace(go.Heatmap(
+            x=x, y=ylabels, z=z, zmin=-0.5, zmax=2.5, showscale=False,
+            colorscale=[[0.0, "#e9ecef"], [0.33, "#e9ecef"],      # 0 = aus
+                        [0.34, "#2ca02c"], [0.66, "#2ca02c"],     # 1 = AN
+                        [0.67, "#adb5bd"], [1.0, "#adb5bd"]],     # 2 = deaktiviert
+            customdata=[[_lab[v] for v in row] for row in z],
+            hovertemplate="%{y}  %{x|%H:%M} – %{customdata}<extra></extra>"),
+            row=6, col=1)
+
     # ---------- Orientierung: Vergangenheit, Jetzt, Tagesgrenzen ----------
     if x[0] < now:
         fig.add_vrect(x0=x[0], x1=min(now, x[-1]), fillcolor="rgba(0,0,0,0.05)",
@@ -292,6 +331,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(title_text="ct/kWh", row=3, col=1)
     fig.update_yaxes(title_text="W", row=4, col=1)
     fig.update_yaxes(visible=False, row=5, col=1)
+    if has_loads:
+        fig.update_yaxes(row=6, col=1, autorange="reversed", tickfont=dict(size=10))
 
     # Mini-Legende der Modus-Farben DIREKT unter der Zeitleiste (Annotation,
     # unterhalb der Zeit-Beschriftung; die Trace-Legende rückt weiter nach
@@ -307,7 +348,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
-        height=980, autosize=True, template="plotly_white",
+        height=1120 if has_loads else 980, autosize=True, template="plotly_white",
         hovermode="x unified", barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",

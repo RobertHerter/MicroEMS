@@ -82,6 +82,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if publisher is not None:
             publisher.apply_vehicle_overrides(config.vehicle)
             publisher.apply_battery_overrides(config.house_battery)
+            publisher.apply_load_overrides(config.controllable_loads)
         # Horizont bis ENDE des letzten Tages (nächste Mitternacht) aufrunden ->
         # immer ganze Tage, kein verzerrter Teiltag am Ende.
         _raw_end = now + timedelta(hours=config.general.optimization_horizon_hours)
@@ -607,6 +608,9 @@ def _build_display_frame(repo, config, now, history, result,
               "grid_import_w", "grid_export_w", "export_line_w", "mode",
               "feedin_ct_kwh", "pv_curtail_w"]:
         if c in ot.columns:
+            df[c] = ot[c].reindex(full)
+    for c in ot.columns:                    # steuerbare Lasten (load_*_w / _temp_c)
+        if c.startswith("load_"):
             df[c] = ot[c].reindex(full)
     if "mode" in df.columns:
         df["mode"] = df["mode"].fillna("auto")

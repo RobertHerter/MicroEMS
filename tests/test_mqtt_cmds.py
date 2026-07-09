@@ -121,3 +121,37 @@ def test_car_boost_and_recalc():
     pub.recalc_event.clear()
     pub._on_message(None, None, Msg("ems/cmd/recalc", "x"))
     assert pub.recalc_event.is_set()
+
+
+def _pub_with_pool():
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=7000,
+        temp_signal="homie/homey/temperatur-pool/measure-temperature",
+        stages=[LoadStage("klein", 400, 3000)])]
+    return cfg, HomeyMqttPublisher(cfg)
+
+
+def test_load_enable_disable_via_mqtt():
+    cfg, pub = _pub_with_pool()
+    pub._on_message(None, None, Msg("ems/cmd/load/pool", "off"))
+    assert pub.recalc_event.is_set()
+    pub.apply_load_overrides(cfg.controllable_loads)
+    assert cfg.controllable_loads[0].enabled is False
+    # zurück auf Konfigurationswert (True)
+    pub._on_message(None, None, Msg("ems/cmd/load/pool", "default"))
+    pub.apply_load_overrides(cfg.controllable_loads)
+    assert cfg.controllable_loads[0].enabled is True
+    # explizit wieder an
+    pub._on_message(None, None, Msg("ems/cmd/load/pool", "on"))
+    pub.apply_load_overrides(cfg.controllable_loads)
+    assert cfg.controllable_loads[0].enabled is True
+
+
+def test_pool_temp_cached_from_mqtt():
+    cfg, pub = _pub_with_pool()
+    topic = "homie/homey/temperatur-pool/measure-temperature"
+    assert topic in pub._temp_topics
+    pub._on_message(None, None, Msg(topic, "27,4"))     # Dezimal-Komma zulässig
+    assert pub.get_load_temp(topic) == 27.4

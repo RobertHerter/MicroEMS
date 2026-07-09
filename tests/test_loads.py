@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from ems.config import ControllableLoad, LoadStage
 from ems.optimizer import Optimizer
@@ -133,3 +134,29 @@ def test_empty_loads_is_noop():
     res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=500.0, price=30.0, soc=5000.0))
     assert not res.infeasible
     assert not any(c.startswith("load_") for c in res.table.columns)
+
+
+def test_dashboard_renders_loads_panel(tmp_path):
+    """Dashboard rendert das Lasten-Panel; deaktivierte Last -> graue Leiste."""
+    from ems.dashboard import build_dashboard
+    cfg = make_config()
+    cfg.dashboard.output_path = str(tmp_path / "dash.html")
+    cfg.controllable_loads = [
+        ControllableLoad(name="pool", type="thermal", enabled=True, volume_l=7000,
+                         stages=[LoadStage("klein", 400, 3000),
+                                 LoadStage("gross", 650, 4000, requires="klein")]),
+        ControllableLoad(name="Waschmaschine", type="deferrable", enabled=False,
+                         power_w=2000)]
+    idx = pd.date_range("2026-07-09 00:00", periods=96, freq="15min", tz="Europe/Berlin")
+    t = pd.DataFrame(index=idx)
+    t["house_load_w"] = 500.0
+    t["pv_w"] = 1000.0
+    t["price_ct_kwh"] = 30.0
+    t["mode"] = "auto"
+    t["load_pool_klein_w"] = np.where((idx.hour >= 11) & (idx.hour < 14), 400.0, 0.0)
+    t["load_pool_gross_w"] = 0.0
+    out = build_dashboard(cfg, t, total_cost_ct=-500.0)
+    html = open(out, encoding="utf-8").read()
+    assert "Steuerbare Lasten" in html
+    assert "Waschmaschine" in html and "deaktiviert" in html   # graue Leiste
+    assert "klein" in html and "gross" in html                 # Pool-Lanes

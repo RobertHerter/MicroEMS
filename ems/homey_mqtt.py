@@ -96,8 +96,14 @@ class HomeyMqttPublisher:
         self.loads = getattr(config, "controllable_loads", [])
         self._tz = config.general.timezone
         self.load_temps: Dict[str, float] = {}
+        # temp_signal (MQTT-Topic der Ist-Temperatur) unabhängig von enabled
+        # abonnieren, damit ein per MQTT nachträglich aktivierter Pool sofort
+        # einen Startwert hat.
         self._temp_topics = [ld.temp_signal for ld in self.loads
-                             if ld.enabled and ld.type == "thermal" and ld.temp_signal]
+                             if ld.type == "thermal" and ld.temp_signal]
+        # Enable/Disable je Last per ems/cmd/load/<slug>; leer = Konfigwert.
+        self.load_overrides: Dict[str, bool] = {}
+        self._load_defaults = {_slug(ld.name): ld.enabled for ld in self.loads}
 
     def _connect(self):
         import socket
@@ -155,6 +161,17 @@ class HomeyMqttPublisher:
                 self.load_temps[msg.topic] = float(payload.replace(",", "."))
             except ValueError:
                 pass
+            return
+        if "/cmd/load/" in msg.topic:         # steuerbare Last an/aus (enable/disable)
+            slug = msg.topic.split("/cmd/load/", 1)[1].strip("/").lower()
+            if payload in _RESET_WORDS:
+                self.load_overrides.pop(slug, None)
+                log.info("MQTT: Last '%s' -> Konfigurationswert.", slug)
+            else:
+                on = payload in ("1", "true", "on", "an", "ein", "enable", "enabled")
+                self.load_overrides[slug] = on
+                log.info("MQTT: Last '%s' %s.", slug, "aktiviert" if on else "deaktiviert")
+            self.recalc_event.set()
             return
         if msg.topic.endswith("/cmd/recalc"):
             log.info("MQTT-Kommando: sofortige Neuberechnung angefordert.")
@@ -259,6 +276,16 @@ class HomeyMqttPublisher:
         veh.target_soc_percent = (self.target_soc_override
                                   if self.target_soc_override is not None
                                   else self._veh_defaults[1])
+
+    def apply_load_overrides(self, loads) -> None:
+        """Überträgt per MQTT (ems/cmd/load/<slug>) gesetzte Enable/Disable-
+        Overrides auf die steuerbaren Lasten; sonst der Konfigurationswert."""
+        for ld in loads or []:
+            slug = _slug(ld.name)
+            if slug in self.load_overrides:
+                ld.enabled = self.load_overrides[slug]
+            else:
+                ld.enabled = self._load_defaults.get(slug, ld.enabled)
 
     def wait_for_recalc(self, timeout: float) -> bool:
         """Wartet bis zu `timeout` Sekunden; True, wenn währenddessen per
