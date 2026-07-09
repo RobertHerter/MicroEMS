@@ -249,6 +249,8 @@ class ForecastConfig:
     # p' = m + (p - m) * (1 - price_damping). Verhindert, dass auf
     # prognostizierte Preistäler/-spitzen spekuliert wird. 0 = aus, 1 = flach.
     price_damping: float = 0.3
+    # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
+    method: str = "similar_days"
 
 
 @dataclass
@@ -602,7 +604,10 @@ def load_config(path: str) -> Config:
         intraday_decay_hours=float(f.get("intraday_decay_hours", 6.0)),
         intraday_max_factor=float(f.get("intraday_max_factor", 1.5)),
         price_damping=float(f.get("price_damping", 0.3)),
+        method=str(f.get("method", "similar_days")),
     )
+    if forecast.method not in ("similar_days", "ml"):
+        raise ValueError("forecast.method muss 'similar_days' oder 'ml' sein.")
 
     m = raw.get("mqtt", {})
     mqtt = MqttConfig(

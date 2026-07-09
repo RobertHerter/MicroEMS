@@ -127,8 +127,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         temp = _read_temp(repo, config,
                           now - timedelta(days=config.forecast.lookback_days), forecast_end)
         forecaster = LoadForecaster(config)
+        hist_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
+                                         now - timedelta(days=config.forecast.lookback_days), now)
+        fut_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
+                                        now, forecast_end)
         load_fc = forecaster.forecast(history, now, config.general.n_forecast_slots,
-                                      hist_temp=temp, fut_temp=temp)
+                                      hist_temp=temp, fut_temp=temp, hist_pv=hist_pv, fut_pv=fut_pv)
 
         # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf
         # die Zukunft anwenden (abklingend) - fängt Tagesabweichungen, die das

@@ -85,6 +85,8 @@ class LoadForecaster:
         apply_correction: bool = True,
         hist_temp: "pd.Series | None" = None,
         fut_temp: "pd.Series | None" = None,
+        hist_pv: "pd.Series | None" = None,
+        fut_pv: "pd.Series | None" = None,
     ) -> pd.Series:
         """Ähnliche-Tage-Prognose für `horizon_slots` ab `start`.
 
@@ -134,49 +136,110 @@ class LoadForecaster:
             hist_feat["recency"] = 1.0
 
         fut_feat = self._features(future_index)
+        if use_temp:
+            fut_feat["temp"] = fut_temp_arr
+        else:
+            fut_feat["temp"] = np.nan
 
-        # Vorberechnung: Historie nach Tagesslot gruppieren (dict of DataFrames)
-        groups = {sod: grp for sod, grp in hist_feat.groupby("slot_of_day")}
-        overall_mean = float(history.mean())
+        method = getattr(self.fc, "method", "similar_days")
+        if method == "ml":
+            try:
+                from sklearn.ensemble import HistGradientBoostingRegressor
+            except ImportError:
+                log.error("scikit-learn ist nicht installiert. Fallback auf 'similar_days'.")
+                method = "similar_days"
 
-        w_wd = self.fc.weight_same_weekday
-        w_dt = self.fc.weight_same_daytype
-        w_mo = self.fc.weight_same_month
-        w_se = self.fc.weight_same_season
-
-        preds = np.empty(len(fut_feat), dtype="float64")
-        for i, (_, f) in enumerate(fut_feat.iterrows()):
-            grp = groups.get(int(f["slot_of_day"]))
-            if grp is None or len(grp) < 1:
-                preds[i] = overall_mean
-                continue
-
-            # Basisgewicht 1 + Zuschläge für Übereinstimmungen
-            w = np.ones(len(grp))
-            w += w_wd * (grp["weekday"].values == f["weekday"])
-            w += w_dt * (grp["daytype"].values == f["daytype"])
-            w += w_mo * (grp["month"].values == f["month"])
-            w += w_se * (grp["season"].values == f["season"])
-            # Rezenz multiplikativ (1.0, falls half_life_days = 0)
-            w = w * grp["recency"].values
-
-            # Temperatur-Ähnlichkeit: Tage mit ähnlicher Temperatur höher gewichten
-            if use_temp:
-                tf = fut_temp_arr[i]
-                th = grp["temp"].values
-                if np.isfinite(tf):
-                    gk = np.exp(-((th - tf) ** 2) / (2.0 * sigma * sigma))
-                    gk = np.where(np.isnan(th), 0.0, gk)  # fehlende Temp -> neutral
-                    w = w * (1.0 + w_tp * gk)
-
-            vals = grp["value"].values
-            # Fallback: zu wenig "ähnliche" Stichproben -> reines Slot-Mittel
-            strongly_similar = (grp["daytype"].values == f["daytype"])
-            if strongly_similar.sum() < self.fc.min_samples:
-                preds[i] = float(np.average(vals, weights=w))
+        if method == "ml":
+            # Feature: PV Forecast (als Helligkeits-/Aktivitäts-Proxy)
+            if hist_pv is not None:
+                hist_feat["pv"] = pd.Series(hist_pv).reindex(history.index).values
             else:
-                sw = w * (1 + 2 * strongly_similar)  # ähnliche Tage stärker gewichten
-                preds[i] = float(np.average(vals, weights=sw))
+                hist_feat["pv"] = np.nan
+            if fut_pv is not None:
+                fut_feat["pv"] = pd.Series(fut_pv).reindex(future_index).values
+            else:
+                fut_feat["pv"] = np.nan
+
+            # Feature: Lag 7 Tage (Baseline für denselben Slot in der Vorwoche)
+            lag_slots = int(7 * 24 * 60 / self.cfg.general.slot_minutes)
+            hist_feat["lag_7d"] = history.shift(lag_slots).values
+            
+            # Für die Zukunft: Lag direkt über Zeitstempel aus der bekannten Historie holen
+            fut_lags = []
+            for t in fut_feat.index:
+                past_t = t - pd.Timedelta(days=7)
+                if past_t in history.index:
+                    fut_lags.append(history[past_t])
+                else:
+                    # Nahestes Suchen falls kleine Lücken existieren
+                    idx = history.index.get_indexer([past_t], method="nearest")[0]
+                    fut_lags.append(history.iloc[idx] if idx >= 0 else np.nan)
+            fut_feat["lag_7d"] = fut_lags
+
+            # X und y für ML vorbereiten
+            drop_cols = ["value", "recency"]
+            X_train = hist_feat.drop(columns=[c for c in drop_cols if c in hist_feat.columns])
+            y_train = hist_feat["value"].values
+            w_train = hist_feat["recency"].values if "recency" in hist_feat.columns else None
+
+            # Ordinal kategorische Features markieren (für HistGradientBoosting)
+            cat_features = [X_train.columns.get_loc(c) for c in 
+                            ["slot_of_day", "weekday", "is_holiday", "daytype", "month", "season"] 
+                            if c in X_train.columns]
+
+            model = HistGradientBoostingRegressor(
+                categorical_features=cat_features,
+                max_iter=150,
+                random_state=42
+            )
+            model.fit(X_train, y_train, sample_weight=w_train)
+
+            # Vorhersage
+            X_pred = fut_feat[X_train.columns]
+            preds = model.predict(X_pred)
+        else:
+            # Vorberechnung: Historie nach Tagesslot gruppieren (dict of DataFrames)
+            groups = {sod: grp for sod, grp in hist_feat.groupby("slot_of_day")}
+            overall_mean = float(history.mean())
+
+            w_wd = self.fc.weight_same_weekday
+            w_dt = self.fc.weight_same_daytype
+            w_mo = self.fc.weight_same_month
+            w_se = self.fc.weight_same_season
+
+            preds = np.empty(len(fut_feat), dtype="float64")
+            for i, (_, f) in enumerate(fut_feat.iterrows()):
+                grp = groups.get(int(f["slot_of_day"]))
+                if grp is None or len(grp) < 1:
+                    preds[i] = overall_mean
+                    continue
+
+                # Basisgewicht 1 + Zuschläge für Übereinstimmungen
+                w = np.ones(len(grp))
+                w += w_wd * (grp["weekday"].values == f["weekday"])
+                w += w_dt * (grp["daytype"].values == f["daytype"])
+                w += w_mo * (grp["month"].values == f["month"])
+                w += w_se * (grp["season"].values == f["season"])
+                # Rezenz multiplikativ (1.0, falls half_life_days = 0)
+                w = w * grp["recency"].values
+
+                # Temperatur-Ähnlichkeit: Tage mit ähnlicher Temperatur höher gewichten
+                if use_temp:
+                    tf = fut_temp_arr[i]
+                    th = grp["temp"].values
+                    if np.isfinite(tf):
+                        gk = np.exp(-((th - tf) ** 2) / (2.0 * sigma * sigma))
+                        gk = np.where(np.isnan(th), 0.0, gk)  # fehlende Temp -> neutral
+                        w = w * (1.0 + w_tp * gk)
+
+                vals = grp["value"].values
+                # Fallback: zu wenig "ähnliche" Stichproben -> reines Slot-Mittel
+                strongly_similar = (grp["daytype"].values == f["daytype"])
+                if strongly_similar.sum() < self.fc.min_samples:
+                    preds[i] = float(np.average(vals, weights=w))
+                else:
+                    sw = w * (1 + 2 * strongly_similar)  # ähnliche Tage stärker gewichten
+                    preds[i] = float(np.average(vals, weights=sw))
 
         # Globaler Korrekturfaktor aus der Kalibrierung (nur Verbrauch)
         if apply_correction:

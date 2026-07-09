@@ -36,7 +36,7 @@ Steuerbefehle per MQTT.
 |-------|---------|
 | `ems/config.py` | YAML-Konfiguration laden/validieren (typisierte Dataclasses) |
 | `ems/influx.py` | InfluxDB-Abstraktion 1.x (InfluxQL) / 2.x (Flux), Lesen/Schreiben, 15-min-Resampling |
-| `ems/forecast.py` | Hausverbrauchs-Prognose per Ähnliche-Tage-Mittelung (Wochentag/Feiertag/Monat/Jahreszeit/Temperatur, Rezenz-Gewichtung) |
+| `ems/forecast.py` | Hausverbrauchs-Prognose: Ähnliche-Tage-Mittelung (Standard) oder Machine Learning (Lag/PV/Temp, via scikit-learn HistGradientBoosting) |
 | `ems/optimizer.py` | MILP-Optimierer (PuLP/CBC): Steuertabelle 48 h |
 | `ems/homey_mqtt.py` | MQTT: Steuerbefehle an Homey, Status/Last-Will, Alerts, Kommandos |
 | `ems/savings.py` | Ersparnis-Tracking: Ist-Kosten vs. simulierte "Ohne-EMS"-Baseline |

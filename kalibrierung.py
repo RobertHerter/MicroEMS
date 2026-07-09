@@ -176,12 +176,13 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
     # Temperatur (falls vorhanden) in den Backtest einbeziehen -> prüft das
     # temperaturgewichtete Modell, konsistent zum Live-Betrieb (gleiche Quelle).
     temp = _temp_hist(repo, cfg, start, now)
+    pv, _ = _pv_forecast_hist(cfg, repo, start, now)
 
     # Modell aus Trainingszeitraum, ohne bestehende Korrektur, out-of-sample prüfen
     cfg.forecast.correction_factor = 1.0
     fc = LoadForecaster(cfg)
     horizon = len(actual_test)
-    pred = fc.forecast(train, test_start, horizon, hist_temp=temp, fut_temp=temp)
+    pred = fc.forecast(train, test_start, horizon, hist_temp=temp, fut_temp=temp, hist_pv=pv, fut_pv=pv)
     idx = actual_test.index.intersection(pred.index)
     a, p = actual_test.reindex(idx), pred.reindex(idx)
     m = _metrics(a.values, p.values)

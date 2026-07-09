@@ -237,6 +237,9 @@ forecast:
   # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen, damit
   # nicht auf Phantom-Preistäler spekuliert wird. 0 = aus, 1 = flach.
   price_damping: 0.3
+  # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) 
+  # oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
+  method: "similar_days"
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)

@@ -26,6 +26,9 @@ plotly>=5.18
 # Tests (pytest im Projektverzeichnis ausführen)
 pytest>=8.0
 
+# Machine Learning (für Lastprognose)
+scikit-learn>=1.3.0
+
 # Optional: direkte E3DC-Anbindung per RSCP (config.e3dc_rscp.enabled: true).
 # Nur installieren, wenn genutzt:  pip install pye3dc
 # pye3dc>=0.7
