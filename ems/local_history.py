@@ -67,6 +67,21 @@ def write_actuals(path: str, ts, live: dict) -> None:
     con.close()
 
 
+def write_pv_actual(path: str, mapping: Dict[str, float]) -> int:
+    """UPSERT historischer Ist-PV {UTC-ISO -> W} in actuals.pv_w. Andere Spalten
+    (house_w/grid_w/…) bleiben unberührt – für den einmaligen PV-Ist-Import."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO actuals(ts, pv_w) VALUES(?, ?) "
+        "ON CONFLICT(ts) DO UPDATE SET pv_w=excluded.pv_w",
+        [(k, float(v)) for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
 def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
     """Ist-Wert-Spalte [start, end) als tz-lokale Serie (leer, wenn nichts da)."""
     s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()

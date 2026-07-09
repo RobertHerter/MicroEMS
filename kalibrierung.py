@@ -9,12 +9,13 @@ Vergleicht:
   * Hausverbrauchs-Modell (Ähnliche-Tage) vs. Ist-Verbrauch
     – out-of-sample (Modell aus Trainingszeitraum, geprüft auf Testzeitraum)
 
-Datenquellen der Verbrauchs-Kalibrierung folgen derselben Weiche wie der
-Live-Betrieb: bei e3dc_rscp.history_source die tiefe lokale RSCP-house_load,
-bei weather.enabled die Open-Meteo-Temperatur – sonst InfluxDB. So wird der
-correction_factor gegen exakt die Daten kalibriert, mit denen das Live-Modell
-rechnet. Die PV-Kalibrierung bleibt InfluxDB-gebunden (Solcast-pv_forecast und
-tiefe Ist-PV-Historie liegen noch nicht lokal vor).
+Datenquellen folgen derselben Weiche wie der Live-Betrieb (standalone-fähig):
+  * Verbrauch: tiefe lokale RSCP-house_load (bei history_source), sonst InfluxDB.
+  * Temperatur: Open-Meteo (bei weather.enabled), sonst InfluxDB.
+  * PV-Prognose: kombinierte Solcast-Quellen + influx_hist (bei solcast.enabled),
+    sonst InfluxDB.
+  * Ist-PV: tiefe lokale actuals.pv_w (nach pv_actual_import.py), sonst InfluxDB.
+So wird gegen exakt die Daten kalibriert, mit denen das Live-Modell rechnet.
 
 Ausgabe:
   * Konsolen-Report (MAPE, Bias, Korrektur global/stündlich/monatlich)
@@ -84,12 +85,34 @@ def _month_hour_table(actual: pd.Series, pred: pd.Series, tz: str) -> dict:
     return out
 
 
+def _pv_forecast_hist(cfg, repo, start, now):
+    """PV-Prognose wie im Live-Betrieb: kombinierte Solcast-Quellen (lokal) bei
+    solcast.enabled, sonst InfluxDB. (str-Quelle mit zurückgeben.)"""
+    if cfg.solcast.enabled:
+        from ems import solcast
+        return (solcast.read_pv_signal(cfg, repo, "pv_forecast", start, now),
+                "lokal (Solcast Ost+West / influx_hist)")
+    return repo.read_slots("pv_forecast", start, now), "InfluxDB (pv_forecast)"
+
+
+def _pv_actual_hist(cfg, repo, start, now):
+    """Ist-PV: tiefe lokale actuals.pv_w (nach pv_actual_import), sonst InfluxDB."""
+    from ems.local_history import read_actual
+    s = read_actual(cfg.e3dc_rscp.history_db_path, "pv_w", start, now,
+                    cfg.general.timezone)
+    if not s.empty:
+        return s, "lokal (E3DC actuals.pv_w)"
+    if repo.signal_available("pv_generation"):
+        return repo.read_slots("pv_generation", start, now), "InfluxDB (pv_generation)"
+    return pd.Series(dtype="float64"), "—"
+
+
 def calibrate_pv(repo, cfg, now, lookback_days):
-    if not (repo.signal_available("pv_generation") and repo.signal_available("pv_forecast")):
-        return None
     start = now - timedelta(days=lookback_days)
-    actual = repo.read_slots("pv_generation", start, now)
-    fcast = repo.read_slots("pv_forecast", start, now)
+    fcast, fsrc = _pv_forecast_hist(cfg, repo, start, now)
+    actual, asrc = _pv_actual_hist(cfg, repo, start, now)
+    if fcast is None or fcast.empty or actual.empty:
+        return None
     idx = actual.index.intersection(fcast.index)
     a, p = actual.reindex(idx), fcast.reindex(idx)
     # nur Tagstunden (Vorhersage > 50 W) bewerten
@@ -99,9 +122,10 @@ def calibrate_pv(repo, cfg, now, lookback_days):
     hourly = _factor_table(a_d, p_d, lambda i: i.tz_convert(cfg.general.timezone).hour)
     monthly = _factor_table(a_d, p_d, lambda i: i.tz_convert(cfg.general.timezone).month)
     month_hour = _month_hour_table(a_d, p_d, cfg.general.timezone)
-    cur_scale = cfg.influxdb.signals["pv_forecast"].scale
+    sig = cfg.influxdb.signals.get("pv_forecast")
+    cur_scale = sig.scale if sig else 1.0
     return {"metrics": m, "hourly": hourly, "monthly": monthly, "month_hour": month_hour,
-            "current_scale": cur_scale,
+            "current_scale": cur_scale, "forecast_source": fsrc, "actual_source": asrc,
             "suggested_scale": round(cur_scale * m.get("scale_actual_over_pred", 1.0), 4)}
 
 
@@ -226,6 +250,8 @@ def main():
 
     _print_block("PV-Vorhersage (Solcast) vs. Ist-Erzeugung", pv)
     if pv:
+        print(f"     Quelle Prognose: {pv.get('forecast_source', '?')} | "
+              f"Ist: {pv.get('actual_source', '?')}")
         print(f"  -> Empfehlung  pv_forecast.scale = {pv['suggested_scale']}  "
               f"(aktuell {pv['current_scale']})")
         print(f"     stündliche Faktoren: {pv['hourly']}")
