@@ -42,6 +42,17 @@ def test_fetch_forecast_parse(monkeypatch):
     assert m["2026-07-09T10:30:00+00:00"][0] == 0.0
 
 
+def test_fetch_forecast_hours_in_url(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, *a, **k):
+        seen["url"] = req.full_url
+        return _Resp(json.dumps({"forecasts": []}).encode())
+    monkeypatch.setattr(solcast.urllib.request, "urlopen", fake_urlopen)
+    solcast.fetch_forecast("KEY", "res-1", hours=72)
+    assert "hours=72" in seen["url"] and "res-1" in seen["url"]
+
+
 def test_combine_sum_vs_mean(tmp_path):
     db = str(tmp_path / "pv.sqlite")
     base = pd.Timestamp("2026-07-09 08:00", tz="UTC")

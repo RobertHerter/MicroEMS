@@ -48,12 +48,16 @@ def _period_minutes(p: str) -> int:
     return 30
 
 
-def fetch_forecast(api_key: str, resource_id: str,
+def fetch_forecast(api_key: str, resource_id: str, hours: int = 72,
                    timeout: float = 30.0) -> Dict[str, Tuple[float, float, float]]:
-    """Forecast einer Resource -> {UTC-ISO-Periodenstart: (pv_w, p10_w, p90_w)}."""
+    """Forecast einer Resource -> {UTC-ISO-Periodenstart: (pv_w, p10_w, p90_w)}.
+    hours: Vorhersage-Horizont (Solcast max 168); 72 deckt den auf Mitternacht
+    aufgerundeten Optimierungshorizont ab (bis 00:00 übernächster Tag)."""
+    url = _BASE.format(rid=resource_id)
+    if hours:
+        url += f"&hours={int(hours)}"
     req = urllib.request.Request(
-        _BASE.format(rid=resource_id),
-        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
+        url, headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         payload = json.load(r)
     out: Dict[str, Tuple[float, float, float]] = {}
@@ -116,7 +120,8 @@ def refresh(config) -> None:
         if last is not None and (now - last).total_seconds() < interval * 0.9:
             continue                             # noch nicht fällig
         try:
-            data = fetch_forecast(s.api_key, s.resource_id)
+            data = fetch_forecast(s.api_key, s.resource_id,
+                                  hours=config.general.forecast_horizon_hours)
             local_history.write_pv_forecast(db, s.resource_id, data)
             local_history.log_solcast_call(db, s.api_key, s.resource_id,
                                            now.tz_convert("UTC").isoformat())
