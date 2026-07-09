@@ -29,6 +29,13 @@ class FakeE3DC:
                 "grid_power_out": 250.0, "bat_power_in": 100.0,
                 "grid_power_in": 50.0, "stateOfCharge": 50.0}
 
+    def get_system_info(self):
+        return {"model": "S10X", "maxAcPower": 12000,
+                "maxBatChargePower": 12480, "maxBatDischargePower": 12120}
+
+    def get_power_settings(self):
+        return {"dischargeStartPower": 100, "powerSaveEnabled": True}
+
     def set_power_limits(self, enable=None, max_charge=None, max_discharge=None,
                          keepAlive=False):
         self.limits = {"enable": enable, "max_charge": max_charge,
@@ -216,3 +223,29 @@ def test_local_history_roundtrip(tmp_path):
     write_house_load(db, {idx[0].tz_convert("UTC").isoformat(): 5.0})
     assert count(db) == 8
     assert read_house_load(db, idx[0], idx[1], tz).iloc[0] == 5.0
+
+
+def test_read_system_limits_maps_device_fields():
+    """Auto-Auslesen: nur die verlässlichen W-Werte aus system_info/power_settings."""
+    _cfg, link = _link(enabled=True)
+    lim = link.read_system_limits()
+    assert lim == {
+        "inverter_max_ac_power_w": 12000.0,
+        "max_charge_w": 12480.0,
+        "max_discharge_w": 12120.0,
+        "min_discharge_w": 100.0,
+    }
+
+
+def test_apply_system_limits_overrides_config_but_not_capacity():
+    from ems.main import _apply_system_limits
+    cfg = make_config()
+    cap_before = cfg.house_battery.capacity_wh
+    _apply_system_limits(cfg, {
+        "inverter_max_ac_power_w": 12000.0, "max_charge_w": 12480.0,
+        "max_discharge_w": 12120.0, "min_discharge_w": 100.0})
+    assert cfg.inverter.max_ac_power_w == 12000.0
+    assert cfg.house_battery.max_discharge_w == 12120.0
+    assert cfg.house_battery.max_charge_w == 12480.0
+    assert cfg.optimization.min_discharge_w == 100.0
+    assert cfg.house_battery.capacity_wh == cap_before      # Kapazität unberührt

@@ -399,6 +399,10 @@ class E3DCRscpConfig:
     password: str = ""
     key: str = ""                        # RSCP-Passwort (im E3DC gesetzt)
     read_live: bool = True               # Live-SoC/PV/Last für den Lauf nutzen
+    # Anlagengrenzen (WR-/Lade-/Entladeleistung, Entlade-Startschwelle) beim
+    # Start vom Gerät lesen und die Config-Werte überschreiben (immer korrekt,
+    # auch nach Firmware-/Hardwareänderung). Kapazität/SoC bleiben aus der Config.
+    autoread_limits: bool = False
     control_enabled: bool = False        # Steuerung per RSCP (greift real ein!)
     grid_sign: float = 1.0               # Vorzeichen Netz (+ = Bezug)
     batt_sign: float = 1.0               # Vorzeichen Akku (+ = Laden)
@@ -737,6 +741,7 @@ def load_config(path: str) -> Config:
         password=e.get("password", ""),
         key=e.get("key", ""),
         read_live=bool(e.get("read_live", True)),
+        autoread_limits=bool(e.get("autoread_limits", False)),
         control_enabled=bool(e.get("control_enabled", False)),
         grid_sign=float(e.get("grid_sign", 1.0)),
         batt_sign=float(e.get("batt_sign", 1.0)),

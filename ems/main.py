@@ -748,6 +748,28 @@ def start_dashboard_server(config: Config) -> None:
              config.dashboard.host, config.dashboard.port, fname)
 
 
+def _apply_system_limits(config: Config, lim: dict) -> None:
+    """Vom E3DC gelesene Anlagengrenzen in die Config übernehmen (überschreibt
+    die konfigurierten Werte). Kapazität/SoC bleiben unberührt."""
+    if not lim:
+        return
+    changes = []
+    if "inverter_max_ac_power_w" in lim:
+        config.inverter.max_ac_power_w = lim["inverter_max_ac_power_w"]
+        changes.append(f"WR max_ac={lim['inverter_max_ac_power_w']:.0f} W")
+    if "max_charge_w" in lim:
+        config.house_battery.max_charge_w = lim["max_charge_w"]
+        changes.append(f"max_charge={lim['max_charge_w']:.0f} W")
+    if "max_discharge_w" in lim:
+        config.house_battery.max_discharge_w = lim["max_discharge_w"]
+        changes.append(f"max_discharge={lim['max_discharge_w']:.0f} W")
+    if "min_discharge_w" in lim:
+        config.optimization.min_discharge_w = lim["min_discharge_w"]
+        changes.append(f"min_discharge={lim['min_discharge_w']:.0f} W")
+    if changes:
+        log.info("Anlagengrenzen vom E3DC übernommen: %s", ", ".join(changes))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="EMS – Energy Management System")
     parser.add_argument("--config", default="config.yaml", help="Pfad zur Konfiguration")
@@ -785,6 +807,12 @@ def main() -> None:
         try:
             from .rscp import E3DCLink
             e3dc = E3DCLink(config)
+            if config.e3dc_rscp.autoread_limits:
+                try:
+                    _apply_system_limits(config, e3dc.read_system_limits())
+                except Exception as exc:
+                    log.warning("Auto-Auslesen der Anlagengrenzen fehlgeschlagen "
+                                "(%s) – nutze Config-Werte.", exc)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     _sd_notify("READY=1")

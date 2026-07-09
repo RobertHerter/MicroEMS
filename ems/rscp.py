@@ -138,6 +138,26 @@ class E3DCLink:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
             return None
 
+    def read_system_limits(self) -> dict:
+        """Statische Anlagengrenzen vom E3DC (einmalig beim Start) – nur die
+        verlässlichen W-Werte aus get_system_info/get_power_settings. Die
+        Kapazitätsfelder aus get_battery_data sind mehrdeutig (Ah/kWh) und
+        werden bewusst NICHT verwendet. Rückgabe: {config-Feld: W}."""
+        with self._lock:
+            e = self._connect()
+            info = e.get_system_info() or {}
+            ps = e.get_power_settings() or {}
+        out: dict = {}
+        if info.get("maxAcPower"):
+            out["inverter_max_ac_power_w"] = float(info["maxAcPower"])
+        if info.get("maxBatChargePower"):
+            out["max_charge_w"] = float(info["maxBatChargePower"])
+        if info.get("maxBatDischargePower"):
+            out["max_discharge_w"] = float(info["maxBatDischargePower"])
+        if ps.get("dischargeStartPower") is not None:
+            out["min_discharge_w"] = float(ps["dischargeStartPower"])
+        return out
+
     @staticmethod
     def _house_load_w(x: dict) -> float:
         """Hauslast (W) aus den Energie-Aggregaten eines 15-min-Fensters.

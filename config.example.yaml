@@ -342,6 +342,10 @@ e3dc_rscp:
   password: ""
   key: ""               # RSCP-Passwort
   read_live: true
+  # Anlagengrenzen (WR-/Lade-/Entladeleistung, Entlade-Startschwelle) beim Start
+  # vom Gerät lesen und die Config-Werte überschreiben (get_system_info /
+  # get_power_settings). Kapazität und SoC-Grenzen bleiben aus der Config.
+  autoread_limits: false
   control_enabled: false
   grid_sign: 1.0
   batt_sign: 1.0
