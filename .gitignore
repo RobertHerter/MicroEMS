@@ -9,6 +9,7 @@ dashboard_heute.html
 plotly.min.js
 savings_state.json
 last_run_debug.json
+api_data.json
 e3dc_history.sqlite
 backup/
 *.log
