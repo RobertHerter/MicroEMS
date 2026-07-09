@@ -428,9 +428,11 @@ class HomeyMqttPublisher:
                 self._pub(f"{base}/setpoint/{key}", value, retain=False)
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
 
-            # Steuerbare Lasten: on/off je Slot unter ems/loads/<name> (IMMER,
-            # auch deaktiviert -> 0) und ans externe Schalt-Topic (nur bei aktiver
-            # Last). Fail-safe: nie retained.
+            # Steuerbare Lasten: on/off je Slot unter ems/loads/<name> für JEDE
+            # konfigurierte Last (auch deaktiviert -> 0). Diese Monitoring-Topics
+            # werden RETAINED (immer sichtbar, wie das ems/loads-JSON). Der
+            # eigentliche Schaltbefehl ans externe Topic bleibt fail-safe (nur bei
+            # aktiver Last, nie retained).
             lanes = self._load_lanes()
             if lanes:
                 loadsp = {}
@@ -438,7 +440,8 @@ class HomeyMqttPublisher:
                     col, en = e["column"], e["enabled"]
                     on = (1 if (en and col in table.columns
                                 and float(row[col]) > 5.0) else 0)
-                    self._pub(f"{base}/loads/{_slug(e['label'])}", on, retain=False)
+                    self._pub(f"{base}/loads/{_slug(e['label'])}", on,
+                              retain=self.cfg.retain)
                     if en and e.get("topic"):
                         self._pub(e["topic"], on, retain=False)
                     loadsp[e["label"]] = on if en else "aus"
