@@ -155,3 +155,19 @@ def test_pool_temp_cached_from_mqtt():
     assert topic in pub._temp_topics
     pub._on_message(None, None, Msg(topic, "27,4"))     # Dezimal-Komma zulässig
     assert pub.get_load_temp(topic) == 27.4
+
+
+def test_load_lanes_includes_disabled_loads():
+    """_load_lanes listet ALLE konfigurierten Lasten (auch deaktivierte)."""
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [
+        ControllableLoad(name="Pool", type="thermal", enabled=False, volume_l=7000,
+                         stages=[LoadStage("WP klein", 400, 3000),
+                                 LoadStage("WP groß", 650, 4000, requires="WP klein")]),
+        ControllableLoad(name="Waschmaschine", type="deferrable", enabled=False,
+                         power_w=2000)]
+    lanes = HomeyMqttPublisher(cfg)._load_lanes()
+    assert [e["label"] for e in lanes] == ["Pool/WP klein", "Pool/WP groß", "Waschmaschine"]
+    assert all(e["enabled"] is False for e in lanes)
+    assert all(e["column"].startswith("load_") for e in lanes)

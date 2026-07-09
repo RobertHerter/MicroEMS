@@ -145,6 +145,24 @@ class HomeyMqttPublisher:
         """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None)."""
         return self.load_temps.get(topic)
 
+    def _load_lanes(self):
+        """Alle konfigurierten steuerbaren Lasten als [(label, column, enabled,
+        topic)] – auch deaktivierte, damit deren Zustand (aus) publiziert wird."""
+        from .loads import _slug as _col
+        lanes = []
+        for ld in self.loads:
+            if ld.type == "thermal":
+                sg = _col(ld.name)
+                for st in ld.stages:
+                    lanes.append({"label": f"{ld.name}/{st.name}",
+                                  "column": f"load_{sg}_{_col(st.name)}_w",
+                                  "enabled": ld.enabled, "topic": st.mqtt_topic})
+            else:
+                lanes.append({"label": ld.name,
+                              "column": f"load_{_col(ld.name)}_w",
+                              "enabled": ld.enabled, "topic": ld.mqtt_topic})
+        return lanes
+
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).
         client.subscribe(f"{self.cfg.base_topic}/cmd/#", qos=1)
@@ -407,22 +425,21 @@ class HomeyMqttPublisher:
                 self._pub(f"{base}/setpoint/{key}", value, retain=False)
             log.info("MQTT Steuerbefehle publiziert (Slot %s): %s", idx[pos], setpoints)
 
-            # Steuerbare Lasten (controllable_loads): on/off je Slot -> externes
-            # Schalt-Topic (falls gesetzt) UND unter ems/loads/<name>. Fail-safe:
-            # nie retained.
-            if load_mqtt_map:
+            # Steuerbare Lasten: on/off je Slot unter ems/loads/<name> (IMMER,
+            # auch deaktiviert -> 0) und ans externe Schalt-Topic (nur bei aktiver
+            # Last). Fail-safe: nie retained.
+            lanes = self._load_lanes()
+            if lanes:
                 loadsp = {}
-                for e in load_mqtt_map:
-                    col = e["column"]
-                    if col not in table.columns:
-                        continue
-                    on = 1 if float(row[col]) > 5.0 else 0
+                for e in lanes:
+                    col, en = e["column"], e["enabled"]
+                    on = (1 if (en and col in table.columns
+                                and float(row[col]) > 5.0) else 0)
                     self._pub(f"{base}/loads/{_slug(e['label'])}", on, retain=False)
-                    if e.get("topic"):
+                    if en and e.get("topic"):
                         self._pub(e["topic"], on, retain=False)
-                    loadsp[e["label"]] = on
-                if loadsp:
-                    log.info("MQTT Last-Sollwerte publiziert: %s", loadsp)
+                    loadsp[e["label"]] = on if en else "aus"
+                log.info("MQTT Last-Sollwerte publiziert: %s", loadsp)
 
             # Wirksame Fahrzeug-Parameter zurückmelden (Rückmeldung für Homey,
             # z.B. nach ems/cmd/car_departure_time bzw. /target_soc).
@@ -467,24 +484,30 @@ class HomeyMqttPublisher:
                      len(payload), len(cols), len(data) / 1024)
 
             # Steuerbare Lasten als eigene JSON-Liste (wie schedule): aktueller
-            # Sollwert + Zeitplan (on/off) je Last.
-            if load_mqtt_map:
-                entries = [e for e in load_mqtt_map if e["column"] in table.columns]
+            # Sollwert + Zeitplan (on/off) je Last – inkl. deaktivierter (enabled).
+            lanes = self._load_lanes()
+            if lanes:
                 lp = table
                 if self.cfg.schedule_max_hours and len(lp) > 1:
                     end = current_ts + pd.Timedelta(hours=self.cfg.schedule_max_hours)
                     lp = lp[lp.index <= end]
+
+                def _on(r, e):
+                    return (1 if (e["enabled"] and e["column"] in table.columns
+                                  and float(r[e["column"]]) > 5.0) else 0)
+
                 loads_json = {
                     "generated": pd.Timestamp.now(tz=idx.tz).isoformat(),
                     "current": [
-                        {"name": e["label"], "topic": e.get("topic"),
-                         "on": 1 if float(row[e["column"]]) > 5.0 else 0,
-                         "power_w": round(float(row[e["column"]]), 1)}
-                        for e in entries],
+                        {"name": e["label"], "enabled": e["enabled"],
+                         "topic": e.get("topic"), "on": _on(row, e),
+                         "power_w": (round(float(row[e["column"]]), 1)
+                                     if (e["enabled"] and e["column"] in table.columns)
+                                     else 0.0)}
+                        for e in lanes],
                     "slots": [
                         {"time": ts.isoformat(),
-                         **{_slug(e["label"]): (1 if float(r[e["column"]]) > 5.0 else 0)
-                            for e in entries}}
+                         **{_slug(e["label"]): _on(r, e) for e in lanes}}
                         for ts, r in lp.iterrows()],
                 }
                 self._pub(f"{base}/loads", json.dumps(loads_json, separators=(",", ":")),
