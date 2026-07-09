@@ -67,7 +67,10 @@ log = logging.getLogger("ems.mqtt")
 
 
 def _slug(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower() or "load"
+    s = name.lower()
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss")):
+        s = s.replace(a, b)
+    return re.sub(r"[^a-z0-9]+", "_", s).strip("_") or "load"
 
 _RESET_WORDS = ("", "-", "auto", "default", "reset")
 _OFF_WORDS = ("off", "aus", "keine", "none", "urlaub", "holiday")
