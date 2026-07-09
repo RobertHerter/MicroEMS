@@ -104,12 +104,13 @@ def make_solver(cfg: Config):
     threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
     kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
                   threads=threads)
-                  
+
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":
         try:
             highs = pulp.HiGHS(**kwargs)
             if highs.available():
+                log.info("Solver: HiGHS (highspy).")
                 return highs
             log.warning("HiGHS-Solver ist nicht verfügbar (ist 'highspy' installiert?). Fallback auf CBC.")
         except Exception as exc:

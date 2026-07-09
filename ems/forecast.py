@@ -21,6 +21,11 @@ from .config import Config
 
 log = logging.getLogger("ems.forecast")
 
+# Zwischenspeicher für trainierte ML-Modelle je Trainingsdaten-Fingerprint.
+# run_once ruft forecast() mehrfach pro Zyklus mit DERSELBEN Historie auf
+# (Haupt-Prognose + Dashboard) - so wird nur einmal trainiert statt mehrfach.
+_ML_CACHE: dict = {}
+
 
 def _season(month: np.ndarray) -> np.ndarray:
     """Meteorologische Jahreszeit: 0=Winter,1=Frühling,2=Sommer,3=Herbst."""
@@ -75,6 +80,62 @@ class LoadForecaster:
             },
             index=index,
         )
+
+    def _forecast_ml(self, history, hist_feat, fut_feat, future_index,
+                     hist_pv, fut_pv) -> np.ndarray:
+        """ML-Prognose (HistGradientBoostingRegressor) mit PV- und 7-Tage-Lag-
+        Feature. Wirft bei fehlendem sklearn / untauglichen Daten -> der Aufrufer
+        fällt dann auf 'similar_days' zurück. Modell wird je Trainingsdaten-
+        Fingerprint gecacht (mehrere forecast()-Aufrufe pro Zyklus)."""
+        from sklearn.ensemble import HistGradientBoostingRegressor
+
+        hist_feat, fut_feat = hist_feat.copy(), fut_feat.copy()
+        # Feature: PV-Prognose (Helligkeits-/Aktivitäts-Proxy)
+        hist_feat["pv"] = (pd.Series(hist_pv).reindex(history.index).values
+                           if hist_pv is not None else np.nan)
+        fut_feat["pv"] = (pd.Series(fut_pv).reindex(future_index).values
+                          if fut_pv is not None else np.nan)
+        # Feature: 7-Tage-Lag PER ZEITSTEMPEL (lückenrobust; positionsbasiertes
+        # shift wäre bei fehlenden Slots - z.B. lokale house_load - falsch, und
+        # inkonsistent zum Serving-Pfad).
+        lag_td = pd.Timedelta(days=7)
+        hist_feat["lag_7d"] = history.reindex(history.index - lag_td).values
+        fut_feat["lag_7d"] = history.reindex(future_index - lag_td).values
+
+        drop_cols = [c for c in ("value", "recency") if c in hist_feat.columns]
+        X_train = hist_feat.drop(columns=drop_cols)
+        # komplett-NaN-Spalten entfernen (z.B. fehlende Temp/PV -> HGBR-Fehler)
+        nan_cols = X_train.columns[X_train.isna().all()].tolist()
+        if nan_cols:
+            X_train = X_train.drop(columns=nan_cols)
+        y_train = hist_feat["value"].values
+        w_train = hist_feat["recency"].values if "recency" in hist_feat.columns else None
+
+        valid = ~np.isnan(y_train)
+        if not valid.all():
+            X_train, y_train = X_train[valid], y_train[valid]
+            if w_train is not None:
+                w_train = w_train[valid]
+        if len(X_train) == 0 or len(X_train.columns) == 0:
+            raise ValueError("keine tauglichen ML-Trainingsdaten")
+
+        fp = (len(X_train), tuple(X_train.columns), str(X_train.index[0]),
+              str(X_train.index[-1]), round(float(np.nansum(y_train)), 3))
+        cached = _ML_CACHE.get(fp)
+        if cached is not None:
+            model, train_cols = cached
+        else:
+            cat = [X_train.columns.get_loc(c) for c in
+                   ("slot_of_day", "weekday", "is_holiday", "daytype", "month", "season")
+                   if c in X_train.columns]
+            model = HistGradientBoostingRegressor(categorical_features=cat,
+                                                  max_iter=150, random_state=42)
+            model.fit(X_train, y_train, sample_weight=w_train)
+            train_cols = list(X_train.columns)
+            _ML_CACHE[fp] = (model, train_cols)
+            if len(_ML_CACHE) > 4:                 # nur die letzten paar behalten
+                _ML_CACHE.pop(next(iter(_ML_CACHE)))
+        return model.predict(fut_feat.reindex(columns=train_cols))
 
     def forecast(
         self,
@@ -142,76 +203,18 @@ class LoadForecaster:
             fut_feat["temp"] = np.nan
 
         method = getattr(self.fc, "method", "similar_days")
+        preds = None
         if method == "ml":
             try:
-                from sklearn.ensemble import HistGradientBoostingRegressor
+                preds = self._forecast_ml(history, hist_feat, fut_feat,
+                                          future_index, hist_pv, fut_pv)
             except ImportError:
-                log.error("scikit-learn ist nicht installiert. Fallback auf 'similar_days'.")
-                method = "similar_days"
+                log.error("scikit-learn nicht installiert - Fallback auf 'similar_days'.")
+            except Exception as exc:
+                log.error("ML-Prognose fehlgeschlagen (%s) - Fallback auf 'similar_days'.",
+                          exc, exc_info=True)
 
-        if method == "ml":
-            # Feature: PV Forecast (als Helligkeits-/Aktivitäts-Proxy)
-            if hist_pv is not None:
-                hist_feat["pv"] = pd.Series(hist_pv).reindex(history.index).values
-            else:
-                hist_feat["pv"] = np.nan
-            if fut_pv is not None:
-                fut_feat["pv"] = pd.Series(fut_pv).reindex(future_index).values
-            else:
-                fut_feat["pv"] = np.nan
-
-            # Feature: Lag 7 Tage (Baseline für denselben Slot in der Vorwoche)
-            lag_slots = int(7 * 24 * 60 / self.cfg.general.slot_minutes)
-            hist_feat["lag_7d"] = history.shift(lag_slots).values
-            
-            # Für die Zukunft: Lag direkt über Zeitstempel aus der bekannten Historie holen
-            fut_lags = []
-            for t in fut_feat.index:
-                past_t = t - pd.Timedelta(days=7)
-                if past_t in history.index:
-                    fut_lags.append(history[past_t])
-                else:
-                    # Nahestes Suchen falls kleine Lücken existieren
-                    idx = history.index.get_indexer([past_t], method="nearest")[0]
-                    fut_lags.append(history.iloc[idx] if idx >= 0 else np.nan)
-            fut_feat["lag_7d"] = fut_lags
-
-            # X und y für ML vorbereiten
-            drop_cols = ["value", "recency"]
-            X_train = hist_feat.drop(columns=[c for c in drop_cols if c in hist_feat.columns])
-            
-            # Spalten entfernen, die komplett NaN sind (sonst stürzt der HistGradientBoostingRegressor ab)
-            nan_cols = X_train.columns[X_train.isna().all()].tolist()
-            if nan_cols:
-                X_train = X_train.drop(columns=nan_cols)
-
-            y_train = hist_feat["value"].values
-            w_train = hist_feat["recency"].values if "recency" in hist_feat.columns else None
-
-            # Zeilen mit NaN in y_train entfernen
-            valid_idx = ~np.isnan(y_train)
-            if not valid_idx.all():
-                X_train = X_train[valid_idx]
-                y_train = y_train[valid_idx]
-                if w_train is not None:
-                    w_train = w_train[valid_idx]
-
-            # Ordinal kategorische Features markieren (für HistGradientBoosting)
-            cat_features = [X_train.columns.get_loc(c) for c in 
-                            ["slot_of_day", "weekday", "is_holiday", "daytype", "month", "season"] 
-                            if c in X_train.columns]
-
-            model = HistGradientBoostingRegressor(
-                categorical_features=cat_features,
-                max_iter=150,
-                random_state=42
-            )
-            model.fit(X_train, y_train, sample_weight=w_train)
-
-            # Vorhersage
-            X_pred = fut_feat[X_train.columns]
-            preds = model.predict(X_pred)
-        else:
+        if preds is None:
             # Vorberechnung: Historie nach Tagesslot gruppieren (dict of DataFrames)
             groups = {sod: grp for sod, grp in hist_feat.groupby("slot_of_day")}
             overall_mean = float(history.mean())
