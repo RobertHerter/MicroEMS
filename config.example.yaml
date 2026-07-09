@@ -115,6 +115,29 @@ tariff:
     - {ct_kwh: 3.0,  hours: ["0-6"], date_from: "11-01", date_to: "02-28"}  # NT Winter-Nacht
 
 # -----------------------------------------------------------------------------
+# PV-Vorhersage / Solcast (statt InfluxDB pv_forecast)
+# -----------------------------------------------------------------------------
+# enabled: true = PV-Prognose (inkl. P10/P90) kommt direkt von Solcast rooftop
+# sites, lokal in der SQLite gecacht. Mehrere Keys UND Resourcen möglich.
+#   combine: "sum"  -> Resourcen sind verschiedene Arrays (z.B. Ost/West) -> addieren
+#            "mean" -> dieselbe Anlage über mehrere Keys (nur mehr Abrufe) -> mitteln
+# Abruf-Budget: calls_per_key_per_day (Free-Tier 10) je Key. Die Abrufe werden
+# gleichmäßig über das Tageslicht-Fenster [window_start_hour, window_end_hour)
+# verteilt (je Quelle key_budget / Quellen-je-Key mal am Tag), damit Solcasts
+# Nowcasting tagsüber laufend einfließt. Fenster 0..24 = ganzer Tag.
+solcast:
+  enabled: false
+  combine: "sum"
+  calls_per_key_per_day: 10
+  window_start_hour: 5
+  window_end_hour: 22
+  sources:
+    - {api_key: "DEIN_KEY_1", resource_id: "aaaa-bbbb-cccc-dddd"}   # z.B. Ost-Dach
+    - {api_key: "DEIN_KEY_1", resource_id: "eeee-ffff-0000-1111"}   # z.B. West-Dach
+    # weiterer Account für mehr Abrufe derselben Anlage (combine: "mean"):
+    # - {api_key: "DEIN_KEY_2", resource_id: "..."}
+
+# -----------------------------------------------------------------------------
 # Haus-Batteriespeicher
 # -----------------------------------------------------------------------------
 house_battery:

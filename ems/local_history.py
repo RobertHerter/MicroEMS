@@ -32,6 +32,14 @@ def _con(path: str) -> sqlite3.Connection:
     # (ems/tariff.py) rechnet daraus beim Auslesen den Bezugspreis (brutto).
     con.execute("CREATE TABLE IF NOT EXISTS spot_price ("
                 " ts TEXT PRIMARY KEY, ct REAL NOT NULL)")
+    # PV-Vorhersage (Solcast) je Quelle (rooftop site), W. p10/p90 = Unsicherheits-
+    # bänder. Beim Auslesen werden die Quellen kombiniert (sum/mean, ems/solcast.py).
+    con.execute("CREATE TABLE IF NOT EXISTS pv_forecast ("
+                " source TEXT, ts TEXT, pv_w REAL, pv10_w REAL, pv90_w REAL,"
+                " PRIMARY KEY(source, ts))")
+    # Abruf-Protokoll (je erfolgreichem Solcast-Call) für Budget/Verteilung.
+    con.execute("CREATE TABLE IF NOT EXISTS solcast_log ("
+                " api_key TEXT, resource TEXT, ts TEXT)")
     con.commit()
     return con
 
@@ -178,6 +186,87 @@ def read_spot(path: str, start, end, tz: str, slot_minutes: int = 15) -> pd.Seri
     allidx = src.index.union(grid)
     held = src.reindex(allidx).ffill(limit=spl - 1)
     return held.reindex(grid)
+
+
+def write_pv_forecast(path: str, source: str, mapping: Dict[str, tuple]) -> int:
+    """UPSERT einer Solcast-Quelle {UTC-ISO -> (pv_w, pv10_w, pv90_w)}."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO pv_forecast(source, ts, pv_w, pv10_w, pv90_w) "
+        "VALUES(?,?,?,?,?) ON CONFLICT(source, ts) DO UPDATE SET "
+        "pv_w=excluded.pv_w, pv10_w=excluded.pv10_w, pv90_w=excluded.pv90_w",
+        [(source, k, v[0], v[1], v[2]) for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
+def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
+                     combine: str, which: str) -> pd.Series:
+    """Kombinierte PV-Vorhersage [start, end) auf dem Slot-Raster (W).
+    which: 'pv' | 'p10' | 'p90'. combine: 'sum' (Arrays addieren) | 'mean'
+    (redundante Quellen mitteln). Gröbere Quellschritte (30-min) werden gehalten;
+    nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden."""
+    col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
+    agg = "sum" if combine == "sum" else "avg"
+    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=1)).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            f"SELECT ts, {agg}({col}) FROM pv_forecast WHERE ts >= ? AND ts < ? "
+            f"AND {col} IS NOT NULL GROUP BY ts ORDER BY ts", (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    src = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz),
+                         freq=f"{slot_minutes}min", inclusive="left")
+    if len(grid) == 0:
+        return src
+    spl = max(1, 30 // slot_minutes)      # Solcast-Periode 30-min -> Sub-Slots halten
+    allidx = src.index.union(grid)
+    return src.reindex(allidx).ffill(limit=spl - 1).reindex(grid)
+
+
+def log_solcast_call(path: str, api_key: str, resource: str, ts_iso: str) -> None:
+    con = _con(path)
+    con.execute("INSERT INTO solcast_log(api_key, resource, ts) VALUES(?,?,?)",
+                (api_key, resource, ts_iso))
+    con.commit()
+    con.close()
+
+
+def solcast_calls_since(path: str, api_key: str, since_iso: str) -> int:
+    """Zahl der Abrufe dieses Keys seit `since_iso` (UTC-ISO) – für das Tagesbudget."""
+    try:
+        con = _con(path)
+        n = con.execute("SELECT count(*) FROM solcast_log WHERE api_key=? AND ts>=?",
+                        (api_key, since_iso)).fetchone()[0]
+        con.close()
+        return int(n)
+    except Exception:
+        return 0
+
+
+def last_solcast_fetch(path: str, api_key: str, resource: str) -> Optional[pd.Timestamp]:
+    """Zeitpunkt des letzten Abrufs dieser Quelle (tz-aware UTC), oder None."""
+    try:
+        con = _con(path)
+        row = con.execute("SELECT max(ts) FROM solcast_log WHERE api_key=? AND resource=?",
+                          (api_key, resource)).fetchone()
+        con.close()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return pd.Timestamp(row[0])
 
 
 def read_actual_signal(config, repo, signal: str, start, end):

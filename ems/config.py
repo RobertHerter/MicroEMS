@@ -318,6 +318,27 @@ class WeatherConfig:
 
 
 @dataclass
+class SolcastSource:
+    api_key: str
+    resource_id: str
+
+
+@dataclass
+class SolcastConfig:
+    # PV-Vorhersage direkt von Solcast (rooftop sites) statt InfluxDB.
+    enabled: bool = False
+    # "sum"  = Resourcen sind verschiedene Arrays (Ost/West) -> je Slot addieren
+    # "mean" = dieselbe Anlage über mehrere Keys -> redundante Forecasts mitteln
+    combine: str = "sum"
+    calls_per_key_per_day: int = 10       # Free-Tier: 10/Key/Tag
+    sources: list = field(default_factory=list)   # [SolcastSource]
+    # Abruf-Verteilung: gleichmäßig über dieses lokale Stundenfenster (Tageslicht).
+    # 0..24 = ganzer Tag. Je Quelle wird key_budget/(Quellen je Key) mal abgerufen.
+    window_start_hour: int = 5
+    window_end_hour: int = 22
+
+
+@dataclass
 class GridFeeWindow:
     """Ein §14a-EnWG-Zeitfenster: Netzentgelt (ct/kWh netto) für die Slots, die
     ALLE gesetzten Filter erfüllen. Nicht gesetzte Filter (None) = egal.
@@ -394,6 +415,7 @@ class Config:
     e3dc_rscp: E3DCRscpConfig = field(default_factory=E3DCRscpConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     tariff: TariffConfig = field(default_factory=TariffConfig)
+    solcast: SolcastConfig = field(default_factory=SolcastConfig)
 
 
 # --------------------------------------------------------------------------- #
@@ -662,6 +684,20 @@ def load_config(path: str) -> Config:
     if tariff.grid_fee_mode not in ("static", "included", "14a"):
         raise ValueError("tariff.grid_fee_mode muss 'static', 'included' oder '14a' sein.")
 
+    sc = raw.get("solcast", {})
+    solcast = SolcastConfig(
+        enabled=bool(sc.get("enabled", False)),
+        combine=str(sc.get("combine", "sum")),
+        calls_per_key_per_day=int(sc.get("calls_per_key_per_day", 10)),
+        sources=[SolcastSource(api_key=str(s["api_key"]),
+                               resource_id=str(s["resource_id"]))
+                 for s in (sc.get("sources") or [])],
+        window_start_hour=int(sc.get("window_start_hour", 5)),
+        window_end_hour=int(sc.get("window_end_hour", 22)),
+    )
+    if solcast.combine not in ("sum", "mean"):
+        raise ValueError("solcast.combine muss 'sum' oder 'mean' sein.")
+
     e = raw.get("e3dc_rscp", {})
     e3dc_rscp = E3DCRscpConfig(
         enabled=bool(e.get("enabled", False)),
@@ -696,4 +732,5 @@ def load_config(path: str) -> Config:
         e3dc_rscp=e3dc_rscp,
         weather=weather,
         tariff=tariff,
+        solcast=solcast,
     )

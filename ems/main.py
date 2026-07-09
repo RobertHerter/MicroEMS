@@ -33,6 +33,7 @@ from .homey_mqtt import HomeyMqttPublisher
 from .influx import InfluxRepository
 from .optimizer import Optimizer, OptimizerInputs
 from .tariff import read_price_signal
+from . import solcast
 from .validate import summarize, validate_plan
 
 log = logging.getLogger("ems.main")
@@ -113,6 +114,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # --- 0b) Day-Ahead-Spotpreis (Energy-Charts) nachführen ---------- #
         _refresh_spot(config)
 
+        # --- 0c) PV-Vorhersage (Solcast) nachführen (Budget/Verteilung) -- #
+        try:
+            solcast.refresh(config)
+        except Exception as exc:  # pragma: no cover
+            log.warning("Solcast-Nachführung fehlgeschlagen (%s).", exc)
+
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
         history = load_history(repo, config, now)
@@ -153,7 +160,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
 
         def _pv_series(signal: str) -> pd.Series:
             """PV-Signal auf den Horizont + Kalibrierprofil + Intraday-Korrektur."""
-            s = repo.read_slots(signal, now, opt_end).reindex(opt_index).ffill().bfill()
+            s = solcast.read_pv_signal(config, repo, signal, now, opt_end
+                                       ).reindex(opt_index).ffill().bfill()
             if cal_profile:
                 from .calibration import apply_pv_correction
                 s = apply_pv_correction(s, cal_profile, config.general.timezone)
@@ -171,7 +179,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Pessimistische PV (Solcast p10, optional): dimensioniert die
         # Einspeise-Linie an Peak-Tagen wolken-robust.
         pv10 = (_pv_series("pv_forecast_p10")
-                if repo.signal_available("pv_forecast_p10") else None)
+                if solcast.available(config, repo, "pv_forecast_p10") else None)
         price = _price_series(repo, config, opt_index, now)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
@@ -388,7 +396,7 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now):
     try:
         if config.e3dc_rscp.history_source or repo.signal_available("pv_generation"):
             act_pv = read_actual_signal(config, repo, "pv_generation", win_start, now)
-            pred_pv = repo.read_slots("pv_forecast", win_start, now)
+            pred_pv = solcast.read_pv_signal(config, repo, "pv_forecast", win_start, now)
             if config.calibration.enabled:
                 from .calibration import apply_pv_correction, load_profile
                 prof = load_profile(config.calibration.pv_profile)
@@ -531,9 +539,9 @@ def _build_display_frame(repo, config, now, history, result,
         for col, signal in (("pv_w", "pv_forecast"),
                             ("pv10_w", "pv_forecast_p10"),
                             ("pv90_w", "pv_forecast_p90")):
-            if not repo.signal_available(signal):
+            if not solcast.available(config, repo, signal):
                 continue
-            pv = repo.read_slots(signal, day_start, end + slot)
+            pv = solcast.read_pv_signal(config, repo, signal, day_start, end + slot)
             if prof:
                 pv = apply_pv_correction(pv, prof, tz)
             df[col] = pv.reindex(full)

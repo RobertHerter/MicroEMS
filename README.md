@@ -116,8 +116,20 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   Tiefe Preishistorie einmalig via `energycharts_backfill.py` (90-Tage-Blöcke).
   Fällt der Abruf aus, wird der Cache genutzt; fehlende Folgetag-Preise ergänzt
   weiterhin die Ähnliche-Tage-Schätzung.
-- **Noch InfluxDB-gebunden:** nur noch die **PV-Vorhersage** – deren Direktabruf
-  (Solcast) ist der letzte Standalone-Schritt.
+- **PV-Vorhersage direkt von Solcast** (`ems/solcast.py`, `solcast.enabled`):
+  rooftop-site-Forecast (inkl. P10/P90) je Zyklus geholt und in die lokale SQLite
+  (Tabelle `pv_forecast`, je Quelle) gecacht; `read_pv_signal`/`available` ersetzen
+  die `pv_forecast`-Reads in `_pv_series`, Intraday-PV-Korrektur und Dashboard.
+  **Mehrere Keys und Resourcen**: `combine: "sum"` addiert verschiedene Arrays
+  (Ost/West), `"mean"` mittelt redundante Quellen (dieselbe Anlage über mehrere
+  Keys). **Abruf-Budget** `calls_per_key_per_day` (Free-Tier 10/Key) wird je Quelle
+  gleichmäßig über das Tageslicht-Fenster `[window_start_hour, window_end_hour)`
+  verteilt (key_budget / Quellen-je-Key Abrufe/Tag), sodass Solcasts Nowcasting
+  tagsüber laufend einfließt; nachts/zwischen Abrufen wird der letzte Forecast
+  gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
+  beim Auslesen aufs Slot-Raster gehalten.
+- **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
+  laufen ohne InfluxDB. Die InfluxDB bleibt optional (Fallback je Signal + Writeback).
 
 Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
 und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist
