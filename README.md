@@ -2,22 +2,27 @@
 
 Kostenoptimale Steuerung von Haus-Akku, PV und Fahrzeug. Läuft als
 Python-Dienst auf einem Raspberry Pi (Raspberry Pi OS **Trixie** / Debian 13),
-liest Eingangsdaten aus **InfluxDB** (1.x oder 2.x), berechnet per **MILP** die
-optimale Steuertabelle für 48 h und gibt die Steuerbefehle per **MQTT** an
-Homey aus. Zusätzlich werden alle Zukunftswerte (Steuerbefehle, prognostizierte
-SoCs, Zustände) zurück in InfluxDB geschrieben.
+berechnet per **MILP** die optimale Steuertabelle für 48 h und gibt die
+Steuerbefehle per **MQTT** an Homey aus – und/oder steuert den E3DC **direkt per
+RSCP**.
+
+Die Eingangsdaten können aus **InfluxDB** (1.x/2.x) kommen **oder** direkt aus
+den Originalquellen (E3DC per RSCP, Open-Meteo, Energy-Charts, Solcast). **Eine
+InfluxDB ist damit nicht mehr zwingend erforderlich** – das EMS läuft komplett
+standalone (siehe „Standalone ohne InfluxDB"). Wo eine InfluxDB vorhanden ist,
+bleibt sie optionaler Fallback je Signal, und alle Zukunftswerte (Steuerbefehle,
+prognostizierte SoCs, Zustände) werden auf Wunsch dorthin zurückgeschrieben.
 
 ## Architektur
 
 ```
-InfluxDB  ──►  EMS (Pi, Python)                              ──►  MQTT  ──►  Homey
-(1.x/2.x)      1. Verbrauchsprognose (72h, Ähnliche-Tage)         (Sollwerte)
-               2. Eingangsdaten lesen (Preis/PV-Vorhersage,      ──►  InfluxDB
-                  aktueller Haus-/Auto-SoC)                            (Steuertabelle +
-               3. MILP-Optimierung (48h) → Steuertabelle              Prognose-SoCs)
-               4. MQTT-Ausgabe an Homey
-               5. Writeback in InfluxDB
-               6. Dashboard (HTML)
+Datenquellen  ──►  EMS (Pi, Python)                       ──►  MQTT  ──►  Homey (Sollwerte)
+ InfluxDB          1. Verbrauchsprognose (72h, Ähnliche-Tage)
+  ODER direkt:     2. Eingangsdaten lesen (Preis/PV/SoC/…)  ──►  E3DC (RSCP-Steuerung, optional)
+  E3DC (RSCP)      3. MILP-Optimierung (48h) → Steuertabelle
+  Open-Meteo       4. Ausgabe: MQTT an Homey + optional RSCP ──►  InfluxDB (Writeback, optional)
+  Energy-Charts    5. optionaler Writeback in InfluxDB
+  Solcast          6. Dashboard (HTML)
 ```
 
 Warum Pi-Dienst und nicht Homey-App: Die MILP-Optimierung (192 Slots) und die
@@ -36,37 +41,54 @@ Steuerbefehle per MQTT.
 | `ems/homey_mqtt.py` | MQTT: Steuerbefehle an Homey, Status/Last-Will, Alerts, Kommandos |
 | `ems/savings.py` | Ersparnis-Tracking: Ist-Kosten vs. simulierte "Ohne-EMS"-Baseline |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard (heute + Vorhersage + Steuerbefehle) |
-| `ems/rscp.py` | Optionale direkte E3DC-Anbindung (RSCP/pye3dc): Live-Werte, Historie, Steuerung |
+| `ems/rscp.py` | Optionale direkte E3DC-Anbindung (RSCP/pye3dc): Live-Werte, 15-min-Historie, Steuerung (Modi 0–4, Watchdog) |
+| `ems/local_history.py` | Lokaler SQLite-Speicher (Hauslast, Ist-Werte, Temperatur, Spotpreis, PV-Prognose) + Quellen-Weichen |
+| `ems/weather.py` | Temperatur direkt von Open-Meteo (kein Key) |
+| `ems/energycharts.py` + `ems/tariff.py` | Spotpreis von Energy-Charts + Tarifmodell → Endkunden-Bezugspreis (§14a EnWG) |
+| `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) |
 | `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |
 | `tests/` | pytest-Suite (E2E synthetisch, Optimierer-Randfälle, Prognose, Ersparnis) |
 
-## Eingangssignale (aus InfluxDB)
+## Eingangssignale
 
 Hausverbrauch, Strompreis, Haus-Akku-SoC, PV-Erzeugung, PV-Vorhersage,
 optional Fahrzeug-SoC, optional Einspeisevergütung. Strompreis und PV-Vorhersage
 werden auch für die Zukunft gelesen. Alle Leistungen in **W**, Preise in
 **ct/kWh**, Energien in **Wh**. Berechnung auf **15-min-Slots**.
 
-Die Zuordnung Signal → Measurement/Field wird in `config.yaml` unter
-`influxdb.signals` festgelegt und an die eigene InfluxDB-Struktur angepasst.
+Jedes Signal kommt entweder **aus der InfluxDB** (Zuordnung Signal →
+Measurement/Field in `config.yaml` unter `influxdb.signals`) **oder direkt aus
+der Originalquelle** – gesteuert über die jeweiligen Flags (`e3dc_rscp`,
+`weather`, `tariff`, `solcast`). Ist eine Direktquelle aktiv, wird das
+entsprechende InfluxDB-Signal nicht mehr benötigt; siehe „Standalone ohne
+InfluxDB".
 
-## Optional: direkte E3DC-Anbindung (RSCP)
+## Direkte Quellen / Standalone ohne InfluxDB
 
 Statt (oder zusätzlich zu) InfluxDB/MQTT kann das EMS den E3DC direkt per RSCP
-ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
-`config.yaml` → `e3dc_rscp` (Default aus, ändert sonst nichts):
+ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`) und alle übrigen
+Eingangsdaten direkt aus den Originalquellen ziehen. Sind alle Direktquellen
+aktiv, läuft das EMS **komplett ohne InfluxDB**. Aktivierung unter `config.yaml`
+→ `e3dc_rscp` / `weather` / `tariff` / `solcast` (Default aus, ändert sonst
+nichts):
 
 - **`read_live`**: aktueller SoC/PV/Last direkt vom Gerät (frischer als der
   DB-Umweg) für Anfangs-SoC und Slot-0-Anker – mit Fallback auf InfluxDB.
 - **`control_enabled`**: steuert den Speicher direkt per RSCP (zusätzlich zur
-  MQTT-Ausgabe an Homey, die parallel weiterläuft). **Greift real ein** – gegen
-  echte Hardware verifiziert:
-  - *Netzladen* (`batt_grid_charge_w>0`) → `EMS_REQ_SET_POWER` Mode 3, Wert =
-    geplante Gesamt-Ladeleistung; ein Watchdog-Thread sendet alle 5 s neu
-    (sonst fällt der E3DC nach 10 s auf auto). Netz-Entladen (Mode 4) analog,
-    nur bei `allow_grid_discharge` – noch nicht ohne PV gegengeprüft.
+  MQTT-Ausgabe an Homey, die parallel **immer** weiterläuft). **Greift real ein.**
+  Die `EMS_REQ_SET_POWER`-Modi sind **an echter Hardware verifiziert** (pye3dc
+  0.10): **0**=auto, **1**=idle, **2**=Entladen, **3**=Laden (aus PV),
+  **4**=Netzladen. Der Wert ist die Gesamtleistung (PV zuerst, Netz für den Rest).
+  `apply_control` setzt daraus je Slot:
+  - *Netzladen* (`batt_grid_charge_w>0`) → **Mode 4**, Wert = geplante
+    Gesamt-Ladeleistung (DC+Netz).
+  - *Netz-Entladen* (`batt_grid_discharge_w>0`, nur bei `allow_grid_discharge`)
+    → **Mode 2**, Wert = geplante Entladeleistung. (Mode 2 = Entladen live
+    verifiziert, −3042 W; Mode 4 = Netzladen mit 8 kW verifiziert.)
   - *reine Lade-/Entlade-Begrenzung* (Peak-Shaving, Sperren) → persistente
-    Limits (`set_power_limits`), kein Watchdog.
+    Limits (`set_power_limits`), **kein** Mode-Eingriff/Watchdog.
+  - Für aktive Modi (2/3/4) sendet ein Watchdog-Thread den Befehl alle **5 s**
+    neu, da der E3DC sonst nach ~10 s selbst auf auto zurückfällt.
   - Beim Beenden schaltet der Dienst aktiv auf auto (Mode 0) zurück; stirbt der
     Prozess, tut es der 10-s-Watchdog des E3DC selbst (Fail-safe).
 - **`history_source`**: die Verbrauchsprognose liest die 15-min-Hauslast aus
@@ -132,11 +154,15 @@ ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`). Aktivierung unter
   `solcast_import.py` (aus der InfluxDB, Quelle `influx_hist`, nur für Zeitstempel
   VOR dem Live-Beginn → keine Überlappung mit Ost/West beim `sum`).
 - **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
-  laufen ohne InfluxDB. Die InfluxDB bleibt optional (Fallback je Signal + Writeback).
+  laufen ohne InfluxDB. Auch die Kalibrierung (`kalibrierung.py`) folgt derselben
+  Weiche und rechnet dann gegen die lokalen Daten. Die InfluxDB bleibt optional
+  (Fallback je Signal + Writeback).
 
-Hinweis: Nicht gegen echte Hardware getestet. Feldnamen-Mapping (`_map_live`)
-und Vorzeichen (`grid_sign`/`batt_sign`) ggf. am Gerät anpassen; die Logik ist
-mit gemocktem Client getestet (`tests/test_rscp.py`).
+Hinweis: Live-Werte, 15-min-Historie und die Steuerung (Modi 2/3/4) sind gegen
+echte Hardware (pye3dc 0.10) verifiziert. Feldnamen-Mapping (`_map_live`) und
+Vorzeichen (`grid_sign`/`batt_sign`) sind gerätespezifisch – bei abweichender
+Hardware prüfen; die Logik ist zusätzlich mit gemocktem Client getestet
+(`tests/test_rscp.py`).
 
 ## Konfigurierbare Anlagenwerte
 

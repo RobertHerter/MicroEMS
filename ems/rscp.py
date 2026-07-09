@@ -175,8 +175,8 @@ class E3DCLink:
 
     # ---- Steuerung ---------------------------------------------------- #
     def _set_power(self, mode: int, value: int) -> None:
-        """Roh-Befehl EMS_REQ_SET_POWER (verifiziert: Mode 3=Laden, 4=Entladen,
-        0=auto; Wert = Gesamt-Leistung, PV zuerst, Netz für den Rest)."""
+        """Roh-Befehl EMS_REQ_SET_POWER (verifiziert: 0=auto, 1=idle, 2=Entladen,
+        3=Laden (PV), 4=Netzladen; Wert = Gesamt-Leistung, PV zuerst, Netz für den Rest)."""
         from e3dc._rscpTags import RscpTag, RscpType
         with self._lock:
             e = self._connect()
