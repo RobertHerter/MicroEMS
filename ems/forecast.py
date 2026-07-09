@@ -179,8 +179,22 @@ class LoadForecaster:
             # X und y für ML vorbereiten
             drop_cols = ["value", "recency"]
             X_train = hist_feat.drop(columns=[c for c in drop_cols if c in hist_feat.columns])
+            
+            # Spalten entfernen, die komplett NaN sind (sonst stürzt der HistGradientBoostingRegressor ab)
+            nan_cols = X_train.columns[X_train.isna().all()].tolist()
+            if nan_cols:
+                X_train = X_train.drop(columns=nan_cols)
+
             y_train = hist_feat["value"].values
             w_train = hist_feat["recency"].values if "recency" in hist_feat.columns else None
+
+            # Zeilen mit NaN in y_train entfernen
+            valid_idx = ~np.isnan(y_train)
+            if not valid_idx.all():
+                X_train = X_train[valid_idx]
+                y_train = y_train[valid_idx]
+                if w_train is not None:
+                    w_train = w_train[valid_idx]
 
             # Ordinal kategorische Features markieren (für HistGradientBoosting)
             cat_features = [X_train.columns.get_loc(c) for c in 
