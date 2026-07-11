@@ -94,3 +94,10 @@ def test_similar_days_unaffected():
     cfg = make_config()          # method default 'similar_days'
     fc = LoadForecaster(cfg).forecast(_history(30), START, 96)
     assert len(fc) == 96 and fc.notna().all()
+
+
+def test_ml_empty_horizon_returns_empty():
+    """Leerer Horizont (horizon=0, z.B. Intraday ohne Ist-Daten) darf den ML-
+    Pfad nicht crashen (sklearn predict auf 0 Zeilen)."""
+    fc = LoadForecaster(_ml_config()).forecast(_history(30), START, 0)
+    assert len(fc) == 0

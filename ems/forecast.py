@@ -89,6 +89,9 @@ class LoadForecaster:
         Fingerprint gecacht (mehrere forecast()-Aufrufe pro Zyklus)."""
         from sklearn.ensemble import HistGradientBoostingRegressor
 
+        if len(fut_feat) == 0:          # leerer Horizont (z.B. Intraday ohne Ist)
+            return np.empty(0, dtype=float)
+
         hist_feat, fut_feat = hist_feat.copy(), fut_feat.copy()
         # Feature: PV-Prognose (Helligkeits-/Aktivitäts-Proxy)
         hist_feat["pv"] = (pd.Series(hist_pv).reindex(history.index).values
