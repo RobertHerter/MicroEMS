@@ -96,7 +96,7 @@ def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
 
 
@@ -130,7 +130,7 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
     # tz aus den (bereits tz-bewussten) Endpunkten ableiten, NICHT zusätzlich
     # tz= übergeben (sonst pytz/zoneinfo-Konflikt in date_range).
@@ -188,7 +188,7 @@ def read_spot(path: str, start, end, tz: str, slot_minutes: int = 15) -> pd.Seri
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     src = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
     grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz),
@@ -238,7 +238,7 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     src = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
     grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz),
@@ -336,7 +336,7 @@ def read_house_load(path: str, start, end, tz: str) -> pd.Series:
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
 
 
