@@ -643,9 +643,20 @@ def _build_display_frame(repo, config, now, history, result,
                         ("actual_battery_w", "battery_power"),
                         ("actual_grid_w", "grid_power")]:
         try:
-            if config.e3dc_rscp.history_source or repo.signal_available(signal):
-                s = read_actual_signal(config, repo, signal,
-                                       day_start, now + slot).reindex(full)
+            if config.e3dc_rscp.history_source:
+                # Lokale Ist-Werte (RSCP), Lücken (z.B. am Umstelltag, bevor die
+                # actuals-Tabelle gefüllt war) fürs Dashboard aus der InfluxDB
+                # ergänzen, solange dort vorhanden. Rein kosmetisch.
+                s = read_actual_signal(config, repo, signal, day_start, now + slot)
+                if repo.signal_available(signal):
+                    inf = repo.read_slots(signal, day_start, now + slot, fill=False)
+                    s = s.combine_first(inf) if not s.empty else inf
+            elif repo.signal_available(signal):
+                s = read_actual_signal(config, repo, signal, day_start, now + slot)
+            else:
+                continue
+            if not s.empty:
+                s = s.reindex(full)
                 df[col] = s.where(past_mask).ffill().where(past_mask)
         except Exception:  # pragma: no cover
             pass
