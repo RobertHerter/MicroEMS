@@ -330,3 +330,21 @@ def test_dst_autumn_day():
     res = Optimizer(cfg).solve(_inputs(idx, pv=_pv_gauss(idx, 3000), soc=3000))
     assert not res.infeasible
     assert len(res.table) == 100
+
+
+def test_no_spurious_discharge_block_when_pv_near_load():
+    """PV≈Last (nur ~30 W Netto-Restlast): keine sinnlose Entladesperre, wenn der
+    Akku ohnehin fast nichts täte (Melde-Schwelle act_floor, s. 5:45-Artefakt)."""
+    import numpy as np
+    cfg = make_config()
+    cfg.optimization.terminal_soc_value = 31.0     # Restwert knapp > Preis -> halten
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    load = np.full(n, 1000.0)
+    pv = np.full(n, 970.0)                          # Netto-Entladung ~30 W < 100 W
+    res = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, price=30.0,
+                                       soc=cfg.house_battery.capacity_wh * 0.6))
+    assert not res.infeasible
+    assert not res.table["mode"].isin(["hold", "limit_discharge"]).any(), \
+        "sinnlose Entladesperre bei PV≈Last"
+    assert (res.table["batt_discharge_limit_w"] > 1.0).all()

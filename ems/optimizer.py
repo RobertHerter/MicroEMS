@@ -655,18 +655,25 @@ class Optimizer:
             nat_charge = min(max(0.0, pv_t - load_t), hb.max_dc_charge_w)
             nat_dis = min(max(0.0, load_t - pv_t), hb.max_discharge_w)
             tol = 5.0
+            # Ein Eingriff (Lade-/Entladesperre/-drossel) wird erst ab einer
+            # SPÜRBAREN Abweichung vom Eigenverbrauch gemeldet. Bei PV≈Last ist
+            # die natürliche Lade-/Entladeleistung nur ein paar Watt Rauschen -
+            # daraus keine sinnlose Sperre ableiten (die real nur Sub-Slot-
+            # Netzbezug erzwänge). Peak-Shaping ist davon unberührt (dort ist die
+            # Abweichung deutlich größer).
+            act_floor = 100.0   # W
             full_tol = 0.02 * hb.capacity_wh   # 2 % Toleranz für "praktisch voll/leer"
             battery_full = soc_v >= hb.max_soc_wh - full_tol
             battery_empty = soc_v <= hb.min_soc_wh + full_tol
             # PV-Laden nur dann als "begrenzt" markieren, wenn der Akku noch Platz
             # hätte (sonst lädt er ohnehin nicht weiter -> kein Eingriff, "auto").
-            if dc_v < nat_charge - tol and not battery_full:
+            if dc_v < nat_charge - act_floor and not battery_full:
                 charge_limit, charge_limited = round(dc_v, 1), 1
             else:
                 charge_limit, charge_limited = hb.max_dc_charge_w, 0
             # Entladen nur dann als "gesperrt/gedrosselt" markieren, wenn noch
             # Ladung vorhanden ist (sonst kann er ohnehin nicht entladen).
-            if dis_v < nat_dis - tol and not battery_empty:
+            if dis_v < nat_dis - act_floor and not battery_empty:
                 dis_limit, dis_limited = round(dis_v, 1), 1
             else:
                 dis_limit, dis_limited = hb.max_discharge_w, 0
