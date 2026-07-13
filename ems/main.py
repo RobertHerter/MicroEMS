@@ -300,6 +300,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         for v in violations:
             (log.error if v.severity == "error" else log.warning)("Planprüfung: %s", v)
         log.info("Planprüfung: %s.", summarize(violations))
+        # solver.time_limit ist an peak-Sommertagen erwartbar (lose LP-Relaxation,
+        # Optimalität unbeweisbar -> das Zeitlimit greift jeden Zyklus, der Plan ist
+        # aber near-optimal). Nicht als Homey-Alarm eskalieren (sonst 15-min-Spam);
+        # in der Planprüfung/Log bleibt er sichtbar. Echte Solver-Probleme melden
+        # sich als solver.infeasible (error).
+        alertable_warnings = [v for v in plan_warnings if v.rule != "solver.time_limit"]
 
         # --- 3c) SoC-Drift (Modell gegen Realität) ---------------------- #
         drift_mae = None
@@ -327,10 +333,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 publisher.publish_alert(
                     "error", "Planprüfung: " + "; ".join(
                         f"{v.rule} ({v.count})" for v in plan_errors[:5]))
-            elif plan_warnings:
+            elif alertable_warnings:
                 publisher.publish_alert(
                     "warning", "Planprüfung: " + "; ".join(
-                        f"{v.rule} ({v.count})" for v in plan_warnings[:5]))
+                        f"{v.rule} ({v.count})" for v in alertable_warnings[:5]))
             if result.car_target_shortfall_wh > 100.0:
                 publisher.publish_alert(
                     "warning",
