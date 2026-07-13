@@ -207,6 +207,34 @@ def test_set_limits_flags_rejected_limit(caplog):
     assert any("NICHT übernommen" in r.message for r in caplog.records)
 
 
+def test_manual_power_charge_and_revert():
+    """Dashboard-Handeingriff: charge -> Mode 4 mit Wert; _manual_revert -> auto."""
+    cfg, link = _link(control_enabled=False)   # manuell wirkt auch ohne control_enabled
+    res = link.manual_power("charge", 3000.0, seconds=0)   # kein Timer
+    assert res["mode"] == 4 and res["watts"] == 3000
+    assert link._e3dc.last_power == (4, 3000)
+    assert link._e3dc.limits["enable"] is False            # etwaige Limits raus
+    link._manual_revert()
+    assert link._e3dc.last_power == (0, 0)
+
+
+def test_manual_power_discharge_clamped_and_auto():
+    cfg, link = _link(control_enabled=False)
+    hb = cfg.house_battery
+    link.manual_power("discharge", 1e9, seconds=0)         # über Grenze -> geclampt
+    m, v = link._e3dc.last_power
+    assert m == 2 and v == int(hb.max_discharge_w)
+    link.manual_power("auto")
+    assert link._e3dc.last_power == (0, 0)
+
+
+def test_manual_power_rejects_unknown_action():
+    import pytest
+    _cfg, link = _link(control_enabled=False)
+    with pytest.raises(ValueError):
+        link.manual_power("bogus", 1000)
+
+
 def test_house_load_15min_balance_and_keys():
     import pandas as pd
     cfg, link = _link()

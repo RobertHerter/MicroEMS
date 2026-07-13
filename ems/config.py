@@ -6,6 +6,7 @@ statt mit rohen Dictionaries.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import time
 from typing import Any, Dict, Optional
@@ -361,6 +362,10 @@ class DashboardConfig:
     # POST-Ingest-Endpunkte (/api/ingest/<kind>): Live- und Historienwerte extern
     # einspielen (Betrieb ohne RSCP/InfluxDB). Auth = username/password (Basic).
     ingest_enabled: bool = False
+    # Interaktive Steuerung im Dashboard (/api/control/*): Lasten an/aus + Parameter,
+    # Optimierungsmodus, manuelles Laden/Entladen. Auth = username/password (Basic).
+    # Standard AUS – manuelles Laden/Entladen greift real in den Akku ein.
+    controls_enabled: bool = False
 
 
 @dataclass
@@ -575,8 +580,18 @@ def parse_grid_fee_windows(raw) -> list:
     return out
 
 
-def parse_controllable_loads(raw) -> list:
-    """controllable_loads aus der YAML-Liste in ControllableLoad-Objekte."""
+def _load_slug(name: str) -> str:
+    """Wie ems.loads._slug (ohne Import-Zyklus): Name -> Spalten-/Overlay-Schlüssel."""
+    import re
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "load"
+
+
+def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
+    """controllable_loads aus der YAML-Liste in ControllableLoad-Objekte.
+
+    `overrides` (aus config_overrides.yaml, Schlüssel = Last-Slug) überschreibt
+    Dashboard-editierbare Felder (enabled + Kernparameter), da die Basis-Liste
+    nicht per Name deep-gemergt werden kann."""
     if not raw:
         return []
     out = []
@@ -617,14 +632,72 @@ def parse_controllable_loads(raw) -> list:
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "
                              f"'deferrable' oder 'thermal' sein.")
+        ov = (overrides or {}).get(_load_slug(load.name))
+        if isinstance(ov, dict):
+            _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
+                        "runtime_minutes", "window_from_hour", "window_to_hour"}
+            for k, v in ov.items():
+                if k in _ALLOWED and hasattr(load, k):
+                    setattr(load, k, v)
         out.append(load)
     return out
 
 
+def _overrides_path(config_path: str) -> str:
+    """Pfad der Overlay-Datei neben der config.yaml (Dashboard-Änderungen)."""
+    base = os.path.dirname(os.path.abspath(config_path)) or "."
+    return os.path.join(base, "config_overrides.yaml")
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """`over` rekursiv über `base` legen (verändert `base`, gibt es zurück)."""
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def save_override(config_path: str, dotted_key: str, value) -> None:
+    """Persistiert EINEN Wert (z.B. "optimization.charge_strategy") in die Overlay-
+    Datei config_overrides.yaml. config.yaml (kommentiert) bleibt unberührt;
+    load_config merged die Overlays beim nächsten Laden über die Basis."""
+    p = _overrides_path(config_path)
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except (OSError, yaml.YAMLError):
+        data = {}
+    node = data
+    parts = dotted_key.split(".")
+    for part in parts[:-1]:
+        node = node.setdefault(part, {})
+        if not isinstance(node, dict):   # kollidierender Skalar -> überschreiben
+            node = {}
+    node[parts[-1]] = value
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+    os.replace(tmp, p)
+
+
 def load_config(path: str) -> Config:
-    """Lädt und validiert die YAML-Konfiguration."""
+    """Lädt und validiert die YAML-Konfiguration.
+
+    Eine optionale Overlay-Datei ``config_overrides.yaml`` (vom Dashboard
+    geschrieben) wird rekursiv über die Basis gelegt – so überdauern interaktive
+    Änderungen (Lasten an/aus + Parameter, Optimierungsmodus) einen Neustart,
+    ohne die kommentierte config.yaml anzutasten."""
     with open(path, "r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh)
+        raw = yaml.safe_load(fh) or {}
+    try:
+        with open(_overrides_path(path), "r", encoding="utf-8") as fh:
+            overrides = yaml.safe_load(fh)
+        if isinstance(overrides, dict):
+            _deep_merge(raw, overrides)
+    except (OSError, yaml.YAMLError):
+        pass
 
     g = raw.get("general", {})
     general = GeneralConfig(
@@ -772,6 +845,7 @@ def load_config(path: str) -> Config:
         username=str(d.get("username", "")),
         password=str(d.get("password", "")),
         ingest_enabled=bool(d.get("ingest_enabled", False)),
+        controls_enabled=bool(d.get("controls_enabled", False)),
     )
 
     cal = raw.get("calibration", {})
@@ -845,7 +919,8 @@ def load_config(path: str) -> Config:
     if solcast.combine not in ("sum", "mean"):
         raise ValueError("solcast.combine muss 'sum' oder 'mean' sein.")
 
-    controllable_loads = parse_controllable_loads(raw.get("controllable_loads"))
+    controllable_loads = parse_controllable_loads(
+        raw.get("controllable_loads"), raw.get("controllable_loads_overrides"))
     if solcast.distribution not in ("daytime", "24h"):
         raise ValueError("solcast.distribution muss 'daytime' oder '24h' sein.")
 

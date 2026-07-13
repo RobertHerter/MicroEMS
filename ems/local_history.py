@@ -40,6 +40,10 @@ def _con(path: str) -> sqlite3.Connection:
     # Abruf-Protokoll (je erfolgreichem Solcast-Call) für Budget/Verteilung.
     con.execute("CREATE TABLE IF NOT EXISTS solcast_log ("
                 " api_key TEXT, resource TEXT, ts TEXT)")
+    # Ist-Temperatur thermischer steuerbarer Lasten (Pool) je Zyklus, für den
+    # Verlauf im Dashboard (erwartet vs. echt).
+    con.execute("CREATE TABLE IF NOT EXISTS load_temp ("
+                " name TEXT, ts TEXT, temp_c REAL, PRIMARY KEY(name, ts))")
     con.commit()
     return con
 
@@ -91,6 +95,39 @@ def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
         rows = con.execute(
             f"SELECT ts, {field} FROM actuals WHERE ts >= ? AND ts < ? "
             f"AND {field} IS NOT NULL ORDER BY ts", (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+
+
+def write_load_temp(path: str, ts, name: str, temp_c: float) -> None:
+    """Ist-Temperatur einer thermischen steuerbaren Last beim Slot-Zeitstempel
+    ablegen (für den erwartet-vs-echt-Verlauf im Dashboard)."""
+    if temp_c is None:
+        return
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT INTO load_temp(name, ts, temp_c) VALUES(?,?,?) "
+        "ON CONFLICT(name, ts) DO UPDATE SET temp_c=excluded.temp_c",
+        (str(name), key, float(temp_c)))
+    con.commit()
+    con.close()
+
+
+def read_load_temp(path: str, name: str, start, end, tz: str) -> pd.Series:
+    """Ist-Temperatur-Verlauf einer Last [start, end) als tz-lokale Serie."""
+    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, temp_c FROM load_temp WHERE name = ? AND ts >= ? AND ts < ? "
+            "ORDER BY ts", (str(name), s_utc, e_utc)).fetchall()
         con.close()
     except Exception:
         rows = []

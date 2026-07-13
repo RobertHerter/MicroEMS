@@ -272,6 +272,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
 
         # --- 3) Optimierung --------------------------------------------- #
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
+        load_state = _read_load_state(config, publisher)
         inputs = OptimizerInputs(
             index=opt_index,
             house_load_w=np.asarray(house_load, dtype=float),
@@ -284,8 +285,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
             ambient_temp_c=(temp.reindex(opt_index).ffill().bfill().values.astype(float)
                             if temp is not None else None),
-            load_state=_read_load_state(config, publisher),
+            load_state=load_state,
         )
+        # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben.
+        if load_state:
+            from .local_history import write_load_temp
+            for _name, _tc in load_state.items():
+                try:
+                    write_load_temp(config.e3dc_rscp.history_db_path, now, _name, _tc)
+                except Exception as exc:  # pragma: no cover
+                    log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", _name, exc)
         result = Optimizer(config).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
@@ -385,10 +394,24 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             display = _build_display_frame(repo, config, now, history, result,
                                            intraday=(load_ratio, pv_ratio),
                                            hist_pv=hist_pv, fut_pv=fut_pv)
+            # Ist-Temperatur-Verlauf thermischer Lasten für das Temperatur-Panel.
+            load_temp_actual = {}
+            try:
+                from .local_history import read_load_temp
+                tz = config.general.timezone
+                for ld in getattr(config, "controllable_loads", []):
+                    if ld.type == "thermal":
+                        s = read_load_temp(config.e3dc_rscp.history_db_path, ld.name,
+                                           display.index[0], display.index[-1], tz)
+                        if not s.empty:
+                            load_temp_actual[ld.name] = s
+            except Exception as exc:  # pragma: no cover
+                log.debug("Ist-Temp-Verlauf fürs Dashboard nicht verfügbar: %s", exc)
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
-                            violations=violations)
+                            violations=violations,
+                            load_temp_actual=load_temp_actual)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -693,9 +716,13 @@ def _sd_notify(message: str) -> None:
         pass
 
 
-def start_dashboard_server(config: Config) -> None:
+def start_dashboard_server(config: Config, publisher=None, e3dc=None,
+                           config_path: str = "config.yaml") -> None:
     """Startet im Dienstmodus einen kleinen HTTP-Server, der das Dashboard
-    im Browser abrufbar macht (http://<host>:<port>/). Läuft als Daemon-Thread."""
+    im Browser abrufbar macht (http://<host>:<port>/). Läuft als Daemon-Thread.
+
+    publisher/e3dc: Laufzeit-Mechanik für die interaktive Steuerung
+    (/api/control/*); config_path: Basis für die Overlay-Persistenz."""
     import functools
     import http.server
     import json
@@ -707,6 +734,67 @@ def start_dashboard_server(config: Config) -> None:
     directory = os.path.dirname(out) or "."
     fname = os.path.basename(out)
     snap_path = os.path.abspath(config.report.snapshot_path)
+
+    # Kernparameter, die im Dashboard je Lasttyp editierbar sind (Whitelist).
+    _LOAD_PARAMS = {
+        "thermal": {"target_c": float, "min_c": float, "max_c": float},
+        "deferrable": {"power_w": float, "runtime_minutes": float,
+                       "window_from_hour": int, "window_to_hour": int},
+    }
+
+    def _find_load(name):
+        for ld in getattr(config, "controllable_loads", []):
+            if ld.name == name:
+                return ld
+        raise ValueError(f"Unbekannte Last: {name!r}")
+
+    def _handle_control(action: str, payload: dict):
+        """Führt eine Dashboard-Steuer-Aktion aus (Laufzeit) und persistiert
+        Lasten-/Modus-Änderungen ins Overlay (config_overrides.yaml)."""
+        from .config import save_override
+        from .loads import _slug as _lslug
+        if action == "load":
+            name = str(payload.get("name", ""))
+            ld = _find_load(name)
+            slug = _lslug(name)
+            changed = {}
+            if "enabled" in payload:
+                en = bool(payload["enabled"])
+                ld.enabled = en
+                if publisher is not None:
+                    publisher.load_overrides[slug] = en
+                save_override(config_path,
+                              f"controllable_loads_overrides.{slug}.enabled", en)
+                changed["enabled"] = en
+            allowed = _LOAD_PARAMS.get(ld.type, {})
+            for key, val in (payload.get("params") or {}).items():
+                if key not in allowed:
+                    raise ValueError(f"Parameter {key!r} für {ld.type} nicht erlaubt")
+                cast = allowed[key](val)
+                setattr(ld, key, cast)
+                save_override(config_path,
+                              f"controllable_loads_overrides.{slug}.{key}", cast)
+                changed[key] = cast
+            if publisher is not None:
+                publisher.recalc_event.set()
+            return changed
+        if action == "mode":
+            strat = str(payload.get("strategy", "")).lower()
+            if strat not in ("asap", "peak", "auto"):
+                raise ValueError("strategy muss asap|peak|auto sein")
+            config.optimization.charge_strategy = strat
+            save_override(config_path, "optimization.charge_strategy", strat)
+            if publisher is not None:
+                publisher.recalc_event.set()
+            return {"charge_strategy": strat}
+        if action == "battery":
+            if e3dc is None:
+                raise ValueError("Keine RSCP-Verbindung – manuelles Laden nicht möglich")
+            act = str(payload.get("action", "")).lower()
+            watts = float(payload.get("watts", 0) or 0)
+            minutes = float(payload.get("minutes", 15) or 15)
+            return e3dc.manual_power(act, watts, minutes * 60.0)
+        raise KeyError(action)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def _authed(self) -> bool:
@@ -724,16 +812,48 @@ def start_dashboard_server(config: Config) -> None:
             self.end_headers()
             return False
 
+        def _reply(self, obj, code=200):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _body_json(self):
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            return json.loads(self.rfile.read(length) or b"{}")
+
         def do_POST(self):
-            # Ingest-API: Live-/Historienwerte extern einspielen (ohne RSCP/Influx).
             if not self._authed():
                 return
+            path = self.path.split("?")[0]
+            # Interaktive Steuerung (/api/control/<action>): Lasten, Modus, Akku.
+            if path.startswith("/api/control/"):
+                if not getattr(config.dashboard, "controls_enabled", False):
+                    self.send_error(403, "Steuerung deaktiviert (dashboard.controls_enabled)")
+                    return
+                action = path[len("/api/control/"):].strip("/")
+                try:
+                    payload = self._body_json()
+                    result = _handle_control(action, payload)
+                except KeyError:
+                    self.send_error(404, f"Unbekannte Steuer-Aktion: {action}")
+                    return
+                except ValueError as exc:
+                    self.send_error(400, f"Steuer-Fehler: {exc}")
+                    return
+                except Exception as exc:
+                    self.send_error(500, f"Steuer-Fehler: {exc}")
+                    return
+                self._reply({"status": "ok", "action": action, "result": result})
+                return
+            # Ingest-API: Live-/Historienwerte extern einspielen (ohne RSCP/Influx).
             if not getattr(config.dashboard, "ingest_enabled", False):
                 self.send_error(403, "Ingest deaktiviert (dashboard.ingest_enabled)")
                 return
-            path = self.path.split("?")[0]
             if not path.startswith("/api/ingest/"):
-                self.send_error(404, "Nur /api/ingest/<kind>")
+                self.send_error(404, "Nur /api/ingest/<kind> oder /api/control/<action>")
                 return
             kind = path[len("/api/ingest/"):].strip("/")
             try:
@@ -871,9 +991,6 @@ def main() -> None:
         run_once(config)
         return
 
-    if config.dashboard.enabled and config.dashboard.serve:
-        start_dashboard_server(config)
-
     interval = config.general.run_interval_minutes * 60
     # Kleiner Versatz, damit die neuen 15-Minuten-Werte (Preis, Zähler) schon in
     # der InfluxDB stehen, bevor gerechnet wird.
@@ -899,6 +1016,12 @@ def main() -> None:
                                 "(%s) – nutze Config-Werte.", exc)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
+
+    # Dashboard-Server NACH publisher/e3dc starten, damit die interaktive
+    # Steuerung (/api/control/*) direkt auf deren Laufzeit-Mechanik zugreift.
+    if config.dashboard.enabled and config.dashboard.serve:
+        start_dashboard_server(config, publisher=publisher, e3dc=e3dc,
+                               config_path=args.config)
 
     # Geordnetes Beenden: SIGTERM (systemctl stop/restart) und SIGINT lösen ein
     # SystemExit aus, damit der finally-Block läuft und u. a. die persistenten

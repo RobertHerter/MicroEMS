@@ -64,6 +64,8 @@ class E3DCLink:
         # Anders als Mode 3/4 hat sie KEINEN E3DC-Watchdog -> beim Beenden/Absturz
         # ausdrücklich freigeben, sonst bleibt der Akku unbegrenzt gedrosselt.
         self._limits_active = False
+        # Auto-Rücksetz-Timer für manuelles Laden/Entladen (Dashboard).
+        self._manual_timer: Optional[threading.Timer] = None
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -87,6 +89,9 @@ class E3DCLink:
     def close(self) -> None:
         # Watchdog stoppen und – falls Steuerung aktiv war – auf auto zurück,
         # damit der Akku nach dem Beenden nicht in einem Manuell-Modus hängt.
+        if self._manual_timer is not None:
+            self._manual_timer.cancel()
+            self._manual_timer = None
         self._wd_stop.set()
         if self._wd_thread is not None:
             self._wd_thread.join(timeout=2)
@@ -279,6 +284,57 @@ class E3DCLink:
             self._wd_thread = threading.Thread(target=self._watchdog_loop,
                                                name="rscp-watchdog", daemon=True)
             self._wd_thread.start()
+
+    def manual_power(self, action: str, watts: float = 0.0,
+                     seconds: float = 900.0) -> dict:
+        """Manuelles Laden/Entladen vom Dashboard (expliziter Nutzer-Eingriff).
+
+        action: "charge" (Mode 4, Netzladen), "discharge" (Mode 2) oder
+        "auto"/"stop" (Mode 0). Läuft über den 10-s-Watchdog und setzt sich nach
+        `seconds` selbst auf auto zurück; stirbt der Prozess, fällt der E3DC nach
+        10 s ohnehin auf auto (Fail-safe). GREIFT REAL IN DEN SPEICHER EIN – läuft
+        bewusst auch ohne control_enabled (nur über das Dashboard-Opt-in erreichbar).
+        Rückgabe: {mode, watts, seconds}."""
+        hb = self.cfg.house_battery
+        mode = {"charge": 4, "discharge": 2, "auto": 0, "stop": 0}.get(action)
+        if mode is None:
+            raise ValueError(f"Unbekannte Aktion: {action!r} (charge|discharge|auto)")
+        cap = hb.max_dc_charge_w if mode == 4 else \
+            (hb.max_discharge_w if mode == 2 else 0.0)
+        val = int(max(0.0, min(float(watts or 0.0), float(cap))))
+        # laufenden Rücksetz-Timer abbrechen
+        if self._manual_timer is not None:
+            self._manual_timer.cancel()
+            self._manual_timer = None
+        if mode == 0:
+            self._wd_mode, self._wd_value = 0, 0
+            try:
+                self._set_power(0, 0)
+            except Exception as exc:  # pragma: no cover
+                log.warning("RSCP: Auto-Rücksetzen fehlgeschlagen (%s).", exc)
+            log.info("RSCP: manueller Eingriff beendet -> auto.")
+            return {"mode": 0, "watts": 0, "seconds": 0}
+        self._set_limits(False)                       # etwaige Limits raus
+        self._wd_mode, self._wd_value = mode, val
+        self._ensure_watchdog()
+        self._set_power(mode, val)
+        secs = max(0.0, float(seconds))
+        if secs > 0:
+            self._manual_timer = threading.Timer(secs, self._manual_revert)
+            self._manual_timer.daemon = True
+            self._manual_timer.start()
+        log.info("RSCP: manuelles %s %d W für %.0f min (Mode %d).",
+                 action, val, secs / 60.0, mode)
+        return {"mode": mode, "watts": val, "seconds": secs}
+
+    def _manual_revert(self) -> None:
+        self._manual_timer = None
+        self._wd_mode, self._wd_value = 0, 0
+        try:
+            self._set_power(0, 0)
+            log.info("RSCP: manueller Eingriff abgelaufen -> auto.")
+        except Exception as exc:  # pragma: no cover
+            log.warning("RSCP: Auto-Rücksetzen nach Ablauf fehlgeschlagen (%s).", exc)
 
     def apply_control(self, row) -> None:
         """Plan-Slot -> E3DC-Steuerung. Nur mit control_enabled=true.

@@ -129,27 +129,116 @@ def _js_str(s: str) -> str:
     return _j.dumps(s)
 
 
+def _controls_block(config) -> str:
+    """Interaktives Steuerpanel (nur bei dashboard.controls_enabled): Lasten
+    an/aus + Kernparameter, Optimierungsmodus, manuelles Laden/Entladen.
+    Sendet an /api/control/* (Basic-Auth wie das Dashboard)."""
+    if not getattr(config.dashboard, "controls_enabled", False):
+        return ""
+    import json as _j
+    from .loads import _slug as _lslug
+
+    def _num(idp, val, step="1", width=64):
+        return (f"<input type='number' step='{step}' id='{idp}' "
+                f"value='{val:g}' style='width:{width}px'>")
+
+    meta, rows = {}, []
+    for ld in getattr(config, "controllable_loads", []):
+        sg = _lslug(ld.name)
+        if ld.type == "thermal":
+            keys = ["target_c", "min_c", "max_c"]
+            fields = (f"Ziel {_num(f'p_{sg}_target_c', ld.target_c, '0.1')}°C "
+                      f"Min {_num(f'p_{sg}_min_c', ld.min_c, '0.1')}°C "
+                      f"Max {_num(f'p_{sg}_max_c', ld.max_c, '0.1')}°C")
+        else:
+            keys = ["power_w", "runtime_minutes", "window_from_hour", "window_to_hour"]
+            fields = (f"Leistung {_num(f'p_{sg}_power_w', ld.power_w)}W "
+                      f"Laufzeit {_num(f'p_{sg}_runtime_minutes', ld.runtime_minutes)}min "
+                      f"Fenster {_num(f'p_{sg}_window_from_hour', ld.window_from_hour)}"
+                      f"–{_num(f'p_{sg}_window_to_hour', ld.window_to_hour)} h")
+        meta[sg] = {"name": ld.name, "keys": keys}
+        chk = "checked" if ld.enabled else ""
+        rows.append(
+            f"<div class='ctl-row'><label class='sw'>"
+            f"<input type='checkbox' id='en_{sg}' {chk}> <b>{_esc(ld.name)}</b></label> "
+            f"<span class='fld'>{fields}</span> "
+            f"<button onclick=\"emsLoad('{sg}')\">Speichern</button></div>")
+
+    strat = getattr(config.optimization, "charge_strategy", "auto")
+    mode_btns = "".join(
+        f"<button class='mode{' on' if strat == m else ''}' "
+        f"onclick=\"emsMode('{m}')\">{m}</button>" for m in ("auto", "asap", "peak"))
+    battery = (
+        "<div class='ctl-row'><b>Akku manuell</b> "
+        "<input type='number' id='bat_w' value='3000' style='width:72px'>W "
+        "<input type='number' id='bat_min' value='30' style='width:56px'>min "
+        "<button onclick=\"emsBat('charge')\">Laden</button> "
+        "<button onclick=\"emsBat('discharge')\">Entladen</button> "
+        "<button onclick=\"emsBat('auto')\">Auto/Stop</button></div>")
+
+    js = """
+const EMS_LOADS=%s;
+async function emsPost(action,payload){
+  const m=document.getElementById('ctl-msg'); m.textContent='… '+action;
+  try{
+    const r=await fetch('api/control/'+action,{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    if(!r.ok){ throw new Error((await r.text()).slice(0,200)); }
+    m.textContent='✓ übernommen – Neuberechnung läuft …';
+    setTimeout(()=>location.reload(), 2500);
+  }catch(e){ m.textContent='✗ '+e.message; }
+}
+function emsLoad(sg){
+  const L=EMS_LOADS[sg], p={};
+  L.keys.forEach(k=>{const el=document.getElementById('p_'+sg+'_'+k);
+    if(el&&el.value!=='') p[k]=parseFloat(el.value);});
+  emsPost('load',{name:L.name, enabled:document.getElementById('en_'+sg).checked, params:p});
+}
+function emsMode(s){ emsPost('mode',{strategy:s}); }
+function emsBat(a){ emsPost('battery',{action:a,
+  watts:parseFloat(document.getElementById('bat_w').value),
+  minutes:parseFloat(document.getElementById('bat_min').value)}); }
+""" % _j.dumps(meta)
+
+    return (
+        "<div class='controls'>"
+        "<div class='ctl-h'>Steuerung</div>"
+        f"{''.join(rows)}"
+        f"<div class='ctl-row'><b>Optimierungsmodus</b> {mode_btns}</div>"
+        f"{battery}"
+        "<div id='ctl-msg' class='ctl-msg'></div>"
+        f"</div><script>{js}</script>")
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
-                    export_line_w=None, savings_eur=None, violations=None) -> str:
+                    export_line_w=None, savings_eur=None, violations=None,
+                    load_temp_actual=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
     t = table
     x = t.index
     now = pd.Timestamp.now(tz=x.tz)
+    load_temp_actual = load_temp_actual or {}
 
     loads_cfg = list(getattr(config, "controllable_loads", []) or [])
     has_loads = len(loads_cfg) > 0
+    thermal_cfg = [ld for ld in loads_cfg if ld.type == "thermal"]
+    has_thermal = len(thermal_cfg) > 0
     if has_loads:
-        n_rows = 6
+        titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
+                  "<b>Steuerung</b>", "", "<b>Steuerbare Lasten</b>"]
         row_heights = [0.33, 0.14, 0.14, 0.24, 0.045, 0.105]
-        titles = ("<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
-                  "<b>Steuerung</b>", "", "<b>Steuerbare Lasten</b>")
     else:
-        n_rows = 5
+        titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
+                  "<b>Steuerung</b>", ""]
         row_heights = [0.36, 0.15, 0.15, 0.26, 0.045]
-        titles = ("<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
-                  "<b>Steuerung</b>", "")
+    temp_row = None
+    if has_thermal:
+        temp_row = len(titles) + 1
+        titles.append("<b>Pool-Temperatur</b>")
+        row_heights.append(0.12)
+    n_rows = len(titles)
     fig = make_subplots(
         rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.035,
         row_heights=row_heights, subplot_titles=titles,
@@ -187,6 +276,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     line("pv_w", "PV (Prognose)", "#ff7f0e", 1, "prog", dash="dash")
     line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist")
     line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
+    # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
+    if has_loads:
+        _cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+        if _cl_cols:
+            cl_sum = t[_cl_cols].sum(axis=1)
+            if float(cl_sum.abs().sum()) > 0:
+                fig.add_trace(go.Scatter(
+                    x=x, y=cl_sum, name="Steuerb. Lasten (Prognose)", mode="lines",
+                    line=dict(color="#9467bd", width=1.6, dash="dot"),
+                    hovertemplate=HOVER_W, legendgroup="prog",
+                    legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
     line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8)
     if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
         net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
@@ -302,6 +402,31 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             hovertemplate="%{y}  %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
 
+    # ---------- Panel 7: Pool-/Thermo-Temperatur (erwartet vs. echt) ----------
+    if temp_row is not None:
+        from .loads import _slug as _lslug
+        _tcol = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd"]
+        for i, ld in enumerate(thermal_cfg):
+            sg = _lslug(ld.name)
+            c = _tcol[i % len(_tcol)]
+            # Komfortband [min_c, max_c] als hellgrüner Bereich
+            fig.add_hrect(y0=ld.min_c, y1=ld.max_c, line_width=0,
+                          fillcolor="rgba(44,160,44,0.10)", row=temp_row, col=1)
+            col = f"load_{sg}_temp_c"
+            if col in t.columns and t[col].notna().any():
+                fig.add_trace(go.Scatter(
+                    x=x, y=t[col], name=f"{ld.name} erwartet", mode="lines",
+                    line=dict(color=c, width=2, dash="dash"),
+                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
+            act = load_temp_actual.get(ld.name)
+            if act is not None and len(act) > 0:
+                fig.add_trace(go.Scatter(
+                    x=act.index, y=act.values, name=f"{ld.name} echt", mode="lines",
+                    line=dict(color=c, width=2),
+                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
+
     # ---------- Orientierung: Vergangenheit, Jetzt, Tagesgrenzen ----------
     if x[0] < now:
         fig.add_vrect(x0=x[0], x1=min(now, x[-1]), fillcolor="rgba(0,0,0,0.05)",
@@ -333,6 +458,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_yaxes(visible=False, row=5, col=1)
     if has_loads:
         fig.update_yaxes(row=6, col=1, autorange="reversed", tickfont=dict(size=10))
+    if temp_row is not None:
+        fig.update_yaxes(title_text="°C", row=temp_row, col=1)
 
     # Mini-Legende der Modus-Farben DIREKT unter der Zeitleiste (Annotation,
     # unterhalb der Zeit-Beschriftung; die Trace-Legende rückt weiter nach
@@ -348,7 +475,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
-        height=1120 if has_loads else 980, autosize=True, template="plotly_white",
+        height=(1120 if has_loads else 980) + (180 if temp_row else 0),
+        autosize=True, template="plotly_white",
         hovermode="x unified", barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
@@ -399,6 +527,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False})
     report_html = _report_block(config, now, violations)
+    controls_html = _controls_block(config)
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -428,12 +557,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .report button.hot {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e;
         font-weight: 600; }}
  .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
+ .controls {{ margin: 4px 0 14px; padding: 10px 14px; background: #f6f7f9;
+        border: 1px solid #e3e5e8; border-radius: 8px; font-size: 13px; }}
+ .controls .ctl-h {{ font-weight: 700; margin-bottom: 8px; }}
+ .controls .ctl-row {{ display: flex; align-items: center; flex-wrap: wrap;
+        gap: 8px; padding: 5px 0; border-top: 1px solid #ececef; }}
+ .controls .ctl-row:first-of-type {{ border-top: none; }}
+ .controls .sw {{ min-width: 150px; }}
+ .controls .fld {{ color: #555; }}
+ .controls button {{ font-size: 13px; padding: 5px 12px; border-radius: 7px;
+        border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
+ .controls button.mode.on {{ background: #0d6efd; color: #fff; border-color: #0d6efd; }}
+ .controls .ctl-msg {{ margin-top: 8px; font-size: 12px; color: #555; min-height: 1em; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {_alert_banner(violations)}
 {report_html}
+{controls_html}
 {plot_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""
