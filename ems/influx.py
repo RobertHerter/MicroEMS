@@ -286,3 +286,41 @@ class InfluxRepository:
 
     def close(self) -> None:
         self.backend.close()
+
+
+class NoOpRepository:
+    """Ersatz-Repository für den Betrieb OHNE InfluxDB (influxdb.enabled=false).
+    Alle Lese-Signale gelten als nicht verfügbar; Writeback ist ein No-op. Die
+    Eingangsdaten kommen dann rein lokal/extern (RSCP, Ingest-API, Open-Meteo,
+    Energy-Charts, Solcast)."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.tz = config.general.timezone
+
+    def signal_available(self, name: str) -> bool:
+        return False
+
+    def read_slots(self, name: str, start: datetime, end: datetime,
+                   fill: bool = True) -> pd.Series:
+        return pd.Series(dtype="float64")
+
+    def read_scalar_latest(self, name: str, start: datetime, end: datetime):
+        return None
+
+    def write_frame(self, output_key: str, df: pd.DataFrame, tags=None) -> None:
+        return None
+
+    def read_slots_output(self, output_key: str, field: str,
+                          start: datetime, end: datetime):
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def make_repository(config: Config):
+    """InfluxRepository, oder NoOpRepository wenn influxdb.enabled=false."""
+    if not getattr(config.influxdb, "enabled", True):
+        return NoOpRepository(config)
+    return InfluxRepository(config)

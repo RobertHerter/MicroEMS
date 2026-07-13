@@ -30,7 +30,7 @@ from .forecast import (LoadForecaster, dampen_estimated,
                        intraday_factor_series, intraday_ratio, load_history)
 from .local_history import read_actual_signal, write_actuals
 from .homey_mqtt import HomeyMqttPublisher
-from .influx import InfluxRepository
+from .influx import make_repository
 from .optimizer import Optimizer, OptimizerInputs
 from .tariff import read_price_signal
 from . import solcast
@@ -63,7 +63,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     """Ein Rechenzyklus. `publisher`/`e3dc`: persistente Verbindungen im Loop-
     Betrieb (MQTT Last Will bzw. RSCP-Watchdog-Thread); ohne werden sie pro Lauf
     erzeugt und wieder geschlossen."""
-    repo = InfluxRepository(config)
+    repo = make_repository(config)
     one_shot = publisher is None
     # Optionale direkte E3DC-Anbindung (RSCP); im Loop von main() übergeben,
     # sonst pro Lauf erzeugen (own_e3dc -> am Ende schließen).
@@ -200,8 +200,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Live-Werte optional direkt vom E3DC (RSCP) statt aus der InfluxDB.
         # force=True: im Loop-Betrieb frisch pollen (kein Zyklus-übergreifender Cache).
         live = e3dc.read_live(force=True) if (e3dc and config.e3dc_rscp.read_live) else None
+        live_src = "RSCP"
+        if live is None:               # ohne RSCP: extern per Ingest-API eingespeiste Werte
+            from .ingest import get_live
+            live = get_live()
+            live_src = "Ingest-API"
         if live:
-            log.info("RSCP live: SoC %.0f%%, PV %.0f W, Last %.0f W.",
+            log.info("%s live: SoC %.0f%%, PV %.0f W, Last %.0f W.", live_src,
                      live.get("soc_percent") or -1, live.get("pv_w") or 0,
                      live.get("house_load_w") or 0)
             # Ist-Werte lokal protokollieren (Ersatz für die InfluxDB-Ist-Signale).
@@ -686,6 +691,7 @@ def start_dashboard_server(config: Config) -> None:
     im Browser abrufbar macht (http://<host>:<port>/). Läuft als Daemon-Thread."""
     import functools
     import http.server
+    import json
     import os
     import threading
     import base64
@@ -696,19 +702,54 @@ def start_dashboard_server(config: Config) -> None:
     snap_path = os.path.abspath(config.report.snapshot_path)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
+        def _authed(self) -> bool:
+            """Basic-Auth prüfen (Dashboard-username/password). True = ok; bei
+            Fehlschlag wird 401 gesendet und False zurückgegeben."""
+            u, p = config.dashboard.username, config.dashboard.password
+            if not (u and p):
+                return True
+            expected = "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()
+            if self.headers.get("Authorization") == expected:
+                return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="EMS"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return False
+
+        def do_POST(self):
+            # Ingest-API: Live-/Historienwerte extern einspielen (ohne RSCP/Influx).
+            if not self._authed():
+                return
+            if not getattr(config.dashboard, "ingest_enabled", False):
+                self.send_error(403, "Ingest deaktiviert (dashboard.ingest_enabled)")
+                return
+            path = self.path.split("?")[0]
+            if not path.startswith("/api/ingest/"):
+                self.send_error(404, "Nur /api/ingest/<kind>")
+                return
+            kind = path[len("/api/ingest/"):].strip("/")
+            try:
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                from .ingest import ingest as _do_ingest
+                msg = _do_ingest(config, kind, payload)
+            except KeyError:
+                self.send_error(404, f"Unbekannter Ingest-Typ: {kind}")
+                return
+            except Exception as exc:
+                self.send_error(400, f"Ingest-Fehler: {exc}")
+                return
+            body = json.dumps({"status": "ok", "kind": kind, "result": msg}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
-            # Basic Auth prüfen
-            if config.dashboard.username and config.dashboard.password:
-                auth = self.headers.get("Authorization")
-                expected = "Basic " + base64.b64encode(
-                    f"{config.dashboard.username}:{config.dashboard.password}".encode()
-                ).decode()
-                if auth != expected:
-                    self.send_response(401)
-                    self.send_header("WWW-Authenticate", 'Basic realm="EMS Dashboard"')
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
+            if not self._authed():
+                return
 
             # API Endpunkt für Optimierungsdaten
             if getattr(config.dashboard, "api_enabled", False) and self.path.split("?")[0] == "/api/data.json":

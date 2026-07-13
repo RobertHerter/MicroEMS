@@ -47,6 +47,7 @@ Steuerbefehle per MQTT.
 | `ems/energycharts.py` + `ems/tariff.py` | Spotpreis von Energy-Charts + Tarifmodell → Endkunden-Bezugspreis (§14a EnWG) |
 | `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) |
 | `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher, z.B. Pool) |
+| `ems/ingest.py` | Externe Einspeisung (REST-Ingest) von Live-/Historienwerten -> Betrieb ohne RSCP/InfluxDB |
 | `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |
 | `tests/` | pytest-Suite (E2E synthetisch, Optimierer-Randfälle, Prognose, Ersparnis) |
 
@@ -201,6 +202,26 @@ Zwei Typen (`ems/loads.py`):
   PV-Überschuss/günstige Slots vorgeheizt statt grob „PV>X → an".
 
 Leere Liste (Default) = keine zusätzlichen Variablen, Optimierer unverändert.
+
+## Betrieb ohne InfluxDB / externe Einspeisung (Ingest-API)
+
+Das EMS läuft auch **ganz ohne InfluxDB und ohne RSCP** — die sonst von dort
+kommenden Werte werden per REST eingespielt (`ems/ingest.py`):
+- **`influxdb.enabled: false`** → No-op-Repository (kein Lesen/Writeback aus/in
+  InfluxDB); alle Eingangsdaten kommen lokal/extern.
+- **`dashboard.ingest_enabled: true`** → POST-Endpunkte am Dashboard-HTTP-Server
+  (Basic-Auth wie das Dashboard, `dashboard.username`/`password`):
+  - `POST /api/ingest/live` – aktueller Snapshot (SoC/PV/Last/Netz/Akku), im
+    Speicher gecacht; `run_once` nutzt ihn als Ersatz für `e3dc.read_live`.
+  - `POST /api/ingest/house_load` – 15-min-Hauslast-Historie (für die Prognose).
+  - `POST /api/ingest/actuals` – Ist-Werte (Dashboard/Ersparnis/Drift).
+  - `POST /api/ingest/temperature` / `/spot` / `/pv_forecast` – für den voll
+    externen Betrieb auch Temperatur, Spotpreis und PV-Prognose.
+  Zeitstempel werden auf UTC-ISO normalisiert; Historien landen direkt in der
+  lokalen SQLite, Live-Werte im Cache. Payload-Formate: siehe `config.example.yaml`.
+
+So kann ein beliebiges Fremdsystem (Homey, node-red, eigenes Skript) die Daten
+liefern; RSCP/InfluxDB sind dann nur noch optionale Quellen.
 
 ## Installation auf dem Pi (Trixie)
 

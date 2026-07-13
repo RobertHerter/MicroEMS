@@ -87,6 +87,9 @@ class InfluxConfig:
     v2: Dict[str, Any]
     signals: Dict[str, SignalSpec]
     outputs: Dict[str, str]
+    # False = keine InfluxDB (No-op-Repository): Betrieb komplett ohne InfluxDB,
+    # Eingangsdaten kommen dann lokal/extern (RSCP, Ingest-API, Open-Meteo, ...).
+    enabled: bool = True
 
 
 @dataclass
@@ -346,6 +349,9 @@ class DashboardConfig:
     api_enabled: bool = True
     username: str = ""
     password: str = ""
+    # POST-Ingest-Endpunkte (/api/ingest/<kind>): Live- und Historienwerte extern
+    # einspielen (Betrieb ohne RSCP/InfluxDB). Auth = username/password (Basic).
+    ingest_enabled: bool = False
 
 
 @dataclass
@@ -634,6 +640,7 @@ def load_config(path: str) -> Config:
         v2=inf.get("v2", {}),
         signals=signals,
         outputs=outputs,
+        enabled=bool(inf.get("enabled", True)),
     )
     if influxdb.version not in (1, 2):
         raise ValueError("influxdb.version muss 1 oder 2 sein.")
@@ -751,6 +758,10 @@ def load_config(path: str) -> Config:
         serve=bool(d.get("serve", True)),
         host=d.get("host", "0.0.0.0"),
         port=int(d.get("port", 8080)),
+        api_enabled=bool(d.get("api_enabled", True)),
+        username=str(d.get("username", "")),
+        password=str(d.get("password", "")),
+        ingest_enabled=bool(d.get("ingest_enabled", False)),
     )
 
     cal = raw.get("calibration", {})

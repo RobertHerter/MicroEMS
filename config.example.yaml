@@ -19,6 +19,7 @@ general:
 # InfluxDB – Version 1 oder 2 wählen. Nur der jeweilige Block muss gefüllt sein.
 # -----------------------------------------------------------------------------
 influxdb:
+  enabled: true        # false = ganz ohne InfluxDB (No-op); Daten dann lokal/extern
   version: 2            # 1 oder 2
 
   # ---- Version 1.x (InfluxQL) -------------------------------------------------
@@ -397,6 +398,15 @@ e3dc_rscp:
 dashboard:
   enabled: true
   output_path: "./dashboard.html"
-  api_enabled: true
-  username: ""
+  api_enabled: true          # GET /api/data.json (Optimierungsdaten)
+  username: ""               # Basic-Auth (leer = kein Auth); gilt auch fürs Ingest
   password: ""
+  # POST-Ingest: Live-/Historienwerte extern einspielen (Betrieb ohne RSCP/InfluxDB).
+  # Endpunkte (Basic-Auth wie oben):
+  #   POST /api/ingest/live         {"soc_percent":.., "pv_w":.., "house_load_w":.., "grid_w":.., "battery_w":..}
+  #   POST /api/ingest/house_load   {"values": {"<UTC-ISO>": <W>, ...}}
+  #   POST /api/ingest/actuals      {"values": {"<ISO>": {"pv_w":..,"house_w":..,"grid_w":..,"battery_w":..,"soc":..}}}
+  #   POST /api/ingest/temperature  {"values": {"<UTC-ISO>": <°C>}}
+  #   POST /api/ingest/spot         {"values": {"<UTC-ISO>": <ct/kWh netto>}}
+  #   POST /api/ingest/pv_forecast  {"source":"extern", "values": {"<ISO>": {"pv_w":..,"pv10_w":..,"pv90_w":..}}}
+  ingest_enabled: false
