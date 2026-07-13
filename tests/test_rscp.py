@@ -10,6 +10,8 @@ class FakeE3DC:
     # Akku steht unter consumption.battery (+ = Laden), PV unter production.solar.
     def __init__(self):
         self.limits = None
+        self.limit_calls = []          # Verlauf aller set_power_limits(enable=…)
+        self.limits_rc = 0             # Rückgabecode (0=ok, 1=angepasst, -1=Fehler)
         self.last_power = None
         self.power_calls = []
         self._poll = {
@@ -40,6 +42,8 @@ class FakeE3DC:
                          keepAlive=False):
         self.limits = {"enable": enable, "max_charge": max_charge,
                        "max_discharge": max_discharge}
+        self.limit_calls.append(bool(enable))
+        return self.limits_rc
 
     def sendRequest(self, req, retries=3, keepAlive=False):
         # Erwartet SET_POWER-Container -> Mode/Value mitschreiben
@@ -160,6 +164,47 @@ def test_control_free_running_disables_limit():
                         "batt_discharge_limit_w": hb.max_discharge_w,
                         "batt_grid_charge_w": 0, "batt_grid_discharge_w": 0})
     assert link._e3dc.limits["enable"] is False
+
+
+def test_close_releases_active_power_limits():
+    """Persistente Lade-/Entlade-Limits haben keinen Watchdog -> close() muss sie
+    ausdrücklich freigeben (EMS_POWER_LIMITS_USED=false), sonst bleibt der Akku
+    nach dem Beenden unbegrenzt gedrosselt."""
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    link.apply_control({"batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+                        "batt_discharge_limit_w": hb.max_discharge_w,
+                        "batt_grid_discharge_w": 0})
+    fake = link._e3dc                                # close() setzt _e3dc = None
+    assert fake.limits["enable"] is True and link._limits_active
+    link.close()
+    assert fake.limit_calls[-1] is False            # Freigabe beim Beenden
+    assert link._limits_active is False
+
+
+def test_close_without_active_limit_leaves_limits_untouched():
+    """Lief der E3DC frei (kein Limit aktiv), gibt close() nichts frei."""
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    link.apply_control({"batt_charge_limit_w": hb.max_dc_charge_w,
+                        "batt_discharge_limit_w": hb.max_discharge_w,
+                        "batt_grid_charge_w": 0, "batt_grid_discharge_w": 0})
+    fake = link._e3dc                                # close() setzt _e3dc = None
+    calls_before = list(fake.limit_calls)            # [False] (Frei-Lauf)
+    assert not link._limits_active
+    link.close()
+    assert fake.limit_calls == calls_before          # close() fügt nichts hinzu
+
+
+def test_set_limits_flags_rejected_limit(caplog):
+    """Lehnt der E3DC das Limit ab (rc=-1), wird gewarnt statt still zu scheitern."""
+    import logging
+    cfg, link = _link(control_enabled=True)
+    link._e3dc.limits_rc = -1
+    with caplog.at_level(logging.WARNING, logger="ems.rscp"):
+        rc = link._set_limits(True, 1200, 3000)
+    assert rc == -1
+    assert any("NICHT übernommen" in r.message for r in caplog.records)
 
 
 def test_house_load_15min_balance_and_keys():

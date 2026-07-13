@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import time as _time
 from datetime import timedelta
 
@@ -892,24 +893,49 @@ def main() -> None:
                                 "(%s) – nutze Config-Werte.", exc)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
+
+    # Geordnetes Beenden: SIGTERM (systemctl stop/restart) und SIGINT lösen ein
+    # SystemExit aus, damit der finally-Block läuft und u. a. die persistenten
+    # RSCP-Lade-/Entlade-Limits freigegeben werden (EMS_POWER_LIMITS_USED=false) –
+    # sie haben keinen Watchdog. (Bei SIGKILL/Stromausfall unmöglich; dann heilt
+    # der nächste Zyklus nach dem systemd-Neustart die Grenze selbst.)
+    def _handle_signal(signum, _frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
     _sd_notify("READY=1")
-    while True:
+    try:
+        while True:
+            try:
+                run_once(config, publisher, e3dc)
+            except Exception as exc:  # pragma: no cover
+                log.exception("Fehler im EMS-Zyklus – fahre fort.")
+                publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
+            # Lebenszeichen an systemd (WatchdogSec): bleibt es aus (Prozess hängt),
+            # startet systemd den Dienst neu.
+            _sd_notify("WATCHDOG=1")
+            # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) warten;
+            # ein MQTT-Kommando (ems/cmd/recalc, car_boost) bricht das Warten ab.
+            now = _time.time()
+            next_mark = (now // interval + 1) * interval + offset
+            if next_mark - now < 5.0:      # zu knapp -> erst zur übernächsten Marke
+                next_mark += interval
+            if publisher.wait_for_recalc(next_mark - _time.time()):
+                log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
+    except (KeyboardInterrupt, SystemExit):
+        log.info("EMS wird beendet – Verbindungen werden geschlossen.")
+    finally:
+        _sd_notify("STOPPING=1")
+        if e3dc is not None:
+            try:
+                e3dc.close()   # gibt persistente Lade-/Entlade-Limits frei
+            except Exception as exc:  # pragma: no cover
+                log.warning("RSCP-Abschluss fehlgeschlagen (%s).", exc)
         try:
-            run_once(config, publisher, e3dc)
-        except Exception as exc:  # pragma: no cover
-            log.exception("Fehler im EMS-Zyklus – fahre fort.")
-            publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
-        # Lebenszeichen an systemd (WatchdogSec): bleibt es aus (Prozess hängt),
-        # startet systemd den Dienst neu.
-        _sd_notify("WATCHDOG=1")
-        # Bis zur nächsten glatten Raster-Marke (z. B. :00/:15/:30/:45) warten;
-        # ein MQTT-Kommando (ems/cmd/recalc, car_boost) bricht das Warten ab.
-        now = _time.time()
-        next_mark = (now // interval + 1) * interval + offset
-        if next_mark - now < 5.0:      # zu knapp -> erst zur übernächsten Marke
-            next_mark += interval
-        if publisher.wait_for_recalc(next_mark - _time.time()):
-            log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
+            publisher.close()
+        except Exception:  # pragma: no cover
+            pass
 
 
 if __name__ == "__main__":

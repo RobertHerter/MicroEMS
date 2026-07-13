@@ -60,6 +60,10 @@ class E3DCLink:
         self._wd_stop = threading.Event()
         self._wd_mode = 0
         self._wd_value = 0
+        # Persistente Lade-/Entlade-Begrenzung aktiv? (EMS_POWER_LIMITS_USED).
+        # Anders als Mode 3/4 hat sie KEINEN E3DC-Watchdog -> beim Beenden/Absturz
+        # ausdrücklich freigeben, sonst bleibt der Akku unbegrenzt gedrosselt.
+        self._limits_active = False
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -93,6 +97,16 @@ class E3DCLink:
         except Exception:  # pragma: no cover
             pass
         self._wd_mode = 0
+        # Persistente Lade-/Entlade-Limits ausdrücklich freigeben – sie haben
+        # keinen E3DC-Watchdog und blieben sonst nach dem Beenden unbegrenzt aktiv
+        # (EMS_POWER_LIMITS_USED = false).
+        try:
+            if self._e3dc is not None and self.rc.control_enabled and self._limits_active:
+                self._set_limits(False)
+                log.info("RSCP: Lade-/Entlade-Limits beim Beenden freigegeben "
+                         "(EMS_POWER_LIMITS_USED=false).")
+        except Exception:  # pragma: no cover
+            pass
         try:
             if self._e3dc is not None and hasattr(self._e3dc, "disconnect"):
                 self._e3dc.disconnect()
@@ -226,13 +240,28 @@ class E3DCLink:
                 (RscpTag.EMS_REQ_SET_POWER_VALUE, RscpType.Int32, int(value))]),
                 keepAlive=True)
 
-    def _set_limits(self, enable: bool, max_charge=None, max_discharge=None) -> None:
+    def _set_limits(self, enable: bool, max_charge=None, max_discharge=None) -> int:
+        """Persistente SmartPower-Lade-/Entlade-BEGRENZUNG.
+
+        enable=True setzt zugleich EMS_POWER_LIMITS_USED=true – ohne dieses Flag
+        ignoriert der E3DC die gesetzten Max-Werte. enable=False gibt die Grenzen
+        wieder frei (EMS_POWER_LIMITS_USED=false). Es gibt KEINEN Watchdog wie bei
+        Mode 3/4: die Grenze bleibt bis zum ausdrücklichen Zurücksetzen aktiv
+        (deshalb Freigabe in close()). Rückgabe von pye3dc: 0=ok, 1=Wert
+        angepasst (nicht-optimal), -1=Fehler."""
         with self._lock:
             e = self._connect()
-            e.set_power_limits(enable=bool(enable),
-                               max_charge=(int(max_charge) if enable else None),
-                               max_discharge=(int(max_discharge) if enable else None),
-                               keepAlive=True)
+            rc = e.set_power_limits(
+                enable=bool(enable),
+                max_charge=(int(max_charge) if enable else None),
+                max_discharge=(int(max_discharge) if enable else None),
+                keepAlive=True)
+        self._limits_active = bool(enable)
+        rc = 0 if rc is None else int(rc)
+        if enable and rc == -1:
+            log.warning("RSCP: Lade-/Entlade-Limit vom E3DC NICHT übernommen "
+                        "(EMS_POWER_LIMITS_USED) – Begrenzung greift evtl. nicht.")
+        return rc
 
     def _watchdog_loop(self) -> None:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
