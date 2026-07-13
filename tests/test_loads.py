@@ -6,7 +6,7 @@ import pandas as pd
 
 from ems.config import ControllableLoad, LoadStage
 from ems.optimizer import Optimizer
-from tests.test_optimizer import _day_index, _inputs
+from tests.test_optimizer import _day_index, _inputs, _pv_gauss
 from tests.test_synthetic import make_config
 
 DT_H = 0.25
@@ -114,6 +114,32 @@ def test_thermal_hot_ambient_stays_feasible():
     assert temp.max() > 29.0, "passiver Wärmeeintrag sollte das Band übersteigen"
     # Kühlen unmöglich -> nicht heizen, wenn ohnehin zu warm
     assert float(klein.sum()) + float(gross.sum()) < 1.0, "WP heizt, obwohl zu warm"
+
+
+def test_thermal_load_no_spurious_charge_block():
+    """Regression: läuft eine steuerbare Last (Pool-WP) aus PV-Überschuss, ist das
+    für den E3DC normaler Eigenverbrauch - der Akku lädt mit dem REST. Die vom Pool
+    verbrauchte PV darf NICHT als fehlende Akku-Ladung interpretiert und als
+    'Laden gesperrt/gedrosselt' gemeldet werden (kein Akku-Eingriff liegt vor)."""
+    cfg = make_config()
+    cfg.controllable_loads = [_pool_load(loss=100.0, min_c=27.0, target=28.0)]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    # Kräftige PV, moderate Hauslast, Pool startet unter Ziel -> WP heizt tagsüber
+    # aus dem Überschuss, während der Akku mit dem Rest lädt.
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 9000), load=500.0, price=30.0,
+        soc=cfg.house_battery.min_soc_wh,
+        ambient_temp_c=np.full(n, 20.0), load_state={"pool": 27.2}))
+    assert not res.infeasible
+    t = res.table
+    wp = t["load_pool_klein_w"] + t["load_pool_gross_w"]
+    surplus = t["pv_w"] > t["house_load_w"]
+    mask = (wp > 1.0) & surplus
+    assert mask.any(), "Testszenario ohne Pool-Betrieb bei Überschuss – nichts geprüft"
+    spurious = t.loc[mask, "mode"].astype(str).isin(["block_charge", "limit_charge"])
+    assert not spurious.any(), \
+        "Pool-Verbrauch aus PV fälschlich als Lade-Sperre/-Drossel gemeldet"
 
 
 def test_deferrable_profile_cycle_runs_once_in_cheap_slots():

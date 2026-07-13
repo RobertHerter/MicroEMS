@@ -657,7 +657,14 @@ class Optimizer:
             #   * Lade-/Entladelimit < Maximum           -> gezielte Begrenzung/Sperre
             #   * grid_charge_w > 0                      -> Netzladen erzwingen
             pv_t = float(max(0.0, inp.pv_w[t]))
-            load_t = float(max(0.0, inp.house_load_w[t]))
+            # Steuerbare Lasten (Pool-WP etc.) sind für den E3DC ganz normale
+            # Hausverbraucher: der Eigenverbrauch bedient sie aus PV, BEVOR der Akku
+            # geladen wird. Für die "natürliche" Lade-/Entladeleistung daher zur
+            # Hauslast zählen - sonst sieht die Klassifikation die vom Pool
+            # verbrauchte PV als fehlende Akku-Ladung und meldet fälschlich
+            # "Laden gesperrt/gedrosselt", obwohl gar kein Akku-Eingriff vorliegt.
+            cl_v = float(max(0.0, val(cl_power[t]))) if cl_power else 0.0
+            load_t = float(max(0.0, inp.house_load_w[t])) + cl_v
             nat_charge = min(max(0.0, pv_t - load_t), hb.max_dc_charge_w)
             nat_dis = min(max(0.0, load_t - pv_t), hb.max_discharge_w)
             tol = 5.0
