@@ -77,6 +77,12 @@ def validate_plan(config: Config, result: OptimizerResult,
     price = col("price_ct_kwh")
     soc = col("house_soc_wh")
     car = col("car_charge_w")
+    # Steuerbare Lasten (Pool-WP etc.) sind lokale Verbraucher: der Akku darf sie
+    # decken und PV wird zuerst von ihnen verbraucht. Für "PV-Überschuss"- und
+    # Bilanz-Regeln daher zur Last zählen (sonst Fehlalarme, sobald der Pool läuft).
+    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+    cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
+    total_load = load + cl + car          # gesamte lokale Last (ohne Akku/Netz)
 
     # ---- Solver-Status -------------------------------------------------- #
     if result.infeasible:
@@ -117,8 +123,10 @@ def validate_plan(config: Config, result: OptimizerResult,
 
     # Kein Entladen bei PV-Überschuss (außer erlaubtem Akku->Netz)
     if not config.optimization.allow_grid_discharge:
+        # Überschuss NUR, wenn PV auch die steuerbaren Lasten (+Auto) übersteigt -
+        # den Pool darf der Akku decken, ohne dass das als getarntes Akku->Netz gilt.
         add(_mask_violation("battery.no_discharge_on_surplus", "error",
-            (pv > load + TOL_W) & (dis > TOL_W),
+            (pv > total_load + TOL_W) & (dis > TOL_W),
             "Entladen trotz PV-Überschuss (getarntes Akku->Netz)"))
         add(_mask_violation("grid.no_discharge", "error",
             col("batt_grid_discharge_w") > TOL_W,
@@ -146,10 +154,7 @@ def validate_plan(config: Config, result: OptimizerResult,
         "Netz-Entladung größer als die geplante Gesamteinspeisung"))
 
     # Energiebilanz je Slot (muss per Konstruktion ~0 sein). Steuerbare Lasten
-    # (controllable_loads) sind Teil der AC-Knotenbilanz -> alle load_*_w-Spalten
-    # (NICHT house_load_w) aufsummieren.
-    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
-    cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
+    # (controllable_loads, cl oben) sind Teil der AC-Knotenbilanz.
     pv_to_ac = pv - dc - curt
     balance = imp - exp - (load + car + cl + ac - pv_to_ac - dis)
     add(_mask_violation("balance.node", "error", balance.abs() > 2 * TOL_W,
@@ -228,15 +233,30 @@ def validate_plan(config: Config, result: OptimizerResult,
         plan_cost = (float(t["slot_cost_ct"].sum())
                      + _peak_pen(exp.values)
                      - term * float(soc.iloc[-1]) / 1000.0)
-        # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten),
-        # sonst wirkt der Plan durch die Pool-Last künstlich teurer.
+        # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten)
+        # UND dasselbe reale Akku-Modell wie der Optimierer: WR-Sockellast je
+        # Entlade-Slot und Mindest-Entladeleistung. Sonst wäre die Baseline ein
+        # verlustfreier, beliebig fein regelnder (physikalisch unmöglicher) Akku
+        # und der Plan wirkt um genau diese Modell-Verluste "teurer".
         cl_vals = cl.values if cl_cols else np.zeros(len(t))
+        sb = config.optimization.standby_discharge_w
+        min_dis = config.optimization.min_discharge_w
         b_cost, b_soc = 0.0, prev[0]
         b_exp_w = np.zeros(len(t))
         for i in range(len(t)):
-            b_soc, _c, _d, b_imp, b_exp = natural_battery_step(
-                b_soc, inputs.pv_w[i], inputs.house_load_w[i] + float(cl_vals[i]), hb, dt,
-                max_export_w=config.inverter.max_export_w)
+            pv_i = max(0.0, float(inputs.pv_w[i]))
+            load_i = max(0.0, float(inputs.house_load_w[i]) + float(cl_vals[i]))
+            deficit = load_i - pv_i
+            if 0.0 < deficit < min_dis:
+                # Defizit unter Mindest-Entladeleistung -> Akku bleibt aus (0 oder
+                # >= min_dis), der Rest kommt aus dem Netz (wie im MILP).
+                b_imp, b_exp = deficit, 0.0
+            else:
+                b_soc, _c, b_dis, b_imp, b_exp = natural_battery_step(
+                    b_soc, pv_i, load_i, hb, dt,
+                    max_export_w=config.inverter.max_export_w)
+                if b_dis > 0.0:
+                    b_soc = max(hb.min_soc_wh, b_soc - sb * dt)   # WR-Sockellast
             b_cost += (b_imp * inputs.price_ct_kwh[i]
                        - b_exp * inputs.feedin_ct_kwh[i]) * kwh
             b_exp_w[i] = b_exp

@@ -93,6 +93,36 @@ def test_thermal_recovers_from_low_start():
     assert ((gross <= 1.0) | (klein > 1.0)).all()      # Kopplung auch hier
 
 
+def test_controllable_load_covered_by_battery_not_grid():
+    """Regression: eine steuerbare Last (Pool-WP) nachts (keine PV) muss aus dem
+     vollen Akku gedeckt werden, nicht teuer aus dem Netz. Die Entlade-Obergrenze
+    im Optimierer zählte nur die Hauslast - der Akku durfte die Last daher nicht
+    decken und ihr Verbrauch kam sinnlos aus dem Netz (Modus 'limit_discharge')."""
+    cfg = make_config()
+    cfg.optimization.allow_grid_discharge = False
+    cfg.controllable_loads = [ControllableLoad(
+        name="wp", type="deferrable", power_w=1000.0, runtime_minutes=120.0,
+        window_from_hour=0, window_to_hour=6, switch_penalty_ct=0.0)]
+    idx = _day_index("2026-01-20")           # Winter, damit nachts geheizt wird
+    n = len(idx)
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    # Teuer im Lauf-Fenster (0-6 h), danach billig -> Entladen JETZT ist eindeutig
+    # optimal (kein Anreiz, den Akku für später/Terminalwert zu halten).
+    price = np.where(hour < 6, 45.0, 8.0)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=price,
+        soc=cfg.house_battery.max_soc_wh * 0.9))
+    assert not res.infeasible
+    t = res.table
+    run = t["load_wp_w"] > 1.0
+    assert run.any(), "Last läuft gar nicht"
+    # Während die Last läuft: Netzbezug ~0 (Akku deckt Haus + Last), kein
+    # gedrosseltes Entladen.
+    assert float(t.loc[run, "grid_import_w"].max()) < 50.0, \
+        "Netzbezug trotz vollem Akku - Akku darf die steuerbare Last nicht decken"
+    assert not (t.loc[run, "mode"].astype(str) == "limit_discharge").any()
+
+
 def test_thermal_hot_ambient_stays_feasible():
     """Regression: ist die Umgebung wärmer als das Bandmaximum, gewinnt der Pool
     auch mit allen WP AUS passiv Wärme und übersteigt max_c. Ein hartes oberes Band

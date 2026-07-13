@@ -408,13 +408,16 @@ class Optimizer:
             if min_dis > 0.0:
                 prob += dis[t] >= min_dis * is_di[t]
 
-            # Entladen nur zur Deckung der Restlast (+ Auto). Bei PV-Überschuss
-            # kann der E3DC im Automatikmodus nicht "für den Export" entladen -
-            # das wäre Akku->Netz und braucht den expliziten grid_discharge-
-            # Pfad (gd_allowed). Verhindert zudem, dass die Linien-Minimierung
-            # des Folgetags den Akku abends zur Einspeisevergütung leerverkauft.
+            # Entladen nur zur Deckung der Restlast (+ steuerbare Lasten + Auto).
+            # Bei PV-Überschuss kann der E3DC im Automatikmodus nicht "für den
+            # Export" entladen - das wäre Akku->Netz und braucht den expliziten
+            # grid_discharge-Pfad (gd_allowed). Verhindert zudem, dass die Linien-
+            # Minimierung des Folgetags den Akku abends zur Einspeisevergütung
+            # leerverkauft. WICHTIG: steuerbare Lasten (Pool-WP) gehören zur
+            # lokalen Last - ohne cl_power dürfte der Akku sie nicht decken und
+            # ihr Verbrauch (z.B. nachts) käme unnötig teuer aus dem Netz.
             if not gd_allowed[t]:
-                prob += dis[t] <= max(0.0, load_t - pv_t) + car[t]
+                prob += dis[t] <= max(0.0, load_t - pv_t) + cl_power[t] + car[t]
 
             # physikalische Gesamt-Ladeleistung des Akkus (DC + AC zusammen)
             prob += dc[t] + ac[t] <= max_tot_ch
