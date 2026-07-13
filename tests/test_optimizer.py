@@ -64,6 +64,24 @@ def test_peak_strategy_shaves_and_fills_battery():
         "Entladen trotz PV-Überschuss"
 
 
+def test_make_solver_sets_mip_gap_and_time_limit():
+    """solver_mip_gap -> gapRel am Solver; 0 = kein gapRel (exakt)."""
+    import pulp
+    from ems.optimizer import make_solver
+    cfg = make_config()
+    cfg.optimization.solver = "highs"            # Live-Solver
+    cfg.optimization.solver_time_limit_s = 60
+    cfg.optimization.solver_mip_gap = 0.01
+    s = make_solver(cfg)
+    if not isinstance(s, pulp.HiGHS):
+        import pytest
+        pytest.skip("HiGHS nicht verfügbar")
+    assert getattr(s, "gapRel", None) == 0.01
+    assert getattr(s, "timeLimit", None) == 60
+    cfg.optimization.solver_mip_gap = 0.0
+    assert getattr(make_solver(cfg), "gapRel", None) in (None, 0)
+
+
 def test_asap_strategy_exports_only_when_full_or_at_max():
     """asap: Einspeisung nur bei vollem Akku oder maximaler Ladeleistung."""
     cfg = make_config()

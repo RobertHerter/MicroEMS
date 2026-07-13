@@ -238,6 +238,15 @@ class OptimizationConfig:
     solver_time_limit_s: int = 60
     # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
     solver_threads: int = 0
+    # Relative MIP-Optimalitätslücke: der Solver stoppt, sobald die gefundene
+    # Lösung beweisbar innerhalb dieses Anteils des Optimums liegt (0.01 = 1 %).
+    # Der teure Teil eines MILP ist meist NICHT das Finden einer guten Lösung,
+    # sondern der BEWEIS ihrer Optimalität – an "peak"-Tagen (Einspeise-Linien +
+    # p10-Slacks + Pool-Binärvariablen) kann das Minuten dauern. Eine kleine Lücke
+    # kappt diesen Beweis-Endlauf; bei Kosten von wenigen Euro sind 1 % ein paar
+    # Cent und die Steuerentscheidungen praktisch identisch. 0 = exakt (kann lange
+    # dauern).
+    solver_mip_gap: float = 0.01
     # Malus (ct) je Einschaltvorgang der Wallbox: verhindert, dass das Auto
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
@@ -698,6 +707,7 @@ def load_config(path: str) -> Config:
         solver=str(o.get("solver", "cbc")),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
+        solver_mip_gap=float(o.get("solver_mip_gap", 0.01)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
         car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),

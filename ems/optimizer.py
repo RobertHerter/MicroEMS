@@ -111,6 +111,12 @@ def make_solver(cfg: Config):
     threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
     kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
                   threads=threads)
+    # Relative Optimalitätslücke: kappt den teuren "Optimalität beweisen"-Endlauf
+    # (v. a. an peak-Tagen mit Pool-Binärvariablen). gapRel wird von HiGHS und
+    # COIN_CMD unterstützt; 0 = exakt.
+    gap = float(getattr(cfg.optimization, "solver_mip_gap", 0.0) or 0.0)
+    if gap > 0:
+        kwargs["gapRel"] = gap
 
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":

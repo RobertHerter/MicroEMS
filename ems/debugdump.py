@@ -78,6 +78,11 @@ def save_snapshot(config: Config, now, inputs, result, violations,
             "initial_car_soc_wh": (round(float(inputs.initial_car_soc_wh), 1)
                                    if inputs.initial_car_soc_wh is not None else None),
             "car_present": bool(inputs.car_present),
+            # Für exakt reproduzierbare Re-Solves (Solver-Laufzeit-Analyse) müssen
+            # auch die Eingänge des Pool-/Thermomodells mit rein.
+            "ambient_temp_c": (arr(inputs.ambient_temp_c)
+                               if inputs.ambient_temp_c is not None else None),
+            "load_state": (inputs.load_state or None),
         },
         "plan": {c: arr(t[c]) for c in t.columns
                  if pd.api.types.is_numeric_dtype(t[c])},
