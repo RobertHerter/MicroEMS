@@ -160,3 +160,22 @@ def test_dashboard_renders_loads_panel(tmp_path):
     assert "Steuerbare Lasten" in html
     assert "Waschmaschine" in html and "deaktiviert" in html   # graue Leiste
     assert "klein" in html and "gross" in html                 # Pool-Lanes
+
+
+def test_thermal_load_passes_plan_validation():
+    """Mit aktivem Pool darf die Planprüfung weder AC-Bilanz noch
+    Baseline-Vergleich fälschlich als Verstoß melden (Validator kennt Lasten)."""
+    from ems.validate import validate_plan
+    from tests.test_optimizer import _pv_gauss
+    cfg = make_config()
+    cfg.controllable_loads = [_pool_load()]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    inp = _inputs(idx, pv=_pv_gauss(idx, 9000), load=800.0, price=30.0,
+                  soc=cfg.house_battery.max_soc_wh * 0.6,
+                  ambient_temp_c=np.full(n, 20.0), load_state={"pool": 27.0})
+    res = Optimizer(cfg).solve(inp)
+    assert not res.infeasible
+    rules = {x.rule for x in validate_plan(cfg, res, inp)}
+    assert "balance.node" not in rules, "AC-Bilanz fälschlich verletzt (Lasten fehlen im Validator)"
+    assert "econ.worse_than_baseline" not in rules, "Baseline ohne Pool-Last -> falsch teurer"

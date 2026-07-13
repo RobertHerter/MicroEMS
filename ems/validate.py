@@ -145,9 +145,13 @@ def validate_plan(config: Config, result: OptimizerResult,
         col("batt_grid_discharge_w") > exp + TOL_W,
         "Netz-Entladung größer als die geplante Gesamteinspeisung"))
 
-    # Energiebilanz je Slot (muss per Konstruktion ~0 sein)
+    # Energiebilanz je Slot (muss per Konstruktion ~0 sein). Steuerbare Lasten
+    # (controllable_loads) sind Teil der AC-Knotenbilanz -> alle load_*_w-Spalten
+    # (NICHT house_load_w) aufsummieren.
+    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+    cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
     pv_to_ac = pv - dc - curt
-    balance = imp - exp - (load + car + ac - pv_to_ac - dis)
+    balance = imp - exp - (load + car + cl + ac - pv_to_ac - dis)
     add(_mask_violation("balance.node", "error", balance.abs() > 2 * TOL_W,
         "AC-Knotenbilanz verletzt"))
 
@@ -202,10 +206,13 @@ def validate_plan(config: Config, result: OptimizerResult,
     if inputs is not None:
         term = float(np.mean(inputs.price_ct_kwh)) * hb.discharge_efficiency
         plan_cost = float(t["slot_cost_ct"].sum()) - term * float(soc.iloc[-1]) / 1000.0
+        # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten),
+        # sonst wirkt der Plan durch die Pool-Last künstlich teurer.
+        cl_vals = cl.values if cl_cols else np.zeros(len(t))
         b_cost, b_soc = 0.0, prev[0]
         for i in range(len(t)):
             b_soc, _c, _d, b_imp, b_exp = natural_battery_step(
-                b_soc, inputs.pv_w[i], inputs.house_load_w[i], hb, dt,
+                b_soc, inputs.pv_w[i], inputs.house_load_w[i] + float(cl_vals[i]), hb, dt,
                 max_export_w=config.inverter.max_export_w)
             b_cost += (b_imp * inputs.price_ct_kwh[i]
                        - b_exp * inputs.feedin_ct_kwh[i]) * kwh
