@@ -578,19 +578,26 @@ class Optimizer:
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ),
         # mit Entlade-Wirkungsgrad diskontiert. Bei "auto" als FALLENDE
-        # Grenzwert-Kurve in drei Segmenten: die ersten kWh über min_soc
-        # ersetzen mit hoher Sicherheit teuren Import (oberes Preisquartil),
-        # die mittleren den Durchschnitt, die letzten konkurrieren evtl. nur
-        # mit der Einspeisung (morgen füllt PV ohnehin nach). Konkav fallend
-        # -> das LP füllt automatisch das wertvollste Segment zuerst, keine
-        # Binärvariablen nötig. Fester Zahlenwert = flache Kurve (wie bisher).
+        # Grenzwert-Kurve in drei Segmenten: erstes Drittel über min_soc = Median-
+        # preis, mittleres = unteres Quartil, letztes = nur Einspeisung (morgen
+        # füllt PV ohnehin nach). Konkav fallend -> das LP füllt das wertvollste
+        # Segment zuerst, keine Binärvariablen nötig. Fester Zahlenwert = flach.
+        #
+        # BEWUSST konservativ (früher p75/Mittel/p25): mit dem höheren Mittel-
+        # segment bewertete der Optimierer die "letzte" gespeicherte kWh nahe am
+        # Horizont-Ende teurer als den Netzbezug und HORTETE dann Akku-Energie -
+        # er importierte/regelte PV ab, statt zu entladen (sinnlos aussehende
+        # Abend-Eingriffe im Sommer). Median/p25/Einspeisung behebt das (die
+        # Grenz-kWh liegt jetzt unter dem Bezugspreis) und ist zugleich billiger;
+        # der Akku füllt sich weiterhin aus PV, da alle Segmente >= Einspeisung.
         tv = cfg.optimization.terminal_soc_value
         if tv == "auto":
             p = np.asarray(inp.price_ct_kwh, dtype=float)
+            fin = float(np.mean(inp.feedin_ct_kwh))
             seg_values = sorted([
-                float(np.percentile(p, 75)),
-                float(np.mean(p)),
-                max(float(np.percentile(p, 25)), float(np.mean(inp.feedin_ct_kwh))),
+                max(float(np.percentile(p, 50)), fin),
+                max(float(np.percentile(p, 25)), fin),
+                fin,
             ], reverse=True)
         else:
             seg_values = [float(tv)] * 3

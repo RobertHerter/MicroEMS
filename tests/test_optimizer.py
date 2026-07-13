@@ -64,6 +64,30 @@ def test_peak_strategy_shaves_and_fills_battery():
         "Entladen trotz PV-Überschuss"
 
 
+def test_auto_terminal_does_not_curtail_exportable_pv():
+    """Regression: bei vollem Akku und PV-Überschuss darf PV nicht ABGEREGELT
+    werden, solange sie einspeisbar ist (Einspeisung > 0). Der frühere aggressive
+    'auto'-Terminalwert (p75/Mittel) ließ den Akku horten (voll bleiben) und regelte
+    die Nachmittags-PV ab, statt sie einzuspeisen - reiner Erlösverlust. Mit
+    Median/p25/Einspeisung wird eingespeist statt weggeworfen."""
+    cfg = make_config()                       # terminal_soc_value="auto"
+    cfg.inverter.max_export_w = None          # Einspeisung nicht begrenzt
+    idx = _day_index("2026-07-14")
+    n = len(idx)
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    # Preis-Spreizung (mittags billig) -> p25 << Mittel, damit die alte/neue Kurve
+    # sich unterscheiden. Kräftige PV füllt den Akku, Nachmittags-Überschuss bleibt.
+    price = np.where((hour >= 10) & (hour < 15), 6.0, 30.0)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 10000), load=500.0, price=price, feedin=8.0,
+        soc=cfg.house_battery.min_soc_wh))
+    assert not res.infeasible
+    t = res.table
+    curt_kwh = float(t["pv_curtail_w"].sum()) * 0.25 / 1000.0
+    assert curt_kwh < 0.5, \
+        f"PV abgeregelt ({curt_kwh:.1f} kWh) statt eingespeist (Einspeisung möglich)"
+
+
 def test_make_solver_sets_mip_gap_and_time_limit():
     """solver_mip_gap -> gapRel am Solver; 0 = kein gapRel (exakt)."""
     import pulp
