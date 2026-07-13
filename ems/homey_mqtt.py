@@ -56,7 +56,7 @@ import json
 import logging
 import re
 import threading
-from datetime import time as dtime
+from datetime import datetime, time as dtime
 from typing import Dict, Optional
 
 import pandas as pd
@@ -324,7 +324,10 @@ class HomeyMqttPublisher:
             self._ensure_connected()
             payload = json.dumps({
                 "level": level, "message": message,
-                "time": pd.Timestamp.now().astimezone().isoformat(),
+                # stdlib-datetime: astimezone() ohne Argument hängt die lokale
+                # Zeitzone an (pd.Timestamp.astimezone() verlangt zwingend ein tz
+                # und warf sonst bei JEDEM Alarm -> Alarme kamen nie an).
+                "time": datetime.now().astimezone().isoformat(),
             })
             self._pub(f"{self.cfg.base_topic}/alert", payload, retain=False)
             log.info("MQTT-Alarm publiziert: [%s] %s", level, message)
