@@ -205,18 +205,42 @@ def validate_plan(config: Config, result: OptimizerResult,
     # verhalten. term_val = Mittelpreis (wie terminal_soc_value "auto").
     if inputs is not None:
         term = float(np.mean(inputs.price_ct_kwh)) * hb.discharge_efficiency
-        plan_cost = float(t["slot_cost_ct"].sum()) - term * float(soc.iloc[-1]) / 1000.0
+
+        # Peak-Shave-Wert (peak_charge_weight): an "peak"-Tagen kappt der
+        # Optimierer die Einspeise-SPITZE und speichert den Überschuss statt ihn
+        # zu vergüteter Einspeisung zu geben. Das ist ein Netz-/Regulatorik-
+        # Nutzen, den die reine Cash-Baseline NICHT kennt - dort wirkt der Plan
+        # an solchen Tagen zu Recht "teurer" (er verzichtet bewusst auf ein paar
+        # ct Einspeise-Erlös für eine tiefere Spitze). Fair verglichen wird nur
+        # mit DEMSELBEN Spitzen-Malus auf BEIDEN Seiten (je eigene Tages-Spitze),
+        # exakt wie der Zielterm im Optimierer (pw * Tages-Linie / 1000).
+        pw = config.optimization.peak_charge_weight
+        dates = np.array([ts.date() for ts in t.index])
+        peak_days = (set(dates[t["mode"].astype(str).values == "peak"])
+                     if pw and "mode" in t.columns else set())
+
+        def _peak_pen(exp_w: np.ndarray) -> float:
+            if not peak_days:
+                return 0.0
+            return pw * sum(float(np.asarray(exp_w)[dates == d].max())
+                            for d in peak_days) / 1000.0
+
+        plan_cost = (float(t["slot_cost_ct"].sum())
+                     + _peak_pen(exp.values)
+                     - term * float(soc.iloc[-1]) / 1000.0)
         # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten),
         # sonst wirkt der Plan durch die Pool-Last künstlich teurer.
         cl_vals = cl.values if cl_cols else np.zeros(len(t))
         b_cost, b_soc = 0.0, prev[0]
+        b_exp_w = np.zeros(len(t))
         for i in range(len(t)):
             b_soc, _c, _d, b_imp, b_exp = natural_battery_step(
                 b_soc, inputs.pv_w[i], inputs.house_load_w[i] + float(cl_vals[i]), hb, dt,
                 max_export_w=config.inverter.max_export_w)
             b_cost += (b_imp * inputs.price_ct_kwh[i]
                        - b_exp * inputs.feedin_ct_kwh[i]) * kwh
-        b_cost -= term * b_soc / 1000.0
+            b_exp_w[i] = b_exp
+        b_cost += _peak_pen(b_exp_w) - term * b_soc / 1000.0
         margin = max(50.0, abs(b_cost) * 0.05)   # 50 ct oder 5 %
         if plan_cost > b_cost + margin:
             v.append(Violation("econ.worse_than_baseline", "warning", 1,

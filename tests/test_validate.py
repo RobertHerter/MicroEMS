@@ -80,6 +80,36 @@ def test_detects_export_cap_violation():
     assert "grid.export_cap" in _rules(validate_plan(cfg, res, inp), "error")
 
 
+def test_peak_shave_not_flagged_as_worse_than_baseline():
+    """Regression: an einem Peak-Tag kappt der Optimierer die Einspeise-SPITZE
+    (peak_charge_weight) und verzichtet dafür bewusst auf ein paar ct Einspeise-
+    Erlös - ein Netz-/Regulatorik-Nutzen, den die reine Cash-Baseline nicht kennt.
+    Die naive Baseline speist die volle Spitze ein und wirkt dadurch günstiger.
+    Der Validator muss denselben Spitzen-Malus auf BEIDE Seiten anwenden, sonst
+    meldet er den beabsichtigten Peak-Shave als econ.worse_than_baseline.
+
+    Statt die (mehrtägige, lastgekoppelte) Live-Situation nachzubauen, wird der
+    Verzicht direkt in die Plantabelle injiziert - wie die übrigen Tests hier."""
+    cfg = make_config()
+    cfg.inverter.max_export_w = None               # Baseline speist frei ein
+    inp, res = _solve(cfg, feedin_ct_kwh=np.full(96, 14.0),
+                      pv_w=np.clip(9000 * np.exp(
+                          -((np.arange(96) * 0.25 - 13) ** 2) / 9), 0, None),
+                      initial_house_soc_wh=3000.0)
+    t = res.table
+    # Peak-Shave-Verzicht injizieren: Mittags-Fenster als "peak", Einspeisung auf
+    # eine niedrige Linie gekappt (Baseline speist deutlich mehr ein), Cash dafür
+    # bewusst teurer. Ohne die symmetrische Spitzen-Gutschrift wäre der Plan hier
+    # ~1,3 € "teurer" als die Baseline -> Fehlalarm.
+    mid = (t.index.hour >= 11) & (t.index.hour < 15)
+    t.loc[mid, "mode"] = "peak"
+    t.loc[mid, "grid_export_w"] = 1500.0
+    t.loc[mid, "slot_cost_ct"] = t.loc[mid, "slot_cost_ct"] + 8.0
+    warns = _rules(validate_plan(cfg, res, inp), "warning")
+    assert "econ.worse_than_baseline" not in warns, \
+        "beabsichtigter Peak-Shave fälschlich als teurer-als-Baseline gemeldet"
+
+
 def test_debug_snapshot_roundtrip(tmp_path):
     """Snapshot muss valide JSON sein (auch mit mode-Spalte und time-Objekten)."""
     import json
