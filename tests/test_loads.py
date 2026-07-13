@@ -93,6 +93,29 @@ def test_thermal_recovers_from_low_start():
     assert ((gross <= 1.0) | (klein > 1.0)).all()      # Kopplung auch hier
 
 
+def test_thermal_hot_ambient_stays_feasible():
+    """Regression: ist die Umgebung wärmer als das Bandmaximum, gewinnt der Pool
+    auch mit allen WP AUS passiv Wärme und übersteigt max_c. Ein hartes oberes Band
+    machte das Modell dann unlösbar (Infeasible) – der Fall trat live an einem
+    heißen Nachmittag auf. Das obere Band muss weich sein (Komfort-Malus statt
+    Sperre); die WP müssen ausbleiben (Kühlen ist nicht möglich)."""
+    cfg = make_config()
+    cfg.controllable_loads = [_pool_load(loss=120.0, min_c=27.0, target=28.0)]
+    idx = _day_index("2026-07-15")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=30.0, soc=cfg.house_battery.min_soc_wh,
+        ambient_temp_c=np.full(n, 33.0),          # heißer als max_c=29
+        load_state={"pool": 28.9}))
+    assert not res.infeasible, "heißer Nachmittag darf nicht Infeasible sein"
+    temp = res.table["load_pool_temp_c"]
+    klein = res.table["load_pool_klein_w"]
+    gross = res.table["load_pool_gross_w"]
+    assert temp.max() > 29.0, "passiver Wärmeeintrag sollte das Band übersteigen"
+    # Kühlen unmöglich -> nicht heizen, wenn ohnehin zu warm
+    assert float(klein.sum()) + float(gross.sum()) < 1.0, "WP heizt, obwohl zu warm"
+
+
 def test_deferrable_profile_cycle_runs_once_in_cheap_slots():
     """15-min-Kurve: der ganze Zyklus wird einmal gestartet, bevorzugt günstig."""
     cfg = make_config()

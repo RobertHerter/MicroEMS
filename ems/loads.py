@@ -136,12 +136,19 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     if C <= 0 or not ld.stages:
         return
     T0 = float(state.get(ld.name, ld.target_c))
-    T0 = min(max(T0, ld.min_c - 5.0), ld.max_c)
+    T0 = min(max(T0, ld.min_c - 5.0), ld.max_c + 5.0)
     Tamb = amb if amb is not None else np.full(N, ld.target_c)
 
-    T = [pulp.LpVariable(f"clT_{sg}_{t}", ld.min_c - 10.0, ld.max_c) for t in range(N + 1)]
+    # Temperatur darf das Band nach OBEN verlassen: die Stufen können nur HEIZEN,
+    # nicht kühlen. An heißen Tagen (Tamb > T) gewinnt der Pool auch mit allen WP
+    # aus passiv Wärme -> ein hartes max_c wäre dann UNLÖSBAR. Deshalb weiches Band
+    # in beide Richtungen (Über-/Unterschreitung mit Komfort-Malus), Var-Grenzen nur
+    # als weiter Sicherheitsrahmen.
+    T = [pulp.LpVariable(f"clT_{sg}_{t}", ld.min_c - 10.0, ld.max_c + 10.0)
+         for t in range(N + 1)]
     prob += T[0] == T0
-    slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]
+    slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
+    slack_hi = [pulp.LpVariable(f"clShi_{sg}_{t}", 0) for t in range(N + 1)]  # über max_c
 
     stage_on: dict = {}
     for st in ld.stages:
@@ -165,8 +172,11 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         loss = ld.loss_w_per_k * (T[t] - float(Tamb[t]))
         prob += T[t + 1] == T[t] + (heat - loss) * dt / C
         prob += T[t] + slack[t] >= ld.min_c
+        prob += T[t] - slack_hi[t] <= ld.max_c
     prob += T[N] + slack[N] >= ld.min_c
+    prob += T[N] - slack_hi[N] <= ld.max_c
     cost_terms.append(_COMFORT_PEN * pulp.lpSum(slack))
+    cost_terms.append(_COMFORT_PEN * pulp.lpSum(slack_hi))
 
     for st in ld.stages:
         ssg = _slug(st.name)
