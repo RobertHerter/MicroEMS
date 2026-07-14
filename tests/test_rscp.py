@@ -24,6 +24,7 @@ class FakeE3DC:
         return self._poll
 
     def get_db_data_timestamp(self, startTimestamp, timespanSeconds, keepAlive=False):
+        self.last_db_ts = startTimestamp
         # Energie Wh je 15-min-Fenster (konstant für den Test):
         # Last = solar + bat_out + grid_in(import) - bat_in - grid_out(export)
         #      = 500 + 300 + 250 - 100 - 50 = 900 Wh -> *4 = 3600 W
@@ -246,6 +247,23 @@ def test_house_load_15min_balance_and_keys():
     assert all(abs(v - 3600.0) < 1e-6 for v in data.values())
     # Schlüssel = UTC-ISO
     assert all(k.endswith("+00:00") for k in data)
+
+
+def test_house_load_15min_queries_local_time():
+    """Regression: die E3DC-Historien-DB liegt in ORTSZEIT. read_house_load_15min
+    muss den Slot als lokale Wandzeit abfragen (echter UTC-Epoch + Offset), sonst
+    landen die Verbrauchswerte um den Zeitzonen-Offset verschoben (Sommer +2 h)."""
+    import pandas as pd
+    cfg, link = _link()
+    start = pd.Timestamp("2026-07-01 06:00", tz="Europe/Berlin")   # Sommer, +2 h
+    link.read_house_load_15min(start, start + pd.Timedelta(minutes=15))
+    # erwartet: 06:00 Wandzeit als UTC interpretiert = 06:00Z-Epoch
+    expected = int(pd.Timestamp("2026-07-01 06:00", tz="UTC").timestamp())
+    assert link._e3dc.last_db_ts == expected, \
+        "get_db_data_timestamp nicht mit lokaler Wandzeit abgefragt (Offset fehlt)"
+    # Speicher-Schlüssel bleibt die ECHTE UTC-Zeit (04:00Z)
+    data = link.read_house_load_15min(start, start + pd.Timedelta(minutes=15))
+    assert list(data.keys())[0].startswith("2026-07-01T04:00:00")
 
 
 def test_actuals_roundtrip_and_routing(tmp_path):

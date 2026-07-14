@@ -215,14 +215,26 @@ class E3DCLink:
         Ein RSCP-Aufruf je 15-min-Fenster -> Zeitraum bewusst begrenzen
         (Backfill: eigenes Skript; zyklisch: nur wenige Fenster)."""
         out: Dict[str, float] = {}
+        tz = self.cfg.general.timezone
         t = pd.Timestamp(start).floor("15min")
         end = pd.Timestamp(end).floor("15min")
+        # In Ortszeit iterieren (tz-aware sicherstellen), damit die DST-korrekte
+        # Verschiebung je Slot bestimmt werden kann.
+        t = (t.tz_localize(tz) if t.tz is None else t.tz_convert(tz))
+        end = (end.tz_localize(tz) if end.tz is None else end.tz_convert(tz))
         while t < end:
+            # Die E3DC-Historien-DB (get_db_data_timestamp) liegt in ORTSZEIT: sie
+            # interpretiert den übergebenen Epoch als lokale Wandzeit. Ein echter
+            # UTC-Epoch liefert das Fenster daher um den Zeitzonen-Offset verschoben
+            # (im Sommer +2 h) -> Verbrauchsspitzen landen 2 h zu spät. Korrektur:
+            # den Offset aufaddieren (DST-sicher via utcoffset). Der Speicher-
+            # Schlüssel bleibt die ECHTE UTC-Zeit des Slots.
+            local_epoch = int(t.timestamp() + t.utcoffset().total_seconds())
             try:
                 with self._lock:
                     e = self._connect()
                     d = e.get_db_data_timestamp(
-                        startTimestamp=int(t.timestamp()), timespanSeconds=900,
+                        startTimestamp=local_epoch, timespanSeconds=900,
                         keepAlive=True)
             except Exception as exc:  # pragma: no cover
                 log.debug("RSCP Hauslast %s nicht lesbar (%s).", t, exc)
