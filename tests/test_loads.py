@@ -341,3 +341,47 @@ def test_thermal_load_passes_plan_validation():
     rules = {x.rule for x in validate_plan(cfg, res, inp)}
     assert "balance.node" not in rules, "AC-Bilanz fälschlich verletzt (Lasten fehlen im Validator)"
     assert "econ.worse_than_baseline" not in rules, "Baseline ohne Pool-Last -> falsch teurer"
+
+
+def test_pv_surplus_only_never_causes_grid_import():
+    """pv_surplus_only: die WP-Stufen laufen nur, wenn der PV-Überschuss ihre
+    Leistung deckt -> kein Slot, in dem die WP läuft und ihre Leistung den
+    Überschuss übersteigt; nachts (kein PV) bleibt sie aus, auch wenn die
+    Temperatur unter min_c sackt (weiches Band statt Netz-/Akku-Heizen)."""
+    cfg = make_config()
+    pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
+    pool.pv_surplus_only = True
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 6000), load=800.0, price=30.0,
+        soc=cfg.house_battery.max_soc_wh * 0.8,
+        ambient_temp_c=np.full(n, 16.0), load_state={"pool": 26.5}))
+    assert not res.infeasible
+    t = res.table
+    wp = t["load_pool_klein_w"] + t["load_pool_gross_w"]
+    surplus = np.maximum(0.0, t["pv_w"].values - t["house_load_w"].values)
+    on = wp.values > 1.0
+    assert on.any(), "WP läuft nie - Szenario prüft nichts"
+    assert (wp.values[on] <= surplus[on] + 1.0).all(), \
+        "WP läuft über den PV-Überschuss hinaus (würde Netz/Akku anzapfen)"
+    night = t["pv_w"].values < 10.0
+    assert (wp.values[night] <= 1.0).all(), "WP heizt nachts trotz pv_surplus_only"
+
+
+def test_pv_surplus_only_off_allows_night_heating():
+    """Gegenprobe: ohne pv_surplus_only darf nachts geheizt werden (Band halten)."""
+    cfg = make_config()
+    pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
+    pool.pv_surplus_only = False
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=800.0, price=30.0,
+        soc=cfg.house_battery.max_soc_wh * 0.8,
+        ambient_temp_c=np.full(n, 10.0), load_state={"pool": 26.0}))
+    assert not res.infeasible
+    wp = res.table["load_pool_klein_w"] + res.table["load_pool_gross_w"]
+    assert float(wp.sum()) * DT_H > 1.0, "ohne PV darf trotzdem geheizt werden"

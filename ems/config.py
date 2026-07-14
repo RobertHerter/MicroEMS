@@ -229,6 +229,13 @@ class ControllableLoad:
     # Open-Meteo). 0 = deaktiviert (kein Eintrag, unverändertes Verhalten).
     surface_m2: float = 0.0              # Wasseroberfläche (m²)
     solar_absorption: float = 0.75       # effektiver Wirkungsgrad der Fläche
+    # Nur aus PV-Überschuss heizen (thermische Lasten): die Stufen dürfen in
+    # einem Slot nur laufen, wenn der PV-Überschuss (PV - Hauslast) ihre
+    # Leistungsaufnahme deckt -> das Einschalten verursacht NIE Netzbezug (und
+    # zapft auch nicht den Akku an). In trüben Phasen wird dann nicht geheizt,
+    # auch wenn die Temperatur unter min_c sackt (weiches Band). false = der
+    # Optimierer darf auch Akku/Netz nutzen, wenn es wirtschaftlich ist.
+    pv_surplus_only: bool = False
     # Last hat einen EIGENEN Thermostat-Cutoff (z.B. Pool-WP): das EMS-Signal ist
     # dann eine Heiz-FREIGABE, kein Zwang. Bei Ist-Temperatur >= target_c bleibt
     # die Freigabe AN (der Thermostat hält die WP ohnehin aus) - weniger Schalt-
@@ -653,6 +660,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             surface_m2=float(w.get("surface_m2", 0.0)),
             solar_absorption=float(w.get("solar_absorption", 0.75)),
             thermostat=bool(w.get("thermostat", False)),
+            pv_surplus_only=bool(w.get("pv_surplus_only", False)),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
             stages=stages,
             season_from=(str(w.get("season_from") or seas.get("from"))

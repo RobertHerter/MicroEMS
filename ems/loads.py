@@ -191,7 +191,18 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         return traj
     all_heat = float(sum(st.heat_w for st in ld.stages))
     T_off = _free_run(np.zeros(N))
-    T_on = _free_run(np.where(np.asarray(active, dtype=bool), all_heat, 0.0))
+    # Maximal erreichbar: alle Stufen an, wo aktiv - und bei pv_surplus_only
+    # nur dort, wo der PV-Überschuss wenigstens die kleinste Stufe deckt
+    # (sonst würde nachts unerreichbares Heizen als "vermeidbar" bestraft und
+    # die MIP-Gap erneut durch eine Konstante verzerrt).
+    heat_ok = np.asarray(active, dtype=bool).copy()
+    if ld.pv_surplus_only:
+        _surplus = np.maximum(0.0, np.asarray(inp.pv_w, dtype=float)
+                              - np.maximum(0.0, np.asarray(inp.house_load_w,
+                                                           dtype=float)))
+        min_stage = min(st.power_w for st in ld.stages)
+        heat_ok &= _surplus >= min_stage
+    T_on = _free_run(np.where(heat_ok, all_heat, 0.0))
     unavoid_hi = float(np.clip(T_off - ld.max_c, 0.0, None).sum())
     unavoid_lo = float(np.clip(ld.min_c - T_on, 0.0, None).sum())
 
@@ -232,6 +243,19 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         if st.requires and st.requires in stage_on:
             for t in range(N):
                 prob += stage_on[st.name][t] <= stage_on[st.requires][t]
+
+    # Nur-PV-Überschuss-Betrieb: die Stufen dürfen nur laufen, wenn der
+    # PV-Überschuss (PV - Hauslast) ihre Leistung im Slot deckt -> Einschalten
+    # verursacht NIE Netzbezug und zapft auch nicht den Akku an. Mit dem
+    # Stunden-Entscheidungsraster muss der Überschuss in JEDEM Slot des Blocks
+    # reichen (Block sonst aus).
+    if ld.pv_surplus_only:
+        surplus = np.maximum(0.0, np.asarray(inp.pv_w, dtype=float)
+                             - np.maximum(0.0, np.asarray(inp.house_load_w,
+                                                          dtype=float)))
+        for t in range(N):
+            prob += pulp.lpSum(st.power_w * stage_on[st.name][t]
+                               for st in ld.stages) <= float(surplus[t])
 
     for t in range(N):
         heat = (pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)
