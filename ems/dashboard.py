@@ -577,9 +577,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
 {_alert_banner(violations)}
-{report_html}
 {plot_html}
 {controls_html}
+{report_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""
 
