@@ -287,14 +287,22 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             if temp is not None else None),
             load_state=load_state,
         )
-        # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben.
-        if load_state:
+        # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
+        # bewusst UNABHÄNGIG von enabled: die Pool-Temperatur ist auch dann
+        # interessant, wenn das EMS die Last gerade nicht steuert.
+        if publisher is not None:
             from .local_history import write_load_temp
-            for _name, _tc in load_state.items():
+            for ld in getattr(config, "controllable_loads", []):
+                if ld.type != "thermal" or not ld.temp_signal:
+                    continue
+                _tc = publisher.get_load_temp(ld.temp_signal)
+                if _tc is None:
+                    continue
                 try:
-                    write_load_temp(config.e3dc_rscp.history_db_path, now, _name, _tc)
+                    write_load_temp(config.e3dc_rscp.history_db_path, now,
+                                    ld.name, float(_tc))
                 except Exception as exc:  # pragma: no cover
-                    log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", _name, exc)
+                    log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", ld.name, exc)
         result = Optimizer(config).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
