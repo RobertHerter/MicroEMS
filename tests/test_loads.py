@@ -343,14 +343,13 @@ def test_thermal_load_passes_plan_validation():
     assert "econ.worse_than_baseline" not in rules, "Baseline ohne Pool-Last -> falsch teurer"
 
 
-def test_pv_surplus_only_never_causes_grid_import():
-    """pv_surplus_only: die WP-Stufen laufen nur, wenn der PV-Überschuss ihre
-    Leistung deckt -> kein Slot, in dem die WP läuft und ihre Leistung den
-    Überschuss übersteigt; nachts (kein PV) bleibt sie aus, auch wenn die
-    Temperatur unter min_c sackt (weiches Band statt Netz-/Akku-Heizen)."""
+def test_no_grid_import_wp_never_runs_on_grid():
+    """no_grid_import: läuft eine WP-Stufe, muss der Netzbezug im Slot 0 sein.
+    PV-Überschuss UND Akku dürfen die WP decken - Netzstrom nie. Mit leerem
+    Akku und ohne PV bleibt die WP aus, auch wenn min_c unterschritten wird."""
     cfg = make_config()
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
-    pool.pv_surplus_only = True
+    pool.no_grid_import = True
     cfg.controllable_loads = [pool]
     idx = _day_index("2026-06-10")
     n = len(idx)
@@ -360,28 +359,49 @@ def test_pv_surplus_only_never_causes_grid_import():
         ambient_temp_c=np.full(n, 16.0), load_state={"pool": 26.5}))
     assert not res.infeasible
     t = res.table
-    wp = t["load_pool_klein_w"] + t["load_pool_gross_w"]
-    surplus = np.maximum(0.0, t["pv_w"].values - t["house_load_w"].values)
-    on = wp.values > 1.0
+    wp = (t["load_pool_klein_w"] + t["load_pool_gross_w"]).values
+    imp = t["grid_import_w"].values
+    on = wp > 1.0
     assert on.any(), "WP läuft nie - Szenario prüft nichts"
-    assert (wp.values[on] <= surplus[on] + 1.0).all(), \
-        "WP läuft über den PV-Überschuss hinaus (würde Netz/Akku anzapfen)"
-    night = t["pv_w"].values < 10.0
-    assert (wp.values[night] <= 1.0).all(), "WP heizt nachts trotz pv_surplus_only"
+    assert (imp[on] <= 1.0).all(), \
+        "Netzbezug in Slots, in denen die WP läuft (no_grid_import verletzt)"
 
 
-def test_pv_surplus_only_off_allows_night_heating():
-    """Gegenprobe: ohne pv_surplus_only darf nachts geheizt werden (Band halten)."""
+def test_no_grid_import_allows_battery_heating():
+    """Akku-Deckung ist erlaubt: nachts (keine PV), Akku voll, billige WP-Slots
+    -> die WP darf aus dem Akku laufen, solange kein Netzbezug entsteht."""
     cfg = make_config()
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
-    pool.pv_surplus_only = False
+    pool.no_grid_import = True
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=40.0,
+        soc=cfg.house_battery.max_soc_wh,          # Akku voll
+        ambient_temp_c=np.full(n, 10.0), load_state={"pool": 25.5}))
+    assert not res.infeasible
+    t = res.table
+    wp = (t["load_pool_klein_w"] + t["load_pool_gross_w"]).values
+    imp = t["grid_import_w"].values
+    assert (wp > 1.0).any(), "WP heizt nicht aus dem (vollen) Akku"
+    on = wp > 1.0
+    assert (imp[on] <= 1.0).all(), "Netzbezug trotz Akku-Deckung"
+
+
+def test_no_grid_import_off_allows_grid_heating():
+    """Gegenprobe: ohne no_grid_import darf (bei leerem Akku) aus dem Netz
+    geheizt werden, um das Band zu halten."""
+    cfg = make_config()
+    pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
+    pool.no_grid_import = False
     cfg.controllable_loads = [pool]
     idx = _day_index("2026-06-10")
     n = len(idx)
     res = Optimizer(cfg).solve(_inputs(
         idx, pv=0.0, load=800.0, price=30.0,
-        soc=cfg.house_battery.max_soc_wh * 0.8,
+        soc=cfg.house_battery.min_soc_wh,           # Akku leer
         ambient_temp_c=np.full(n, 10.0), load_state={"pool": 26.0}))
     assert not res.infeasible
     wp = res.table["load_pool_klein_w"] + res.table["load_pool_gross_w"]
-    assert float(wp.sum()) * DT_H > 1.0, "ohne PV darf trotzdem geheizt werden"
+    assert float(wp.sum()) * DT_H > 1.0, "ohne Flag darf aus dem Netz geheizt werden"

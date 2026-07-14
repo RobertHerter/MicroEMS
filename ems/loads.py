@@ -64,7 +64,7 @@ def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag):
         cost_terms.append(pen_ct * sw)
 
 
-def add_controllable_loads(prob, config, inp, N, dt):
+def add_controllable_loads(prob, config, inp, N, dt, g_imp=None):
     cl_power = [pulp.LpAffineExpression() for _ in range(N)]
     cost_terms: list = []
     outputs: dict = {}
@@ -88,7 +88,8 @@ def add_controllable_loads(prob, config, inp, N, dt):
         active = _season_mask(ld, md_list)
         if ld.type == "thermal":
             _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
-                         mqtt_map, amb, solar, state, active, on_by_key)
+                         mqtt_map, amb, solar, state, active, on_by_key, g_imp,
+                         config)
         else:
             _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
                             mqtt_map, hours, active, on_by_key)
@@ -162,7 +163,7 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
 
 
 def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
-                 amb, solar, state, active, on_by_key):
+                 amb, solar, state, active, on_by_key, g_imp=None, config=None):
     sg = _slug(ld.name)
     C = ld.capacity_wh_per_k
     if C <= 0 or not ld.stages:
@@ -191,17 +192,13 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         return traj
     all_heat = float(sum(st.heat_w for st in ld.stages))
     T_off = _free_run(np.zeros(N))
-    # Maximal erreichbar: alle Stufen an, wo aktiv - und bei pv_surplus_only
-    # nur dort, wo der PV-Überschuss wenigstens die kleinste Stufe deckt
-    # (sonst würde nachts unerreichbares Heizen als "vermeidbar" bestraft und
-    # die MIP-Gap erneut durch eine Konstante verzerrt).
-    heat_ok = np.asarray(active, dtype=bool).copy()
-    if ld.pv_surplus_only:
-        _surplus = np.maximum(0.0, np.asarray(inp.pv_w, dtype=float)
-                              - np.maximum(0.0, np.asarray(inp.house_load_w,
-                                                           dtype=float)))
-        min_stage = min(st.power_w for st in ld.stages)
-        heat_ok &= _surplus >= min_stage
+    # Maximal erreichbar: alle Stufen an, wo aktiv. (Bei no_grid_import kann
+    # Heizen in seltenen Fällen zusätzlich unmöglich sein - trübe Tage MIT
+    # leerem Akku; das hängt aber von Akku-Entscheidungen ab und ist nicht
+    # deterministisch vorhersagbar. T_on überschätzt dann das Erreichbare
+    # leicht -> unavoid_lo wird UNTERschätzt, der Slack-Offset bleibt >= 0,
+    # nur ein kleiner konstanter Rest verbleibt im Ziel. Sichere Richtung.)
+    heat_ok = np.asarray(active, dtype=bool)
     T_on = _free_run(np.where(heat_ok, all_heat, 0.0))
     unavoid_hi = float(np.clip(T_off - ld.max_c, 0.0, None).sum())
     unavoid_lo = float(np.clip(ld.min_c - T_on, 0.0, None).sum())
@@ -244,18 +241,18 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             for t in range(N):
                 prob += stage_on[st.name][t] <= stage_on[st.requires][t]
 
-    # Nur-PV-Überschuss-Betrieb: die Stufen dürfen nur laufen, wenn der
-    # PV-Überschuss (PV - Hauslast) ihre Leistung im Slot deckt -> Einschalten
-    # verursacht NIE Netzbezug und zapft auch nicht den Akku an. Mit dem
-    # Stunden-Entscheidungsraster muss der Überschuss in JEDEM Slot des Blocks
-    # reichen (Block sonst aus).
-    if ld.pv_surplus_only:
-        surplus = np.maximum(0.0, np.asarray(inp.pv_w, dtype=float)
-                             - np.maximum(0.0, np.asarray(inp.house_load_w,
-                                                          dtype=float)))
+    # Heizen ohne Netzbezug: läuft eine Stufe im Slot, muss der Netzbezug dort
+    # 0 sein - PV-Überschuss UND Akku dürfen die WP decken, Netzstrom nie.
+    # Big-M-Kopplung je Stufe an g_imp; mit dem Stunden-Entscheidungsraster
+    # gilt das für JEDEN Slot des Blocks (Block sonst aus).
+    if ld.no_grid_import and g_imp is not None and config is not None:
+        M_imp = (float(np.max(np.maximum(inp.house_load_w, 0.0)) if N else 0.0)
+                 + config.house_battery.max_ac_charge_w
+                 + (config.vehicle.max_charge_w if config.vehicle.enabled else 0.0)
+                 + sum(st.power_w for st in ld.stages) + 1000.0)
         for t in range(N):
-            prob += pulp.lpSum(st.power_w * stage_on[st.name][t]
-                               for st in ld.stages) <= float(surplus[t])
+            for st in ld.stages:
+                prob += g_imp[t] <= M_imp * (1 - stage_on[st.name][t])
 
     for t in range(N):
         heat = (pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)

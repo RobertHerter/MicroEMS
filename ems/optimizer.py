@@ -383,7 +383,7 @@ class Optimizer:
         # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
         from .loads import add_controllable_loads
         cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
-            prob, cfg, inp, N, dt)
+            prob, cfg, inp, N, dt, g_imp=g_imp)
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -551,7 +551,11 @@ class Optimizer:
         # Export begrenzt/wertlos), nie statt Einspeisung mit Vergütung > 0.
         for t in range(N):
             cost_terms.append(0.02 * ac[t] * kwh)
-            cost_terms.append(0.01 * curt[t] * kwh)
+            # Abregelung spürbar (0,5 ct/kWh) bestrafen - weit unter der
+            # Einspeisevergütung (verzerrt keine echte Entscheidung), aber
+            # genug, dass die MIP-Gap-Toleranz (gapAbs) nie "Abregeln statt
+            # Einspeisen" als gleichwertig durchwinkt.
+            cost_terms.append(0.5 * curt[t] * kwh)
 
         # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
         # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
