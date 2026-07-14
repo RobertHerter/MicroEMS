@@ -761,16 +761,21 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
         Lasten-/Modus-Änderungen ins Overlay (config_overrides.yaml)."""
         from .config import save_override
         from .loads import _slug as _lslug
+        from .homey_mqtt import _slug as _hslug
         if action == "load":
             name = str(payload.get("name", ""))
             ld = _find_load(name)
-            slug = _lslug(name)
+            slug = _lslug(name)          # Overlay-/Spalten-Konvention (config_overrides)
             changed = {}
             if "enabled" in payload:
                 en = bool(payload["enabled"])
                 ld.enabled = en
+                # apply_load_overrides überschreibt ld.enabled JEDEN Zyklus aus
+                # publisher.load_overrides[homey-slug] – daher MUSS hier der
+                # homey-slug (kleingeschrieben) genutzt werden, sonst greift die
+                # Änderung nicht (der direkte ld.enabled-Set würde überschrieben).
                 if publisher is not None:
-                    publisher.load_overrides[slug] = en
+                    publisher.load_overrides[_hslug(name)] = en
                 save_override(config_path,
                               f"controllable_loads_overrides.{slug}.enabled", en)
                 changed["enabled"] = en

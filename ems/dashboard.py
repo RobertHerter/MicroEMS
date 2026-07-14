@@ -471,7 +471,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         f"<span style='color:{_MODE_SWATCH[m]}'>■</span> "
         f"{_MODE_LABEL[m].replace(' (kein Eingriff)', '')}"
         for m in _MODES if m in present)
-    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.05,
+    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.085,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
@@ -480,8 +480,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         hovermode="x unified", barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
-        margin=dict(l=60, r=30, t=80, b=140),
-        legend=dict(orientation="h", yanchor="top", y=-0.09, xanchor="left",
+        # Großer Fußbereich: die (im Quermodus mehrzeilig umbrechende) Legende und
+        # die Modus-Zeile müssen UNTER dem letzten Panel Platz haben, sonst
+        # überlappen sie auf dem Handy das unterste Panel (steuerbare Lasten).
+        margin=dict(l=60, r=30, t=80, b=210),
+        legend=dict(orientation="h", yanchor="top", y=-0.135, xanchor="left",
                     x=0, font=dict(size=11), groupclick="toggleitem"),
     )
 
@@ -575,8 +578,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <div class="tiles">{''.join(tiles)}</div>
 {_alert_banner(violations)}
 {report_html}
-{controls_html}
 {plot_html}
+{controls_html}
 <script>{_RELOAD_JS}</script>
 </body></html>"""
 
