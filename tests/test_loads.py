@@ -123,6 +123,26 @@ def test_controllable_load_covered_by_battery_not_grid():
     assert not (t.loc[run, "mode"].astype(str) == "limit_discharge").any()
 
 
+def test_no_disguised_grid_discharge_with_thermal_load():
+    """Regression: die Entlade-Obergrenze enthält cl_power (Akku darf den Pool
+    decken). Deckt aber die PV den Pool schon, darf der Akku NICHT zusätzlich
+    "für den Pool" entladen - die frei werdende PV ginge ins Netz (getarntes
+    Akku->Netz). Absicherung: nie gleichzeitig entladen UND einspeisen."""
+    cfg = make_config()
+    cfg.optimization.allow_grid_discharge = False
+    cfg.controllable_loads = [_pool_load(loss=120.0)]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 9000), load=500.0, price=30.0,
+        soc=cfg.house_battery.max_soc_wh * 0.8,
+        ambient_temp_c=np.full(n, 20.0), load_state={"pool": 27.0}))
+    assert not res.infeasible
+    t = res.table
+    both = (t["batt_discharge_w"] > 5.0) & (t["grid_export_w"] > 5.0)
+    assert not both.any(), "gleichzeitig entladen und einspeisen (Akku->Netz-Dump)"
+
+
 def test_thermal_hot_ambient_stays_feasible():
     """Regression: ist die Umgebung wärmer als das Bandmaximum, gewinnt der Pool
     auch mit allen WP AUS passiv Wärme und übersteigt max_c. Ein hartes oberes Band

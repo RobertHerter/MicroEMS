@@ -150,10 +150,20 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
     slack_hi = [pulp.LpVariable(f"clShi_{sg}_{t}", 0) for t in range(N + 1)]  # über max_c
 
+    # Entscheidungsraster: ein träger thermischer Speicher braucht keine 15-min-
+    # Schaltentscheidungen. Eine Binärvariable je BLOCK (Default 60 min) statt je
+    # Slot viertelt die Binärvariablen - der Unterschied zwischen "Solver findet
+    # das Optimum in Sekunden" und "läuft ins Zeitlimit und liefert grobe
+    # Zwischenstände (seltsame Sperren)". Schont zudem die WP-Kompressoren.
+    dm = ld.decision_minutes or 60
+    blk = max(1, int(round(dm / (dt * 60.0))))
+    n_blocks = (N + blk - 1) // blk
     stage_on: dict = {}
     for st in ld.stages:
         ssg = _slug(st.name)
-        on = [pulp.LpVariable(f"cl_{sg}_{ssg}_{t}", cat="Binary") for t in range(N)]
+        blk_var = [pulp.LpVariable(f"cl_{sg}_{ssg}_b{b}", cat="Binary")
+                   for b in range(n_blocks)]
+        on = [blk_var[t // blk] for t in range(N)]     # je Slot -> Block-Variable
         stage_on[st.name] = on
         on_by_key[f"{ld.name}/{st.name}"] = on
         for t in range(N):

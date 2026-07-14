@@ -224,6 +224,11 @@ class ControllableLoad:
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
     season_to: Optional[str] = None
+    # Entscheidungsraster (min): Schaltentscheidungen nur alle X Minuten statt je
+    # Slot. Träge thermische Lasten (Pool) brauchen keine 15-min-Entscheidungen -
+    # 60 min viertelt die Binärvariablen (Solver-Laufzeit!) und schont die WP-
+    # Kompressoren. 0 = Default (thermal 60, deferrable = Slotraster).
+    decision_minutes: int = 0
 
     @property
     def capacity_wh_per_k(self) -> float:
@@ -628,6 +633,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                          if (w.get("season_from") or seas.get("from")) else None),
             season_to=(str(w.get("season_to") or seas.get("to"))
                        if (w.get("season_to") or seas.get("to")) else None),
+            decision_minutes=int(w.get("decision_minutes", 0)),
         )
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "

@@ -418,6 +418,15 @@ class Optimizer:
             # ihr Verbrauch (z.B. nachts) käme unnötig teuer aus dem Netz.
             if not gd_allowed[t]:
                 prob += dis[t] <= max(0.0, load_t - pv_t) + cl_power[t] + car[t]
+                # Da cl_power eine VARIABLE ist, ist die Obergrenze allein nicht
+                # dicht: der Akku dürfte "für den Pool" entladen, obwohl die PV
+                # den Pool schon deckt - die frei werdende PV ginge ins Netz
+                # (getarntes Akku->Netz zur Einspeisevergütung). Dicht wird es
+                # mit dem Ausschluss: NIE gleichzeitig entladen UND einspeisen
+                # (im Ein-Knoten-Modell ist jede Entladung bei laufendem Export
+                # ökonomisch ein Akku->Netz-Dump; weniger exportieren wäre immer
+                # möglich). Arbitrage-Slots (gd_allowed) bleiben ausgenommen.
+                prob += g_exp[t] <= BIGG * (1 - is_di[t])
 
             # physikalische Gesamt-Ladeleistung des Akkus (DC + AC zusammen)
             prob += dc[t] + ac[t] <= max_tot_ch
