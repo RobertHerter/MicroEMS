@@ -171,3 +171,46 @@ def test_load_lanes_includes_disabled_loads():
     assert [e["label"] for e in lanes] == ["Pool/WP klein", "Pool/WP groß", "Waschmaschine"]
     assert all(e["enabled"] is False for e in lanes)
     assert all(e["column"].startswith("load_") for e in lanes)
+
+
+def test_thermostat_permission_keeps_on_when_warm():
+    """WP mit eigenem Thermostat (thermostat: true): Freigabe bleibt AN, wenn
+    die Ist-Temperatur >= target_c ist (Thermostat hält die WP ohnehin aus);
+    "aus" nur, wenn Heizen aktiv verhindert werden muss (T < target_c)."""
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=8000, target_c=28.0,
+        thermostat=True, temp_signal="homie/pool/temp",
+        stages=[LoadStage("klein", 400, 3000)])]
+    pub = HomeyMqttPublisher(cfg)
+    lane = pub._load_lanes()[0]
+    assert lane["thermostat"] is True and lane["target_c"] == 28.0
+
+    # Kein Heiz-Slot geplant, Wasser WARM (29.5 >= 28) -> Freigabe AN
+    pub.load_temps["homie/pool/temp"] = 29.5
+    assert pub._lane_command(lane, planned_on=False) == 1
+    # Kein Heiz-Slot geplant, Wasser KALT (27 < 28) -> aktiv AUS (EMS blockt)
+    pub.load_temps["homie/pool/temp"] = 27.0
+    assert pub._lane_command(lane, planned_on=False) == 0
+    # Heiz-Slot geplant -> immer AN
+    assert pub._lane_command(lane, planned_on=True) == 1
+    # Keine Ist-Temperatur empfangen -> konservativ dem Plan folgen
+    pub.load_temps.clear()
+    assert pub._lane_command(lane, planned_on=False) == 0
+
+
+def test_no_thermostat_follows_plan():
+    """Ohne thermostat-Flag folgt der Befehl 1:1 dem Heizplan (wie bisher) -
+    Dauer-Freigabe wäre dort ungeplantes Heizen."""
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=8000, target_c=28.0,
+        thermostat=False, temp_signal="homie/pool/temp",
+        stages=[LoadStage("klein", 400, 3000)])]
+    pub = HomeyMqttPublisher(cfg)
+    lane = pub._load_lanes()[0]
+    pub.load_temps["homie/pool/temp"] = 29.5     # warm - egal, kein Thermostat
+    assert pub._lane_command(lane, planned_on=False) == 0
+    assert pub._lane_command(lane, planned_on=True) == 1

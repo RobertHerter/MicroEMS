@@ -229,6 +229,14 @@ class ControllableLoad:
     # Open-Meteo). 0 = deaktiviert (kein Eintrag, unverändertes Verhalten).
     surface_m2: float = 0.0              # Wasseroberfläche (m²)
     solar_absorption: float = 0.75       # effektiver Wirkungsgrad der Fläche
+    # Last hat einen EIGENEN Thermostat-Cutoff (z.B. Pool-WP): das EMS-Signal ist
+    # dann eine Heiz-FREIGABE, kein Zwang. Bei Ist-Temperatur >= target_c bleibt
+    # die Freigabe AN (der Thermostat hält die WP ohnehin aus) - weniger Schalt-
+    # spiele, und bei unerwartetem Temperaturabfall heizt die WP sofort. "Aus"
+    # wird nur gesendet, wenn Heizen aktiv verhindert werden soll (T < target_c
+    # und kein Heiz-Slot geplant). target_c sollte dem WP-eigenen Sollwert
+    # entsprechen. false = Signal folgt 1:1 dem Heizplan (wie bisher).
+    thermostat: bool = False
     temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
@@ -644,6 +652,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             loss_w_per_k=float(w.get("loss_w_per_k", 0.0)),
             surface_m2=float(w.get("surface_m2", 0.0)),
             solar_absorption=float(w.get("solar_absorption", 0.75)),
+            thermostat=bool(w.get("thermostat", False)),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
             stages=stages,
             season_from=(str(w.get("season_from") or seas.get("from"))

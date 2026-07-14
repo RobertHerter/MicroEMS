@@ -159,12 +159,32 @@ class HomeyMqttPublisher:
                 for st in ld.stages:
                     lanes.append({"label": f"{ld.name}/{st.name}",
                                   "column": f"load_{sg}_{_col(st.name)}_w",
-                                  "enabled": ld.enabled, "topic": st.mqtt_topic})
+                                  "enabled": ld.enabled, "topic": st.mqtt_topic,
+                                  "thermostat": bool(ld.thermostat),
+                                  "temp_signal": ld.temp_signal,
+                                  "target_c": float(ld.target_c)})
             else:
                 lanes.append({"label": ld.name,
                               "column": f"load_{_col(ld.name)}_w",
                               "enabled": ld.enabled, "topic": ld.mqtt_topic})
         return lanes
+
+    def _lane_command(self, lane: dict, planned_on: bool) -> int:
+        """Schaltbefehl einer Last-Stufe aus dem Heizplan ableiten.
+
+        Bei Lasten mit EIGENEM Thermostat (thermostat: true) ist das Signal eine
+        Heiz-FREIGABE: liegt die Ist-Temperatur auf/über target_c, hält der
+        Thermostat die WP ohnehin aus -> Freigabe bleibt AN (weniger Schalt-
+        spiele; heizt sofort, falls die Temperatur unerwartet fällt). "Aus"
+        nur, wenn Heizen aktiv verhindert werden soll (kein Heiz-Slot geplant
+        UND T unter target_c, d.h. der Thermostat WÜRDE sonst heizen)."""
+        if planned_on:
+            return 1
+        if lane.get("thermostat") and lane.get("temp_signal"):
+            t_ist = self.get_load_temp(lane["temp_signal"])
+            if t_ist is not None and float(t_ist) >= lane.get("target_c", 1e9):
+                return 1
+        return 0
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).
@@ -441,8 +461,9 @@ class HomeyMqttPublisher:
                 loadsp = {}
                 for e in lanes:
                     col, en = e["column"], e["enabled"]
-                    on = (1 if (en and col in table.columns
-                                and float(row[col]) > 5.0) else 0)
+                    planned = bool(en and col in table.columns
+                                   and float(row[col]) > 5.0)
+                    on = self._lane_command(e, planned) if en else 0
                     self._pub(f"{base}/loads/{_slug(e['label'])}", on,
                               retain=self.cfg.retain)
                     if en and e.get("topic"):
