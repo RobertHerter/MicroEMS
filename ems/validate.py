@@ -207,9 +207,37 @@ def validate_plan(config: Config, result: OptimizerResult,
 
     # Plan vs. Ohne-EMS-Baseline (terminalwert-bereinigt): der perfekt
     # informierte MILP darf nie teurer sein als das naive Eigenverbrauchs-
-    # verhalten. term_val = Mittelpreis (wie terminal_soc_value "auto").
+    # verhalten. WICHTIG: der End-SoC wird mit DERSELBEN Terminalwert-Kurve
+    # bewertet wie im Optimierer (terminal_soc_value, bei "auto" konkav
+    # [Median, p25, Einspeisung]) - eine abweichende Metrik (z.B. flacher
+    # Mittelpreis) lässt sonst selbst BEWEISBAR optimale Pläne "teurer als
+    # Baseline" aussehen, sobald der Optimierer Energie zu Preisen zwischen
+    # den beiden Bewertungen umsetzt.
     if inputs is not None:
-        term = float(np.mean(inputs.price_ct_kwh)) * hb.discharge_efficiency
+        p_arr = np.asarray(inputs.price_ct_kwh, dtype=float)
+        fin_mean = float(np.mean(inputs.feedin_ct_kwh))
+        tv = config.optimization.terminal_soc_value
+        if tv == "auto":
+            seg_values = sorted([
+                max(float(np.percentile(p_arr, 50)), fin_mean),
+                max(float(np.percentile(p_arr, 25)), fin_mean),
+                fin_mean,
+            ], reverse=True)
+        else:
+            seg_values = [float(tv)] * 3
+        usable_cap = hb.max_soc_wh - hb.min_soc_wh
+
+        def _terminal_value_ct(soc_end: float) -> float:
+            """Wert des End-SoC (ct), konkav wie der Optimierer-Zielterm."""
+            e = max(0.0, float(soc_end) - hb.min_soc_wh)
+            v_ct = 0.0
+            for seg in seg_values:
+                take = min(e, usable_cap / 3.0)
+                v_ct += seg * hb.discharge_efficiency * take / 1000.0
+                e -= take
+                if e <= 0:
+                    break
+            return v_ct
 
         # Peak-Shave-Wert (peak_charge_weight): an "peak"-Tagen kappt der
         # Optimierer die Einspeise-SPITZE und speichert den Überschuss statt ihn
@@ -232,7 +260,7 @@ def validate_plan(config: Config, result: OptimizerResult,
 
         plan_cost = (float(t["slot_cost_ct"].sum())
                      + _peak_pen(exp.values)
-                     - term * float(soc.iloc[-1]) / 1000.0)
+                     - _terminal_value_ct(float(soc.iloc[-1])))
         # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten)
         # UND dasselbe reale Akku-Modell wie der Optimierer: WR-Sockellast je
         # Entlade-Slot und Mindest-Entladeleistung. Sonst wäre die Baseline ein
@@ -260,7 +288,7 @@ def validate_plan(config: Config, result: OptimizerResult,
             b_cost += (b_imp * inputs.price_ct_kwh[i]
                        - b_exp * inputs.feedin_ct_kwh[i]) * kwh
             b_exp_w[i] = b_exp
-        b_cost += _peak_pen(b_exp_w) - term * b_soc / 1000.0
+        b_cost += _peak_pen(b_exp_w) - _terminal_value_ct(b_soc)
         margin = max(50.0, abs(b_cost) * 0.05)   # 50 ct oder 5 %
         if plan_cost > b_cost + margin:
             v.append(Violation("econ.worse_than_baseline", "warning", 1,

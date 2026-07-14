@@ -23,7 +23,14 @@ import re
 import numpy as np
 import pulp
 
-_COMFORT_PEN = 1000.0     # ct je K·Slot Bandverletzung (Komfort dominiert)
+# Komfort-Malus je K·Slot Bandverletzung. GRÖSSENORDNUNG MIT BEDACHT: 1 K eine
+# Stunde lang verfehlt = 4*50 = 200 ct - mehr, als das Nachheizen von 1 K je
+# kostet (~2-3 kWh_el ~ 60-90 ct) -> Komfort dominiert die Energie-Ökonomie und
+# das Band wird gehalten. Aber NICHT mehr um Größenordnungen darüber (früher
+# 1000 ct/K·Slot): sonst sind Milli-Kelvin dem Solver Cent-Beträge "wert" und
+# er tauscht innerhalb der MIP-Toleranz echtes Geld gegen unfühlbare
+# Temperatur-Differenzen (Cash-Verschwendung bei Status "Optimal").
+_COMFORT_PEN = 50.0
 _RUNTIME_PEN = 1000.0     # ct je fehlendem Laufzeit-Slot
 
 
@@ -95,15 +102,31 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
     on = [pulp.LpVariable(f"cl_{sg}_{t}", cat="Binary") for t in range(N)]
     on_by_key[ld.name] = on
 
+    # Deadline: die Laufzeit muss innerhalb von deadline_hours ab JETZT (Slot 0)
+    # abgeschlossen sein - sonst schiebt der Optimierer den Lauf für Cent-
+    # Bruchteile ans Horizontende ("Waschmaschine erst übermorgen"). Slots
+    # jenseits der Deadline sind gesperrt; wäre dadurch GAR KEIN Start mehr
+    # möglich (z.B. sehr enge Fenster), wird die Deadline ignoriert statt das
+    # Problem unlösbar zu machen.
+    ddl = float(ld.deadline_hours or 0.0)
+
     if prof is not None:
         # Startzyklus: 'on' markiert Startslot; Profil läuft ab da (nicht unterbr.).
         L = len(prof)
+        ok = [bool(active[t] and ld.window_from_hour <= hours[t] < ld.window_to_hour
+                   and t + L <= N) for t in range(N)]
+        if ddl > 0:
+            within = [ok[t] and (t + L) * dt <= ddl for t in range(N)]
+            if any(within):
+                ok = within
         for t in range(N):
-            if not (active[t] and ld.window_from_hour <= hours[t] < ld.window_to_hour
-                    and t + L <= N):
+            if not ok[t]:
                 prob += on[t] == 0
         runs = max(1, int(round(ld.runtime_minutes / (dt * 60 * L)))) if ld.runtime_minutes else 1
-        prob += pulp.lpSum(on) == runs
+        # Nie mehr Starts fordern, als Start-Slots existieren (sonst wird das
+        # GANZE MILP unlösbar, z.B. außerhalb der Saison: alle on==0 erzwungen,
+        # aber sum(on)==1 gefordert -> Infeasible).
+        prob += pulp.lpSum(on) == min(runs, sum(ok))
         for t in range(N):
             # Leistung im Slot t = Summe der Starts, deren Profil hier hinreicht
             expr = pulp.lpSum(prof[t - s] * on[s]
@@ -111,8 +134,15 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
             cl_power[t] = cl_power[t] + expr
             outputs.setdefault(f"load_{sg}_w", [None] * N)[t] = expr
     else:
+        ok = [bool(active[t] and ld.window_from_hour <= hours[t] < ld.window_to_hour)
+              for t in range(N)]
+        if ddl > 0:
+            req_slots_ddl = int(np.ceil(ld.runtime_minutes / (dt * 60.0)))
+            within = [ok[t] and (t + 1) * dt <= ddl for t in range(N)]
+            if sum(within) >= req_slots_ddl > 0 or (ld.runtime_minutes <= 0 and any(within)):
+                ok = within
         for t in range(N):
-            if not (active[t] and ld.window_from_hour <= hours[t] < ld.window_to_hour):
+            if not ok[t]:
                 prob += on[t] == 0
             cl_power[t] = cl_power[t] + ld.power_w * on[t]
             outputs.setdefault(f"load_{sg}_w", [None] * N)[t] = ld.power_w * on[t]
@@ -145,13 +175,35 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     Solar = solar if solar is not None else np.zeros(N)
     solar_gain = ld.surface_m2 * ld.solar_absorption
 
+    # Freilauf-Trajektorien (DETERMINISTISCH, da die Stufen nur heizen können):
+    # T_off = minimal erreichbare Temperatur (alle Stufen AUS),
+    # T_on  = maximal erreichbare Temperatur (alle Stufen AN, wo aktiv).
+    # Daraus folgt die UNVERMEIDBARE Bandverletzung: liegt schon T_off über
+    # max_c (heißes Wasser, Solar) bzw. T_on unter min_c (tiefer Winter), kann
+    # KEINE Entscheidung sie verhindern.
+    def _free_run(heat_on_w: np.ndarray) -> np.ndarray:
+        traj = np.empty(N + 1)
+        traj[0] = T0
+        for t in range(N):
+            heat = float(heat_on_w[t]) + solar_gain * float(Solar[t])
+            loss = ld.loss_w_per_k * (traj[t] - float(Tamb[t]))
+            traj[t + 1] = traj[t] + (heat - loss) * dt / C
+        return traj
+    all_heat = float(sum(st.heat_w for st in ld.stages))
+    T_off = _free_run(np.zeros(N))
+    T_on = _free_run(np.where(np.asarray(active, dtype=bool), all_heat, 0.0))
+    unavoid_hi = float(np.clip(T_off - ld.max_c, 0.0, None).sum())
+    unavoid_lo = float(np.clip(ld.min_c - T_on, 0.0, None).sum())
+
     # Temperatur darf das Band nach OBEN verlassen: die Stufen können nur HEIZEN,
     # nicht kühlen. An heißen Tagen (Tamb > T) gewinnt der Pool auch mit allen WP
     # aus passiv Wärme -> ein hartes max_c wäre dann UNLÖSBAR. Deshalb weiches Band
     # in beide Richtungen (Über-/Unterschreitung mit Komfort-Malus), Var-Grenzen nur
-    # als weiter Sicherheitsrahmen.
-    T = [pulp.LpVariable(f"clT_{sg}_{t}", ld.min_c - 10.0, ld.max_c + 10.0)
-         for t in range(N + 1)]
+    # als weiter Sicherheitsrahmen (an die physikalisch erreichbaren Trajektorien
+    # angepasst, sonst würde z.B. starker Solar-Eintrag die Obergrenze sprengen).
+    t_lb = min(ld.min_c - 10.0, float(T_off.min()) - 1.0)
+    t_ub = max(ld.max_c + 10.0, float(T_on.max()) + 1.0)
+    T = [pulp.LpVariable(f"clT_{sg}_{t}", t_lb, t_ub) for t in range(N + 1)]
     prob += T[0] == T0
     slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
     slack_hi = [pulp.LpVariable(f"clShi_{sg}_{t}", 0) for t in range(N + 1)]  # über max_c
@@ -192,8 +244,15 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         prob += T[t] - slack_hi[t] <= ld.max_c
     prob += T[N] + slack[N] >= ld.min_c
     prob += T[N] - slack_hi[N] <= ld.max_c
-    cost_terms.append(_COMFORT_PEN * pulp.lpSum(slack))
-    cost_terms.append(_COMFORT_PEN * pulp.lpSum(slack_hi))
+    # Komfort-Malus NUR auf den VERMEIDBAREN Teil der Bandverletzung: die
+    # unvermeidbare Verletzung (Wasser wärmer als max_c und nicht kühlbar, bzw.
+    # selbst Volllast-Heizen erreicht min_c nicht) wird als Konstante abgezogen.
+    # Ohne den Abzug bläht z.B. 1,5 K Dauer-Überschreitung das Solver-Ziel um
+    # tausende Euro auf - und die RELATIVE MIP-Gap (1 %) erlaubt dann real um
+    # zig Euro schlechtere Pläne ("Optimal" mit Entladesperren/econ-Lücke).
+    # Der Abzug ist eine Konstante -> ändert KEINE Entscheidung, nur die Skala.
+    cost_terms.append(_COMFORT_PEN * (pulp.lpSum(slack) - unavoid_lo))
+    cost_terms.append(_COMFORT_PEN * (pulp.lpSum(slack_hi) - unavoid_hi))
 
     for st in ld.stages:
         ssg = _slug(st.name)

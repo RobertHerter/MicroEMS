@@ -223,6 +223,38 @@ def test_thermal_load_no_spurious_charge_block():
         "Pool-Verbrauch aus PV fälschlich als Lade-Sperre/-Drossel gemeldet"
 
 
+def test_deferrable_deadline_keeps_run_today():
+    """Regression: ohne Deadline schob der Optimierer die Waschmaschine für
+    Cent-Bruchteile ans Horizontende ("erst übermorgen"). Mit deadline_hours
+    (Default 24) muss der Zyklus innerhalb von 24 h ab JETZT fertig sein,
+    auch wenn ein späterer Tag minimal billiger wäre."""
+    cfg = make_config()
+    prof = [2000.0, 500.0, 500.0, 2000.0]
+    cfg.controllable_loads = [ControllableLoad(
+        name="wm", type="deferrable", power_profile_w=prof, runtime_minutes=60.0,
+        window_from_hour=8, window_to_hour=22, switch_penalty_ct=0.0,
+        deadline_hours=24.0)]
+    idx = _day_index("2026-01-15", days=2)
+    n = len(idx)
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    day2 = np.arange(n) >= n // 2
+    # Tag 2 ist DEUTLICH billiger -> ohne Deadline liefe die WM dort.
+    price = np.where(day2, 10.0, 35.0)
+    res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=300.0, price=price,
+                                       soc=cfg.house_battery.min_soc_wh))
+    assert not res.infeasible
+    w = res.table["load_wm_w"]
+    assert float(w.iloc[:n // 2].sum()) * DT_H > 500.0, \
+        "Zyklus läuft nicht innerhalb der Deadline (Tag 1)"
+    assert float(w.iloc[n // 2:].sum()) < 1.0, "Zyklus trotz Deadline auf Tag 2"
+    # Gegenprobe: ohne Deadline wandert er auf den billigen Tag 2
+    cfg.controllable_loads[0].deadline_hours = 0.0
+    res2 = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=300.0, price=price,
+                                        soc=cfg.house_battery.min_soc_wh))
+    w2 = res2.table["load_wm_w"]
+    assert float(w2.iloc[n // 2:].sum()) * DT_H > 500.0
+
+
 def test_deferrable_profile_cycle_runs_once_in_cheap_slots():
     """15-min-Kurve: der ganze Zyklus wird einmal gestartet, bevorzugt günstig."""
     cfg = make_config()

@@ -120,6 +120,12 @@ def make_solver(cfg: Config):
     gap = float(getattr(cfg.optimization, "solver_mip_gap", 0.0) or 0.0)
     if gap > 0:
         kwargs["gapRel"] = gap
+    # Absolute Lücke (ct) zusätzlich: schützt vor dem "1 % von einem großen
+    # Ziel sind viele Euro"-Effekt (konstante Malusterme) und beendet auf
+    # Instanzen mit kleinem Zielwert die teure Beweisphase früher.
+    gap_abs = float(getattr(cfg.optimization, "solver_mip_gap_abs_ct", 0.0) or 0.0)
+    if gap_abs > 0:
+        kwargs["gapAbs"] = gap_abs
 
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":

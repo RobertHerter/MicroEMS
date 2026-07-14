@@ -213,6 +213,11 @@ class ControllableLoad:
     runtime_minutes: float = 0.0
     window_from_hour: int = 0
     window_to_hour: int = 24
+    # Deadline (h ab JETZT), bis wann die Laufzeit abgeschlossen sein muss.
+    # Ohne Deadline würde der Optimierer den Lauf für Cent-Bruchteile ans Ende
+    # des 48-h-Horizonts schieben ("Waschmaschine erst übermorgen") - wer eine
+    # Last einschaltet, will sie zeitnah. 0 = keine Deadline (alte Semantik).
+    deadline_hours: float = 24.0
     requires: Optional[str] = None
     # -- thermal --
     volume_l: float = 0.0                # Wasservolumen -> Wärmekapazität
@@ -257,6 +262,11 @@ class OptimizationConfig:
     # Cent und die Steuerentscheidungen praktisch identisch. 0 = exakt (kann lange
     # dauern).
     solver_mip_gap: float = 0.01
+    # Absolute Optimalitätslücke (ct): Stopp, sobald die Lösung beweisbar
+    # höchstens X ct vom Optimum entfernt ist. Wichtig als Ergänzung zur
+    # RELATIVEN Lücke: enthält das Ziel große konstante Terme (z.B. Komfort-
+    # Malus), wären "1 %" plötzlich viele Euro. 0 = aus.
+    solver_mip_gap_abs_ct: float = 25.0
     # Malus (ct) je Einschaltvorgang der Wallbox: verhindert, dass das Auto
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
@@ -625,6 +635,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             runtime_minutes=float(w.get("runtime_minutes", 0.0)),
             window_from_hour=int(win.get("from", w.get("window_from_hour", 0))),
             window_to_hour=int(win.get("to", w.get("window_to_hour", 24))),
+            deadline_hours=float(w.get("deadline_hours", 24.0)),
             requires=(str(w["requires"]) if w.get("requires") else None),
             volume_l=float(w.get("volume_l", 0.0)),
             target_c=float(w.get("target_c", 28.0)),
@@ -648,7 +659,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
         if isinstance(ov, dict):
             _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
                         "runtime_minutes", "window_from_hour", "window_to_hour",
-                        "surface_m2", "solar_absorption"}
+                        "surface_m2", "solar_absorption", "deadline_hours"}
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)
@@ -794,6 +805,7 @@ def load_config(path: str) -> Config:
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
         solver_mip_gap=float(o.get("solver_mip_gap", 0.01)),
+        solver_mip_gap_abs_ct=float(o.get("solver_mip_gap_abs_ct", 25.0)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
         car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
