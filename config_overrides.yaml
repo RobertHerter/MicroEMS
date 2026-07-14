@@ -1,0 +1,14 @@
+optimization:
+  charge_strategy: auto
+controllable_loads_overrides:
+  Pool:
+    enabled: true
+    target_c: 28.0
+    min_c: 26.0
+    max_c: 32.0
+  Waschmaschine:
+    enabled: false
+    power_w: 0.0
+    runtime_minutes: 120.0
+    window_from_hour: 8
+    window_to_hour: 22
