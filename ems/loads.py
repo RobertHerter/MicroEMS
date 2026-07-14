@@ -72,6 +72,8 @@ def add_controllable_loads(prob, config, inp, N, dt):
     md_list = [(t.month, t.day) for t in local]
     amb = (np.asarray(inp.ambient_temp_c, dtype=float)
            if inp.ambient_temp_c is not None else None)
+    solar = (np.asarray(inp.solar_w_m2, dtype=float)
+            if inp.solar_w_m2 is not None else None)
     state = inp.load_state or {}
     on_by_key: dict = {}          # für `requires`-Kopplung
 
@@ -79,7 +81,7 @@ def add_controllable_loads(prob, config, inp, N, dt):
         active = _season_mask(ld, md_list)
         if ld.type == "thermal":
             _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
-                         mqtt_map, amb, state, active, on_by_key)
+                         mqtt_map, amb, solar, state, active, on_by_key)
         else:
             _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
                             mqtt_map, hours, active, on_by_key)
@@ -130,7 +132,7 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
 
 
 def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
-                 amb, state, active, on_by_key):
+                 amb, solar, state, active, on_by_key):
     sg = _slug(ld.name)
     C = ld.capacity_wh_per_k
     if C <= 0 or not ld.stages:
@@ -138,6 +140,10 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     T0 = float(state.get(ld.name, ld.target_c))
     T0 = min(max(T0, ld.min_c - 5.0), ld.max_c + 5.0)
     Tamb = amb if amb is not None else np.full(N, ld.target_c)
+    # Solar-Einstrahlung (W/m²) -> Wärmeeintrag = Fläche * Wirkungsgrad * Strahlung.
+    # surface_m2=0 (Default) -> Term entfällt, unverändertes Verhalten wie bisher.
+    Solar = solar if solar is not None else np.zeros(N)
+    solar_gain = ld.surface_m2 * ld.solar_absorption
 
     # Temperatur darf das Band nach OBEN verlassen: die Stufen können nur HEIZEN,
     # nicht kühlen. An heißen Tagen (Tamb > T) gewinnt der Pool auch mit allen WP
@@ -176,7 +182,8 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
                 prob += stage_on[st.name][t] <= stage_on[st.requires][t]
 
     for t in range(N):
-        heat = pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)
+        heat = (pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)
+                + solar_gain * float(Solar[t]))
         elec = pulp.lpSum(st.power_w * stage_on[st.name][t] for st in ld.stages)
         cl_power[t] = cl_power[t] + elec
         loss = ld.loss_w_per_k * (T[t] - float(Tamb[t]))

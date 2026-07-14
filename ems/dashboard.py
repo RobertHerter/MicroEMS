@@ -146,10 +146,12 @@ def _controls_block(config) -> str:
     for ld in getattr(config, "controllable_loads", []):
         sg = _lslug(ld.name)
         if ld.type == "thermal":
-            keys = ["target_c", "min_c", "max_c"]
+            keys = ["target_c", "min_c", "max_c", "surface_m2", "solar_absorption"]
             fields = (f"Ziel {_num(f'p_{sg}_target_c', ld.target_c, '0.1')}°C "
                       f"Min {_num(f'p_{sg}_min_c', ld.min_c, '0.1')}°C "
-                      f"Max {_num(f'p_{sg}_max_c', ld.max_c, '0.1')}°C")
+                      f"Max {_num(f'p_{sg}_max_c', ld.max_c, '0.1')}°C "
+                      f"Fläche {_num(f'p_{sg}_surface_m2', ld.surface_m2, '0.1')}m² "
+                      f"Solar-η {_num(f'p_{sg}_solar_absorption', ld.solar_absorption, '0.05')}")
         else:
             keys = ["power_w", "runtime_minutes", "window_from_hour", "window_to_hour"]
             fields = (f"Leistung {_num(f'p_{sg}_power_w', ld.power_w)}W "

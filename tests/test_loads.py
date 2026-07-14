@@ -143,6 +143,37 @@ def test_no_disguised_grid_discharge_with_thermal_load():
     assert not both.any(), "gleichzeitig entladen und einspeisen (Akku->Netz-Dump)"
 
 
+def test_solar_gain_heats_pool_without_electric_heating():
+    """Solarer Wärmeeintrag (surface_m2 * solar_absorption * solar_w_m2) muss die
+    Pooltemperatur real anheben - unabhängig von den WP-Stufen. Aufbau: Ambient
+    == Zieltemperatur (kein Verlust, kein Heizbedarf) -> die WP bleiben in BEIDEN
+    Läufen aus (Heizen kostet nur, ohne Nutzen); der einzige Unterschied ist ein
+    Mittags-Strahlungspuls. Nur der solare Term kann den Temperaturunterschied
+    erklären."""
+    cfg = make_config()
+    pool = _pool_load(loss=100.0, min_c=20.0, target=25.0)
+    pool.surface_m2 = 8.0
+    pool.solar_absorption = 0.75
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    solar = np.where((hour >= 11) & (hour < 15), 700.0, 0.0)   # Mittags-Puls
+    common = dict(pv=0.0, load=300.0, price=30.0, soc=cfg.house_battery.min_soc_wh,
+                 ambient_temp_c=np.full(n, 25.0), load_state={"pool": 25.0})
+    res_sun = Optimizer(cfg).solve(_inputs(idx, solar_w_m2=solar, **common))
+    res_dark = Optimizer(cfg).solve(_inputs(idx, solar_w_m2=np.zeros(n), **common))
+    assert not res_sun.infeasible and not res_dark.infeasible
+    t_sun = res_sun.table["load_pool_temp_c"]
+    t_dark = res_dark.table["load_pool_temp_c"]
+    elec_sun = (res_sun.table["load_pool_klein_w"] + res_sun.table["load_pool_gross_w"]).sum()
+    elec_dark = (res_dark.table["load_pool_klein_w"] + res_dark.table["load_pool_gross_w"]).sum()
+    assert elec_sun < 1.0 and elec_dark < 1.0, \
+        "WP sollte bei ambient==target gar nicht heizen (Testaufbau prüft nur Solar)"
+    assert t_sun.max() - t_dark.max() > 0.5, \
+        "Solar-Puls hebt die Pooltemperatur nicht spürbar an"
+
+
 def test_thermal_hot_ambient_stays_feasible():
     """Regression: ist die Umgebung wärmer als das Bandmaximum, gewinnt der Pool
     auch mit allen WP AUS passiv Wärme und übersteigt max_c. Ein hartes oberes Band

@@ -220,6 +220,10 @@ class ControllableLoad:
     min_c: float = 27.0
     max_c: float = 29.0
     loss_w_per_k: float = 0.0            # Wärmeverlust je K (T_pool - T_außen)
+    # Solarer Wärmeeintrag = surface_m2 * solar_absorption * Globalstrahlung (W/m²,
+    # Open-Meteo). 0 = deaktiviert (kein Eintrag, unverändertes Verhalten).
+    surface_m2: float = 0.0              # Wasseroberfläche (m²)
+    solar_absorption: float = 0.75       # effektiver Wirkungsgrad der Fläche
     temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
@@ -627,6 +631,8 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             min_c=float(w.get("min_c", 27.0)),
             max_c=float(w.get("max_c", 29.0)),
             loss_w_per_k=float(w.get("loss_w_per_k", 0.0)),
+            surface_m2=float(w.get("surface_m2", 0.0)),
+            solar_absorption=float(w.get("solar_absorption", 0.75)),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
             stages=stages,
             season_from=(str(w.get("season_from") or seas.get("from"))
@@ -641,7 +647,8 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
         ov = (overrides or {}).get(_load_slug(load.name))
         if isinstance(ov, dict):
             _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
-                        "runtime_minutes", "window_from_hour", "window_to_hour"}
+                        "runtime_minutes", "window_from_hour", "window_to_hour",
+                        "surface_m2", "solar_absorption"}
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)

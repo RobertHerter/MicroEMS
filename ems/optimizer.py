@@ -53,6 +53,9 @@ class OptimizerInputs:
     pv10_w: Optional[np.ndarray] = None
     # Außentemperatur (°C) je Slot – Wärmeverlust thermischer Lasten (Pool).
     ambient_temp_c: Optional[np.ndarray] = None
+    # Solar-Einstrahlung (W/m² Globalstrahlung) je Slot – solarer Wärmeeintrag
+    # thermischer Lasten (Pool, ems.loads._add_thermal).
+    solar_w_m2: Optional[np.ndarray] = None
     # Ist-Zustand steuerbarer Lasten beim Start: {load_name: aktuelle Temperatur °C}
     # für thermische Lasten (T[0]). Fehlt ein Wert -> target_c als Startwert.
     load_state: Optional[dict] = None

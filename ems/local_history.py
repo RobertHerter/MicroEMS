@@ -44,6 +44,10 @@ def _con(path: str) -> sqlite3.Connection:
     # Verlauf im Dashboard (erwartet vs. echt).
     con.execute("CREATE TABLE IF NOT EXISTS load_temp ("
                 " name TEXT, ts TEXT, temp_c REAL, PRIMARY KEY(name, ts))")
+    # Solar-Einstrahlung (Open-Meteo shortwave_radiation, W/m² Globalstrahlung)
+    # für den solaren Wärmeeintrag thermischer Lasten (Pool).
+    con.execute("CREATE TABLE IF NOT EXISTS radiation ("
+                " ts TEXT PRIMARY KEY, w_m2 REAL NOT NULL)")
     con.commit()
     return con
 
@@ -178,6 +182,47 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
         return hourly
     return (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
             .reindex(grid))
+
+
+def write_radiation(path: str, mapping: Dict[str, float]) -> int:
+    """UPSERT stündlicher Solar-Einstrahlung {UTC-ISO -> W/m²}."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO radiation(ts, w_m2) VALUES(?, ?) "
+        "ON CONFLICT(ts) DO UPDATE SET w_m2=excluded.w_m2",
+        [(k, float(v)) for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
+def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:
+    """Solar-Einstrahlung (W/m²) [start, end) auf das Slot-Raster interpoliert
+    (wie read_temperature). Leer, wenn nichts vorhanden."""
+    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    e_utc = (pd.Timestamp(end) + pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, w_m2 FROM radiation WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz), freq=freq,
+                         inclusive="left")
+    if len(grid) == 0:
+        return hourly.clip(lower=0.0)
+    out = (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
+           .reindex(grid))
+    return out.clip(lower=0.0)   # Einstrahlung ist nie negativ (Interpolationsrand)
 
 
 def write_spot(path: str, mapping: Dict[str, float]) -> int:

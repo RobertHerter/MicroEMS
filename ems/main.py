@@ -128,6 +128,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         forecast_end = now + timedelta(hours=config.general.forecast_horizon_hours)
         temp = _read_temp(repo, config,
                           now - timedelta(days=config.forecast.lookback_days), forecast_end)
+        # Solar-Einstrahlung für den Pool-Wärmeeintrag (dasselbe Fenster, derselbe
+        # Open-Meteo-Cache-Refresh wie temp – kein zusätzlicher HTTP-Call).
+        solar = _read_solar(config,
+                            now - timedelta(days=config.forecast.lookback_days), forecast_end)
         forecaster = LoadForecaster(config)
         hist_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
                                          now - timedelta(days=config.forecast.lookback_days), now)
@@ -285,6 +289,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
             ambient_temp_c=(temp.reindex(opt_index).ffill().bfill().values.astype(float)
                             if temp is not None else None),
+            solar_w_m2=(solar.reindex(opt_index).ffill().bfill().values.astype(float)
+                       if solar is not None else None),
             load_state=load_state,
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
@@ -473,27 +479,41 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None)
     return load_ratio, pv_ratio
 
 
-_last_temp_fetch = 0.0
+_last_weather_fetch = 0.0
+
+
+def _refresh_weather_cache(config) -> None:
+    """Holt Temperatur + Solar-Einstrahlung von Open-Meteo (EIN HTTP-Call für
+    BEIDE Signale, kein Mehraufwand) und cacht sie lokal. Höchstens alle ~5 min
+    pro Zyklus (von _read_temp UND _read_solar aufgerufen – der zweite Aufruf
+    greift innerhalb desselben Zyklus einfach den frischen Cache)."""
+    if not config.weather.enabled:
+        return
+    global _last_weather_fetch
+    if _time.time() - _last_weather_fetch <= 300:
+        return
+    w, db = config.weather, config.e3dc_rscp.history_db_path
+    try:
+        from .weather import fetch_forecast
+        from .local_history import write_temperature, write_radiation
+        temp_map, rad_map = fetch_forecast(w.latitude, w.longitude,
+                                           w.past_days, w.forecast_days)
+        n_t = write_temperature(db, temp_map)
+        n_r = write_radiation(db, rad_map)
+        _last_weather_fetch = _time.time()
+        log.info("Open-Meteo: %d Temperatur- + %d Strahlungs-Stundenwerte "
+                 "aktualisiert.", n_t, n_r)
+    except Exception as exc:
+        log.warning("Open-Meteo-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
 
 
 def _read_temp(repo, config, start, end):
     """Temperatur fürs Ähnlichkeits-Gewicht. Quelle: Open-Meteo (lokaler
     SQLite-Cache) wenn weather.enabled, sonst InfluxDB. None wenn nicht da."""
     if config.weather.enabled:
-        global _last_temp_fetch
-        w, db = config.weather, config.e3dc_rscp.history_db_path
+        _refresh_weather_cache(config)
+        db = config.e3dc_rscp.history_db_path
         freq = f"{config.general.slot_minutes}min"
-        # HTTP-Abruf höchstens einmal je ~5 min (pro Zyklus, nicht je Aufruf).
-        if _time.time() - _last_temp_fetch > 300:
-            try:
-                from .weather import fetch_forecast
-                from .local_history import write_temperature
-                n = write_temperature(db, fetch_forecast(
-                    w.latitude, w.longitude, w.past_days, w.forecast_days))
-                _last_temp_fetch = _time.time()
-                log.info("Open-Meteo: %d Temperatur-Stundenwerte aktualisiert.", n)
-            except Exception as exc:
-                log.warning("Open-Meteo-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
         try:
             from .local_history import read_temperature
             s = read_temperature(db, start, end, config.general.timezone, freq)
@@ -507,6 +527,24 @@ def _read_temp(repo, config, start, end):
         return repo.read_slots("temperature", start, end)
     except Exception as exc:  # pragma: no cover
         log.warning("Temperatur konnte nicht gelesen werden (%s).", exc)
+        return None
+
+
+def _read_solar(config, start, end):
+    """Solar-Einstrahlung (W/m² Globalstrahlung) für den solaren Wärmeeintrag
+    thermischer Lasten (Pool). Nur Open-Meteo – kein InfluxDB-Äquivalent
+    vorhanden. None wenn weather.enabled=false oder nichts gecacht ist."""
+    if not config.weather.enabled:
+        return None
+    _refresh_weather_cache(config)
+    try:
+        from .local_history import read_radiation
+        freq = f"{config.general.slot_minutes}min"
+        s = read_radiation(config.e3dc_rscp.history_db_path, start, end,
+                           config.general.timezone, freq)
+        return s if not s.empty else None
+    except Exception as exc:  # pragma: no cover
+        log.warning("Solar-Einstrahlung nicht lesbar (%s).", exc)
         return None
 
 
@@ -745,7 +783,8 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
 
     # Kernparameter, die im Dashboard je Lasttyp editierbar sind (Whitelist).
     _LOAD_PARAMS = {
-        "thermal": {"target_c": float, "min_c": float, "max_c": float},
+        "thermal": {"target_c": float, "min_c": float, "max_c": float,
+                   "surface_m2": float, "solar_absorption": float},
         "deferrable": {"power_w": float, "runtime_minutes": float,
                        "window_from_hour": int, "window_to_hour": int},
     }
