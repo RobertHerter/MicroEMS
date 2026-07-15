@@ -668,6 +668,33 @@ def _source_status(config, now):
                             "detail": f"vor {age_h:.1f} h"})
     except Exception as exc:  # pragma: no cover
         log.debug("Quellen-Status Solcast fehlgeschlagen: %s", exc)
+    # E3DC live (RSCP/Ingest): letzter protokollierter Live-Snapshot (actuals,
+    # wird jeden Zyklus geschrieben) - veraltet = Live-Auslesen klemmt.
+    # Hauslast-Historie: letztes 15-min-Fenster aus der E3DC-DB (Basis der
+    # Verbrauchsprognose); hängt normal 15-30 min hinter "jetzt".
+    try:
+        if config.e3dc_rscp.history_source:
+            import sqlite3
+            con = sqlite3.connect(config.e3dc_rscp.history_db_path)
+            row_a = con.execute("SELECT MAX(ts) FROM actuals").fetchone()
+            row_h = con.execute("SELECT MAX(ts) FROM house_load").fetchone()
+            con.close()
+            for label, row, lim_ok, lim_warn in (
+                    ("E3DC live", row_a, 0.5, 2.0),
+                    ("Hauslast-Historie", row_h, 2.0, 12.0)):
+                if not row or not row[0]:
+                    out.append({"name": label, "level": "err",
+                                "detail": "keine Daten"})
+                    continue
+                last = pd.Timestamp(row[0]).tz_convert(tz)
+                age_h = (now - last).total_seconds() / 3600.0
+                lvl = "ok" if age_h < lim_ok else ("warn" if age_h < lim_warn
+                                                   else "err")
+                det = (f"vor {age_h * 60:.0f} min" if age_h < 2.0
+                       else f"vor {age_h:.1f} h")
+                out.append({"name": label, "level": lvl, "detail": det})
+    except Exception as exc:  # pragma: no cover
+        log.debug("Quellen-Status E3DC fehlgeschlagen: %s", exc)
     return out
 
 
