@@ -433,7 +433,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             savings_eur=savings_eur,
                             violations=violations,
                             load_temp_actual=load_temp_actual,
-                            ambient_temp_c=ambient_temp_display)
+                            ambient_temp_c=ambient_temp_display,
+                            source_status=_source_status(config, now))
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -580,6 +581,72 @@ def _refresh_spot(config):
         log.info("Energy-Charts: %d Spot-Preiswerte aktualisiert.", n)
     except Exception as exc:
         log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+
+
+def _source_status(config, now):
+    """Frische der externen Datenquellen fürs Dashboard (Ampel je Quelle).
+    Fällt eine API aus, läuft das EMS still auf Cache/Schätzung weiter -
+    genau das soll sichtbar werden, statt unbemerkt tagelang auf alten
+    Daten zu optimieren."""
+    out = []
+    now = pd.Timestamp(now).floor("15min")
+    tz = config.general.timezone
+    # Spotpreis (Energy-Charts): bis wann liegen ECHTE Preise vor? Erwartung:
+    # vormittags bis Ende heute; nach der Day-Ahead-Auktion (~14 Uhr) sollte
+    # der Folgetag da sein. Danach ergänzt die Ähnliche-Tage-Schätzung.
+    try:
+        if config.tariff.enabled and config.tariff.type == "dynamic":
+            from .local_history import read_spot
+            s = read_spot(config.e3dc_rscp.history_db_path,
+                          now - pd.Timedelta(hours=2),
+                          now + pd.Timedelta(hours=48), tz)
+            sd = s.dropna()
+            last = sd.index[-1] if len(sd) else None
+            expected = (now.normalize()
+                        + pd.Timedelta(days=2 if now.hour >= 15 else 1)
+                        - pd.Timedelta(minutes=15))
+            if last is None or last < now:
+                lvl, det = "err", ("keine Daten" if last is None else
+                                   f"veraltet ({last.strftime('%d.%m. %H:%M')})")
+            elif last < expected - pd.Timedelta(hours=1):
+                lvl, det = "warn", f"echt bis {last.strftime('%d.%m. %H:%M')}"
+            else:
+                lvl, det = "ok", f"echt bis {last.strftime('%d.%m. %H:%M')}"
+            out.append({"name": "Spotpreis", "level": lvl, "detail": det})
+    except Exception as exc:  # pragma: no cover
+        log.debug("Quellen-Status Preis fehlgeschlagen: %s", exc)
+    # Wetter (Open-Meteo): Alter des letzten erfolgreichen Abrufs (Prozess).
+    try:
+        if config.weather.enabled:
+            if _last_weather_fetch <= 0:
+                out.append({"name": "Wetter", "level": "err",
+                            "detail": "noch kein Abruf"})
+            else:
+                age_min = (_time.time() - _last_weather_fetch) / 60.0
+                lvl = "ok" if age_min < 120 else ("warn" if age_min < 720 else "err")
+                out.append({"name": "Wetter", "level": lvl,
+                            "detail": f"vor {age_min:.0f} min"})
+    except Exception as exc:  # pragma: no cover
+        log.debug("Quellen-Status Wetter fehlgeschlagen: %s", exc)
+    # Solcast: letzter erfolgreicher Abruf laut solcast_log (überlebt Neustarts).
+    try:
+        if config.solcast.enabled:
+            import sqlite3
+            con = sqlite3.connect(config.e3dc_rscp.history_db_path)
+            row = con.execute("SELECT MAX(ts) FROM solcast_log").fetchone()
+            con.close()
+            if not row or not row[0]:
+                out.append({"name": "Solcast", "level": "err",
+                            "detail": "noch kein Abruf"})
+            else:
+                last = pd.Timestamp(row[0]).tz_convert(tz)
+                age_h = (now - last).total_seconds() / 3600.0
+                lvl = "ok" if age_h < 5 else ("warn" if age_h < 12 else "err")
+                out.append({"name": "Solcast", "level": lvl,
+                            "detail": f"vor {age_h:.1f} h"})
+    except Exception as exc:  # pragma: no cover
+        log.debug("Quellen-Status Solcast fehlgeschlagen: %s", exc)
+    return out
 
 
 def _read_load_state(config, publisher):

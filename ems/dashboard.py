@@ -212,9 +212,25 @@ function emsBat(a){ emsPost('battery',{action:a,
         f"</div><script>{js}</script>")
 
 
+def _sources_block(source_status) -> str:
+    """Frische-Chips der externen Datenquellen (Spotpreis/Wetter/Solcast):
+    grün = frisch, gelb = älter als erwartet, rot = veraltet/fehlend -
+    macht sichtbar, wenn still auf Cache/Schätzung optimiert wird."""
+    if not source_status:
+        return ""
+    col = {"ok": "#2ca02c", "warn": "#e6a700", "err": "#d62728"}
+    chips = "".join(
+        f'<span class="chip"><span class="dot" style="background:'
+        f'{col.get(s.get("level"), "#999")}"></span>{s.get("name")}: '
+        f'{s.get("detail", "")}</span>'
+        for s in source_status)
+    return f'<div class="chips">Datenquellen: {chips}</div>'
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
-                    load_temp_actual=None, ambient_temp_c=None) -> str:
+                    load_temp_actual=None, ambient_temp_c=None,
+                    source_status=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -584,10 +600,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
  .controls button.mode.on {{ background: #0d6efd; color: #fff; border-color: #0d6efd; }}
  .controls .ctl-msg {{ margin-top: 8px; font-size: 12px; color: #555; min-height: 1em; }}
+ .chips {{ font-size: 12px; color: #555; margin: -2px 0 10px; }}
+ .chips .chip {{ margin-right: 14px; white-space: nowrap; }}
+ .chips .dot {{ display: inline-block; width: 8px; height: 8px;
+        border-radius: 50%; margin-right: 4px; }}
 </style></head><body>
 <h1>EMS – Ist vs. Prognose &amp; Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 <div class="tiles">{''.join(tiles)}</div>
+{_sources_block(source_status)}
 {_alert_banner(violations)}
 {plot_html}
 {controls_html}
