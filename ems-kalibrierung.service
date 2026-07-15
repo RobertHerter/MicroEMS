@@ -10,6 +10,10 @@ Group=ems
 WorkingDirectory=/opt/ems
 # Erzeugt kalibrierung.yaml (Report) und kalibrierung_profil.yaml (PV-Profil).
 ExecStart=/opt/ems/.venv/bin/python -m kalibrierung --config /opt/ems/config.yaml --lookback-days 730 --test-days 365
+# Pool-Thermomodell (Verlust + Solareintrag) aus Messdaten nachfuehren:
+# schreibt bei ausreichender Fit-Qualitaet gedaempfte Werte ins Overlay
+# (config_overrides.yaml); bei zu wenig Daten passiert schlicht nichts.
+ExecStart=/opt/ems/.venv/bin/python -m ems.pool_calibration --config /opt/ems/config.yaml --apply
 Environment=PYTHONUNBUFFERED=1
 # Haertung analog ems.service (kein Port noetig -> keine Capabilities).
 NoNewPrivileges=true

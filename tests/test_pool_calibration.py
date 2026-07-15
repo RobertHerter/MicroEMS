@@ -69,6 +69,60 @@ def test_fit_needs_enough_windows():
                               min_windows=1000) is None
 
 
+def test_maybe_apply_writes_damped_values_to_overlay(tmp_path):
+    """--apply: gute Fit-Qualität -> gedämpfte Werte (Mittel aus alt und Fit)
+    landen im Overlay und kommen über load_config wieder an der Last an."""
+    import shutil, yaml
+    from ems.pool_calibration import FitResult, maybe_apply
+    from ems.config import load_config
+    cfg_path = str(tmp_path / "config.yaml")
+    shutil.copy("config.example.yaml", cfg_path)
+    with open(cfg_path, "a", encoding="utf-8") as fh:
+        fh.write("\ne3dc_rscp:\n  history_db_path: '%s'\n" % (tmp_path / "h.sqlite"))
+        fh.write("controllable_loads:\n"
+                 "  - name: Pool\n    type: thermal\n    volume_l: 8000\n"
+                 "    loss_w_per_k: 300.0\n    surface_m2: 8.0\n"
+                 "    solar_absorption: 0.6\n"
+                 "    stages: [{name: WP, power_w: 400, heat_w: 3000}]\n")
+    cfg = load_config(cfg_path)
+    ld = cfg.controllable_loads[0]
+    fit = FitResult(loss_w_per_k=500.0, a_solar_w_per_wm2=8.0,  # absorption 1.0
+                    n_windows=200, r2=0.8)
+    changed = maybe_apply(fit, ld, cfg_path)
+    assert changed == {"loss_w_per_k": 400.0,          # 0.5*300 + 0.5*500
+                       "solar_absorption": 0.8}        # 0.5*0.6 + 0.5*1.0
+    ov = yaml.safe_load(open(tmp_path / "config_overrides.yaml"))
+    assert ov["controllable_loads_overrides"]["Pool"]["loss_w_per_k"] == 400.0
+    # und die Whitelist lässt loss_w_per_k durch (Rundreise über load_config)
+    ld2 = load_config(cfg_path).controllable_loads[0]
+    assert ld2.loss_w_per_k == 400.0
+    assert ld2.solar_absorption == 0.8
+
+
+def test_maybe_apply_respects_quality_gates(tmp_path):
+    """Zu wenig Fenster / schlechtes R² / unplausible Werte -> KEINE Übernahme."""
+    import shutil
+    from ems.pool_calibration import FitResult, maybe_apply
+    from ems.config import load_config
+    cfg_path = str(tmp_path / "config.yaml")
+    shutil.copy("config.example.yaml", cfg_path)
+    with open(cfg_path, "a", encoding="utf-8") as fh:
+        fh.write("\ncontrollable_loads:\n"
+                 "  - name: Pool\n    type: thermal\n    volume_l: 8000\n"
+                 "    loss_w_per_k: 300.0\n    surface_m2: 8.0\n"
+                 "    stages: [{name: WP, power_w: 400, heat_w: 3000}]\n")
+    ld = load_config(cfg_path).controllable_loads[0]
+    ok = dict(loss_w_per_k=500.0, a_solar_w_per_wm2=6.0)
+    assert maybe_apply(FitResult(**ok, n_windows=50, r2=0.9), ld, cfg_path) is None
+    assert maybe_apply(FitResult(**ok, n_windows=200, r2=0.2), ld, cfg_path) is None
+    # unplausibler Verlust (5000 W/K) -> loss nicht übernommen, absorption schon
+    ch = maybe_apply(FitResult(loss_w_per_k=5000.0, a_solar_w_per_wm2=6.0,
+                               n_windows=200, r2=0.9), ld, cfg_path)
+    assert ch is not None and "loss_w_per_k" not in ch
+    assert not (tmp_path / "config_overrides.yaml").exists() or \
+        "loss_w_per_k" not in str(open(tmp_path / "config_overrides.yaml").read())
+
+
 def test_load_cmd_roundtrip(tmp_path):
     db = str(tmp_path / "cmd.sqlite")
     base = pd.Timestamp("2026-06-01 10:00", tz=TZ)

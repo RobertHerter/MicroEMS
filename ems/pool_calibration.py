@@ -42,6 +42,17 @@ WINDOW_SLOTS = 8
 SLOT_HOURS = 0.25
 
 
+# Auto-Übernahme (--apply): Qualitäts-Gates und Plausibilitätsgrenzen. Die
+# Übernahme ist GEDÄMPFT (Mittel aus aktuellem Wert und Fit): der Fit läuft
+# wöchentlich über ein 30-Tage-Fenster - einzelne untypische Wochen (Dauer-
+# regen, Party mit offener Abdeckung) sollen die Planung nicht voll umwerfen.
+APPLY_MIN_WINDOWS = 96          # doppelte Mindest-Stichprobe des reinen Fits
+APPLY_MIN_R2 = 0.5
+APPLY_BLEND = 0.5               # neuer Wert = 0.5*alt + 0.5*Fit
+LOSS_BOUNDS = (30.0, 3000.0)    # W/K
+ABSORB_BOUNDS = (0.05, 1.0)     # physikalisch sinnvoller Bereich
+
+
 @dataclass
 class FitResult:
     loss_w_per_k: float
@@ -118,7 +129,47 @@ def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
                      n_windows=int(len(y)), r2=1.0 - ss_res / ss_tot)
 
 
-def run(config_path: str, days: int = 30) -> int:
+def maybe_apply(fit: FitResult, ld, config_path: str) -> Optional[dict]:
+    """Fit-Werte gedämpft ins Overlay (config_overrides.yaml) übernehmen,
+    wenn die Qualität reicht. config.yaml bleibt unangetastet (load_config
+    merged das Overlay). Rückgabe: {Feld: neuer Wert} oder None."""
+    from .config import save_override
+    from .loads import _slug
+    if fit.n_windows < APPLY_MIN_WINDOWS or fit.r2 < APPLY_MIN_R2:
+        print(f"  Keine Übernahme: Qualität reicht nicht (Fenster "
+              f"{fit.n_windows} >= {APPLY_MIN_WINDOWS}? R² {fit.r2:.2f} >= "
+              f"{APPLY_MIN_R2}?).")
+        return None
+    slug = _slug(ld.name)
+    changed = {}
+    if LOSS_BOUNDS[0] <= fit.loss_w_per_k <= LOSS_BOUNDS[1]:
+        new_loss = round(APPLY_BLEND * fit.loss_w_per_k
+                         + (1 - APPLY_BLEND) * ld.loss_w_per_k, 1)
+        save_override(config_path,
+                      f"controllable_loads_overrides.{slug}.loss_w_per_k",
+                      new_loss)
+        changed["loss_w_per_k"] = new_loss
+    else:
+        print(f"  loss_w_per_k {fit.loss_w_per_k:.0f} außerhalb "
+              f"{LOSS_BOUNDS} - nicht übernommen.")
+    sa = fit.solar_absorption(ld.surface_m2)
+    if sa is not None:
+        if ABSORB_BOUNDS[0] <= sa <= ABSORB_BOUNDS[1]:
+            new_sa = round(APPLY_BLEND * sa
+                           + (1 - APPLY_BLEND) * ld.solar_absorption, 2)
+            save_override(config_path,
+                          f"controllable_loads_overrides.{slug}.solar_absorption",
+                          new_sa)
+            changed["solar_absorption"] = new_sa
+        else:
+            print(f"  solar_absorption {sa:.2f} außerhalb {ABSORB_BOUNDS} - "
+                  f"nicht übernommen (surface_m2 prüfen?).")
+    if changed:
+        print(f"  Übernommen (gedämpft, ins Overlay): {changed}")
+    return changed or None
+
+
+def run(config_path: str, days: int = 30, apply: bool = False) -> int:
     from .config import load_config
     from .local_history import (read_load_cmd, read_load_temp, read_radiation,
                                 read_temperature)
@@ -127,7 +178,6 @@ def run(config_path: str, days: int = 30) -> int:
     now = pd.Timestamp.now(tz=tz)
     start = now - pd.Timedelta(days=days)
     db = config.e3dc_rscp.history_db_path
-    rc = 1
     for ld in getattr(config, "controllable_loads", []):
         if ld.type != "thermal":
             continue
@@ -139,11 +189,9 @@ def run(config_path: str, days: int = 30) -> int:
         fit = fit_thermal_params(t_pool, t_amb, g, permit, cap)
         print(f"== {ld.name} ==")
         if fit is None:
-            print(f"  Noch zu wenig Daten (sicher-aus-Fenster fehlen). Die "
-                  f"Freigabe wird seit heute geloggt (load_cmd) - nach ein "
-                  f"paar Tagen erneut ausführen.")
+            print(f"  Noch zu wenig Daten (sicher-aus-Fenster fehlen) - nach "
+                  f"ein paar Tagen erneut ausführen (load_cmd-Log läuft).")
             continue
-        rc = 0
         cur_a = ld.surface_m2 * ld.solar_absorption
         print(f"  Stichprobe: {fit.n_windows} Fenster à {WINDOW_SLOTS * SLOT_HOURS:.0f} h, R² = {fit.r2:.2f}")
         print(f"  loss_w_per_k:     {fit.loss_w_per_k:7.0f}   (Config: {ld.loss_w_per_k:.0f})")
@@ -155,8 +203,11 @@ def run(config_path: str, days: int = 30) -> int:
         if fit.r2 < 0.3:
             print("  Achtung: R² niedrig - Werte noch mit Vorsicht genießen "
                   "(mehr Daten abwarten).")
-        print("  Werte bei Bedarf manuell in config.yaml übernehmen.")
-    return rc
+        if apply:
+            maybe_apply(fit, ld, config_path)
+        else:
+            print("  Werte bei Bedarf manuell übernehmen (oder --apply).")
+    return 0
 
 
 def main() -> int:
@@ -164,9 +215,12 @@ def main() -> int:
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--days", type=int, default=30,
                     help="Historienfenster in Tagen (Default 30)")
+    ap.add_argument("--apply", action="store_true",
+                    help="Werte bei ausreichender Qualität gedämpft ins "
+                         "Overlay (config_overrides.yaml) übernehmen")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    return run(args.config, args.days)
+    return run(args.config, args.days, apply=args.apply)
 
 
 if __name__ == "__main__":

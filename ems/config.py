@@ -679,7 +679,10 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
         if isinstance(ov, dict):
             _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
                         "runtime_minutes", "window_from_hour", "window_to_hour",
-                        "surface_m2", "solar_absorption", "deadline_hours"}
+                        "surface_m2", "solar_absorption", "deadline_hours",
+                        # von der Thermomodell-Kalibrierung geschrieben
+                        # (ems/pool_calibration.py --apply)
+                        "loss_w_per_k"}
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)
