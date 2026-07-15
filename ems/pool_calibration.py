@@ -1,0 +1,173 @@
+"""Thermomodell-Kalibrierung thermischer Lasten (Pool) aus Messdaten.
+
+Das MILP-Thermomodell (ems/loads._add_thermal) rechnet je Slot
+    dT/dt = (A_solar * G  -  loss_w_per_k * (T_pool - T_aussen)) / C
+mit  A_solar = surface_m2 * solar_absorption  [W je W/m² Globalstrahlung]
+und  C = volume_l * 1.163                     [Wh/K].
+
+loss_w_per_k und solar_absorption stammen aus der Config und sind zunächst
+geschätzt - die Planungsgüte hängt aber direkt daran. Dieses Modul fittet
+beide Koeffizienten per linearer Regression aus der lokalen Historie:
+
+  * load_temp    - gemessene Pooltemperatur je Zyklus (Ist)
+  * temperature  - Außentemperatur (Open-Meteo)
+  * radiation    - Globalstrahlung (Open-Meteo)
+  * load_cmd     - publizierte Heiz-FREIGABE je Zyklus
+
+Gefittet wird NUR über Fenster, in denen die Freigabe durchgehend 0 war
+(WP sicher aus): bei Freigabe "an" entscheidet das WP-Thermostat selbst, ob
+geheizt wird - der Wärmeeintrag wäre unbekannt. Da der Temperatursensor grob
+auflöst (~0,1 K) und dT je 15 min darunter liegt, wird über mehrstündige
+Fenster differenziert statt je Slot.
+
+Aufruf (druckt Vorschlagswerte, ändert NICHTS an der Config):
+    python -m ems.pool_calibration --config config.yaml [--days 30]
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+log = logging.getLogger("ems.pool_calibration")
+
+# Fensterlänge fürs Differenzieren: 2 h = 8 Slots. Lang genug, dass die
+# Temperaturänderung über der Sensorauflösung liegt; kurz genug für viele
+# (überlappende) Stichproben.
+WINDOW_SLOTS = 8
+SLOT_HOURS = 0.25
+
+
+@dataclass
+class FitResult:
+    loss_w_per_k: float
+    a_solar_w_per_wm2: float          # = surface_m2 * solar_absorption
+    n_windows: int
+    r2: float
+
+    def solar_absorption(self, surface_m2: float) -> Optional[float]:
+        if surface_m2 <= 0:
+            return None
+        return self.a_solar_w_per_wm2 / surface_m2
+
+
+def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
+                       permit: pd.Series, capacity_wh_per_k: float,
+                       min_windows: int = 48) -> Optional[FitResult]:
+    """Verlust- und Solar-Koeffizient aus sicher-aus-Fenstern fitten.
+
+    Alle Serien tz-aware; permit 0/1 nur an geloggten Zyklen (Lücken =
+    unbekannt = unbrauchbar). None, wenn zu wenig verwertbare Fenster
+    (< min_windows, Default 48 = 4 Tage à ~3 h Aus-Phase).
+    """
+    freq = f"{int(SLOT_HOURS * 60)}min"
+    if t_pool is None or len(t_pool) == 0 or permit is None or len(permit) == 0:
+        return None
+    grid = pd.date_range(t_pool.index.min().floor(freq),
+                         t_pool.index.max().ceil(freq), freq=freq)
+    df = pd.DataFrame({
+        "T": pd.Series(t_pool).reindex(grid, method="nearest",
+                                       tolerance=pd.Timedelta(freq)),
+        "Ta": pd.Series(t_amb).reindex(grid).interpolate(limit=8),
+        "G": pd.Series(g_solar).reindex(grid).interpolate(limit=8),
+        # KEIN Auffüllen: nur wirklich geloggte Zyklen zählen als bekannt.
+        "p": pd.Series(permit).reindex(grid, method="nearest",
+                                       tolerance=pd.Timedelta(freq)),
+    })
+    ok = df["T"].notna() & df["Ta"].notna() & df["G"].notna() & (df["p"] == 0)
+
+    ys, xs = [], []
+    w = WINDOW_SLOTS
+    for i in range(len(df) - w):
+        if not ok.iloc[i:i + w + 1].all():
+            continue
+        dT = df["T"].iloc[i + w] - df["T"].iloc[i]
+        # mittlerer Wärmestrom [W] über das Fenster = C * dT / Dauer
+        ys.append(capacity_wh_per_k * dT / (w * SLOT_HOURS))
+        xs.append([df["G"].iloc[i:i + w].mean(),
+                   -(df["T"].iloc[i:i + w] - df["Ta"].iloc[i:i + w]).mean()])
+    if len(ys) < min_windows:
+        log.info("Zu wenig sicher-aus-Fenster (%d < %d) - noch keine "
+                 "Kalibrierung möglich.", len(ys), min_windows)
+        return None
+
+    y = np.asarray(ys, dtype=float)
+    X = np.asarray(xs, dtype=float)
+
+    def _lsq(Xa, ya):
+        coef, *_ = np.linalg.lstsq(Xa, ya, rcond=None)
+        return coef
+
+    coef = _lsq(X, y)
+    # Ausreißer (Badegäste, Nachfüllen, Sensor-Sprünge) einmal verwerfen.
+    resid = y - X @ coef
+    keep = np.abs(resid) <= 3.0 * (np.std(resid) or 1.0)
+    if keep.sum() >= min_windows and keep.sum() < len(y):
+        y, X = y[keep], X[keep]
+        coef = _lsq(X, y)
+
+    a_solar, loss = float(coef[0]), float(coef[1])
+    ss_res = float(np.sum((y - X @ coef) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2)) or 1.0
+    return FitResult(loss_w_per_k=max(0.0, loss),
+                     a_solar_w_per_wm2=max(0.0, a_solar),
+                     n_windows=int(len(y)), r2=1.0 - ss_res / ss_tot)
+
+
+def run(config_path: str, days: int = 30) -> int:
+    from .config import load_config
+    from .local_history import (read_load_cmd, read_load_temp, read_radiation,
+                                read_temperature)
+    config = load_config(config_path)
+    tz = config.general.timezone
+    now = pd.Timestamp.now(tz=tz)
+    start = now - pd.Timedelta(days=days)
+    db = config.e3dc_rscp.history_db_path
+    rc = 1
+    for ld in getattr(config, "controllable_loads", []):
+        if ld.type != "thermal":
+            continue
+        t_pool = read_load_temp(db, ld.name, start, now, tz)
+        t_amb = read_temperature(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
+        g = read_radiation(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
+        permit = read_load_cmd(db, ld.name, start, now, tz)
+        cap = ld.volume_l * 1.163
+        fit = fit_thermal_params(t_pool, t_amb, g, permit, cap)
+        print(f"== {ld.name} ==")
+        if fit is None:
+            print(f"  Noch zu wenig Daten (sicher-aus-Fenster fehlen). Die "
+                  f"Freigabe wird seit heute geloggt (load_cmd) - nach ein "
+                  f"paar Tagen erneut ausführen.")
+            continue
+        rc = 0
+        cur_a = ld.surface_m2 * ld.solar_absorption
+        print(f"  Stichprobe: {fit.n_windows} Fenster à {WINDOW_SLOTS * SLOT_HOURS:.0f} h, R² = {fit.r2:.2f}")
+        print(f"  loss_w_per_k:     {fit.loss_w_per_k:7.0f}   (Config: {ld.loss_w_per_k:.0f})")
+        print(f"  Solar-Koeffizient:{fit.a_solar_w_per_wm2:7.2f} W/(W/m²)  (Config: {cur_a:.2f})")
+        sa = fit.solar_absorption(ld.surface_m2)
+        if sa is not None:
+            print(f"  -> solar_absorption bei surface_m2={ld.surface_m2:.1f}: "
+                  f"{sa:.2f}   (Config: {ld.solar_absorption:.2f})")
+        if fit.r2 < 0.3:
+            print("  Achtung: R² niedrig - Werte noch mit Vorsicht genießen "
+                  "(mehr Daten abwarten).")
+        print("  Werte bei Bedarf manuell in config.yaml übernehmen.")
+    return rc
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", default="config.yaml")
+    ap.add_argument("--days", type=int, default=30,
+                    help="Historienfenster in Tagen (Default 30)")
+    args = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    return run(args.config, args.days)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

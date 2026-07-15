@@ -399,11 +399,14 @@ class HomeyMqttPublisher:
             pass
 
     def publish(self, table: pd.DataFrame, current_ts: pd.Timestamp,
-                load_mqtt_map=None) -> None:
-        """Publiziert Sollwerte des aktuellen Slots und optional die Tabelle."""
+                load_mqtt_map=None):
+        """Publiziert Sollwerte des aktuellen Slots und optional die Tabelle.
+        Rückgabe: publizierte Last-Befehle {Lane-Label: 1|0|'aus'} (leer, wenn
+        MQTT aus) - z.B. fürs load_cmd-Log der Thermomodell-Kalibrierung."""
+        loadsp: Dict[str, object] = {}
         if not self.cfg.enabled:
             log.info("MQTT deaktiviert – überspringe Publish.")
-            return
+            return loadsp
 
         base = self.cfg.base_topic
         self._ensure_connected()
@@ -458,7 +461,6 @@ class HomeyMqttPublisher:
             # aktiver Last, nie retained).
             lanes = self._load_lanes()
             if lanes:
-                loadsp = {}
                 for e in lanes:
                     col, en = e["column"], e["enabled"]
                     planned = bool(en and col in table.columns
@@ -542,3 +544,4 @@ class HomeyMqttPublisher:
                 }
                 self._pub(f"{base}/loads", json.dumps(loads_json, separators=(",", ":")),
                           retain=self.cfg.retain)
+        return loadsp

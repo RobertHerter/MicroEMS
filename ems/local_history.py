@@ -48,6 +48,13 @@ def _con(path: str) -> sqlite3.Connection:
     # für den solaren Wärmeeintrag thermischer Lasten (Pool).
     con.execute("CREATE TABLE IF NOT EXISTS radiation ("
                 " ts TEXT PRIMARY KEY, w_m2 REAL NOT NULL)")
+    # Publizierte Heiz-FREIGABE thermischer Lasten je Zyklus (1 = mindestens
+    # eine Stufe freigegeben, 0 = sicher aus). Grundlage der Thermomodell-
+    # Kalibrierung (ems/pool_calibration.py): nur in sicher-aus-Phasen lässt
+    # sich der Wärmehaushalt (Verlust + Solareintrag) sauber fitten - bei
+    # Freigabe "an" entscheidet das WP-Thermostat selbst, ob geheizt wird.
+    con.execute("CREATE TABLE IF NOT EXISTS load_cmd ("
+                " name TEXT, ts TEXT, permit INTEGER, PRIMARY KEY(name, ts))")
     con.commit()
     return con
 
@@ -106,6 +113,39 @@ def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
         return pd.Series(dtype="float64")
     idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     return pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+
+
+def write_load_cmd(path: str, ts, name: str, permit: int) -> None:
+    """Publizierte Heiz-Freigabe (0/1) einer thermischen Last beim Slot-
+    Zeitstempel ablegen (Grundlage der Thermomodell-Kalibrierung)."""
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT INTO load_cmd(name, ts, permit) VALUES(?,?,?) "
+        "ON CONFLICT(name, ts) DO UPDATE SET permit=excluded.permit",
+        (str(name), key, int(permit)))
+    con.commit()
+    con.close()
+
+
+def read_load_cmd(path: str, name: str, start, end, tz: str) -> pd.Series:
+    """Heiz-Freigabe [start, end] einer Last als 0/1-Serie (tz-lokal, nur
+    tatsächlich geloggte Zyklen - Lücken bleiben Lücken, KEIN Auffüllen:
+    'unbekannt' darf beim Kalibrieren nicht als 'aus' gewertet werden)."""
+    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, permit FROM load_cmd WHERE name = ? AND ts >= ? AND ts <= ? "
+            "ORDER BY ts", (str(name), s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    return pd.Series([float(r[1]) for r in rows], index=idx).tz_convert(tz)
 
 
 def write_load_temp(path: str, ts, name: str, temp_c: float) -> None:

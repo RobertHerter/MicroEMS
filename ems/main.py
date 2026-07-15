@@ -370,7 +370,23 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
-            publisher.publish(result.table, now, result.load_mqtt_map)
+            load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
+            # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
+            # aus): Grundlage der Thermomodell-Kalibrierung
+            # (python -m ems.pool_calibration).
+            try:
+                from .local_history import write_load_cmd
+                slot_ts = pd.Timestamp(now).floor("15min")
+                for ld in getattr(config, "controllable_loads", []):
+                    if ld.type != "thermal":
+                        continue
+                    permit = int(any(
+                        v == 1 for lbl, v in (load_cmds or {}).items()
+                        if lbl == ld.name or lbl.startswith(f"{ld.name}/")))
+                    write_load_cmd(config.e3dc_rscp.history_db_path, slot_ts,
+                                   ld.name, permit)
+            except Exception as exc:
+                log.debug("load_cmd-Log fehlgeschlagen (%s).", exc)
             if one_shot:
                 publisher.close()
         except Exception as exc:
