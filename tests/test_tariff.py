@@ -97,3 +97,24 @@ def test_read_spot_roundtrip_and_hold(tmp_path):
     assert abs(s.iloc[8] - 12.0) < 1e-9          # +2h
     assert abs(s.iloc[11] - 12.0) < 1e-9         # +2h45 noch gehalten
     assert pd.isna(s.iloc[12])                   # danach NaN
+
+
+def test_read_spot_native_15min_does_not_extend_past_last_value(tmp_path):
+    """Regression: Energy-Charts liefert die jüngste Historie bereits nativ
+    15-min-genau. Das alte ffill(limit=spl-1) hielt den letzten ECHTEN 15-min-
+    Wert fälschlich 3 weitere Slots (bis zu 45 min) über das reale Datenende
+    hinaus - z.B. 23:45 heute erschien dann bis 00:30 morgen "gültig". Bei
+    lückenlosen 15-min-Quelldaten darf NACH dem letzten Wert sofort NaN stehen."""
+    db = str(tmp_path / "s15.sqlite")
+    base = pd.Timestamp("2026-01-01 22:00", tz="UTC")   # = 23:00 CET
+    mapping = {(base + pd.Timedelta(minutes=15 * i)).isoformat(): 20.0 + i
+               for i in range(4)}                        # 23:00, 23:15, 23:30, 23:45
+    assert write_spot(db, mapping) == 4
+    tz = "Europe/Berlin"
+    s = read_spot(db, base.tz_convert(tz), (base + pd.Timedelta(hours=2)).tz_convert(tz),
+                  tz, 15)
+    last_real = s.dropna().index[-1]
+    assert last_real.strftime("%H:%M") == "23:45", \
+        f"letzter echter Wert sollte 23:45 sein, ist {last_real}"
+    assert pd.isna(s[s.index > last_real]).all(), \
+        "Slots nach dem letzten echten 15-min-Wert dürfen nicht gehalten werden"

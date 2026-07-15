@@ -278,10 +278,24 @@ def read_spot(path: str, start, end, tz: str, slot_minutes: int = 15) -> pd.Seri
     if len(grid) == 0:
         return src
     spl = max(1, 60 // slot_minutes)      # Slots je Stunde
-    # stündliche Quelle auf die Sub-Slots halten (limit), aber nicht über das
-    # Ende der Historie hinaus (dort NaN -> Schätzung).
+    # Ältere, gröbere (stündliche) Quelle auf die Sub-Slots halten (limit) -
+    # ABER NICHT über den letzten ECHTEN Datenpunkt hinaus, wenn dieser bereits
+    # nativ im Slot-Raster liegt: Energy-Charts liefert die jüngste Historie/
+    # Folgetag inzwischen bereits 15-min-genau; ffill(limit=…) kennt nur die
+    # ANZAHL der Lücken-Slots, nicht ob dahinter noch echte Daten kommen -> hielt
+    # den letzten realen 15-min-Wert fälschlich 3 weitere Slots (bis zu 45 min)
+    # über das reale Ende hinaus (z.B. bis 00:30 statt 23:45). Unterscheidung
+    # über den Abstand zum vorletzten Punkt: liegt er bei einer vollen Stunde
+    # (alte stündliche Quelle), bleibt das Halten über die Stunde wie bisher;
+    # liegt er im Slot-Raster (native Auflösung), wird NICHT verlängert.
     allidx = src.index.union(grid)
     held = src.reindex(allidx).ffill(limit=spl - 1)
+    if len(src.index) >= 2:
+        last_gap = src.index[-1] - src.index[-2]
+    else:
+        last_gap = pd.Timedelta(hours=1)   # unbekannt -> altes (sicheres) Verhalten
+    if last_gap <= pd.Timedelta(minutes=slot_minutes):
+        held.loc[held.index > src.index.max()] = float("nan")
     return held.reindex(grid)
 
 
