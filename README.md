@@ -364,7 +364,14 @@ per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
   Einspeisevergütung, **Steuerung** (Ladebefehle, Abregelung, Ist-Akkuleistung)
 - **Modus-Zeitleiste**: Eingriffe als Farbstreifen (auto/Peak-Laden/gedrosselt/
   gesperrt/Netzladen/Netz-Entladen) mit Legende und Hover-Klartext
+- **Steuerbare Lasten** (nur bei konfigurierten `controllable_loads`): An/Aus je
+  Slot als Farbstreifen, deaktivierte Lasten grau
+- **Temperaturen** (nur bei thermischen Lasten): erwartete vs. echte
+  Pooltemperatur je Last (Komfortband hinterlegt) + Außentemperatur
 - Vergangenheit grau hinterlegt, Tagesgrenzen mit Wochentag, Jetzt-Linie
+- **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten
+  an/aus + Kernparameter, Optimierungsmodus (auto/asap/peak), manuelles
+  Akku-Laden/-Entladen – direkt aus dem Dashboard, ohne MQTT
 
 Die interaktive Beispielausgabe (Bild oben, **synthetische Daten**) liegt als
 [dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
