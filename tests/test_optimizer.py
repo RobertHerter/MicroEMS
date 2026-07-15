@@ -390,3 +390,29 @@ def test_no_spurious_discharge_block_when_pv_near_load():
     assert not res.table["mode"].isin(["hold", "limit_discharge"]).any(), \
         "sinnlose Entladesperre bei PV≈Last"
     assert (res.table["batt_discharge_limit_w"] > 1.0).all()
+
+
+def test_warm_start_second_solve_reuses_previous_solution():
+    """MIP-Warmstart: die Lösung des ersten Laufs wird (um den Zeitversatz
+    verschoben) als Startlösung des Folgelaufs gesetzt - Folgelauf bleibt
+    korrekt (Optimal, konsistente Tabelle). Nicht-Slot-Variablen (L_day_*)
+    werden beim Verschieben ausgelassen."""
+    import ems.optimizer as O
+    O._warm_cache.clear()
+    cfg = make_config()
+    idx = _day_index("2026-06-10")
+    res1 = Optimizer(cfg).solve(_inputs(idx, pv=_pv_gauss(idx, 6000),
+                                        load=800.0, price=30.0))
+    assert not res1.infeasible
+    assert O._warm_cache and O._warm_cache["values"], "Warm-Cache leer"
+    assert O._warm_cache["start"] == idx[0]
+    # verschobene Werte für den Folgezyklus (1 Slot später) sind abrufbar
+    warm = O._shifted_warm_values(idx[1], 15)
+    assert warm, "keine verschobenen Warm-Werte"
+    assert not any(k.startswith("L_day") for k in warm)
+    # Folgelauf (1 Slot später) nutzt den Warmstart und bleibt korrekt
+    res2 = Optimizer(cfg).solve(_inputs(idx[1:], pv=_pv_gauss(idx[1:], 6000),
+                                        load=800.0, price=30.0))
+    assert not res2.infeasible
+    assert len(res2.table) == len(idx) - 1
+    O._warm_cache.clear()

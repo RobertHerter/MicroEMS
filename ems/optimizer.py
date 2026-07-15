@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -79,6 +80,90 @@ class OptimizerResult:
     load_mqtt_map: Optional[list] = None
 
 
+# --------------------------------------------------------------------------- #
+# MIP-Warmstart: Lösung des letzten Laufs (prozess-lokal). Zwischen zwei
+# 15-min-Zyklen ändert sich der Plan kaum - die um den Zeitversatz verschobene
+# alte Lösung ist ein sehr guter Startpunkt: HiGHS bekommt sofort einen
+# brauchbaren Incumbent (statt ihn per Heuristik suchen zu müssen) und
+# repariert unpassende kontinuierliche Werte selbst per LP. Passt die alte
+# Lösung gar nicht mehr (Eingaben stark geändert), verwirft HiGHS sie einfach.
+# --------------------------------------------------------------------------- #
+_warm_cache: dict = {}
+
+_TRAIL_IDX = re.compile(r"^(.+)_(\d+)$")
+
+
+def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
+    """Warm-Werte des letzten Laufs auf den neuen Horizont verschieben:
+    alter Slot-Index -> neuer = alt - Versatz. Nicht-Slot-Variablen (z.B.
+    L_day_<i> = Tagesindex der Einspeise-Linie) werden ausgelassen - ein
+    falsch verschobener Tagesindex wäre schädlicher als kein Startwert.
+    None, wenn kein (nutzbarer) letzter Lauf vorliegt."""
+    c = _warm_cache
+    if not c or c.get("slot_min") != slot_minutes:
+        return None
+    delta_min = (pd.Timestamp(new_start) - c["start"]).total_seconds() / 60.0
+    shift = int(round(delta_min / slot_minutes))
+    if abs(delta_min / slot_minutes - shift) > 1e-6 or shift < 0:
+        return None
+    if shift * slot_minutes > 240:      # > 4 h alt: Plan zu weit weg, wertlos
+        return None
+    out = {}
+    for name, val in c["values"].items():
+        m = _TRAIL_IDX.match(name)
+        if not m or m.group(1).startswith("L_day"):
+            continue
+        i = int(m.group(2)) - shift
+        if i >= 0:
+            out[f"{m.group(1)}_{i}"] = val
+    return out or None
+
+
+def _store_warm_solution(prob, start, slot_minutes: int) -> None:
+    """Lösung fürs Warmstarten des nächsten Laufs merken (nur Werte != 0;
+    fehlende Variablen starten ohnehin bei 0)."""
+    vals = {}
+    for v in prob.variables():
+        x = v.varValue
+        if x is not None and abs(x) > 1e-9:
+            vals[v.name] = float(x)
+    _warm_cache.clear()
+    _warm_cache.update({"start": pd.Timestamp(start), "slot_min": slot_minutes,
+                        "values": vals})
+
+
+class _WarmHiGHS(pulp.HiGHS):
+    """pulp.HiGHS + MIP-Startlösung via highspy.setSolution (der PuLP-Wrapper
+    selbst kennt keinen Warmstart). Ein unvollständiger/unpassender Start ist
+    unkritisch: HiGHS prüft ihn, repariert Kontinuierliches per LP oder
+    verwirft ihn kommentarlos."""
+
+    def __init__(self, warm_values=None, **kwargs):
+        super().__init__(**kwargs)
+        self.warm_values = warm_values or {}
+
+    def callSolver(self, lp):
+        if self.warm_values:
+            try:
+                import highspy
+                col = [0.0] * lp.solverModel.getNumCol()
+                hits = 0
+                for var in lp.variables():
+                    x = self.warm_values.get(var.name)
+                    if x is not None:
+                        col[var.index] = float(x)
+                        hits += 1
+                if hits:
+                    sol = highspy.HighsSolution()
+                    sol.col_value = col
+                    lp.solverModel.setSolution(sol)
+                    log.info("Warmstart: %d Variablen aus dem letzten Lauf vorbelegt.",
+                             hits)
+            except Exception as exc:   # pragma: no cover - nur defensive Hülle
+                log.debug("Warmstart übersprungen (%s).", exc)
+        super().callSolver(lp)
+
+
 def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float,
                          max_export_w: Optional[float] = None):
     """Ein Slot natürliches E3DC-Eigenverbrauchsverhalten (ohne EMS-Eingriffe):
@@ -107,10 +192,12 @@ def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours
     return soc_wh, charge, dis, imp, exp
 
 
-def make_solver(cfg: Config):
+def make_solver(cfg: Config, warm_values: Optional[dict] = None):
     """CBC-Solver: bevorzugt das System-CBC (COIN_CMD, coinor-cbc), da
     PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC.
-    Optional: HiGHS-Solver falls in der Konfiguration gewählt."""
+    Optional: HiGHS-Solver falls in der Konfiguration gewählt; warm_values
+    ({Variablenname: Wert}, z.B. verschobene Lösung des letzten Laufs) werden
+    dort als MIP-Startlösung gesetzt (CBC: ignoriert)."""
     threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
     kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
                   threads=threads)
@@ -130,7 +217,7 @@ def make_solver(cfg: Config):
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":
         try:
-            highs = pulp.HiGHS(**kwargs)
+            highs = _WarmHiGHS(warm_values=warm_values, **kwargs)
             if highs.available():
                 log.info("Solver: HiGHS (highspy).")
                 return highs
@@ -651,7 +738,8 @@ class Optimizer:
 
         # ---- Lösen ------------------------------------------------------- #
         _t0 = time.monotonic()
-        prob.solve(make_solver(cfg))
+        warm = _shifted_warm_values(inp.index[0], int(round(dt * 60)))
+        prob.solve(make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0
         hit_limit = solve_s >= cfg.optimization.solver_time_limit_s - 2.0
         if hit_limit:
@@ -670,6 +758,8 @@ class Optimizer:
                       "Fallback 'auto' ohne Eingriffe.", status)
             return self._neutral_result(inp, status)
         infeasible = False
+        # Lösung für den Warmstart des nächsten Zyklus merken.
+        _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
         # ---- Ergebnis extrahieren --------------------------------------- #
         def val(v):
