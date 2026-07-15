@@ -4,8 +4,10 @@ controllable_loads_overrides:
   Pool:
     enabled: true
     target_c: 28.0
-    min_c: 26.0
-    max_c: 32.0
+    min_c: 27.0
+    max_c: 28.0
+    surface_m2: 7.0
+    solar_absorption: 0.75
   Waschmaschine:
     enabled: false
     power_w: 0.0
