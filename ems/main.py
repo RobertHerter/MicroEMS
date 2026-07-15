@@ -425,7 +425,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
                             violations=violations,
-                            load_temp_actual=load_temp_actual)
+                            load_temp_actual=load_temp_actual,
+                            ambient_temp_c=temp)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:

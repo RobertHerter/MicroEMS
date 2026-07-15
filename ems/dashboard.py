@@ -214,7 +214,7 @@ function emsBat(a){ emsPost('battery',{action:a,
 
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
-                    load_temp_actual=None) -> str:
+                    load_temp_actual=None, ambient_temp_c=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -426,6 +426,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 fig.add_trace(go.Scatter(
                     x=act.index, y=act.values, name=f"{ld.name} echt", mode="lines",
                     line=dict(color=c, width=2),
+                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
+        # Außentemperatur (Open-Meteo, Ist+Prognose) als Referenz - erklärt
+        # Wärmeverlust/-eintrag der Pooltemperatur mit.
+        if ambient_temp_c is not None and len(ambient_temp_c) > 0:
+            amb = ambient_temp_c.dropna()
+            if len(amb) > 0:
+                fig.add_trace(go.Scatter(
+                    x=amb.index, y=amb.values, name="Außentemperatur", mode="lines",
+                    line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate="%{y:.1f} °C", legendgroup="temp",
                     legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
 
