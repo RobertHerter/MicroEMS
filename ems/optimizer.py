@@ -443,6 +443,13 @@ class Optimizer:
             # Eigenverbrauchs-Priorität / kein Akku->Netz (außer Arbitrage):
             prob += soc[t + 1] >= (hb.max_soc_wh - EPS_SOC) * is_full[t]
             prob += dc[t] + ac[t] >= (max_tot_ch - EPS_P) * at_max[t]
+            # NETZ-Laden heißt Netz: die AC-Ladung darf den Netzbezug des Slots
+            # nicht übersteigen. Ohne diese Kopplung durfte der Solver "ac" aus
+            # PV-Überschuss speisen (imp=0) - physikalisch sinnlose Doppel-
+            # wandlung (dafür gibt es den effizienteren DC-Pfad), die aber als
+            # batt_grid_charge_w-Befehl real ECHTES Netzladen kommandiert hätte
+            # (z.B. 87 W "Netzladen" bei 38 ct, gespeist aus PV).
+            prob += ac[t] <= g_imp[t]
             # Strategie des jeweiligen Tages (peak/asap)
             dm = day_mode[slot_day[t]]
             # Peak-Tag: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
@@ -461,6 +468,15 @@ class Optimizer:
                 else:
                     # asap: Einspeisen nur, wenn Akku voll ODER mit Max-Leistung lädt.
                     prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
+            # Abregeln nur, wenn der Akku voll ist ODER mit Max-Leistung lädt -
+            # sonst MUSS der Überschuss geladen/exportiert werden. Ohne diese
+            # Regel darf der Solver innerhalb der MIP-Gap-Toleranz PV "aus
+            # Faulheit" wegwerfen (z.B. 350 W abregeln statt laden, wenn das
+            # Export-Gate zu ist und der Ladegewinn nur wenige ct beträgt) -
+            # sichtbar als sinnlose Abregel-/Ladesperren-Slots im Plan. Immer
+            # zulässig bleibt Abregeln bei vollem Akku (Export-Limit/Peak-Linie/
+            # Negativpreis) - genau dann ist es real nötig.
+            prob += curt[t] <= BIGG * (is_full[t] + at_max[t])
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
@@ -679,6 +695,29 @@ class Optimizer:
             car_v = val(car[t]) if use_car else 0.0
             imp_v, exp_v = val(g_imp[t]), val(g_exp[t])
             soc_v = val(soc[t + 1])
+            # Mikro-Netzladen (< 100 W, MIP-Gap-Rauschen) NIE als Befehl ausgeben:
+            # ein "Netzladen 87 W"-Kommando ist für ein 12-kW-System sinnlos und
+            # würde real Mode-4-Netzladen erzwingen. ac <= g_imp (Modell) macht
+            # das Streichen exakt bilanz-konsistent (Import sinkt um denselben
+            # Betrag); die SoC-Abweichung (< 25 Wh) liegt in der Toleranz.
+            if 0.0 < ac_v < 100.0:
+                imp_v = max(0.0, imp_v - ac_v)
+                ac_v = 0.0
+            # Abregel-Krümel (MIP-Gap-Rauschen) deterministisch bereinigen: wird
+            # im selben Slot bereits EXPORTIERT (Export-Gate offen, kein Import),
+            # ist "abregeln statt mehr einspeisen" beweisbar dominiert -> Rest in
+            # Export umbuchen. Exakt bilanz-konsistent (pv_to_ac und g_exp steigen
+            # um denselben Betrag; Peak-Linie deckelt g_exp+curt, Summe konstant).
+            # Schranken: Netzanschluss-Limit und WR-Durchsatz; nur bei positiver
+            # Vergütung (sonst wäre Abregeln ggf. gewollt).
+            if curt_v > 0.0 and exp_v > 1.0 and float(inp.feedin_ct_kwh[t]) > 0.0:
+                cap = (cfg.inverter.max_export_w if cfg.inverter.max_export_w
+                       is not None else float("inf"))
+                pv_to_ac_v = max(0.0, float(inp.pv_w[t])) - dc_v - curt_v
+                room_inv = max_inv - (pv_to_ac_v + dis_v + ac_v)
+                shift = max(0.0, min(curt_v, cap - exp_v, room_inv))
+                curt_v -= shift
+                exp_v += shift
             slot_cost = (imp_v * inp.price_ct_kwh[t] - exp_v * inp.feedin_ct_kwh[t]) * kwh
 
             # --- Übersetzung in E3DC-Steuerbefehle -----------------------

@@ -280,7 +280,9 @@ class OptimizationConfig:
     # Absolute Optimalitätslücke (ct): Stopp, sobald die Lösung beweisbar
     # höchstens X ct vom Optimum entfernt ist. Wichtig als Ergänzung zur
     # RELATIVEN Lücke: enthält das Ziel große konstante Terme (z.B. Komfort-
-    # Malus), wären "1 %" plötzlich viele Euro. 0 = aus.
+    # Malus), wären "1 %" plötzlich viele Euro. Nicht zu groß wählen: die
+    # Toleranz ist auch das Budget für sinnlose Mikro-Artefakte im Plan
+    # (Abregel-Reste, Kleinst-Eingriffe). 0 = aus.
     solver_mip_gap_abs_ct: float = 25.0
     # Malus (ct) je Einschaltvorgang der Wallbox: verhindert, dass das Auto
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
