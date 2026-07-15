@@ -421,12 +421,19 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             load_temp_actual[ld.name] = s
             except Exception as exc:  # pragma: no cover
                 log.debug("Ist-Temp-Verlauf fürs Dashboard nicht verfügbar: %s", exc)
+            # Außentemperatur auf den Anzeigezeitraum zuschneiden (temp deckt den
+            # kompletten Lookback von forecast.lookback_days ab, z.B. 730 Tage -
+            # das Dashboard soll wie alle anderen Kurven nur "heute ab 00:00" bis
+            # Horizontende zeigen).
+            ambient_temp_display = (
+                temp[(temp.index >= display.index[0]) & (temp.index <= display.index[-1])]
+                if temp is not None else None)
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
                             violations=violations,
                             load_temp_actual=load_temp_actual,
-                            ambient_temp_c=temp)
+                            ambient_temp_c=ambient_temp_display)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
