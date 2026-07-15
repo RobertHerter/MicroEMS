@@ -8,6 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ems.config import ControllableLoad, LoadStage
 from ems.dashboard import build_dashboard
 from ems.optimizer import Optimizer, OptimizerInputs
 from tests.test_synthetic import make_config, synthetic_history
@@ -18,6 +19,24 @@ OUT = "dashboard_beispiel.html"
 
 def main() -> None:
     cfg = make_config(tmp_html=OUT)
+    # Steuerbare Last (Pool-WP, wie im echten Betrieb) + interaktives
+    # Steuerpanel, damit das Beispielbild die aktuellen Panels zeigt.
+    cfg.controllable_loads = [
+        ControllableLoad(
+            name="Pool", type="thermal", enabled=True, volume_l=8000,
+            target_c=28.0, min_c=27.0, max_c=29.0, loss_w_per_k=380.0,
+            surface_m2=8.0, solar_absorption=0.75, thermostat=True,
+            no_grid_import=True, switch_penalty_ct=5.0,
+            stages=[LoadStage("WP Pinguin", 650.0, 4000.0),
+                    LoadStage("WP klein", 400.0, 3000.0, requires="WP Pinguin")],
+        ),
+        ControllableLoad(
+            name="Waschmaschine", type="deferrable", enabled=False,
+            power_profile_w=[2100, 300, 150, 150, 2000, 250, 200, 100],
+            runtime_minutes=120.0, window_from_hour=8, window_to_hour=22,
+        ),
+    ]
+    cfg.dashboard.controls_enabled = True
     tz = cfg.general.timezone
     rng = np.random.default_rng(7)
 
@@ -39,6 +58,11 @@ def main() -> None:
                         index=full)
     price_full = pd.Series(24 + 9 * np.sin((hour - 6) / 24 * 2 * np.pi)
                            + np.where((hour >= 18) & (hour <= 21), 12, 0), index=full)
+    # Außentemperatur (Tagesgang) und Solar-Einstrahlung (für den Pool-Wärme-
+    # eintrag) - synthetisch, wie ein Sommertag mit ~28°C Spitze.
+    ambient_full = pd.Series(18 + 10 * np.exp(-((hour - 15) ** 2) / 18), index=full)
+    solar_full = pd.Series(np.clip(850 * np.exp(-((hour - 13) ** 2) / 8), 0, None),
+                           index=full)
 
     # --- Optimierung über den Zukunftsteil ---
     inp = OptimizerInputs(
@@ -49,6 +73,9 @@ def main() -> None:
         feedin_ct_kwh=np.full(len(opt_index), 8.0),
         initial_house_soc_wh=3500.0,
         pv10_w=0.55 * pv_full.reindex(opt_index).values,
+        ambient_temp_c=ambient_full.reindex(opt_index).values,
+        solar_w_m2=solar_full.reindex(opt_index).values,
+        load_state={"Pool": 27.5},
     )
     res = Optimizer(cfg).solve(inp)
 
@@ -79,8 +106,17 @@ def main() -> None:
     t.loc[past, "actual_battery_w"] = (t.loc[past, "actual_pv_w"]
                                        - t.loc[past, "actual_load_w"]).clip(-4000, 6000)
 
+    # Pool-Ist-Temperatur (Vergangenheit): folgt dem geplanten Verlauf mit
+    # etwas Rauschen, damit "Pool erwartet" vs. "Pool echt" sich unterscheiden.
+    load_temp_actual = {}
+    if "load_Pool_temp_c" in t.columns and t.loc[past, "load_Pool_temp_c"].notna().any():
+        planned = t.loc[past, "load_Pool_temp_c"]
+        load_temp_actual["Pool"] = (planned + rng.normal(0, 0.15, len(planned))).dropna()
+
     out = build_dashboard(cfg, t, res.total_cost_ct,
-                          export_line_w=res.export_line_w, savings_eur=42.17)
+                          export_line_w=res.export_line_w, savings_eur=42.17,
+                          load_temp_actual=load_temp_actual,
+                          ambient_temp_c=ambient_full)
 
     # Fürs Repo eigenständig lauffähig: Plotly vom CDN statt lokaler Datei
     # (Version der JS-Bibliothek, nicht des Python-Pakets!)
