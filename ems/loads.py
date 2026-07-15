@@ -43,6 +43,15 @@ def _md(s: str):
     return int(m), int(d)
 
 
+def in_season(load, ts) -> bool:
+    """Ist der Zeitstempel in der Saison der Last? (season_from/to MM-DD, Wrap ok)"""
+    if not (load.season_from and load.season_to):
+        return True
+    lo, hi = _md(load.season_from), _md(load.season_to)
+    cur = (ts.month, ts.day)
+    return (lo <= cur <= hi) if lo <= hi else (cur >= lo or cur <= hi)
+
+
 def _season_mask(load, md_list) -> np.ndarray:
     """Bool je Slot: ist die Last in Saison? (season_from/to als MM-DD, Wrap ok)."""
     n = len(md_list)

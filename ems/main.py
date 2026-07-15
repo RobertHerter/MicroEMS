@@ -373,12 +373,18 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
             # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
             # aus): Grundlage der Thermomodell-Kalibrierung
-            # (python -m ems.pool_calibration).
+            # (python -m ems.pool_calibration). NUR bei aktiver Steuerung UND
+            # in der Saison loggen: außerhalb (Winter) ist der Temperatur-
+            # sensor gar nicht im Pool - solche Slots dürfen NICHT als
+            # "sicher aus" in den Fit einfließen. Nicht geloggt = unbekannt
+            # = vom Fit ignoriert (read_load_cmd füllt Lücken bewusst nicht).
             try:
                 from .local_history import write_load_cmd
+                from .loads import in_season
                 slot_ts = pd.Timestamp(now).floor("15min")
                 for ld in getattr(config, "controllable_loads", []):
-                    if ld.type != "thermal":
+                    if ld.type != "thermal" or not ld.enabled \
+                            or not in_season(ld, slot_ts):
                         continue
                     permit = int(any(
                         v == 1 for lbl, v in (load_cmds or {}).items()

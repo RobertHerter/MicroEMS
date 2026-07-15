@@ -123,6 +123,32 @@ def test_maybe_apply_respects_quality_gates(tmp_path):
         "loss_w_per_k" not in str(open(tmp_path / "config_overrides.yaml").read())
 
 
+def test_in_season_guards_calibration_logging():
+    """Außerhalb der Saison (Winter: Sensor nicht im Pool!) darf die Freigabe
+    nicht geloggt werden - in_season ist der Wächter dafür (inkl. Wrap über
+    den Jahreswechsel und "keine Saison = immer")."""
+    from ems.config import ControllableLoad, LoadStage
+    from ems.loads import in_season
+    pool = ControllableLoad(name="Pool", type="thermal",
+                            season_from="04-15", season_to="10-15",
+                            stages=[LoadStage("WP", 400, 3000)])
+    assert in_season(pool, pd.Timestamp("2026-07-15", tz=TZ))
+    assert in_season(pool, pd.Timestamp("2026-04-15", tz=TZ))
+    assert in_season(pool, pd.Timestamp("2026-10-15", tz=TZ))
+    assert not in_season(pool, pd.Timestamp("2026-01-20", tz=TZ))   # Winter
+    assert not in_season(pool, pd.Timestamp("2026-11-01", tz=TZ))
+    # Wrap über den Jahreswechsel (z.B. Heizsaison Okt-März)
+    heat = ControllableLoad(name="Puffer", type="thermal",
+                            season_from="10-01", season_to="03-31",
+                            stages=[LoadStage("WP", 400, 3000)])
+    assert in_season(heat, pd.Timestamp("2026-01-20", tz=TZ))
+    assert not in_season(heat, pd.Timestamp("2026-07-15", tz=TZ))
+    # keine Saison konfiguriert -> immer aktiv
+    always = ControllableLoad(name="X", type="thermal",
+                              stages=[LoadStage("WP", 400, 3000)])
+    assert in_season(always, pd.Timestamp("2026-01-20", tz=TZ))
+
+
 def test_load_cmd_roundtrip(tmp_path):
     db = str(tmp_path / "cmd.sqlite")
     base = pd.Timestamp("2026-06-01 10:00", tz=TZ)
