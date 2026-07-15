@@ -238,7 +238,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     temp_row = None
     if has_thermal:
         temp_row = len(titles) + 1
-        titles.append("<b>Pool-Temperatur</b>")
+        titles.append("<b>Temperaturen</b>")
         row_heights.append(0.12)
     n_rows = len(titles)
     fig = make_subplots(
@@ -404,7 +404,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             hovertemplate="%{y}  %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
 
-    # ---------- Panel 7: Pool-/Thermo-Temperatur (erwartet vs. echt) ----------
+    # ---------- Panel 7: Temperaturen (Pool erwartet/echt, Außentemperatur) ---
     if temp_row is not None:
         from .loads import _slug as _lslug
         _tcol = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd"]
