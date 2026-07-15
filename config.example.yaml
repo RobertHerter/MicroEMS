@@ -162,6 +162,20 @@ controllable_loads: []
   #   min_c: 27            # der Optimierer hält die Temperatur >= min_c
   #   max_c: 29
   #   loss_w_per_k: 120    # Wärmeverlust je K (T_pool - T_außen); ggf. kalibrieren
+  #   # Solarer Wärmeeintrag (braucht weather.enabled: Open-Meteo-Einstrahlung):
+  #   surface_m2: 8.0          # Wasseroberfläche; 0/weglassen = kein Solareintrag
+  #   solar_absorption: 0.75   # Wirkungsgrad der Fläche (Bubble-Folie ~0.75)
+  #   # Entscheidungsraster (min): WP-Schaltentscheidungen nur alle X Minuten
+  #   # (weniger Binärvariablen -> Solver deutlich schneller); Default 60.
+  #   decision_minutes: 60
+  #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE - bei
+  #   # Ist-Temperatur >= target_c bleibt sie AN (die WP hält per eigenem
+  #   # Thermostat), "aus" nur, wenn Heizen aktiv verhindert werden soll.
+  #   thermostat: true
+  #   # Kein Netzbezug durch die WP: läuft eine Stufe, muss der Netzbezug im
+  #   # Slot 0 sein - PV-Überschuss UND Akku dürfen decken, Netzstrom nie.
+  #   # (Alter Name pv_surplus_only wird weiter als Alias gelesen.)
+  #   no_grid_import: true
   #   temp_signal: "pool/temperature"   # MQTT-Topic der Ist-Temperatur (°C)
   #   season: {from: "04-15", to: "10-15"}
   #   switch_penalty_ct: 5
@@ -174,6 +188,9 @@ controllable_loads: []
   #   power_profile_w: [2100, 300, 150, 150, 2000, 250, 200, 100]   # 2 h Zyklus
   #   runtime_minutes: 120          # = Profillänge -> ein Zyklus
   #   window: {from: 8, to: 22}
+  #   # Spätestens nach X Stunden ab "jetzt" einplanen (verhindert, dass die
+  #   # Maschine für Minimal-Ersparnis auf übermorgen rutscht). Default 24.
+  #   deadline_hours: 24
   #   mqtt_topic: "waschmaschine/start"
 
 # -----------------------------------------------------------------------------
@@ -242,6 +259,13 @@ optimization:
   # beste Zwischenstand publiziert (Alarm auf ems/alert) - der kann deutlich
   # suboptimal sein. Läuft alle 15 min -> 300 s sind unkritisch.
   solver_time_limit_s: 300
+  # Relative Optimalitätslücke (0.01 = 1 %): Stopp, sobald die Lösung beweisbar
+  # nah genug am Optimum ist - meist deutlich schneller als "exakt optimal".
+  solver_mip_gap: 0.01
+  # Absolute Optimalitätslücke in ct: Ergänzung zur relativen (wichtig, wenn
+  # das Ziel große konstante Terme enthält, z.B. Komfort-Malus thermischer
+  # Lasten - dann wären "1 %" plötzlich mehrere Euro). 0 = aus.
+  solver_mip_gap_abs_ct: 25.0
   # CBC-Threads. 0 = automatisch (CPU-Kerne - 1).
   solver_threads: 0
   # Malus (ct) je Wallbox-Einschaltvorgang gegen Dauer-Takten bei zappeligen
@@ -410,3 +434,9 @@ dashboard:
   #   POST /api/ingest/spot         {"values": {"<UTC-ISO>": <ct/kWh netto>}}
   #   POST /api/ingest/pv_forecast  {"source":"extern", "values": {"<ISO>": {"pv_w":..,"pv10_w":..,"pv90_w":..}}}
   ingest_enabled: false
+  # Interaktives Steuerpanel im Dashboard (/api/control/*): steuerbare Lasten
+  # an/aus + Kernparameter, Optimierungsmodus (auto/asap/peak), manuelles
+  # Akku-Laden/-Entladen. Änderungen persistieren in config_overrides.yaml.
+  # Standard AUS - manuelles Laden/Entladen greift real in den Akku ein;
+  # mit username/password absichern!
+  controls_enabled: false
