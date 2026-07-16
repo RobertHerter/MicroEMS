@@ -723,20 +723,42 @@ class Optimizer:
                 prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
             cost_terms.append(pen_sw * pulp.lpSum(car_start))
 
-        # Batterie-Taktung: Ein einzelner Halte-Slot zwischen zwei
-        # Entlade-Slots wird als 0-W-Limit an E3DC/MQTT ausgegeben und ist
-        # damit ein realer, unnötiger Eingriff. Ein kleiner Malus je Wechsel
-        # bevorzugt einen durchgehenden Eigenverbrauch, sofern der Preisvorteil
-        # die Unterbrechung nicht klar rechtfertigt. Der erste Slot bleibt
-        # frei, weil sein Vorzustand unbekannt ist.
+        # Batterie-Taktung: Nur eine einzelne Haltepause INNERHALB einer
+        # zusammenhängenden Defizitphase bestrafen. Allgemeine Ein/Aus-Wechsel
+        # zu bestrafen wäre falsch: Beim Übergang PV-Überschuss -> Restlast ist
+        # das Einschalten natürlich und soll keinen Malus bekommen.
         bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
-        if bat_pen and N > 1:
-            bat_switch = [pulp.LpVariable(f"batswitch_{t}", 0, 1)
-                          for t in range(1, N)]
-            for t in range(1, N):
-                prob += bat_switch[t - 1] >= is_di[t] - is_di[t - 1]
-                prob += bat_switch[t - 1] >= is_di[t - 1] - is_di[t]
-            cost_terms.append(bat_pen * pulp.lpSum(bat_switch))
+        if bat_pen and N > 2:
+            threshold = max(min_dis, 1.0)
+            pauses = []
+            deficits = [max(0.0, float(inp.house_load_w[t])
+                            - float(inp.pv_w[t])) for t in range(N)]
+            for t in range(1, N - 1):
+                if min(deficits[t - 1:t + 2]) < threshold:
+                    continue
+                pause = pulp.LpVariable(f"batpause_{t}", 0, 1)
+                # pause=1 genau für Muster 1,0,1 (bei Minimierung bleibt sie
+                # für alle anderen Kombinationen 0).
+                prob += pause >= is_di[t - 1] + is_di[t + 1] - is_di[t] - 1
+                pauses.append(pause)
+            if pauses:
+                cost_terms.append(bat_pen * pulp.lpSum(pauses))
+
+        # Bewusstes Halten trotz einer vom Akku deckbaren Basis-Restlast ist
+        # ein realer 0-W-Steuereingriff. Für Cent-Bruchteile Preisvorteil lohnt
+        # dieses Takten nicht. Bei einem deutlichen späteren Preisvorteil darf
+        # der Optimierer den kleinen Malus weiterhin bewusst akzeptieren.
+        hold_pen = float(getattr(cfg.optimization, "battery_hold_penalty_ct", 0.0) or 0.0)
+        if hold_pen:
+            hold_candidates = []
+            threshold = max(min_dis, 1.0)
+            for t in range(N):
+                base_deficit = max(0.0, float(inp.house_load_w[t])
+                                   - float(inp.pv_w[t]))
+                if base_deficit >= threshold:
+                    hold_candidates.append(1 - is_di[t])
+            if hold_candidates:
+                cost_terms.append(hold_pen * pulp.lpSum(hold_candidates))
 
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil

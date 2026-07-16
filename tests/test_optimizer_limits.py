@@ -71,8 +71,9 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     """
     cfg = make_config()
     cfg.optimization.battery_switch_penalty_ct = 1.0
+    cfg.optimization.battery_hold_penalty_ct = 0.0
     idx = _day_index("2026-01-15")[:8]
-    price = np.array([30.0, 30.0, 30.0, 30.2, 30.0, 30.0, 30.0, 30.0])
+    price = np.array([30.0, 30.0, 30.0, 29.8, 30.0, 30.0, 30.0, 30.0])
     res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=900.0, price=price,
                                        soc=cfg.house_battery.max_soc_wh))
     assert not res.infeasible
@@ -80,3 +81,23 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     # Bei ausreichendem SoC darf keine einzelne 0-W-Pause in einer laufenden
     # Entladephase bleiben.
     assert not ((dis[1:-1] < 1.0) & (dis[:-2] > 1.0) & (dis[2:] > 1.0)).any()
+
+
+def test_battery_hold_penalty_avoids_micro_optimization():
+    """Ein Cent-Bruchteil Ersparnis rechtfertigt keinen realen 0-W-Eingriff."""
+    cfg = make_config()
+    cfg.optimization.min_discharge_w = 100.0
+    cfg.optimization.standby_discharge_w = 40.0
+    cfg.optimization.battery_switch_penalty_ct = 1.0
+    cfg.optimization.battery_hold_penalty_ct = 1.0
+    idx = _day_index("2026-07-17")[:4]
+    load = np.array([1759.0, 1480.0, 1161.0, 1184.0])
+    pv = np.array([2212.0, 1344.0, 1344.0, 870.0])
+    price = np.array([38.411, 37.987, 38.957, 38.817])
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=pv, load=load, price=price,
+        soc=cfg.house_battery.max_soc_wh))
+    assert not res.infeasible
+    row = res.table.iloc[1]
+    assert row["batt_discharge_w"] >= 100.0
+    assert row["discharge_limited"] == 0.0

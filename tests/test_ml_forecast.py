@@ -101,3 +101,40 @@ def test_ml_empty_horizon_returns_empty():
     Pfad nicht crashen (sklearn predict auf 0 Zeilen)."""
     fc = LoadForecaster(_ml_config()).forecast(_history(30), START, 0)
     assert len(fc) == 0
+
+
+def test_ml_learns_air_conditioning_from_temperature():
+    """Klimaanlagen-Last (springt oberhalb ~25 °C an, wächst mit Wärmestau)
+    muss das ML über die Temperatur-Features (cdh/temp_24h) lernen: ein
+    heißer Prognosetag ergibt DEUTLICH mehr Last als ein kühler - obwohl
+    Kalender-Features identisch sind."""
+    rng = np.random.default_rng(3)
+    days = 90
+    idx = pd.date_range(START - pd.Timedelta(days=days), START, freq=FREQ,
+                        inclusive="left")
+    hour = idx.tz_convert(TZ).hour + idx.tz_convert(TZ).minute / 60.0
+    # Temperatur: Tagesgang + mehrtägige Hitzewellen (Sinus über 10 Tage)
+    day_no = (idx - idx[0]).days
+    t_amb = (18 + 8 * np.sin(2 * np.pi * np.asarray(day_no) / 10.0)
+             + 7 * np.exp(-((hour - 15) ** 2) / 18) - 3)
+    hist_temp = pd.Series(t_amb, index=idx)
+    # Last: Grundprofil + KLIMA = 350 W je Kelvin über 25 °C (nur tagsüber)
+    base = np.where((hour >= 8) & (hour < 22), 600.0, 250.0)
+    ac = 350.0 * np.clip(t_amb - 25.0, 0.0, None) * ((hour >= 10) & (hour < 22))
+    hist = pd.Series(base + ac + rng.normal(0, 30, len(idx)), index=idx)
+
+    cfg = _ml_config()
+    fut_idx = pd.date_range(START, periods=96, freq=FREQ)
+
+    def _predict(fut_temp_c):
+        fut_temp = pd.Series(np.full(96, float(fut_temp_c)), index=fut_idx)
+        return LoadForecaster(cfg).forecast(
+            hist, START, 96, hist_temp=hist_temp, fut_temp=fut_temp)
+
+    hot = _predict(31.0)      # Hitzetag: Klima müsste laufen
+    cool = _predict(18.0)     # kühler Tag: keine Klima
+    # Mittagslast (12-18 Uhr lokal) vergleichen
+    loc = hot.index.tz_convert(TZ)
+    mid = (loc.hour >= 12) & (loc.hour < 18)
+    assert float(hot[mid].mean()) > float(cool[mid].mean()) + 800.0, \
+        (float(hot[mid].mean()), float(cool[mid].mean()))

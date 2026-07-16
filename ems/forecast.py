@@ -119,6 +119,29 @@ class LoadForecaster:
         lag_td = pd.Timedelta(days=7)
         hist_feat["lag_7d"] = history.reindex(history.index - lag_td).values
         fut_feat["lag_7d"] = history.reindex(future_index - lag_td).values
+        # Features: Kühl-/Heizlast aus der Temperatur. Die MOMENTAN-Temperatur
+        # allein bildet Klimaanlage/Heizung schlecht ab: Kühl-Last springt erst
+        # oberhalb einer Schwelle an (cdh) und hängt am WÄRMESTAU mehrerer
+        # heißer Tage (temp_24h = rollierendes 24-h-Mittel; der dritte
+        # Hitzetag kühlt anders als der erste). Symmetrisch hdh für Heizen.
+        # Aus derselben Temp-Quelle für Training UND Zukunft abgeleitet
+        # (Serving-Konsistenz); NaN verkraftet HGBR nativ.
+        if "temp" in hist_feat.columns and hist_feat["temp"].notna().any():
+            # Auf UTC normalisieren: gemischte Zeitzonen ergäben beim concat
+            # einen Object-Index, an dem rolling("24h") scheitert.
+            h_idx = history.index.tz_convert("UTC")
+            f_idx = future_index.tz_convert("UTC")
+            all_temp = pd.concat([
+                pd.Series(hist_feat["temp"].values, index=h_idx),
+                pd.Series(fut_feat["temp"].values, index=f_idx),
+            ]).sort_index()
+            all_temp = all_temp[~all_temp.index.duplicated()]
+            roll = all_temp.rolling("24h", min_periods=4).mean()
+            for f, idx_ in ((hist_feat, h_idx), (fut_feat, f_idx)):
+                t = all_temp.reindex(idx_).values
+                f["cdh"] = np.clip(t - 24.0, 0.0, None)     # Kühlgrad (Klima)
+                f["hdh"] = np.clip(12.0 - t, 0.0, None)     # Heizgrad
+                f["temp_24h"] = roll.reindex(idx_).values   # Wärmestau
 
         drop_cols = [c for c in ("value", "recency") if c in hist_feat.columns]
         X_train = hist_feat.drop(columns=drop_cols)
@@ -215,10 +238,11 @@ class LoadForecaster:
             hist_feat["recency"] = 1.0
 
         fut_feat = self._features(future_index)
-        if use_temp:
-            fut_feat["temp"] = fut_temp_arr
-        else:
-            fut_feat["temp"] = np.nan
+        # Temperatur immer als Feature führen, wenn geliefert (NaN sonst):
+        # use_temp/weight_same_temp steuert nur die similar_days-GEWICHTUNG -
+        # der ML-Pfad braucht die Zukunfts-Temperatur unabhängig davon
+        # (Klima-/Heizlast via cdh/hdh/temp_24h in _forecast_ml).
+        fut_feat["temp"] = fut_temp_arr
 
         method = getattr(self.fc, "method", "similar_days")
         preds = None
