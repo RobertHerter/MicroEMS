@@ -50,6 +50,111 @@ class Violation:
         return f"{tag} {self.rule}: {self.detail}{when}"
 
 
+def economic_comparison(config: Config, result: OptimizerResult,
+                        inputs: OptimizerInputs):
+    """Plan- vs. Ohne-EMS-Baseline-Kosten (ct), terminalwert-bereinigt -
+    DIESELBE Bewertung wie der Optimierer-Zielterm (konkave Terminalwert-
+    Kurve, symmetrischer Peak-Shave-Malus, realistisches Akku-Modell in der
+    Baseline). EINZIGE Stelle, die diese Rechnung macht - genutzt vom
+    econ.worse_than_baseline-Check UND von backtest.py; eine zweite,
+    abweichende Kopie hat früher schon einmal zu falschen "Plan schlechter
+    als Baseline"-Alarmen geführt (andere Terminalbewertung = unfairer
+    Vergleich), s. ems-projekt-entscheidungen.
+
+    Rückgabe: (plan_cost_ct, baseline_cost_ct)."""
+    t = result.table
+    hb = config.house_battery
+    dt = config.general.dt_hours
+    kwh = dt / 1000.0
+
+    def col(name, default=0.0):
+        return t[name] if name in t.columns else pd.Series(default, index=t.index)
+
+    exp = col("grid_export_w")
+    soc = col("house_soc_wh")
+    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+    cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
+
+    prev0 = min(hb.max_soc_wh, max(hb.min_soc_wh, inputs.initial_house_soc_wh))
+
+    p_arr = np.asarray(inputs.price_ct_kwh, dtype=float)
+    fin_mean = float(np.mean(inputs.feedin_ct_kwh))
+    tv = config.optimization.terminal_soc_value
+    if tv == "auto":
+        seg_values = sorted([
+            max(float(np.percentile(p_arr, 50)), fin_mean),
+            max(float(np.percentile(p_arr, 25)), fin_mean),
+            fin_mean,
+        ], reverse=True)
+    else:
+        seg_values = [float(tv)] * 3
+    usable_cap = hb.max_soc_wh - hb.min_soc_wh
+
+    def _terminal_value_ct(soc_end: float) -> float:
+        """Wert des End-SoC (ct), konkav wie der Optimierer-Zielterm."""
+        e = max(0.0, float(soc_end) - hb.min_soc_wh)
+        v_ct = 0.0
+        for seg in seg_values:
+            take = min(e, usable_cap / 3.0)
+            v_ct += seg * hb.discharge_efficiency * take / 1000.0
+            e -= take
+            if e <= 0:
+                break
+        return v_ct
+
+    # Peak-Shave-Wert (peak_charge_weight): an "peak"-Tagen kappt der
+    # Optimierer die Einspeise-SPITZE und speichert den Überschuss statt ihn
+    # zu vergüteter Einspeisung zu geben. Das ist ein Netz-/Regulatorik-
+    # Nutzen, den die reine Cash-Baseline NICHT kennt - dort wirkt der Plan
+    # an solchen Tagen zu Recht "teurer" (er verzichtet bewusst auf ein paar
+    # ct Einspeise-Erlös für eine tiefere Spitze). Fair verglichen wird nur
+    # mit DEMSELBEN Spitzen-Malus auf BEIDEN Seiten (je eigene Tages-Spitze),
+    # exakt wie der Zielterm im Optimierer (pw * Tages-Linie / 1000).
+    pw = config.optimization.peak_charge_weight
+    dates = np.array([ts.date() for ts in t.index])
+    peak_days = (set(dates[t["mode"].astype(str).values == "peak"])
+                 if pw and "mode" in t.columns else set())
+
+    def _peak_pen(exp_w: np.ndarray) -> float:
+        if not peak_days:
+            return 0.0
+        return pw * sum(float(np.asarray(exp_w)[dates == d].max())
+                        for d in peak_days) / 1000.0
+
+    plan_cost = (float(t["slot_cost_ct"].sum())
+                + _peak_pen(exp.values)
+                - _terminal_value_ct(float(soc.iloc[-1])))
+    # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten)
+    # UND dasselbe reale Akku-Modell wie der Optimierer: WR-Sockellast je
+    # Entlade-Slot und Mindest-Entladeleistung. Sonst wäre die Baseline ein
+    # verlustfreier, beliebig fein regelnder (physikalisch unmöglicher) Akku
+    # und der Plan wirkt um genau diese Modell-Verluste "teurer".
+    cl_vals = cl.values if cl_cols else np.zeros(len(t))
+    sb = config.optimization.standby_discharge_w
+    min_dis = config.optimization.min_discharge_w
+    b_cost, b_soc = 0.0, prev0
+    b_exp_w = np.zeros(len(t))
+    for i in range(len(t)):
+        pv_i = max(0.0, float(inputs.pv_w[i]))
+        load_i = max(0.0, float(inputs.house_load_w[i]) + float(cl_vals[i]))
+        deficit = load_i - pv_i
+        if 0.0 < deficit < min_dis:
+            # Defizit unter Mindest-Entladeleistung -> Akku bleibt aus (0 oder
+            # >= min_dis), der Rest kommt aus dem Netz (wie im MILP).
+            b_imp, b_exp = deficit, 0.0
+        else:
+            b_soc, _c, b_dis, b_imp, b_exp = natural_battery_step(
+                b_soc, pv_i, load_i, hb, dt,
+                max_export_w=config.inverter.max_export_w)
+            if b_dis > 0.0:
+                b_soc = max(hb.min_soc_wh, b_soc - sb * dt)   # WR-Sockellast
+        b_cost += (b_imp * inputs.price_ct_kwh[i]
+                   - b_exp * inputs.feedin_ct_kwh[i]) * kwh
+        b_exp_w[i] = b_exp
+    b_cost += _peak_pen(b_exp_w) - _terminal_value_ct(b_soc)
+    return plan_cost, b_cost
+
+
 def _mask_violation(rule, severity, mask: pd.Series, detail) -> Optional[Violation]:
     idx = list(mask.index[mask.fillna(False)])
     if not idx:
@@ -207,88 +312,12 @@ def validate_plan(config: Config, result: OptimizerResult,
 
     # Plan vs. Ohne-EMS-Baseline (terminalwert-bereinigt): der perfekt
     # informierte MILP darf nie teurer sein als das naive Eigenverbrauchs-
-    # verhalten. WICHTIG: der End-SoC wird mit DERSELBEN Terminalwert-Kurve
-    # bewertet wie im Optimierer (terminal_soc_value, bei "auto" konkav
-    # [Median, p25, Einspeisung]) - eine abweichende Metrik (z.B. flacher
-    # Mittelpreis) lässt sonst selbst BEWEISBAR optimale Pläne "teurer als
-    # Baseline" aussehen, sobald der Optimierer Energie zu Preisen zwischen
-    # den beiden Bewertungen umsetzt.
+    # verhalten. WICHTIG: dieselbe Bewertung wie im Optimierer-Zielterm
+    # (economic_comparison) - eine abweichende Metrik (z.B. flacher
+    # Mittelpreis statt der konkaven Terminalwert-Kurve) lässt sonst selbst
+    # BEWEISBAR optimale Pläne "teurer als Baseline" aussehen.
     if inputs is not None:
-        p_arr = np.asarray(inputs.price_ct_kwh, dtype=float)
-        fin_mean = float(np.mean(inputs.feedin_ct_kwh))
-        tv = config.optimization.terminal_soc_value
-        if tv == "auto":
-            seg_values = sorted([
-                max(float(np.percentile(p_arr, 50)), fin_mean),
-                max(float(np.percentile(p_arr, 25)), fin_mean),
-                fin_mean,
-            ], reverse=True)
-        else:
-            seg_values = [float(tv)] * 3
-        usable_cap = hb.max_soc_wh - hb.min_soc_wh
-
-        def _terminal_value_ct(soc_end: float) -> float:
-            """Wert des End-SoC (ct), konkav wie der Optimierer-Zielterm."""
-            e = max(0.0, float(soc_end) - hb.min_soc_wh)
-            v_ct = 0.0
-            for seg in seg_values:
-                take = min(e, usable_cap / 3.0)
-                v_ct += seg * hb.discharge_efficiency * take / 1000.0
-                e -= take
-                if e <= 0:
-                    break
-            return v_ct
-
-        # Peak-Shave-Wert (peak_charge_weight): an "peak"-Tagen kappt der
-        # Optimierer die Einspeise-SPITZE und speichert den Überschuss statt ihn
-        # zu vergüteter Einspeisung zu geben. Das ist ein Netz-/Regulatorik-
-        # Nutzen, den die reine Cash-Baseline NICHT kennt - dort wirkt der Plan
-        # an solchen Tagen zu Recht "teurer" (er verzichtet bewusst auf ein paar
-        # ct Einspeise-Erlös für eine tiefere Spitze). Fair verglichen wird nur
-        # mit DEMSELBEN Spitzen-Malus auf BEIDEN Seiten (je eigene Tages-Spitze),
-        # exakt wie der Zielterm im Optimierer (pw * Tages-Linie / 1000).
-        pw = config.optimization.peak_charge_weight
-        dates = np.array([ts.date() for ts in t.index])
-        peak_days = (set(dates[t["mode"].astype(str).values == "peak"])
-                     if pw and "mode" in t.columns else set())
-
-        def _peak_pen(exp_w: np.ndarray) -> float:
-            if not peak_days:
-                return 0.0
-            return pw * sum(float(np.asarray(exp_w)[dates == d].max())
-                            for d in peak_days) / 1000.0
-
-        plan_cost = (float(t["slot_cost_ct"].sum())
-                     + _peak_pen(exp.values)
-                     - _terminal_value_ct(float(soc.iloc[-1])))
-        # Baseline trägt DIESELBEN Lasten wie der Plan (inkl. steuerbarer Lasten)
-        # UND dasselbe reale Akku-Modell wie der Optimierer: WR-Sockellast je
-        # Entlade-Slot und Mindest-Entladeleistung. Sonst wäre die Baseline ein
-        # verlustfreier, beliebig fein regelnder (physikalisch unmöglicher) Akku
-        # und der Plan wirkt um genau diese Modell-Verluste "teurer".
-        cl_vals = cl.values if cl_cols else np.zeros(len(t))
-        sb = config.optimization.standby_discharge_w
-        min_dis = config.optimization.min_discharge_w
-        b_cost, b_soc = 0.0, prev[0]
-        b_exp_w = np.zeros(len(t))
-        for i in range(len(t)):
-            pv_i = max(0.0, float(inputs.pv_w[i]))
-            load_i = max(0.0, float(inputs.house_load_w[i]) + float(cl_vals[i]))
-            deficit = load_i - pv_i
-            if 0.0 < deficit < min_dis:
-                # Defizit unter Mindest-Entladeleistung -> Akku bleibt aus (0 oder
-                # >= min_dis), der Rest kommt aus dem Netz (wie im MILP).
-                b_imp, b_exp = deficit, 0.0
-            else:
-                b_soc, _c, b_dis, b_imp, b_exp = natural_battery_step(
-                    b_soc, pv_i, load_i, hb, dt,
-                    max_export_w=config.inverter.max_export_w)
-                if b_dis > 0.0:
-                    b_soc = max(hb.min_soc_wh, b_soc - sb * dt)   # WR-Sockellast
-            b_cost += (b_imp * inputs.price_ct_kwh[i]
-                       - b_exp * inputs.feedin_ct_kwh[i]) * kwh
-            b_exp_w[i] = b_exp
-        b_cost += _peak_pen(b_exp_w) - _terminal_value_ct(b_soc)
+        plan_cost, b_cost = economic_comparison(config, result, inputs)
         margin = max(50.0, abs(b_cost) * 0.05)   # 50 ct oder 5 %
         if plan_cost > b_cost + margin:
             v.append(Violation("econ.worse_than_baseline", "warning", 1,

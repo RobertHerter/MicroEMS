@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ems.optimizer import Optimizer, OptimizerInputs
-from ems.validate import validate_plan
+from ems.validate import economic_comparison, validate_plan
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
@@ -28,6 +28,24 @@ def _solve(cfg, **kw):
 
 def _rules(viols, severity=None):
     return {x.rule for x in viols if severity is None or x.severity == severity}
+
+
+def test_economic_comparison_matches_worse_than_baseline_check():
+    """Regression: backtest.py hatte früher eine EIGENE, abweichende
+    Terminalwert-Metrik (flacher Mittelpreis statt der konkaven Kurve) und
+    meldete dadurch einen perfekt informierten, beweisbar optimalen Plan an
+    ~93 % der Tage als "schlechter als Baseline" - reines Bewertungs-
+    artefakt, kein echtes Modellproblem (siehe ems-projekt-entscheidungen).
+    economic_comparison() ist jetzt die EINZIGE Stelle für diese Rechnung;
+    dieser Test verankert, dass sie mit dem echten Zielterm übereinstimmt:
+    ein perfekt informierter Plan darf nie schlechter als die Baseline sein."""
+    cfg = make_config()
+    inp, res = _solve(cfg)
+    plan_cost, base_cost = economic_comparison(cfg, res, inp)
+    assert plan_cost <= base_cost + 1e-6, \
+        "perfekt informierter Plan schlechter als Baseline - Metrik prüfen"
+    viols = validate_plan(cfg, res, inp)
+    assert "econ.worse_than_baseline" not in _rules(viols)
 
 
 def test_clean_plan_has_no_errors():

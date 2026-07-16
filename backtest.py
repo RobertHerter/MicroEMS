@@ -25,8 +25,8 @@ import pandas as pd
 
 from ems.config import load_config
 from ems.influx import InfluxRepository
-from ems.optimizer import Optimizer, OptimizerInputs, natural_battery_step
-from ems.validate import validate_plan
+from ems.optimizer import Optimizer, OptimizerInputs
+from ems.validate import economic_comparison, validate_plan
 
 log = logging.getLogger("ems.backtest")
 
@@ -66,21 +66,6 @@ def _day_plan(repo, config, day_start):
         initial_house_soc_wh=soc0 / 100.0 * config.house_battery.capacity_wh,
     )
     return inp, Optimizer(config).solve(inp)
-
-
-def _baseline_cost(config, inp):
-    """Netto-Kosten (ct) UND End-SoC (Wh) des naiven Eigenverbrauchsverhaltens."""
-    hb = config.house_battery
-    dt = config.general.dt_hours
-    kwh = dt / 1000.0
-    soc = min(hb.max_soc_wh, max(hb.min_soc_wh, inp.initial_house_soc_wh))
-    cost = 0.0
-    for i in range(len(inp.index)):
-        soc, _c, _d, imp, exp = natural_battery_step(
-            soc, inp.pv_w[i], inp.house_load_w[i], hb, dt,
-            max_export_w=config.inverter.max_export_w)
-        cost += (imp * inp.price_ct_kwh[i] - exp * inp.feedin_ct_kwh[i]) * kwh
-    return cost, soc
 
 
 def main() -> int:
@@ -143,14 +128,12 @@ def main() -> int:
         show = errs if args.errors_only else viols
         for x in viols:
             rule_counter[(x.severity, x.rule)] += 1
-        # Ersparnis dieses Tages, TERMINALWERT-BEREINIGT (ehrlich): Roh-Kosten
-        # bestrafen sonst gespeicherte Energie am Horizontende. term = Mittel-
-        # preis * Entlade-Wirkungsgrad (wie terminal_soc_value "auto").
-        base_cost, base_soc = _baseline_cost(config, inp)
-        term = float(np.mean(inp.price_ct_kwh)) * config.house_battery.discharge_efficiency
-        plan_end = float(result.table["house_soc_wh"].iloc[-1])
-        plan_adj = result.total_cost_ct - term * plan_end / 1000.0
-        base_adj = base_cost - term * base_soc / 1000.0
+        # Ersparnis dieses Tages, TERMINALWERT-BEREINIGT: DIESELBE Bewertung
+        # wie der econ.worse_than_baseline-Check (economic_comparison) - eine
+        # abweichende Metrik (z.B. flacher statt konkaver Terminalwert) hat
+        # hier früher selbst beweisbar optimale Pläne "schlechter als
+        # Baseline" aussehen lassen (s. ems-projekt-entscheidungen).
+        plan_adj, base_adj = economic_comparison(config, result, inp)
         savings.append((base_adj - plan_adj) / 100.0)
         if show:
             flagged_days.append(day)
