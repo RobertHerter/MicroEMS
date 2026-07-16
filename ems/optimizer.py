@@ -852,28 +852,48 @@ class Optimizer:
                 seen_full = seen_full or f
             return names
 
-        _core, _chain = set(), set()
-        for t in range(N):
-            hold_susp = ((g_imp[t].varValue or 0.0) > 5.0
-                         and (dis[t].varValue or 0.0) < 1.0
-                         and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0)
-            ac_susp = (ac[t].varValue or 0.0) > 5.0
-            curt_susp = (curt[t].varValue or 0.0) > 5.0
-            if hold_susp:
-                _core.add(is_di[t].name)
-            if curt_susp:
-                _core.update({b_grid[t].name, is_full[t].name, at_max[t].name})
-            if ac_susp:
-                _core.add(b_grid[t].name)
-            if hold_susp or ac_susp:
-                _chain |= _full_chain(t)
-        # Sicherheitsdeckel: Kern-Verdachte immer behalten, Ketten trimmen.
-        if len(_core) + len(_chain) > 256:
-            _chain = set(sorted(_chain)[:max(0, 256 - len(_core))])
-        _free = _core | _chain
-        if _polish_continuous(prob, cfg, free_names=_free):
-            log.info("Politur in %.1f s (%d freie Entlade-Binäre).",
-                     time.monotonic() - _t1, len(_free))
+        def _suspect_free_names():
+            """Verdachts-Binäre der AKTUELLEN Lösung (varValues)."""
+            core, chain = set(), set()
+            for t in range(N):
+                hold_susp = ((g_imp[t].varValue or 0.0) > 5.0
+                             and (dis[t].varValue or 0.0) < 1.0
+                             and (soc[t + 1].varValue or 0.0)
+                             > hb.min_soc_wh + 100.0)
+                ac_susp = (ac[t].varValue or 0.0) > 5.0
+                curt_susp = (curt[t].varValue or 0.0) > 5.0
+                if hold_susp:
+                    core.add(is_di[t].name)
+                if curt_susp:
+                    core.update({b_grid[t].name, is_full[t].name,
+                                 at_max[t].name})
+                if ac_susp:
+                    core.add(b_grid[t].name)
+                if hold_susp or ac_susp:
+                    chain |= _full_chain(t)
+            # Sicherheitsdeckel: Kern-Verdachte immer behalten, Ketten trimmen.
+            if len(core) + len(chain) > 256:
+                chain = set(sorted(chain)[:max(0, 256 - len(core))])
+            return core | chain
+
+        # ITERIEREN: die Politur kann beim exakten Umverteilen selbst neue
+        # Blasen derselben Klassen erzeugen (real beobachtet: um eine fixierte
+        # is_full-Vollladung zu erfüllen, kaufte das Politur-LP im billigsten
+        # Slot 5,8 kW aus dem Netz - der Verdacht existierte im Incumbent noch
+        # nicht, also war die Kette nicht freigegeben). Daher nach jeder Runde
+        # die Verdachts-Erkennung auf dem POLIERTEN Stand wiederholen, bis
+        # keine neuen Verdachte mehr auftauchen (max. 3 Runden, je ~0,3 s).
+        _free = _suspect_free_names()
+        _rounds = 0
+        while _rounds < 3 and _polish_continuous(prob, cfg, free_names=_free):
+            _rounds += 1
+            _new = _suspect_free_names() - _free
+            if not _new:
+                break
+            _free |= _new
+        if _rounds:
+            log.info("Politur in %.1f s (%d Runden, %d freie Binäre).",
+                     time.monotonic() - _t1, _rounds, len(_free))
         # Lösung für den Warmstart des nächsten Zyklus merken.
         _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
