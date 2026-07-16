@@ -107,6 +107,27 @@ def test_make_solver_sets_mip_gap_and_time_limit():
     assert getattr(make_solver(cfg), "gapRel", None) in (None, 0)
 
 
+def test_polish_solver_disables_configured_mip_gaps():
+    """Die Politur ist wirklich gap-frei.
+
+    Sonst darf der Solver trotz Politur eine isolierte Entladesperre als
+    innerhalb der globalen Kostenlücke akzeptieren und sie als 0-W-Limit an
+    die Anlage ausgeben.
+    """
+    import pulp
+    from ems.optimizer import make_solver
+
+    cfg = make_config()
+    cfg.optimization.solver = "highs"
+    cfg.optimization.solver_mip_gap = 0.01
+    cfg.optimization.solver_mip_gap_abs_ct = 25.0
+    s = make_solver(cfg, exact=True)
+    if not isinstance(s, pulp.HiGHS):
+        pytest.skip("HiGHS nicht verfügbar")
+    assert getattr(s, "gapRel", None) in (None, 0)
+    assert getattr(s, "gapAbs", None) in (None, 0)
+
+
 def test_asap_strategy_exports_only_when_full_or_at_max():
     """asap: Einspeisung nur bei vollem Akku oder maximaler Ladeleistung."""
     cfg = make_config()

@@ -196,7 +196,9 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
                 continue
             x = int(round(v.varValue or 0.0))
             v.lowBound = v.upBound = x
-        prob.solve(make_solver(cfg))
+        # Keine relative oder absolute MIP-Lücke in der Politur: genau sie
+        # soll die Artefakte der schnellen Hauptoptimierung entfernen.
+        prob.solve(make_solver(cfg, exact=True))
         if prob.status == pulp.LpStatusOptimal:
             return True
         log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
@@ -240,7 +242,8 @@ def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours
     return soc_wh, charge, dis, imp, exp
 
 
-def make_solver(cfg: Config, warm_values: Optional[dict] = None):
+def make_solver(cfg: Config, warm_values: Optional[dict] = None,
+                exact: bool = False):
     """CBC-Solver: bevorzugt das System-CBC (COIN_CMD, coinor-cbc), da
     PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC.
     Optional: HiGHS-Solver falls in der Konfiguration gewählt; warm_values
@@ -252,13 +255,19 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None):
     # Relative Optimalitätslücke: kappt den teuren "Optimalität beweisen"-Endlauf
     # (v. a. an peak-Tagen mit Pool-Binärvariablen). gapRel wird von HiGHS und
     # COIN_CMD unterstützt; 0 = exakt.
-    gap = float(getattr(cfg.optimization, "solver_mip_gap", 0.0) or 0.0)
+    # Die Politur muss die Lösung mit fixierten Binären tatsächlich exakt
+    # nachrechnen. Die regulären MIP-Gaps dort weiterzuverwenden, ließ
+    # ökonomisch dominierte Einzelentscheidungen stehen (z.B. eine isolierte
+    # Entladesperre vor einem günstigeren Entlade-Slot).
+    gap = 0.0 if exact else float(
+        getattr(cfg.optimization, "solver_mip_gap", 0.0) or 0.0)
     if gap > 0:
         kwargs["gapRel"] = gap
     # Absolute Lücke (ct) zusätzlich: schützt vor dem "1 % von einem großen
     # Ziel sind viele Euro"-Effekt (konstante Malusterme) und beendet auf
     # Instanzen mit kleinem Zielwert die teure Beweisphase früher.
-    gap_abs = float(getattr(cfg.optimization, "solver_mip_gap_abs_ct", 0.0) or 0.0)
+    gap_abs = 0.0 if exact else float(
+        getattr(cfg.optimization, "solver_mip_gap_abs_ct", 0.0) or 0.0)
     if gap_abs > 0:
         kwargs["gapAbs"] = gap_abs
 
