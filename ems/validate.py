@@ -242,6 +242,11 @@ def validate_plan(config: Config, result: OptimizerResult,
             exp > config.inverter.max_export_w + TOL_W,
             f"Einspeisung über Netzanschluss-Limit {config.inverter.max_export_w:.0f} W"))
 
+    if config.inverter.max_import_w is not None:
+        add(_mask_violation("grid.import_cap", "error",
+            imp > config.inverter.max_import_w + TOL_W,
+            f"Netzbezug über Hausanschluss-Grenze {config.inverter.max_import_w:.0f} W"))
+
     # ---- Ausführbarkeit: Befehl <-> Fluss (error) ----------------------- #
     # Homey bekommt Limits + grid_charge; wenn diese Befehle nicht zu den
     # geplanten Flüssen passen, tut der E3DC etwas anderes als der Plan meint.

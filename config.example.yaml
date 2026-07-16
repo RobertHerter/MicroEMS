@@ -217,6 +217,10 @@ inverter:
   # Einspeisebegrenzung am Netzanschluss (60/70%-Regel bzw. §9 EEG), in W.
   # Weglassen = keine Begrenzung.
   # max_export_w: 7000
+  # Bezugsgrenze am Hausanschluss (Sicherung), in W - harte Obergrenze für
+  # den geplanten Netzbezug (Netzladen + Auto + Lasten zusammen), z.B.
+  # 3 x 35 A x 230 V = 24150. Weglassen = keine Begrenzung.
+  # max_import_w: 24150
 
 # -----------------------------------------------------------------------------
 # Fahrzeug (optional – wird nur optimiert, wenn vehicle_soc verfügbar ist)

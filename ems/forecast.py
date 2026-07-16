@@ -46,6 +46,21 @@ class LoadForecaster:
         self.slot_minutes = config.general.slot_minutes
         self.slots_per_day = 24 * config.general.slots_per_hour
         self._holidays = self._build_holidays()
+        # Stunden-Korrekturprofil (Ist/Prognose je Stunde, aus der wöchentlichen
+        # Kalibrierung, out-of-sample). Ersetzt den GLOBALEN correction_factor,
+        # wenn vorhanden: der Pauschalfaktor hebt alle Stunden gleich an, die
+        # Unterprognose ist aber stundenabhängig (Herd-Spitzen 06/17 Uhr werden
+        # am stärksten unterschätzt). None = Fallback auf correction_factor.
+        self.load_hourly = None
+        try:
+            if config.calibration.enabled:
+                from .calibration import load_profile
+                prof = load_profile(config.calibration.pv_profile) or {}
+                lh = prof.get("load_hourly")
+                if isinstance(lh, dict) and lh:
+                    self.load_hourly = {int(k): float(v) for k, v in lh.items()}
+        except Exception:   # pragma: no cover - Profil ist optional
+            self.load_hourly = None
 
     def _build_holidays(self):
         import holidays
@@ -261,9 +276,17 @@ class LoadForecaster:
                     sw = w * (1 + 2 * strongly_similar)  # ähnliche Tage stärker gewichten
                     preds[i] = float(np.average(vals, weights=sw))
 
-        # Globaler Korrekturfaktor aus der Kalibrierung (nur Verbrauch)
+        # Korrektur aus der Kalibrierung (nur Verbrauch): bevorzugt das
+        # STUNDEN-Profil (Ist/Prognose je Stunde, out-of-sample gelernt);
+        # ohne Profil der globale correction_factor. Nie beides - das wäre
+        # eine Doppel-Korrektur.
         if apply_correction:
-            preds = preds * float(getattr(self.fc, "correction_factor", 1.0))
+            if self.load_hourly:
+                hours = future_index.tz_convert(self.cfg.general.timezone).hour
+                preds = preds * np.array([self.load_hourly.get(int(h), 1.0)
+                                          for h in hours])
+            else:
+                preds = preds * float(getattr(self.fc, "correction_factor", 1.0))
         result = pd.Series(preds, index=future_index)
         if clip_min is not None:
             result = result.clip(lower=clip_min)

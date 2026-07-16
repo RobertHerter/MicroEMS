@@ -459,3 +459,22 @@ def test_highs_random_seed_gives_deterministic_results():
     np.testing.assert_allclose(r1.table["batt_ac_charge_w"].values,
                                r2.table["batt_ac_charge_w"].values, atol=1e-6)
     O._warm_cache.clear()
+
+
+def test_max_import_w_caps_grid_draw():
+    """Hausanschluss-Grenze: auch bei stark negativen Preisen (Netzladen
+    maximal attraktiv) darf der geplante Netzbezug die Sicherungsgrenze
+    nie überschreiten."""
+    cfg = make_config()
+    cfg.inverter.max_import_w = 3000.0
+    idx = _day_index("2026-01-15")
+    n = len(idx)
+    price = np.full(n, 30.0)
+    price[20:36] = -10.0                      # 4 h stark negativ -> Netzladen
+    res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=800.0, price=price,
+                                       soc=cfg.house_battery.min_soc_wh))
+    assert not res.infeasible
+    imp = res.table["grid_import_w"].values
+    assert (imp <= 3000.0 + TOL).all(), f"max Import {imp.max():.0f} W > Limit"
+    assert (res.table["batt_ac_charge_w"].values > 5).any(), \
+        "Szenario prüft nichts - bei -10 ct sollte netzgeladen werden"

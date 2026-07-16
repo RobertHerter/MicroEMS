@@ -638,6 +638,11 @@ class Optimizer:
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
+            # Hausanschluss-Grenze (Sicherung): der geplante Netzbezug darf
+            # die Anschlussleistung nie überschreiten - sonst könnte der Plan
+            # bei Netzladen + Auto + Lasten real die Sicherung überlasten.
+            if cfg.inverter.max_import_w is not None:
+                prob += g_imp[t] <= cfg.inverter.max_import_w
 
             # Einspeisebegrenzung am Netzanschluss (60/70%-Regel / §9 EEG):
             # keine Erlöse einplanen, die real abgeregelt würden.

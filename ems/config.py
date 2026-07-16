@@ -147,6 +147,12 @@ class InverterConfig:
     # None = keine Begrenzung. Der Optimierer plant dann keine Einspeise-
     # Erlöse ein, die real abgeregelt würden.
     max_export_w: Optional[float] = None
+    # Bezugsgrenze am Netzanschluss (Hausanschluss-Sicherung), z.B.
+    # 3 x 35 A x 230 V = 24150 W. Harte Obergrenze für den geplanten
+    # Netzbezug je Slot - verhindert, dass Netzladen + Auto + Lasten
+    # zusammen mehr Anschlussleistung einplanen, als die Sicherung trägt.
+    # None = keine Begrenzung.
+    max_import_w: Optional[float] = None
 
 
 @dataclass
@@ -807,6 +813,8 @@ def load_config(path: str) -> Config:
         max_ac_power_w=float(inv["max_ac_power_w"]),
         max_export_w=(float(inv["max_export_w"])
                       if inv.get("max_export_w") is not None else None),
+        max_import_w=(float(inv["max_import_w"])
+                      if inv.get("max_import_w") is not None else None),
     )
 
     v = raw.get("vehicle", {})

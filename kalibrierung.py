@@ -178,9 +178,12 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
     temp = _temp_hist(repo, cfg, start, now)
     pv, _ = _pv_forecast_hist(cfg, repo, start, now)
 
-    # Modell aus Trainingszeitraum, ohne bestehende Korrektur, out-of-sample prüfen
+    # Modell aus Trainingszeitraum, ohne bestehende Korrektur, out-of-sample
+    # prüfen - auch das Stunden-Profil neutralisieren, sonst würde ein
+    # früherer Kalibrierlauf in die eigene Messung einfließen (Zirkelschluss).
     cfg.forecast.correction_factor = 1.0
     fc = LoadForecaster(cfg)
+    fc.load_hourly = None
     horizon = len(actual_test)
     pred = fc.forecast(train, test_start, horizon, hist_temp=temp, fut_temp=temp, hist_pv=pv, fut_pv=pv)
     idx = actual_test.index.intersection(pred.index)
@@ -283,27 +286,35 @@ def main():
         yaml.safe_dump(out, fh, allow_unicode=True, sort_keys=False)
     print(f"\nDetails in {args.output} geschrieben.")
 
-    # Anwendbares PV-Profil (zeitabhängige Korrektur Monat x Stunde) schreiben.
-    # Wird von der Pipeline genutzt, wenn calibration.enabled=true (config).
-    if pv:
-        profile = {
-            "generated": now.isoformat(),
-            "pv_global": round(pv["metrics"].get("scale_actual_over_pred", 1.0), 4),
-            "pv_month_hour": pv.get("month_hour", {}),
-            "pv_hour": pv.get("hourly", {}),
-            "pv_month": pv.get("monthly", {}),
-        }
+    # Anwendbares Profil (zeitabhängige Korrekturen) schreiben. Wird von der
+    # Pipeline genutzt, wenn calibration.enabled=true (config).
+    if pv or load:
+        profile = {"generated": now.isoformat()}
+        if pv:
+            profile.update({
+                "pv_global": round(pv["metrics"].get("scale_actual_over_pred", 1.0), 4),
+                "pv_month_hour": pv.get("month_hour", {}),
+                "pv_hour": pv.get("hourly", {}),
+                "pv_month": pv.get("monthly", {}),
+            })
+        if load and load.get("hourly"):
+            # Last-Stundenprofil (Ist/Prognose je Stunde): ersetzt in der
+            # Pipeline den globalen forecast.correction_factor (Vorrang,
+            # nie beides). Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
+            profile["load_hourly"] = {
+                int(h): round(float(min(1.8, max(0.6, f))), 3)
+                for h, f in load["hourly"].items()}
         with open("kalibrierung_profil.yaml", "w", encoding="utf-8") as fh:
             yaml.safe_dump(profile, fh, allow_unicode=True, sort_keys=True)
-        print("PV-Korrekturprofil (Monat x Stunde) -> kalibrierung_profil.yaml")
+        print("Korrekturprofil (PV Monat x Stunde, Last je Stunde) -> "
+              "kalibrierung_profil.yaml")
 
     print("\nAnwenden:")
-    print("  A) Einfach/global: forecast.correction_factor (Verbrauch) und ggf.")
-    print("     influxdb.signals.pv_forecast.scale (PV) in config.yaml setzen.")
-    print("  B) PV zeitabhängig (empfohlen wg. starkem Tages-/Monatsmuster):")
-    print("     pv_forecast.scale = 1.0 lassen und in config.yaml setzen:")
-    print("       calibration:\n         enabled: true\n         pv_profile: ./kalibrierung_profil.yaml")
-    print("  Danach Dienst neu starten.")
+    print("  Zeitabhängig (empfohlen): calibration.enabled=true + pv_profile=")
+    print("  ./kalibrierung_profil.yaml in config.yaml - PV (Monat x Stunde)")
+    print("  und Last (je Stunde) werden dann automatisch angewandt;")
+    print("  forecast.correction_factor wird bei vorhandenem Last-Profil")
+    print("  ignoriert (kein Doppel-Faktor). Danach Dienst neu starten.")
 
 
 if __name__ == "__main__":

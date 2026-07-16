@@ -118,3 +118,35 @@ def test_intraday_factor_decays_with_lead_time():
     assert fac.iloc[-1] < 1.1                            # weit voraus: fast 1.0
     # ratio None -> neutral
     assert (intraday_factor_series(None, idx, START) == 1.0).all()
+
+
+def test_hourly_correction_profile_replaces_global_factor():
+    """Stunden-Korrekturprofil (Kalibrierung): wird je Slot-Stunde angewandt
+    und ERSETZT den globalen correction_factor (nie beides - das wäre eine
+    Doppel-Korrektur). Ohne Profil gilt weiter der globale Faktor."""
+    import numpy as np
+    import pandas as pd
+    from ems.forecast import LoadForecaster
+    from tests.test_synthetic import make_config, synthetic_history
+
+    cfg = make_config()
+    cfg.forecast.correction_factor = 1.5      # würde global x1.5 heben
+    now = pd.Timestamp("2026-06-10 00:00", tz=cfg.general.timezone)
+    hist = synthetic_history(cfg, now)
+
+    fc = LoadForecaster(cfg)
+    fc.load_hourly = None                     # kein Profil -> globaler Faktor
+    base = fc.forecast(hist, now, 96)
+
+    fc2 = LoadForecaster(cfg)
+    fc2.load_hourly = {h: 1.0 for h in range(24)}
+    fc2.load_hourly[6] = 2.0                  # 06:00 doppelt, Rest neutral
+    prof = fc2.forecast(hist, now, 96)
+
+    loc = prof.index.tz_convert(cfg.general.timezone)
+    h6 = loc.hour == 6
+    # Profil ersetzt global: neutrale Stunden = base/1.5, 06:00 = base/1.5*2
+    np.testing.assert_allclose(prof[~h6].values, (base[~h6] / 1.5).values,
+                               rtol=1e-9)
+    np.testing.assert_allclose(prof[h6].values, (base[h6] / 1.5 * 2.0).values,
+                               rtol=1e-9)
