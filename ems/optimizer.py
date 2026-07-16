@@ -826,31 +826,51 @@ class Optimizer:
         #    (real: Sperre GENAU in der teuersten Reststunde) -> is_di frei.
         #  * Abregel-Blase: curt > 0, obwohl Export möglich wäre (real: 6,7 kW
         #    abgeregelt statt eingespeist, weil b_grid im Slot auf der Import-
-        #    Seite festhing und g_exp <= BIGG*(1-b_grid) den Export sperrte)
-        #    -> b_grid/is_full/at_max des Slots frei. Real NÖTIGE Abregelung
-        #    (Export-Limit, Peak-Linie, Negativpreis) bleibt: sie ist durch
-        #    Constraints erzwungen, nicht durch die Binärwahl.
+        #    Seite festhing und den Export sperrte) -> b_grid/is_full/at_max
+        #    des Slots frei. Real NÖTIGE Abregelung (Export-Limit, Peak-Linie,
+        #    Negativpreis) bleibt: constraint-erzwungen, nicht Binärwahl.
+        #  * is_full-Zwang (koppelt beide): fixierte is_full=1-Folge-Slots
+        #    erzwingen den vollen Akku zu einem festen Zeitpunkt. Das zwang
+        #    real (a) ein 6,8-kW-Netzladen in den Plan (Vollladung vorziehen,
+        #    damit Export früher darf) und (b) hielt eine Entladesperre am
+        #    Leben (Entladen um 04:45 hätte die Mittags-Vollladung um einen
+        #    Slot verzögert - das LP DURFTE nicht, obwohl is_di frei war).
+        #    Daher je Verdachts-Slot die is_full/at_max-Kette bis zum ENDE
+        #    DER NÄCHSTEN VOLLPHASE freigeben - die Politur darf die
+        #    Vollladung dann verschieben.
         _t1 = time.monotonic()
-        _free = {is_di[t].name for t in range(N)
-                 if (g_imp[t].varValue or 0.0) > 5.0
-                 and (dis[t].varValue or 0.0) < 1.0
-                 and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0}
+
+        def _full_chain(t0):
+            """is_full/at_max-Namen ab t0 bis zum Ende der nächsten Vollphase
+            (erste zusammenhängende is_full=1-Periode im Incumbent)."""
+            names, seen_full = set(), False
+            for k in range(t0, N):
+                f = (is_full[k].varValue or 0.0) > 0.5
+                if seen_full and not f:
+                    break
+                names.update({is_full[k].name, at_max[k].name})
+                seen_full = seen_full or f
+            return names
+
+        _core, _chain = set(), set()
         for t in range(N):
-            if (curt[t].varValue or 0.0) > 5.0:
-                _free.update({b_grid[t].name, is_full[t].name, at_max[t].name})
-        #  * Netzlade-Blase mit is_full-Zwang: ac > 0, weil fixierte is_full-
-        #    Binäre der FOLGE-Slots den vollen Akku früher erzwingen, als PV
-        #    ihn allein füllen könnte (real: 6,8 kW Netzladen bei 15,4 ct, nur
-        #    damit der Export 2 Slots früher starten darf - ~13 ct Verlust).
-        #    Die is_full/at_max-Kette der nächsten 4 h wird mit freigegeben,
-        #    damit die Politur die Vollladung nach hinten schieben darf.
-        for t in range(N):
-            if (ac[t].varValue or 0.0) > 5.0:
-                _free.add(b_grid[t].name)
-                for k in range(t, min(N, t + 16)):
-                    _free.update({is_full[k].name, at_max[k].name})
-        if len(_free) > 128:     # Sicherheitsdeckel: Mini-MIP klein halten
-            _free = set(sorted(_free)[:128])
+            hold_susp = ((g_imp[t].varValue or 0.0) > 5.0
+                         and (dis[t].varValue or 0.0) < 1.0
+                         and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0)
+            ac_susp = (ac[t].varValue or 0.0) > 5.0
+            curt_susp = (curt[t].varValue or 0.0) > 5.0
+            if hold_susp:
+                _core.add(is_di[t].name)
+            if curt_susp:
+                _core.update({b_grid[t].name, is_full[t].name, at_max[t].name})
+            if ac_susp:
+                _core.add(b_grid[t].name)
+            if hold_susp or ac_susp:
+                _chain |= _full_chain(t)
+        # Sicherheitsdeckel: Kern-Verdachte immer behalten, Ketten trimmen.
+        if len(_core) + len(_chain) > 256:
+            _chain = set(sorted(_chain)[:max(0, 256 - len(_core))])
+        _free = _core | _chain
         if _polish_continuous(prob, cfg, free_names=_free):
             log.info("Politur in %.1f s (%d freie Entlade-Binäre).",
                      time.monotonic() - _t1, len(_free))
