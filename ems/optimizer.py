@@ -820,14 +820,24 @@ class Optimizer:
         # Politur: Gap-Toleranz-Reste exakt wegoptimieren (Binäre fixiert ->
         # LP), DANN erst die Lösung fürs Warmstarten merken - so startet der
         # nächste Zyklus vom polierten Stand statt vom Incumbent mit Resten.
-        # Verdächtige Entlade-Binäre (Import trotz Entladung 0 bei nutzbarem
-        # SoC = mögliche "Entladesperre in teurer Stunde"-Blase) bleiben frei,
-        # damit die Politur auch solche Einzel-Blasen auflösen kann.
+        # Verdächtige Binäre bleiben dabei frei (Mini-MIP), damit die Politur
+        # auch Einzel-Blasen auflösen kann:
+        #  * Entladesperren-Blase: Import trotz Entladung 0 bei nutzbarem SoC
+        #    (real: Sperre GENAU in der teuersten Reststunde) -> is_di frei.
+        #  * Abregel-Blase: curt > 0, obwohl Export möglich wäre (real: 6,7 kW
+        #    abgeregelt statt eingespeist, weil b_grid im Slot auf der Import-
+        #    Seite festhing und g_exp <= BIGG*(1-b_grid) den Export sperrte)
+        #    -> b_grid/is_full/at_max des Slots frei. Real NÖTIGE Abregelung
+        #    (Export-Limit, Peak-Linie, Negativpreis) bleibt: sie ist durch
+        #    Constraints erzwungen, nicht durch die Binärwahl.
         _t1 = time.monotonic()
         _free = {is_di[t].name for t in range(N)
                  if (g_imp[t].varValue or 0.0) > 5.0
                  and (dis[t].varValue or 0.0) < 1.0
                  and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0}
+        for t in range(N):
+            if (curt[t].varValue or 0.0) > 5.0:
+                _free.update({b_grid[t].name, is_full[t].name, at_max[t].name})
         if len(_free) > 96:      # Sicherheitsdeckel: Mini-MIP klein halten
             _free = set(sorted(_free)[:96])
         if _polish_continuous(prob, cfg, free_names=_free):
