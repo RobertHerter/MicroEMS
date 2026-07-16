@@ -270,8 +270,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         price = _price_series(repo, config, opt_index, now)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
-            feedin = repo.read_slots("feed_in_tariff", now, opt_end).reindex(opt_index)
-            feedin = feedin.ffill().bfill().fillna(config.feed_in.fixed_ct_kwh)
+            feedin = repo.read_slots(
+                "feed_in_tariff", now, opt_end, fill=False).reindex(opt_index)
+            missing_feed = int(feedin.isna().sum())
+            feedin = feedin.fillna(config.feed_in.fixed_ct_kwh)
+            if missing_feed:
+                log.warning("Einspeisetarif: %d fehlende Slots durch %.2f ct/kWh "
+                            "ersetzt.", missing_feed,
+                            config.feed_in.fixed_ct_kwh)
         else:
             feedin = pd.Series(config.feed_in.fixed_ct_kwh, index=opt_index)
         # Solarspitzengesetz: in Negativpreis-Stunden gibt es (für betroffene
@@ -303,14 +309,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # InfluxDB) die Prognose - der Sollwert basiert auf dem echten Zustand.
         try:
             slot_td = pd.Timedelta(freq)
-            if live and live.get("house_load_w") is not None:
+            if (live and live.get("house_load_w") is not None
+                    and np.isfinite(float(live["house_load_w"]))):
                 house_load[0] = max(0.0, float(live["house_load_w"]))
             else:
                 m = repo.read_slots("house_consumption", now - slot_td, now,
                                     fill=False).mean()
                 if np.isfinite(m):
                     house_load[0] = max(0.0, float(m))
-            if live and live.get("pv_w") is not None:
+            if (live and live.get("pv_w") is not None
+                    and np.isfinite(float(live["pv_w"]))):
                 pv.iloc[0] = max(0.0, float(live["pv_w"]))
             elif repo.signal_available("pv_generation"):
                 m = repo.read_slots("pv_generation", now - slot_td, now,
@@ -325,6 +333,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Anfangs-SoC Haus: bevorzugt RSCP-Live, sonst InfluxDB.
         lookback = now - timedelta(hours=6)
         soc_pct = live.get("soc_percent") if live else None
+        if soc_pct is not None and not np.isfinite(float(soc_pct)):
+            soc_pct = None
         if soc_pct is None:
             soc_pct = repo.read_scalar_latest("battery_soc", lookback, now)
         if soc_pct is None:
@@ -340,9 +350,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if config.vehicle.enabled and repo.signal_available("vehicle_soc"):
             car_pct = repo.read_scalar_latest("vehicle_soc", lookback, now)
             connected = None
-            if repo.signal_available("vehicle_connected"):
+            connected_signal = repo.signal_available("vehicle_connected")
+            if connected_signal:
                 connected = repo.read_scalar_latest("vehicle_connected", lookback, now)
-            if connected is not None and connected < 0.5:
+            if connected_signal and connected is None:
+                log.warning("Wallbox-Anwesenheit ohne aktuellen Datenwert – Auto "
+                            "wird sicherheitshalber nicht mitoptimiert.")
+            elif connected is not None and connected < 0.5:
                 log.info("Auto nicht angesteckt (vehicle_connected=%.0f) – "
                          "wird nicht mitoptimiert.", connected)
             elif car_pct is not None:
@@ -850,7 +864,7 @@ def _read_load_state(config, publisher):
     for ld in getattr(config, "controllable_loads", []):
         if ld.enabled and ld.type == "thermal" and ld.temp_signal:
             t = publisher.get_load_temp(ld.temp_signal)
-            if t is not None:
+            if t is not None and np.isfinite(float(t)):
                 st[ld.name] = float(t)
     return st or None
 
@@ -864,6 +878,7 @@ def _price_series(repo, config, index, now, return_estimated=False):
     slot = pd.Timedelta(f"{config.general.slot_minutes}min")
     raw = read_price_signal(config, repo, index[0], index[-1] + slot).reindex(index)
     estimated = raw.isna()   # Slots ohne echten Börsenpreis -> Schätzung
+    hist = pd.Series(dtype="float64")
     if estimated.any():
         try:
             hist = read_price_signal(config, repo, now - timedelta(days=90), now).dropna()
@@ -873,8 +888,18 @@ def _price_series(repo, config, index, now, return_estimated=False):
                 raw = raw.fillna(fc.reindex(index))
                 log.info("Fehlende Folgetag-Preise per Ähnliche-Tage-Prognose ergänzt.")
         except Exception as exc:  # pragma: no cover
-            log.warning("Preis-Prognose fehlgeschlagen (%s) – halte letzten Wert.", exc)
-    price = raw.ffill().bfill()
+            log.warning("Preis-Prognose fehlgeschlagen (%s).", exc)
+    # Auch bei komplett ausgefallener Preisquelle bleibt der Optimierer
+    # lauffähig. Median der echten Historie, sonst konfigurierter Fixpreis.
+    remaining = raw.isna()
+    if remaining.any():
+        fallback = (float(hist.median()) if not hist.empty else
+                    float(config.tariff.fixed_ct_kwh)
+                    if config.tariff.enabled else 30.0)
+        raw = raw.fillna(fallback)
+        log.warning("Strompreis: %d Slots ohne Daten/Schätzung durch %.2f ct/kWh "
+                    "ersetzt.", int(remaining.sum()), fallback)
+    price = raw
     # Unsicherheits-Dämpfung: geschätzte Slots zur Mitte stauchen, damit auf
     # Phantom-Preistäler/-spitzen nicht spekuliert wird.
     price = dampen_estimated(price, estimated, config.forecast.price_damping)

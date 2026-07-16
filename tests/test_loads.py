@@ -76,6 +76,22 @@ def test_thermal_holds_band_and_coupling():
     assert ((gross <= 1.0) | (klein > 1.0)).all(), "große WP läuft ohne kleine"
 
 
+def test_thermal_weather_gaps_use_safe_defaults():
+    """NaN in optionalem Wetter darf weder PuLP noch den EMS-Lauf abbrechen."""
+    cfg = make_config()
+    cfg.controllable_loads = [_pool_load()]
+    idx = _day_index("2026-06-10")
+    n = len(idx)
+    ambient = np.full(n, 20.0); ambient[10:20] = np.nan
+    solar = np.full(n, 300.0); solar[30:40] = np.nan
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=30.0,
+        soc=cfg.house_battery.min_soc_wh,
+        ambient_temp_c=ambient, solar_w_m2=solar,
+        load_state={"pool": 27.0}))
+    assert not res.infeasible and res.status == "Optimal"
+
+
 def test_thermal_recovers_from_low_start():
     """Startet der Pool unter dem Band, wird kräftig (auch mit großer WP) geheizt."""
     cfg = make_config()

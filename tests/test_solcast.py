@@ -93,6 +93,24 @@ def test_pv_archive_selects_snapshot_known_at_origin(tmp_path):
     assert new.tolist() == [200.0, 200.0]
 
 
+def test_complete_pv_requires_every_configured_source(tmp_path):
+    cfg = _cfg(tmp_path, combine="sum",
+               sources=[SolcastSource("K1", "A"), SolcastSource("K2", "B")])
+    base = pd.Timestamp("2026-07-09 08:00", tz="UTC")
+    write_pv_forecast(cfg.e3dc_rscp.history_db_path, "A", {
+        base.isoformat(): (1000.0, 800.0, 1200.0)})
+    incomplete = solcast.read_pv_signal(
+        cfg, None, "pv_forecast", base, base + pd.Timedelta(minutes=30),
+        require_complete=True)
+    assert incomplete.empty
+    write_pv_forecast(cfg.e3dc_rscp.history_db_path, "B", {
+        base.isoformat(): (2000.0, 1600.0, 2400.0)})
+    complete = solcast.read_pv_signal(
+        cfg, None, "pv_forecast", base, base + pd.Timedelta(minutes=30),
+        require_complete=True)
+    assert complete.iloc[0] == 3000.0
+
+
 def test_read_pv_signal_weiche(tmp_path):
     cfg = _cfg(tmp_path, combine="sum",
                sources=[SolcastSource("K", "res-1")])
@@ -110,7 +128,7 @@ def test_read_pv_signal_weiche(tmp_path):
     cfg.solcast.enabled = False
 
     class FakeRepo:
-        def read_slots(self, sig, a, b):
+        def read_slots(self, sig, a, b, **kwargs):
             return pd.Series([1.0], index=pd.to_datetime([a]))
     assert solcast.read_pv_signal(cfg, FakeRepo(), "pv_forecast", base, base).iloc[0] == 1.0
 

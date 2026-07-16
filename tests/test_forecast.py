@@ -135,6 +135,17 @@ def test_intraday_diagnostic_archive(tmp_path):
     assert windows == 4
 
 
+def test_operational_series_does_not_bridge_long_gap():
+    from ems.main import _complete_operational_series
+    idx = pd.date_range(START, periods=20, freq=FREQ)
+    src = pd.Series([100.0, 200.0], index=[idx[0], idx[-1]])
+    out, fallback_slots = _complete_operational_series(
+        src, idx, fallback=999.0, interpolate_limit=2, edge_limit=0)
+    assert out.iloc[1:3].lt(999.0).all()
+    assert (out.iloc[3:-1] == 999.0).all()
+    assert fallback_slots == 16
+
+
 def test_price_damping_pulls_estimates_to_mean():
     from ems.forecast import dampen_estimated
     idx = pd.date_range(START, periods=8, freq="1h")

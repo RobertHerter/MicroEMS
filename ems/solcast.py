@@ -148,15 +148,18 @@ def available(config, repo, signal: str) -> bool:
     return repo.signal_available(signal)
 
 
-def read_pv_signal(config, repo, signal: str, start, end) -> pd.Series:
+def read_pv_signal(config, repo, signal: str, start, end,
+                   require_complete: bool = False) -> pd.Series:
     """PV-Signal [start, end): kombinierte Solcast-Quellen (lokal) oder InfluxDB."""
     if config.solcast.enabled and signal in _SIGNAL_WHICH:
         s = local_history.read_pv_forecast(
             config.e3dc_rscp.history_db_path, start, end, config.general.timezone,
-            config.general.slot_minutes, config.solcast.combine, _SIGNAL_WHICH[signal])
+            config.general.slot_minutes, config.solcast.combine, _SIGNAL_WHICH[signal],
+            ([src.resource_id for src in config.solcast.sources]
+             if require_complete else None))
         # Übergangslücke (noch kein Abruf im Cache): auf InfluxDB zurückfallen,
         # solange dort vorhanden – verhindert NaN-PV vor dem ersten Solcast-Abruf.
         if s.empty and repo is not None and repo.signal_available(signal):
-            return repo.read_slots(signal, start, end)
+            return repo.read_slots(signal, start, end, fill=False)
         return s
-    return repo.read_slots(signal, start, end)
+    return repo.read_slots(signal, start, end, fill=False)

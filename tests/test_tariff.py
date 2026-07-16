@@ -49,6 +49,20 @@ def test_apply_tariff_preserves_nan():
     assert not pd.isna(out.iloc[0]) and pd.isna(out.iloc[1])
 
 
+def test_price_series_complete_outage_uses_safe_fallback(tmp_path):
+    from ems.main import _price_series
+    from tests.test_synthetic import make_config
+    cfg = make_config()
+    cfg.tariff.enabled = True
+    cfg.tariff.type = "dynamic"
+    cfg.tariff.fixed_ct_kwh = 31.5
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "empty.sqlite")
+    now = pd.Timestamp("2026-07-01 12:00", tz=cfg.general.timezone)
+    idx = pd.date_range(now, periods=16, freq="15min")
+    out = _price_series(None, cfg, idx, now)
+    assert out.notna().all() and (out == 31.5).all()
+
+
 def test_fixed_tariff_constant():
     cfg = _cfg(type="fixed", fixed_ct_kwh=34.0)
     idx = pd.date_range("2026-01-01 10:00", periods=3, freq="15min", tz="Europe/Berlin")

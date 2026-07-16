@@ -248,8 +248,10 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
                          inclusive="left")
     if len(grid) == 0:
         return hourly
-    return (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
-            .reindex(grid))
+    step_min = max(1.0, pd.Timedelta(freq).total_seconds() / 60.0)
+    limit = max(1, int(120.0 / step_min))
+    return (hourly.reindex(hourly.index.union(grid)).interpolate(
+            method="time", limit=limit, limit_area="inside").reindex(grid))
 
 
 def write_radiation(path: str, mapping: Dict[str, float]) -> int:
@@ -288,8 +290,10 @@ def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:
                          inclusive="left")
     if len(grid) == 0:
         return hourly.clip(lower=0.0)
-    out = (hourly.reindex(hourly.index.union(grid)).interpolate(method="time")
-           .reindex(grid))
+    step_min = max(1.0, pd.Timedelta(freq).total_seconds() / 60.0)
+    limit = max(1, int(120.0 / step_min))
+    out = (hourly.reindex(hourly.index.union(grid)).interpolate(
+           method="time", limit=limit, limit_area="inside").reindex(grid))
     return out.clip(lower=0.0)   # Einstrahlung ist nie negativ (Interpolationsrand)
 
 
@@ -520,7 +524,10 @@ def read_weather_forecast_asof(path: str, issue_time, start, end, tz: str,
     grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz), freq=freq,
                          inclusive="left")
-    out = src.reindex(src.index.union(grid)).interpolate(method="time").reindex(grid)
+    step_min = max(1.0, pd.Timedelta(freq).total_seconds() / 60.0)
+    limit = max(1, int(120.0 / step_min))
+    out = src.reindex(src.index.union(grid)).interpolate(
+        method="time", limit=limit, limit_area="inside").reindex(grid)
     return out.clip(lower=0.0) if field == "radiation" else out
 
 
@@ -565,7 +572,8 @@ def write_intraday_diagnostic(path: str, issue_time, signal: str,
 
 
 def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
-                     combine: str, which: str) -> pd.Series:
+                     combine: str, which: str,
+                     expected_sources=None) -> pd.Series:
     """Kombinierte PV-Vorhersage [start, end) auf dem Slot-Raster (W).
     which: 'pv' | 'p10' | 'p90'. combine: 'sum' (Arrays addieren) | 'mean'
     (redundante Quellen mitteln). Gröbere Quellschritte (30-min) werden gehalten;
@@ -576,9 +584,28 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     try:
         con = _con(path)
-        rows = con.execute(
-            f"SELECT ts, {agg}({col}) FROM pv_forecast WHERE ts >= ? AND ts < ? "
-            f"AND {col} IS NOT NULL GROUP BY ts ORDER BY ts", (s_utc, e_utc)).fetchall()
+        expected = list(dict.fromkeys(expected_sources or []))
+        if expected:
+            marks = ",".join("?" for _ in expected)
+            raw_rows = con.execute(
+                f"SELECT ts, source, {col} FROM pv_forecast "
+                f"WHERE ts >= ? AND ts < ? AND {col} IS NOT NULL "
+                f"AND source IN ({marks}) ORDER BY ts",
+                (s_utc, e_utc, *expected)).fetchall()
+            if raw_rows:
+                frame = pd.DataFrame(raw_rows, columns=["ts", "source", "value"])
+                wide = frame.pivot_table(index="ts", columns="source",
+                                         values="value", aggfunc="last")
+                wide = wide.reindex(columns=expected).dropna(how="any")
+                combined = wide.sum(axis=1) if combine == "sum" else wide.mean(axis=1)
+                rows = list(combined.items())
+            else:
+                rows = []
+        else:
+            rows = con.execute(
+                f"SELECT ts, {agg}({col}) FROM pv_forecast WHERE ts >= ? AND ts < ? "
+                f"AND {col} IS NOT NULL GROUP BY ts ORDER BY ts",
+                (s_utc, e_utc)).fetchall()
         con.close()
     except Exception:
         rows = []

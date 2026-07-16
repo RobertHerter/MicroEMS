@@ -15,6 +15,7 @@ retention_policy sowie scale/offset zur Einheiten-Umrechnung.
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Optional
@@ -264,7 +265,8 @@ class InfluxRepository:
         val = self.backend.read_latest(spec, start, end)
         if val is None:
             return None
-        return val * spec.scale + spec.offset
+        out = float(val) * spec.scale + spec.offset
+        return out if math.isfinite(out) else None
 
     def write_frame(self, output_key: str, df: pd.DataFrame, tags=None) -> None:
         measurement = self.config.influxdb.outputs[output_key]

@@ -90,6 +90,16 @@ def add_controllable_loads(prob, config, inp, N, dt, g_imp=None):
            if inp.ambient_temp_c is not None else None)
     solar = (np.asarray(inp.solar_w_m2, dtype=float)
             if inp.solar_w_m2 is not None else None)
+    # Wetter ist optional. Rest-NaN dürfen niemals als PuLP-Konstanten enden:
+    # ohne vollständige Temperatur neutral am Zielwert rechnen, fehlende
+    # Strahlung konservativ als 0 (keinen solaren Wärmeeintrag erfinden).
+    if amb is not None and (len(amb) != N or not np.all(np.isfinite(amb))):
+        amb = None
+    if solar is not None:
+        if len(solar) != N:
+            solar = None
+        else:
+            solar = np.nan_to_num(solar, nan=0.0, posinf=0.0, neginf=0.0)
     state = inp.load_state or {}
     on_by_key: dict = {}          # für `requires`-Kopplung
 

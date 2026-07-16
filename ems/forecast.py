@@ -417,6 +417,10 @@ def load_history(repo, config: Config, now: datetime) -> pd.Series:
     start = now - timedelta(days=config.forecast.lookback_days)
     if config.e3dc_rscp.history_source:
         from .local_history import read_house_load
-        return read_house_load(config.e3dc_rscp.history_db_path, start, now,
-                               config.general.timezone)
-    return repo.read_slots("house_consumption", start, now, fill=False)
+        s = read_house_load(config.e3dc_rscp.history_db_path, start, now,
+                            config.general.timezone)
+    else:
+        s = repo.read_slots("house_consumption", start, now, fill=False)
+    # 0/negative Leistung ist bei einem ganzen Haus kein valider Messwert,
+    # sondern typischerweise eine unfertige Bilanz oder Datenlücke.
+    return s.where(s > 0.0)

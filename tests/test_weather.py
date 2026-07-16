@@ -84,6 +84,16 @@ def test_weather_archive_excludes_past_and_selects_asof(tmp_path):
     assert old.iloc[0] == 10.0 and new.iloc[0] == 20.0
 
 
+def test_weather_reader_does_not_interpolate_multi_hour_outage(tmp_path):
+    db = str(tmp_path / "w.sqlite")
+    base = pd.Timestamp("2026-07-01 00:00", tz="UTC")
+    write_temperature(db, {
+        base.isoformat(): 10.0,
+        (base + pd.Timedelta(hours=6)).isoformat(): 20.0})
+    s = read_temperature(db, base, base + pd.Timedelta(hours=6), "UTC", "15min")
+    assert s.isna().any(), "Mehrstündige Wetterlücke wurde als Messdaten getarnt"
+
+
 def _fake_cfg_and_window(tmp_path):
     from tests.test_synthetic import make_config
     cfg = make_config()

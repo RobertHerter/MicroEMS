@@ -47,7 +47,10 @@ def main() -> int:
         return 2
     days = args.days if args.days is not None else config.e3dc_rscp.history_backfill_days
     tz = config.general.timezone
-    now = pd.Timestamp.now(tz=tz).floor("15min")
+    # Das jüngste E3DC-DB-Fenster ist kurz nach Slotende noch nicht final und
+    # kann eine negative, später zu 0 gekappte Zwischenbilanz liefern.
+    now = (pd.Timestamp.now(tz=tz) - pd.Timedelta(
+        minutes=config.e3dc_rscp.history_settle_minutes)).floor("15min")
     start = now - timedelta(days=days)
     db = config.e3dc_rscp.history_db_path
     print(f"Backfill 15-min-Hauslast {start.date()} .. {now.date()} "

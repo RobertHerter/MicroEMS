@@ -472,6 +472,13 @@ Zwei Werkzeuge machen die Suche systematisch:
   `intraday_pv_min_power_w`. Totzone und maximale Änderung je Lauf verhindern
   hektische Sprünge. Ist-/Basisprognose-Slots sowie Roh- und angewandte Faktoren
   werden lokal in `intraday_window`/`intraday_correction` archiviert.
+- Datenlücken werden nicht unbegrenzt interpoliert: Verbrauchstraining lässt
+  fehlende Slots aus; eine komplett fehlende Last-Historie nutzt
+  `forecast.fallback_load_w`. Für die Optimierung gilt konservativ: fehlende PV
+  = 0 W, fehlende Solarstrahlung = 0 W/m², fehlende Preise = Historienmedian
+  beziehungsweise Fixpreis. Wetter wird nur über kurze Lücken interpoliert.
+  Bei Solcast müssen für Zukunftsslots alle konfigurierten Teilanlagen vorhanden
+  sein; unvollständige P10-Reihen werden nicht zur Peak-Planung verwendet.
 - Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung
   wird in Negativpreis-Stunden mit 0 ct bewertet.
 - Geschätzte Folgetag-Preise werden zur Mitte gestaucht
