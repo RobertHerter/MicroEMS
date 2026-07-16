@@ -221,7 +221,8 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
     (er liefert die Korrekturfaktoren); diese Validierung beantwortet die
     Modellwahl-Frage."""
     tz = cfg.general.timezone
-    horizon_slots = horizon_hours * cfg.general.slots_per_hour
+    horizon_slots = int(round(
+        horizon_hours * 60.0 / cfg.general.slot_minutes))
     hist = hist.dropna()
     if hist.empty:
         return None
@@ -231,21 +232,32 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
         methods.insert(0, "ml")
     except ImportError:
         print("  [Hinweis] scikit-learn fehlt - nur similar_days validiert.")
-    end = (pd.Timestamp(now).tz_convert(tz).normalize()
-           - pd.Timedelta(days=horizon_hours // 24))
-    first = (hist.index.min().tz_convert(tz).normalize()
-             + pd.Timedelta(days=min_train_days))
-    usable_days = (end - first).days
-    folds = max(1, min(folds, usable_days)) if usable_days >= 1 else 0
-    if folds < 1:
+    freq = pd.Timedelta(minutes=cfg.general.slot_minutes)
+    horizon = pd.Timedelta(hours=horizon_hours)
+    # Letzter Origin muss den VOLLEN frei wählbaren Horizont vor `now` haben.
+    # horizon_hours//24 schnitt zuvor z.B. einen 36-h-Fold auf 24 h Ist ab.
+    end = (pd.Timestamp(now).tz_convert(tz) - horizon).floor(freq)
+    first = (hist.index.min().tz_convert(tz)
+             + pd.Timedelta(days=min_train_days)).ceil(freq)
+    usable_slots = int((end - first) / freq) if end >= first else 0
+    folds = max(1, min(folds, usable_slots + 1)) if usable_slots >= 0 and end >= first else 0
+    if folds < 1 or end < first:
         return None
-    step = (end - first) / folds
-    origins = [(first + (k + 1) * step).normalize() for k in range(folds)]
+    if folds == 1:
+        origins = [end]
+    else:
+        step = (end - first) / (folds - 1)
+        origins = [(first + k * step).floor(freq) for k in range(folds)]
+        # Rundung aufs Slotraster darf keine doppelten Folds erzeugen.
+        origins = list(dict.fromkeys(origins))
 
     orig_method = cfg.forecast.method
     orig_corr = cfg.forecast.correction_factor
     collected = {m: [] for m in methods}
     used = 0
+    min_train_slots = int(np.ceil(
+        min_train_days * 24 * cfg.general.slots_per_hour * 0.9))
+    min_actual_slots = int(np.ceil(horizon_slots * 0.9))
     try:
         cfg.forecast.correction_factor = 1.0
         for origin in origins:
@@ -253,16 +265,21 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
             actual = hist[(hist.index >= origin)
                           & (hist.index < origin
                              + pd.Timedelta(hours=horizon_hours))]
-            if len(train) < min_train_days * 90 or len(actual) < horizon_slots // 2:
+            if len(train) < min_train_slots or len(actual) < min_actual_slots:
                 continue
             used += 1
             for method in methods:
                 cfg.forecast.method = method
                 fc = LoadForecaster(cfg)
                 fc.load_hourly = None
+                # Keine Look-ahead-Leakage: Die historischen Temperatur-/PV-
+                # Reihen enthalten realisierte Werte bzw. bis kurz vor dem
+                # Ziel aktualisierte Forecasts, nicht den Stand am Fold-Origin.
+                # Ohne issue_time-Archiv sind sie als Zukunftsfeatures nicht
+                # rekonstruierbar; daher im Methodenvergleich ganz auslassen.
                 pred = fc.forecast(train, origin, horizon_slots,
-                                   hist_temp=temp, fut_temp=temp,
-                                   hist_pv=pv, fut_pv=pv)
+                                   hist_temp=None, fut_temp=None,
+                                   hist_pv=None, fut_pv=None)
                 idx = actual.index.intersection(pred.index)
                 if len(idx):
                     collected[method].append(pd.DataFrame(
@@ -272,15 +289,32 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
         cfg.forecast.method = orig_method
         cfg.forecast.correction_factor = orig_corr
 
-    res = {"folds": used, "horizon_hours": horizon_hours, "methods": {}}
+    res = {"folds": used, "horizon_hours": horizon_hours,
+           "exogenous_mode": "disabled_no_issue_time_archive",
+           # Die Residuen gehören zu einem Modell OHNE Zukunfts-Exogene. Das
+           # Live-Modell nutzt aktuelle Wetter-/PV-Prognosen; bis ein echtes
+           # issue_time-Archiv existiert, darf dieses Profil daher nur als
+           # Diagnose gespeichert, nicht produktiv aktiviert werden.
+           "correction_profile_compatible": False, "methods": {}}
+    combined = {}
     for method, frames in collected.items():
         if frames:
-            res["methods"][method] = _segment_metrics(pd.concat(frames), tz)
+            combined[method] = pd.concat(frames)
+            res["methods"][method] = _segment_metrics(combined[method], tz)
     if not res["methods"]:
         return None
     res["empfehlung"] = min(
-        res["methods"],
-        key=lambda m: res["methods"][m]["gesamt"].get("wape_pct", float("inf")))
+        combined, key=lambda m: _wape(combined[m]["a"].values,
+                                      combined[m]["p"].values))
+    best = combined[res["empfehlung"]]
+    # Produktive Korrektur ebenfalls out-of-fold bestimmen. Der alte einzelne
+    # 60-Tage-Horizont verlor beim ML nach Tag 7 sein lag_7d-Feature und konnte
+    # die Stundenfaktoren dadurch systematisch aufblasen.
+    res["global_correction"] = round(
+        float(best["a"].sum() / best["p"].sum()), 4)
+    res["hourly_correction"] = _factor_table(
+        best["a"], best["p"],
+        lambda i: i.tz_convert(cfg.general.timezone).hour)
     return res
 
 
@@ -305,6 +339,11 @@ def _print_validation(res):
         print(f"  {s:<14}" + "".join(f"{c:>22}" for c in cells))
     print(f"  -> Empfehlung forecast.method: '{res['empfehlung']}' "
           f"(kleinster Gesamt-WAPE)")
+    print(f"  -> Rolling-Origin-Korrekturfaktor: "
+          f"{res.get('global_correction', 1.0):.3f}")
+    if not res.get("correction_profile_compatible", False):
+        print("     (nur Diagnose; nicht live angewandt, da Origin-Archive für "
+              "Wetter/PV fehlen)")
 
 
 def calibrate_load(repo, cfg, now, lookback_days, test_days):
@@ -447,7 +486,10 @@ def main():
         "forecast_validation": validation,
         "empfohlene_config": {
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
-            "forecast.correction_factor": load["suggested_correction_factor"] if load else None,
+            "forecast.correction_factor": (
+                validation.get("global_correction")
+                if validation and validation.get("correction_profile_compatible")
+                else load["suggested_correction_factor"] if load else None),
         },
     }
     with open(args.output, "w", encoding="utf-8") as fh:
@@ -465,13 +507,17 @@ def main():
                 "pv_hour": pv.get("hourly", {}),
                 "pv_month": pv.get("monthly", {}),
             })
-        if load and load.get("hourly"):
-            # Last-Stundenprofil (Ist/Prognose je Stunde): ersetzt in der
-            # Pipeline den globalen forecast.correction_factor (Vorrang,
-            # nie beides). Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
+        rolling_hourly = ((validation or {}).get("hourly_correction")
+                          if (validation or {}).get("correction_profile_compatible")
+                          else None)
+        fallback_hourly = load.get("hourly") if load else None
+        load_hourly = rolling_hourly or fallback_hourly
+        if load_hourly:
+            # Bevorzugt aus Rolling-Origin-Residualen; der alte Hold-out bleibt
+            # nur Fallback. Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
             profile["load_hourly"] = {
                 int(h): round(float(min(1.8, max(0.6, f))), 3)
-                for h, f in load["hourly"].items()}
+                for h, f in load_hourly.items()}
         with open("kalibrierung_profil.yaml", "w", encoding="utf-8") as fh:
             yaml.safe_dump(profile, fh, allow_unicode=True, sort_keys=True)
         print("Korrekturprofil (PV Monat x Stunde, Last je Stunde) -> "

@@ -10,6 +10,7 @@ Prüft auf synthetischer Historie:
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -40,6 +41,10 @@ def test_validation_compares_methods_on_same_folds():
         # Segment-Aufschlüsselung vorhanden (Sommer-Folds -> Saison Sommer)
         assert "Nacht 00-06" in seg and "Werktag" in seg and "Sommer" in seg
     assert res["empfehlung"] in res["methods"]
+    assert res["exogenous_mode"] == "disabled_no_issue_time_archive"
+    assert res["correction_profile_compatible"] is False
+    assert len(res["hourly_correction"]) == 24
+    assert res["global_correction"] > 0.0
     best = res["empfehlung"]
     assert all(res["methods"][best]["gesamt"]["wape_pct"]
                <= res["methods"][m]["gesamt"]["wape_pct"]
@@ -68,3 +73,40 @@ def test_validation_returns_none_on_insufficient_history():
     assert validate_forecast_series(cfg, hist, None, None, now,
                                     folds=5, horizon_hours=48,
                                     min_train_days=60) is None
+
+
+def test_validation_does_not_leak_future_exogenous_features(monkeypatch):
+    """Ohne issue_time-Archiv dürfen Ist-Temperatur und final revidierte
+    PV-Prognose nicht als am historischen Origin bekannte Zukunft gelten."""
+    cfg, hist, now = _setup()
+    temp = pd.Series(20.0, index=hist.index)
+    pv = pd.Series(1000.0, index=hist.index)
+    from ems.forecast import LoadForecaster
+    real = LoadForecaster.forecast
+    seen = []
+
+    def wrapped(self, *args, **kwargs):
+        seen.append((kwargs.get("hist_temp"), kwargs.get("fut_temp"),
+                     kwargs.get("hist_pv"), kwargs.get("fut_pv")))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(LoadForecaster, "forecast", wrapped)
+    res = validate_forecast_series(cfg, hist, temp, pv, now, folds=2,
+                                   horizon_hours=24, min_train_days=30)
+    assert res is not None and seen
+    assert all(all(v is None for v in call) for call in seen)
+
+
+def test_validation_supports_hourly_slots_and_36h_horizon():
+    """P2: Raster und Horizont sind frei wählbar; jeder Fold ist vollständig."""
+    cfg = make_config()
+    cfg.general.slot_minutes = 60
+    now = pd.Timestamp("2026-06-10 12:00", tz=cfg.general.timezone)
+    idx = pd.date_range(now - pd.Timedelta(days=100), now,
+                        freq="1h", inclusive="left")
+    hour = idx.hour.to_numpy()
+    hist = pd.Series(500.0 + 200.0 * ((hour >= 7) & (hour < 22)), index=idx)
+    res = validate_forecast_series(cfg, hist, None, None, now, folds=3,
+                                   horizon_hours=36, min_train_days=30)
+    assert res is not None and res["folds"] == 3
+    assert all(m["gesamt"]["n"] == 3 * 36 for m in res["methods"].values())
