@@ -555,17 +555,23 @@ def main():
                 "pv_hour": pv.get("hourly", {}),
                 "pv_month": pv.get("monthly", {}),
             })
+        # NUR das archiv-kompatible Rolling-Profil darf produktiv werden. Der
+        # Hold-out ist als Quelle GESPERRT: sein 365-Tage-Horizont verliert
+        # beim ML nach Tag 7 das lag_7d-Feature und bläst die Faktoren
+        # systematisch auf (real gemessen: Hold-out-Stundenfaktoren im Mittel
+        # x1,44 / nachts bis x1,66, während die Rolling-Diagnose global x1,06
+        # ergab - eine produktive 40-%-Überkorrektur). Ohne kompatibles
+        # Rolling-Profil bleibt load_hourly leer -> die Pipeline nutzt den
+        # globalen forecast.correction_factor, bis das issue_time-Archiv die
+        # ehrliche Stunden-Korrektur freischaltet.
         rolling_hourly = ((validation or {}).get("hourly_correction")
                           if (validation or {}).get("correction_profile_compatible")
                           else None)
-        fallback_hourly = load.get("hourly") if load else None
-        load_hourly = rolling_hourly or fallback_hourly
-        if load_hourly:
-            # Bevorzugt aus Rolling-Origin-Residualen; der alte Hold-out bleibt
-            # nur Fallback. Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
+        if rolling_hourly:
+            # Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
             profile["load_hourly"] = {
                 int(h): round(float(min(1.8, max(0.6, f))), 3)
-                for h, f in load_hourly.items()}
+                for h, f in rolling_hourly.items()}
         with open("kalibrierung_profil.yaml", "w", encoding="utf-8") as fh:
             yaml.safe_dump(profile, fh, allow_unicode=True, sort_keys=True)
         print("Korrekturprofil (PV Monat x Stunde, Last je Stunde) -> "
