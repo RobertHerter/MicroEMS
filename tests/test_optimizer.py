@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ems.optimizer import Optimizer, OptimizerInputs
 from tests.test_synthetic import make_config
@@ -415,4 +416,25 @@ def test_warm_start_second_solve_reuses_previous_solution():
                                         load=800.0, price=30.0))
     assert not res2.infeasible
     assert len(res2.table) == len(idx) - 1
+    O._warm_cache.clear()
+
+
+def test_highs_random_seed_gives_deterministic_results():
+    """Regression: identischer Input lieferte je Solver-Lauf gelegentlich eine
+    ANDERE unter mehreren gleichwertigen (Gap-Toleranz-)Lösungen - einmal live
+    beobachtet als sinnloses Netzladen, das ein sofortiger Neulauf mit
+    demselben Input nicht reproduzierte. Fester random_seed in make_solver
+    macht "derselbe Input -> dieselbe Lösung" verlässlich."""
+    import ems.optimizer as O
+    O._warm_cache.clear()
+    cfg = make_config()
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 6000), load=800.0, price=30.0)
+    r1 = Optimizer(cfg).solve(inp)
+    O._warm_cache.clear()          # kein Warmstart-Effekt, reiner Solver-Vergleich
+    r2 = Optimizer(cfg).solve(inp)
+    assert not r1.infeasible and not r2.infeasible
+    assert r1.total_cost_ct == pytest.approx(r2.total_cost_ct, abs=1e-6)
+    np.testing.assert_allclose(r1.table["batt_ac_charge_w"].values,
+                               r2.table["batt_ac_charge_w"].values, atol=1e-6)
     O._warm_cache.clear()

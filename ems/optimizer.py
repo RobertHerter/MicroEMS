@@ -216,8 +216,16 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None):
 
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":
+        # Fester Zufallsseed: HiGHS' Branch-and-Bound-Suche (Zweigwahl,
+        # Heuristik-Timing) ist sonst nicht deterministisch - bei mehreren
+        # innerhalb der Gap-Toleranz gleichwertigen Lösungen kann derselbe
+        # Input je Lauf eine ANDERE davon liefern (beobachtet: identischer
+        # Plan lieferte einmal ein sinnloses Netzladen, im Neulauf nicht).
+        # Fester Seed macht "derselbe Input -> derselbe Lösung" reproduzierbar
+        # (behebt nicht die zugrunde liegende Entartung, aber die Willkür).
+        highs_kwargs = dict(kwargs, random_seed=42)
         try:
-            highs = _WarmHiGHS(warm_values=warm_values, **kwargs)
+            highs = _WarmHiGHS(warm_values=warm_values, **highs_kwargs)
             if highs.available():
                 log.info("Solver: HiGHS (highspy).")
                 return highs
