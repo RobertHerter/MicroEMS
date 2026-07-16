@@ -61,3 +61,22 @@ def test_standby_loss_suppresses_tiny_discharge():
 
     assert total_dis(0.0) > total_dis(5000.0) + 100.0, \
         "Sockellast sollte Kleinlast-Entladung unterdrücken (Netzbezug stattdessen)"
+
+
+def test_battery_switch_penalty_avoids_single_slot_hold():
+    """Ein kurzer Halte-Slot zwischen zwei Entlade-Slots kostet einen Wechsel.
+
+    Das verhindert 0-W-Entladelimits, die bei nur geringfügig abweichenden
+    Preisen wirtschaftlich kaum etwas bringen, aber real den E3DC takten.
+    """
+    cfg = make_config()
+    cfg.optimization.battery_switch_penalty_ct = 1.0
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([30.0, 30.0, 30.0, 30.2, 30.0, 30.0, 30.0, 30.0])
+    res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=900.0, price=price,
+                                       soc=cfg.house_battery.max_soc_wh))
+    assert not res.infeasible
+    dis = res.table["batt_discharge_w"].values
+    # Bei ausreichendem SoC darf keine einzelne 0-W-Pause in einer laufenden
+    # Entladephase bleiben.
+    assert not ((dis[1:-1] < 1.0) & (dis[:-2] > 1.0) & (dis[2:] > 1.0)).any()

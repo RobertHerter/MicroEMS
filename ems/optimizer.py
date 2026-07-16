@@ -261,14 +261,17 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
     # Entladesperre vor einem günstigeren Entlade-Slot).
     gap = 0.0 if exact else float(
         getattr(cfg.optimization, "solver_mip_gap", 0.0) or 0.0)
-    if gap > 0:
+    # Nicht nur weglassen: HiGHS hat eigene kleine Standard-Gaps. Für die
+    # Politur müssen beide explizit 0 sein, sonst können Cent-Bruchteile
+    # (z.B. eine 15-min-Entladesperre vor einem billigeren Slot) bleiben.
+    if exact or gap > 0:
         kwargs["gapRel"] = gap
     # Absolute Lücke (ct) zusätzlich: schützt vor dem "1 % von einem großen
     # Ziel sind viele Euro"-Effekt (konstante Malusterme) und beendet auf
     # Instanzen mit kleinem Zielwert die teure Beweisphase früher.
     gap_abs = 0.0 if exact else float(
         getattr(cfg.optimization, "solver_mip_gap_abs_ct", 0.0) or 0.0)
-    if gap_abs > 0:
+    if exact or gap_abs > 0:
         kwargs["gapAbs"] = gap_abs
 
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
@@ -714,6 +717,21 @@ class Optimizer:
             for t in range(1, N):
                 prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
             cost_terms.append(pen_sw * pulp.lpSum(car_start))
+
+        # Batterie-Taktung: Ein einzelner Halte-Slot zwischen zwei
+        # Entlade-Slots wird als 0-W-Limit an E3DC/MQTT ausgegeben und ist
+        # damit ein realer, unnötiger Eingriff. Ein kleiner Malus je Wechsel
+        # bevorzugt einen durchgehenden Eigenverbrauch, sofern der Preisvorteil
+        # die Unterbrechung nicht klar rechtfertigt. Der erste Slot bleibt
+        # frei, weil sein Vorzustand unbekannt ist.
+        bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
+        if bat_pen and N > 1:
+            bat_switch = [pulp.LpVariable(f"batswitch_{t}", 0, 1)
+                          for t in range(1, N)]
+            for t in range(1, N):
+                prob += bat_switch[t - 1] >= is_di[t] - is_di[t - 1]
+                prob += bat_switch[t - 1] >= is_di[t - 1] - is_di[t]
+            cost_terms.append(bat_pen * pulp.lpSum(bat_switch))
 
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil

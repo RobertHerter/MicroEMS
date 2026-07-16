@@ -124,8 +124,8 @@ def test_polish_solver_disables_configured_mip_gaps():
     s = make_solver(cfg, exact=True)
     if not isinstance(s, pulp.HiGHS):
         pytest.skip("HiGHS nicht verfügbar")
-    assert getattr(s, "gapRel", None) in (None, 0)
-    assert getattr(s, "gapAbs", None) in (None, 0)
+    assert getattr(s, "gapRel", None) == 0
+    assert getattr(s, "gapAbs", None) == 0
 
 
 def test_asap_strategy_exports_only_when_full_or_at_max():
