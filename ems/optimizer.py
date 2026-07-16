@@ -838,8 +838,19 @@ class Optimizer:
         for t in range(N):
             if (curt[t].varValue or 0.0) > 5.0:
                 _free.update({b_grid[t].name, is_full[t].name, at_max[t].name})
-        if len(_free) > 96:      # Sicherheitsdeckel: Mini-MIP klein halten
-            _free = set(sorted(_free)[:96])
+        #  * Netzlade-Blase mit is_full-Zwang: ac > 0, weil fixierte is_full-
+        #    Binäre der FOLGE-Slots den vollen Akku früher erzwingen, als PV
+        #    ihn allein füllen könnte (real: 6,8 kW Netzladen bei 15,4 ct, nur
+        #    damit der Export 2 Slots früher starten darf - ~13 ct Verlust).
+        #    Die is_full/at_max-Kette der nächsten 4 h wird mit freigegeben,
+        #    damit die Politur die Vollladung nach hinten schieben darf.
+        for t in range(N):
+            if (ac[t].varValue or 0.0) > 5.0:
+                _free.add(b_grid[t].name)
+                for k in range(t, min(N, t + 16)):
+                    _free.update({is_full[k].name, at_max[k].name})
+        if len(_free) > 128:     # Sicherheitsdeckel: Mini-MIP klein halten
+            _free = set(sorted(_free)[:128])
         if _polish_continuous(prob, cfg, free_names=_free):
             log.info("Politur in %.1f s (%d freie Entlade-Binäre).",
                      time.monotonic() - _t1, len(_free))
