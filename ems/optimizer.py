@@ -164,6 +164,47 @@ class _WarmHiGHS(pulp.HiGHS):
         super().callSolver(lp)
 
 
+def _polish_continuous(prob, cfg) -> bool:
+    """LP-Politur: Binärentscheidungen der Lösung fixieren und die kontinuier-
+    lichen Flüsse exakt (gap-frei) nachoptimieren.
+
+    Die MIP-Gap-Toleranz (gapAbs/gapRel) beendet die Suche früh - der
+    Incumbent kann dann ökonomisch dominierte KONTINUIERLICHE Reste enthalten
+    (real beobachtet: 5 kW Netzladen bei 16,5 ct, dessen Energie nur den
+    ohnehin bald vollen Akku früher füllt und dafür späteren PV-Export zu
+    7,77 ct verdrängt - ~10 ct Verlust, unterhalb der Toleranz, aber ein
+    real ausgeführter sinnloser Befehl). Gegen Binär-Artefakte helfen die
+    strukturellen Regeln (ac<=g_imp, curt-Gate, ...) - gegen kontinuierliche
+    Reste hilft nur exaktes Nachrechnen: mit fixierten Binären ist das
+    Problem ein LP, das in Sekunden beweisbar optimal löst.
+
+    Schlägt die Politur fehl (numerische Randfälle), wird die ursprüngliche
+    Lösung wiederhergestellt. Rückgabe: True, wenn poliert wurde."""
+    ints = [v for v in prob.variables() if v.cat == pulp.LpInteger]
+    if not ints:
+        return False
+    snapshot = {v: v.varValue for v in prob.variables()}
+    bounds = [(v, v.lowBound, v.upBound) for v in ints]
+    try:
+        for v in ints:
+            x = int(round(v.varValue or 0.0))
+            v.lowBound = v.upBound = x
+        prob.solve(make_solver(cfg))
+        if prob.status == pulp.LpStatusOptimal:
+            return True
+        log.debug("LP-Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
+                  pulp.LpStatus[prob.status])
+    except Exception as exc:   # pragma: no cover - reine Absicherung
+        log.debug("LP-Politur übersprungen (%s).", exc)
+    finally:
+        for v, lo, hi in bounds:
+            v.lowBound, v.upBound = lo, hi
+    for v, x in snapshot.items():
+        v.varValue = x
+    prob.status = pulp.LpStatusOptimal
+    return False
+
+
 def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours: float,
                          max_export_w: Optional[float] = None):
     """Ein Slot natürliches E3DC-Eigenverbrauchsverhalten (ohne EMS-Eingriffe):
@@ -769,6 +810,13 @@ class Optimizer:
                       "Fallback 'auto' ohne Eingriffe.", status)
             return self._neutral_result(inp, status)
         infeasible = False
+        # LP-Politur: kontinuierliche Gap-Toleranz-Reste exakt wegoptimieren
+        # (Binäre fixiert -> LP, Sekunden), DANN erst die Lösung fürs
+        # Warmstarten merken - so startet der nächste Zyklus vom polierten
+        # Stand statt vom Incumbent mit Resten.
+        _t1 = time.monotonic()
+        if _polish_continuous(prob, cfg):
+            log.info("LP-Politur in %.1f s.", time.monotonic() - _t1)
         # Lösung für den Warmstart des nächsten Zyklus merken.
         _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
