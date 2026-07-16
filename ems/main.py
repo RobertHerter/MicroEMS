@@ -28,7 +28,8 @@ import pandas as pd
 from .config import Config, load_config
 from .dashboard import build_dashboard
 from .forecast import (LoadForecaster, dampen_estimated,
-                       intraday_factor_series, intraday_ratio, load_history)
+                       intraday_factor_series, intraday_ratio, load_history,
+                       stabilize_intraday_ratio)
 from .local_history import read_actual_signal, write_actuals
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import make_repository
@@ -38,6 +39,12 @@ from . import solcast
 from .validate import summarize, validate_plan
 
 log = logging.getLogger("ems.main")
+
+_intraday_state = {
+    "load": {"issue": None, "ratio": 1.0, "applied": None},
+    "pv": {"issue": None, "ratio": 1.0, "applied": None},
+}
+_intraday_raw = {"load": None, "pv": None}
 
 CONTROL_COLS = [
     # E3DC-Steuerbefehle (Limits nur bei Abweichung vom Eigenverbrauch):
@@ -147,9 +154,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                                 history, temp, now, hist_pv=hist_pv)
         if load_ratio is not None:
             load_fc = load_fc * intraday_factor_series(
-                load_ratio, load_fc.index, now, config.forecast.intraday_decay_hours)
-            log.info("Intraday-Korrektur Last: x%.2f (klingt über %.0f h ab).",
-                     load_ratio, config.forecast.intraday_decay_hours)
+                load_ratio, load_fc.index, now,
+                config.forecast.intraday_load_decay_hours)
+            log.info("Intraday-Korrektur Last: x%.2f (roh x%.2f; klingt über "
+                     "%.1f h ab).", load_ratio,
+                     _intraday_raw["load"],
+                     config.forecast.intraday_load_decay_hours)
 
         repo.write_frame(
             "load_forecast",
@@ -177,15 +187,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 s = apply_pv_correction(s, cal_profile, config.general.timezone)
             if pv_ratio is not None:
                 s = s * intraday_factor_series(
-                    pv_ratio, s.index, now, config.forecast.intraday_decay_hours)
+                    pv_ratio, s.index, now,
+                    config.forecast.intraday_pv_decay_hours)
             return s
 
         pv = _pv_series("pv_forecast")
         if cal_profile:
             log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
         if pv_ratio is not None:
-            log.info("Intraday-Korrektur PV: x%.2f (klingt über %.0f h ab).",
-                     pv_ratio, config.forecast.intraday_decay_hours)
+            log.info("Intraday-Korrektur PV: x%.2f (roh x%.2f; klingt über "
+                     "%.1f h ab).", pv_ratio, _intraday_raw["pv"],
+                     config.forecast.intraday_pv_decay_hours)
         # Pessimistische PV (Solcast p10, optional): dimensioniert die
         # Einspeise-Linie an Peak-Tagen wolken-robust.
         pv10 = (_pv_series("pv_forecast_p10")
@@ -477,34 +489,74 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None)
     fc = config.forecast
     if not fc.intraday_enabled:
         return None, None
-    win_start = now - timedelta(hours=fc.intraday_window_hours)
+    load_start = now - timedelta(hours=fc.intraday_load_window_hours)
+    pv_start = now - timedelta(hours=fc.intraday_pv_window_hours)
     load_ratio = pv_ratio = None
+
+    def stabilize(signal, ratio, deadband, max_step):
+        state = _intraday_state[signal]
+        issue = pd.Timestamp(now)
+        if state["issue"] == issue:
+            return state["applied"]
+        applied = stabilize_intraday_ratio(
+            ratio, state["ratio"], deadband=deadband, max_step=max_step)
+        state["issue"] = issue
+        state["applied"] = applied
+        if applied is not None:
+            state["ratio"] = applied
+        return applied
+
+    def archive(signal, start, details, applied):
+        try:
+            from .local_history import write_intraday_diagnostic
+            write_intraday_diagnostic(
+                config.e3dc_rscp.history_db_path, now, signal, start,
+                details, applied)
+        except Exception as exc:  # Diagnose darf den EMS-Lauf nie stoppen
+            log.warning("Intraday-Diagnose %s nicht speicherbar (%s).",
+                        signal, exc)
+
     try:
-        act = read_actual_signal(config, repo, "house_consumption", win_start, now)
+        act = read_actual_signal(config, repo, "house_consumption", load_start, now)
         # Prognose für das Fenster aus der Historie DAVOR (sonst fließen die
         # Ist-Werte des Fensters in ihre eigene Prognose ein).
-        hist_before = history[history.index < win_start]
-        pred = forecaster.forecast(hist_before, win_start, len(act),
+        hist_before = history[history.index < load_start]
+        pred = forecaster.forecast(hist_before, load_start, len(act),
                                    hist_temp=temp, fut_temp=temp,
                                    hist_pv=hist_pv, fut_pv=hist_pv)
-        load_ratio = intraday_ratio(act, pred.reindex(act.index), min_mean=50.0,
-                                    max_factor=fc.intraday_max_factor)
+        clipped, details = intraday_ratio(
+            act, pred.reindex(act.index), min_mean=50.0,
+            max_factor=fc.intraday_load_max_factor, robust=True,
+            return_details=True)
+        _intraday_raw["load"] = details.get("raw_ratio")
+        load_ratio = stabilize(
+            "load", clipped, fc.intraday_load_deadband,
+            fc.intraday_load_max_step)
+        archive("load", load_start, details, load_ratio)
     except Exception as exc:
         log.warning("Intraday-Korrektur Last fehlgeschlagen (%s).", exc, exc_info=True)
     try:
         if config.e3dc_rscp.history_source or repo.signal_available("pv_generation"):
-            act_pv = read_actual_signal(config, repo, "pv_generation", win_start, now)
-            pred_pv = solcast.read_pv_signal(config, repo, "pv_forecast", win_start, now)
+            act_pv = read_actual_signal(config, repo, "pv_generation", pv_start, now)
+            pred_pv = solcast.read_pv_signal(config, repo, "pv_forecast", pv_start, now)
             if config.calibration.enabled:
                 from .calibration import apply_pv_correction, load_profile
                 prof = load_profile(config.calibration.pv_profile)
                 if prof:
                     pred_pv = apply_pv_correction(pred_pv, prof,
                                                   config.general.timezone)
-            # min_mean 200 W: nachts/dämmerungs ist das Verhältnis instabil.
-            pv_ratio = intraday_ratio(act_pv, pred_pv.reindex(act_pv.index),
-                                      min_mean=200.0,
-                                      max_factor=fc.intraday_max_factor)
+            # Nur stabile Tagesleistung: Dämmerungsrampen und kurze Wolken
+            # dürfen die Mittagsprognose nicht über Stunden verzerren.
+            clipped, details = intraday_ratio(
+                act_pv, pred_pv.reindex(act_pv.index), min_mean=200.0,
+                max_factor=fc.intraday_pv_max_factor, robust=True,
+                min_slot_value=fc.intraday_pv_min_power_w,
+                return_details=True)
+            _intraday_raw["pv"] = details.get("raw_ratio")
+            pv_ratio = stabilize(
+                "pv", clipped, fc.intraday_pv_deadband,
+                fc.intraday_pv_max_step)
+            archive("pv", pv_start, details, pv_ratio)
     except Exception as exc:
         log.warning("Intraday-Korrektur PV fehlgeschlagen (%s).", exc)
     return load_ratio, pv_ratio
@@ -802,10 +854,12 @@ def _build_display_frame(repo, config, now, history, result,
     # der Optimierung); im Vergangenheits-Teil bleibt die rohe Modellprognose
     # sichtbar (Vergleich Ist vs. Modell).
     load_ratio, pv_ratio = intraday
-    decay = config.forecast.intraday_decay_hours
     for col, ratio in (("house_load_w", load_ratio), ("pv_w", pv_ratio),
                        ("pv10_w", pv_ratio), ("pv90_w", pv_ratio)):
         if ratio is not None and col in df.columns:
+            decay = (config.forecast.intraday_load_decay_hours
+                     if col == "house_load_w"
+                     else config.forecast.intraday_pv_decay_hours)
             fac = intraday_factor_series(ratio, full, now, decay)
             fac[full <= now] = 1.0
             df[col] = df[col] * fac

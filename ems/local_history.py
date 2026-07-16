@@ -51,6 +51,20 @@ def _con(path: str) -> sqlite3.Connection:
                 " PRIMARY KEY(issue_ts, target_ts))")
     con.execute("CREATE INDEX IF NOT EXISTS idx_weather_fc_archive_target_issue "
                 "ON weather_forecast_archive(target_ts, issue_ts)")
+    # Diagnosebasis der Intraday-Korrektur. summary enthält Roh-/angewandten
+    # Faktor je Lauf, window die dazu verglichenen Ist-/Basisprognose-Slots.
+    con.execute("CREATE TABLE IF NOT EXISTS intraday_correction ("
+                " issue_ts TEXT, signal TEXT, window_start_ts TEXT,"
+                " raw_ratio REAL, clipped_ratio REAL, applied_ratio REAL,"
+                " actual_mean_w REAL, predicted_mean_w REAL,"
+                " samples INTEGER, used_samples INTEGER,"
+                " PRIMARY KEY(issue_ts, signal))")
+    con.execute("CREATE TABLE IF NOT EXISTS intraday_window ("
+                " issue_ts TEXT, signal TEXT, target_ts TEXT,"
+                " actual_w REAL, predicted_w REAL, eligible INTEGER NOT NULL,"
+                " PRIMARY KEY(issue_ts, signal, target_ts))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_intraday_window_target "
+                "ON intraday_window(signal, target_ts)")
     # Abruf-Protokoll (je erfolgreichem Solcast-Call) für Budget/Verteilung.
     con.execute("CREATE TABLE IF NOT EXISTS solcast_log ("
                 " api_key TEXT, resource TEXT, ts TEXT)")
@@ -508,6 +522,46 @@ def read_weather_forecast_asof(path: str, issue_time, start, end, tz: str,
                          inclusive="left")
     out = src.reindex(src.index.union(grid)).interpolate(method="time").reindex(grid)
     return out.clip(lower=0.0) if field == "radiation" else out
+
+
+def write_intraday_diagnostic(path: str, issue_time, signal: str,
+                              window_start, details: dict,
+                              applied_ratio) -> None:
+    """Intraday-Ist/Basisprognose und Faktorentscheidung unveränderlich sichern."""
+    issue = pd.Timestamp(issue_time)
+    if issue.tzinfo is None:
+        issue = issue.tz_localize("UTC")
+    issue_iso = issue.tz_convert("UTC").isoformat()
+    start = pd.Timestamp(window_start)
+    if start.tzinfo is None:
+        start = start.tz_localize("UTC")
+    observations = details.get("observations")
+    con = _con(path)
+    con.execute(
+        "INSERT OR IGNORE INTO intraday_correction("
+        "issue_ts, signal, window_start_ts, raw_ratio, clipped_ratio,"
+        "applied_ratio, actual_mean_w, predicted_mean_w, samples, used_samples)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (issue_iso, str(signal), start.tz_convert("UTC").isoformat(),
+         details.get("raw_ratio"), details.get("clipped_ratio"), applied_ratio,
+         details.get("actual_mean_w"), details.get("predicted_mean_w"),
+         details.get("samples", 0), details.get("used_samples", 0)))
+    if observations is not None and not observations.empty:
+        rows = []
+        for ts, row in observations.iterrows():
+            target = pd.Timestamp(ts)
+            if target.tzinfo is None:
+                target = target.tz_localize("UTC")
+            rows.append((issue_iso, str(signal),
+                         target.tz_convert("UTC").isoformat(),
+                         float(row["a"]), float(row["p"]),
+                         int(row.get("eligible", 1))))
+        con.executemany(
+            "INSERT OR IGNORE INTO intraday_window("
+            "issue_ts, signal, target_ts, actual_w, predicted_w, eligible)"
+            " VALUES(?,?,?,?,?,?)", rows)
+    con.commit()
+    con.close()
 
 
 def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,

@@ -315,12 +315,20 @@ forecast:
   # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
   # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
   half_life_days: 120
-  # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf die
-  # Zukunft anwenden (mit Lead-Time abklingend) - für Last und PV.
+  # Intraday-Korrektur getrennt für Last und PV. deadband neutralisiert kleine
+  # Abweichungen, max_step begrenzt die Änderung je 15-min-Lauf.
   intraday_enabled: true
-  intraday_window_hours: 3.0   # Fenster für das Ist/Prognose-Verhältnis
-  intraday_decay_hours: 6.0    # Halbwertszeit des Abklingens
-  intraday_max_factor: 1.5     # Begrenzung des Faktors (und 1/x nach unten)
+  intraday_load_window_hours: 3.0
+  intraday_load_decay_hours: 3.0
+  intraday_load_max_factor: 1.5
+  intraday_load_deadband: 0.10
+  intraday_load_max_step: 0.10
+  intraday_pv_window_hours: 3.0
+  intraday_pv_decay_hours: 1.5
+  intraday_pv_max_factor: 1.5
+  intraday_pv_deadband: 0.10
+  intraday_pv_max_step: 0.10
+  intraday_pv_min_power_w: 1000  # Dämmerungs-/Wolkenslots ausschließen
   # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen, damit
   # nicht auf Phantom-Preistäler spekuliert wird. 0 = aus, 1 = flach.
   price_damping: 0.3

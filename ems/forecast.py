@@ -319,7 +319,8 @@ class LoadForecaster:
 
 def intraday_ratio(actual: pd.Series, predicted: pd.Series,
                    min_mean: float = 0.0, min_samples: int = 4,
-                   max_factor: float = 1.5):
+                   max_factor: float = 1.5, robust: bool = False,
+                   min_slot_value: float = 0.0, return_details: bool = False):
     """Ist/Prognose-Verhältnis über das jüngste Zeitfenster.
 
     Fängt Tagesabweichungen (Besuch, Homeoffice, Wetter), die das
@@ -327,13 +328,47 @@ def intraday_ratio(actual: pd.Series, predicted: pd.Series,
     Prognose zu klein für ein stabiles Verhältnis ist (z.B. PV nachts).
     Das Ergebnis ist auf [1/max_factor, max_factor] begrenzt.
     """
-    df = pd.DataFrame({"a": actual, "p": predicted}).dropna()
-    if len(df) < min_samples:
+    all_df = pd.DataFrame({"a": actual, "p": predicted}).dropna()
+    eligible = ((all_df["a"] >= min_slot_value)
+                & (all_df["p"] >= min_slot_value)
+                & (all_df["p"] > 1e-9))
+    df = all_df[eligible]
+    details = {"observations": all_df.assign(eligible=eligible.astype(int)),
+               "samples": int(len(all_df)), "used_samples": int(len(df)),
+               "actual_mean_w": None, "predicted_mean_w": None,
+               "raw_ratio": None, "clipped_ratio": None}
+    ratio = None
+    if len(df) >= min_samples:
+        mean_a, mean_p = float(df["a"].mean()), float(df["p"].mean())
+        details["actual_mean_w"], details["predicted_mean_w"] = mean_a, mean_p
+        if mean_p > min_mean and mean_a >= 0.0:
+            # Median der Slot-Verhältnisse ist gegen einzelne Herd-/Boiler-
+            # Spitzen und kurze Wolken deutlich robuster als das Summenverhältnis.
+            raw = (float((df["a"] / df["p"]).median())
+                   if robust else mean_a / mean_p)
+            ratio = float(np.clip(raw, 1.0 / max_factor, max_factor))
+            details["raw_ratio"], details["clipped_ratio"] = raw, ratio
+    return (ratio, details) if return_details else ratio
+
+
+def stabilize_intraday_ratio(ratio, previous: float = 1.0,
+                             deadband: float = 0.10,
+                             max_step: float = 0.10):
+    """Totzone und maximale Faktoränderung je Rechenlauf anwenden.
+
+    ``None`` bleibt None (z.B. PV nachts). Innerhalb 1±deadband wird neutral auf
+    1 gezielt; außerhalb nähert sich der angewandte Faktor höchstens um
+    ``max_step`` je Lauf. So kann ein einzelnes Fenster keinen harten Sprung
+    von 1.0 auf 1.5 auslösen.
+    """
+    if ratio is None:
         return None
-    mean_a, mean_p = float(df["a"].mean()), float(df["p"].mean())
-    if mean_p <= min_mean or mean_a < 0.0:
-        return None
-    return float(np.clip(mean_a / mean_p, 1.0 / max_factor, max_factor))
+    target = 1.0 if abs(float(ratio) - 1.0) <= max(0.0, deadband) else float(ratio)
+    prev = float(previous)
+    step = max(0.0, float(max_step))
+    if step == 0.0:
+        return target
+    return float(np.clip(target, prev - step, prev + step))
 
 
 def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,

@@ -364,9 +364,24 @@ class ForecastConfig:
     # Zukunft anwenden (mit Lead-Time abklingend). Fängt Tagesabweichungen
     # (Besuch, Wetter), die das Ähnliche-Tage-Modell nicht sehen kann.
     intraday_enabled: bool = True
+    # Alte Sammelparameter bleiben als Lade-/Abwärtskompatibilitäts-Fallback.
     intraday_window_hours: float = 3.0     # Fenster für das Ist/Prognose-Verhältnis
     intraday_decay_hours: float = 6.0      # Halbwertszeit des Abklingens
     intraday_max_factor: float = 1.5       # Faktor-Begrenzung (und 1/x nach unten)
+    # Last und PV reagieren sehr verschieden: Lastspitzen brauchen Robustheit,
+    # PV-Rampen an Sonnenauf-/untergang ein Mindestleistungs-Gate und kürzeres
+    # Gedächtnis. Totzone unterdrückt Rauschen, max_step begrenzt Sprünge je Lauf.
+    intraday_load_window_hours: float = 3.0
+    intraday_pv_window_hours: float = 3.0
+    intraday_load_decay_hours: float = 3.0
+    intraday_pv_decay_hours: float = 1.5
+    intraday_load_max_factor: float = 1.5
+    intraday_pv_max_factor: float = 1.5
+    intraday_load_deadband: float = 0.10
+    intraday_pv_deadband: float = 0.10
+    intraday_load_max_step: float = 0.10
+    intraday_pv_max_step: float = 0.10
+    intraday_pv_min_power_w: float = 1000.0
     # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen:
     # p' = m + (p - m) * (1 - price_damping). Verhindert, dass auf
     # prognostizierte Preistäler/-spitzen spekuliert wird. 0 = aus, 1 = flach.
@@ -876,6 +891,23 @@ def load_config(path: str) -> Config:
         intraday_window_hours=float(f.get("intraday_window_hours", 3.0)),
         intraday_decay_hours=float(f.get("intraday_decay_hours", 6.0)),
         intraday_max_factor=float(f.get("intraday_max_factor", 1.5)),
+        intraday_load_window_hours=float(f.get(
+            "intraday_load_window_hours", f.get("intraday_window_hours", 3.0))),
+        intraday_pv_window_hours=float(f.get(
+            "intraday_pv_window_hours", f.get("intraday_window_hours", 3.0))),
+        intraday_load_decay_hours=float(f.get(
+            "intraday_load_decay_hours", f.get("intraday_decay_hours", 3.0))),
+        intraday_pv_decay_hours=float(f.get(
+            "intraday_pv_decay_hours", f.get("intraday_decay_hours", 1.5))),
+        intraday_load_max_factor=float(f.get(
+            "intraday_load_max_factor", f.get("intraday_max_factor", 1.5))),
+        intraday_pv_max_factor=float(f.get(
+            "intraday_pv_max_factor", f.get("intraday_max_factor", 1.5))),
+        intraday_load_deadband=float(f.get("intraday_load_deadband", 0.10)),
+        intraday_pv_deadband=float(f.get("intraday_pv_deadband", 0.10)),
+        intraday_load_max_step=float(f.get("intraday_load_max_step", 0.10)),
+        intraday_pv_max_step=float(f.get("intraday_pv_max_step", 0.10)),
+        intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
         price_damping=float(f.get("price_damping", 0.3)),
         method=str(f.get("method", "similar_days")),
     )

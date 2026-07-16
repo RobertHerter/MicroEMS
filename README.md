@@ -463,9 +463,12 @@ Zwei Werkzeuge machen die Suche systematisch:
   geführte PV-Leistung (`pv_to_ac = pv − dc_charge ≥ 0`).
 - AC-Laden (Netz) hat einen eigenen, schlechteren Wirkungsgrad als DC-Laden
   aus PV (`ac_charge_efficiency`, Standard = `charge_efficiency`).
-- Intraday-Korrektur: Das Ist/Prognose-Verhältnis der letzten Stunden wird
-  abklingend (Halbwertszeit `intraday_decay_hours`) auf die Last- und
-  PV-Prognose angewandt.
+- Intraday-Korrektur: Last und PV besitzen getrennte Fenster, Faktorgrenzen und
+  Abklingzeiten. Die Last nutzt den Median der Slot-Verhältnisse gegen einzelne
+  Verbrauchsspitzen; PV berücksichtigt nur Slots oberhalb
+  `intraday_pv_min_power_w`. Totzone und maximale Änderung je Lauf verhindern
+  hektische Sprünge. Ist-/Basisprognose-Slots sowie Roh- und angewandte Faktoren
+  werden lokal in `intraday_window`/`intraday_correction` archiviert.
 - Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung
   wird in Negativpreis-Stunden mit 0 ct bewertet.
 - Geschätzte Folgetag-Preise werden zur Mitte gestaucht

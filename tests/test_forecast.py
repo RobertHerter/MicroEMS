@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ems.forecast import LoadForecaster
 from tests.test_synthetic import make_config
@@ -91,6 +92,47 @@ def test_intraday_ratio_rejects_thin_data():
     assert intraday_ratio(a, p, min_mean=200.0) is None            # PV-Nacht
     a2 = a.copy(); a2[:] = float("nan")
     assert intraday_ratio(a2, p) is None                           # keine Ist-Werte
+
+
+def test_intraday_ratio_robust_and_pv_power_gate():
+    from ems.forecast import intraday_ratio
+    idx = pd.date_range(START, periods=8, freq=FREQ)
+    pred = pd.Series([100.0] * 4 + [1500.0] * 4, index=idx)
+    actual = pd.Series([500.0] * 4 + [1500.0, 1500.0, 1500.0, 9000.0],
+                       index=idx)
+    ratio, detail = intraday_ratio(
+        actual, pred, robust=True, min_slot_value=1000.0,
+        return_details=True)
+    assert ratio == 1.0                  # 9-kW-Ausreißer ändert den Median nicht
+    assert detail["samples"] == 8 and detail["used_samples"] == 4
+    assert detail["observations"]["eligible"].tolist() == [0] * 4 + [1] * 4
+
+
+def test_intraday_stabilization_deadband_and_step_limit():
+    from ems.forecast import stabilize_intraday_ratio
+    assert stabilize_intraday_ratio(1.08, 1.0, deadband=0.1) == 1.0
+    assert stabilize_intraday_ratio(1.5, 1.0, max_step=0.1) == pytest.approx(1.1)
+    assert stabilize_intraday_ratio(0.5, 1.0, max_step=0.1) == pytest.approx(0.9)
+    assert stabilize_intraday_ratio(None, 1.2) is None
+
+
+def test_intraday_diagnostic_archive(tmp_path):
+    import sqlite3
+    from ems.forecast import intraday_ratio
+    from ems.local_history import write_intraday_diagnostic
+    a, p = _window(hours=1.0, actual=600.0, predicted=500.0)
+    _, details = intraday_ratio(a, p, robust=True, return_details=True)
+    db = str(tmp_path / "intraday.sqlite")
+    write_intraday_diagnostic(db, START, "load", START - pd.Timedelta(hours=1),
+                              details, 1.1)
+    con = sqlite3.connect(db)
+    summary = con.execute(
+        "SELECT raw_ratio, applied_ratio, samples, used_samples "
+        "FROM intraday_correction").fetchone()
+    windows = con.execute("SELECT count(*) FROM intraday_window").fetchone()[0]
+    con.close()
+    assert summary == pytest.approx((1.2, 1.1, 4, 4))
+    assert windows == 4
 
 
 def test_price_damping_pulls_estimates_to_mean():
