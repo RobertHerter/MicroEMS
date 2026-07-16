@@ -11,7 +11,8 @@ Payload je kind (JSON):
   temperature  {"values": {"<UTC-ISO>": <°C>, ...}}
   spot         {"values": {"<UTC-ISO>": <ct/kWh netto>, ...}}
   actuals      {"values": {"<ISO>": {"pv_w":..,"house_w":..,"grid_w":..,"battery_w":..,"soc":..}}}
-  pv_forecast  {"source":"extern", "values": {"<ISO>": {"pv_w":..,"pv10_w":..,"pv90_w":..}}}
+  pv_forecast  {"source":"extern", "issue_time":"<ISO>",
+                "values": {"<ISO>": {"pv_w":..,"pv10_w":..,"pv90_w":..}}}
 Zeitstempel werden auf UTC-ISO normalisiert (naiv -> als UTC interpretiert).
 """
 from __future__ import annotations
@@ -92,5 +93,9 @@ def ingest(config, kind: str, payload: dict) -> str:
             else:
                 pv = float(r["pv_w"])
                 m[_utc_iso(ts)] = (pv, float(r.get("pv10_w", pv)), float(r.get("pv90_w", pv)))
-        return f"{local_history.write_pv_forecast(db, src, m)} Werte"
+        n = local_history.write_pv_forecast(db, src, m)
+        issue_time = payload.get("issue_time", pd.Timestamp.now(tz="UTC"))
+        archived = local_history.write_pv_forecast_archive(
+            db, src, issue_time, m)
+        return f"{n} Werte, {archived} Zukunftswerte archiviert"
     raise KeyError(kind)

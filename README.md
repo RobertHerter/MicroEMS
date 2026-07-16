@@ -121,7 +121,10 @@ nichts):
   `temperature`) gecacht; `_read_temp` liefert daraus (auf Slot-Raster
   interpoliert) statt aus InfluxDB. Tiefe Historie einmalig via
   `weather_backfill.py` (ERA5-Archiv, ein Call/Jahr). Fällt der Abruf aus, wird
-  der Cache genutzt.
+  der Cache genutzt. Jeder erfolgreiche Abruf archiviert zusätzlich nur seine
+  Zukunftswerte unveränderlich mit Erstellungs- und Zielzeitpunkt
+  (`weather_forecast_archive`). Damit kann die Rolling-Origin-Validierung ab
+  diesem Zeitpunkt exakt den damals bekannten Wetterstand verwenden.
 - **Bezugspreis direkt von Energy-Charts + Tarifmodell** (`ems/energycharts.py`,
   `ems/tariff.py`, `tariff.enabled`, kostenlos, kein API-Key): je Zyklus wird der
   Day-Ahead-Spot der Gebotszone (EUR/MWh → ct/kWh) geholt und in die lokale SQLite
@@ -154,7 +157,11 @@ nichts):
   Forecast gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
   beim Auslesen aufs Slot-Raster gehalten. Tiefe PV-Historie einmalig via
   `solcast_import.py` (aus der InfluxDB, Quelle `influx_hist`, nur für Zeitstempel
-  VOR dem Live-Beginn → keine Überlappung mit Ost/West beim `sum`).
+  VOR dem Live-Beginn → keine Überlappung mit Ost/West beim `sum`). Erfolgreiche
+  Live-Abrufe werden außerdem als unveränderliche Snapshots mit `issue_time` und
+  `target_time` archiviert (`pv_forecast_archive`). Alte Snapshots werden nicht
+  überschrieben; rückwirkend lassen sie sich nicht aus dem aktuellen Cache
+  rekonstruieren.
 - **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
   laufen ohne InfluxDB. Auch die Kalibrierung (`kalibrierung.py`) folgt derselben
   Weiche und rechnet dann gegen die lokalen Daten. Die InfluxDB bleibt optional
@@ -216,7 +223,9 @@ kommenden Werte werden per REST eingespielt (`ems/ingest.py`):
   - `POST /api/ingest/house_load` – 15-min-Hauslast-Historie (für die Prognose).
   - `POST /api/ingest/actuals` – Ist-Werte (Dashboard/Ersparnis/Drift).
   - `POST /api/ingest/temperature` / `/spot` / `/pv_forecast` – für den voll
-    externen Betrieb auch Temperatur, Spotpreis und PV-Prognose.
+    externen Betrieb auch Temperatur, Spotpreis und PV-Prognose. Bei
+    `/pv_forecast` kann `issue_time` mitgegeben werden (sonst Eingangszeit);
+    Zukunftswerte werden zugleich im Prognosearchiv abgelegt.
   Zeitstempel werden auf UTC-ISO normalisiert; Historien landen direkt in der
   lokalen SQLite, Live-Werte im Cache. Payload-Formate: siehe `config.example.yaml`.
 

@@ -123,6 +123,8 @@ def refresh(config) -> None:
             data = fetch_forecast(s.api_key, s.resource_id,
                                   hours=config.general.forecast_horizon_hours)
             local_history.write_pv_forecast(db, s.resource_id, data)
+            local_history.write_pv_forecast_archive(
+                db, s.resource_id, now.tz_convert("UTC"), data)
             local_history.log_solcast_call(db, s.api_key, s.resource_id,
                                            now.tz_convert("UTC").isoformat())
             _error_cooldown.pop(skey, None)

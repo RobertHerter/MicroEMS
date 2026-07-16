@@ -97,6 +97,36 @@ def test_validation_does_not_leak_future_exogenous_features(monkeypatch):
     assert all(all(v is None for v in call) for call in seen)
 
 
+def test_validation_uses_complete_issue_time_archive(monkeypatch):
+    cfg, hist, now = _setup()
+    temp = pd.Series(20.0, index=hist.index)
+    pv = pd.Series(1000.0, index=hist.index)
+    seen = []
+    from ems.forecast import LoadForecaster
+    real = LoadForecaster.forecast
+
+    def archive_reader(origin, end):
+        idx = pd.date_range(origin, end,
+                            freq=f"{cfg.general.slot_minutes}min",
+                            inclusive="left")
+        return {"temp": pd.Series(18.0, index=idx),
+                "pv": pd.Series(800.0, index=idx), "complete": True}
+
+    def wrapped(self, *args, **kwargs):
+        seen.append((kwargs.get("hist_temp"), kwargs.get("fut_temp"),
+                     kwargs.get("hist_pv"), kwargs.get("fut_pv")))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(LoadForecaster, "forecast", wrapped)
+    res = validate_forecast_series(
+        cfg, hist, temp, pv, now, folds=2, horizon_hours=24,
+        min_train_days=30, archive_reader=archive_reader)
+    assert res["archive_folds"] == res["folds"] == 2
+    assert res["exogenous_mode"] == "issue_time_archive"
+    assert res["correction_profile_compatible"] is True
+    assert seen and all(all(v is not None for v in call) for call in seen)
+
+
 def test_validation_supports_hourly_slots_and_36h_horizon():
     """P2: Raster und Horizont sind frei wählbar; jeder Fold ist vollständig."""
     cfg = make_config()

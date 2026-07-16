@@ -37,6 +37,20 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS pv_forecast ("
                 " source TEXT, ts TEXT, pv_w REAL, pv10_w REAL, pv90_w REAL,"
                 " PRIMARY KEY(source, ts))")
+    # Unveränderliche Forecast-Snapshots für ehrliche Rolling-Origin-Backtests:
+    # issue_ts = Erstellungszeit, target_ts = prognostizierter Zielzeitpunkt.
+    # Die bisherigen Cache-Tabellen bleiben der schnelle Live-Lesepfad.
+    con.execute("CREATE TABLE IF NOT EXISTS pv_forecast_archive ("
+                " source TEXT, issue_ts TEXT, target_ts TEXT,"
+                " pv_w REAL, pv10_w REAL, pv90_w REAL,"
+                " PRIMARY KEY(source, issue_ts, target_ts))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pv_fc_archive_target_issue "
+                "ON pv_forecast_archive(target_ts, issue_ts)")
+    con.execute("CREATE TABLE IF NOT EXISTS weather_forecast_archive ("
+                " issue_ts TEXT, target_ts TEXT, temp_c REAL, radiation_w_m2 REAL,"
+                " PRIMARY KEY(issue_ts, target_ts))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_weather_fc_archive_target_issue "
+                "ON weather_forecast_archive(target_ts, issue_ts)")
     # Abruf-Protokoll (je erfolgreichem Solcast-Call) für Budget/Verteilung.
     con.execute("CREATE TABLE IF NOT EXISTS solcast_log ("
                 " api_key TEXT, resource TEXT, ts TEXT)")
@@ -352,6 +366,148 @@ def write_pv_forecast(path: str, source: str, mapping: Dict[str, tuple]) -> int:
     con.commit()
     con.close()
     return len(mapping)
+
+
+def write_pv_forecast_archive(path: str, source: str, issue_time,
+                              mapping: Dict[str, tuple]) -> int:
+    """Unveränderlichen PV-Forecast-Snapshot archivieren.
+
+    Nur target >= issue_time wird gespeichert; importierte Historie und bereits
+    vergangene Zielwerte sind keine am Origin nutzbaren Zukunftsprognosen.
+    """
+    if not mapping:
+        return 0
+    issue = pd.Timestamp(issue_time)
+    if issue.tzinfo is None:
+        issue = issue.tz_localize("UTC")
+    issue = issue.tz_convert("UTC")
+    issue_iso = issue.isoformat()
+    rows = []
+    for target, values in mapping.items():
+        t = pd.Timestamp(target)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        t = t.tz_convert("UTC")
+        if t < issue:
+            continue
+        rows.append((str(source), issue_iso, t.isoformat(),
+                     values[0], values[1], values[2]))
+    if not rows:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT OR IGNORE INTO pv_forecast_archive"
+        "(source, issue_ts, target_ts, pv_w, pv10_w, pv90_w) "
+        "VALUES(?,?,?,?,?,?)", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def write_weather_forecast_archive(path: str, issue_time,
+                                   temp_mapping: Dict[str, float],
+                                   radiation_mapping: Dict[str, float]) -> int:
+    """Open-Meteo-Snapshot mit issue_time/target_time archivieren.
+
+    Vergangenheitswerte aus ``past_days`` werden absichtlich ausgelassen.
+    """
+    issue = pd.Timestamp(issue_time)
+    if issue.tzinfo is None:
+        issue = issue.tz_localize("UTC")
+    issue = issue.tz_convert("UTC")
+    issue_iso = issue.isoformat()
+    rows = []
+    for target in set(temp_mapping) | set(radiation_mapping):
+        t = pd.Timestamp(target)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        t = t.tz_convert("UTC")
+        if t < issue:
+            continue
+        rows.append((issue_iso, t.isoformat(), temp_mapping.get(target),
+                     radiation_mapping.get(target)))
+    if not rows:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT OR IGNORE INTO weather_forecast_archive"
+        "(issue_ts, target_ts, temp_c, radiation_w_m2) VALUES(?,?,?,?)", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def read_pv_forecast_asof(path: str, issue_time, start, end, tz: str,
+                          slot_minutes: int, combine: str,
+                          which: str = "pv") -> pd.Series:
+    """Je Quelle jüngsten PV-Snapshot mit issue_ts <= Origin lesen."""
+    col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
+    agg = "sum" if combine == "sum" else "avg"
+    issue_iso = pd.Timestamp(issue_time).tz_convert("UTC").isoformat()
+    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            f"WITH latest AS ("
+            " SELECT source, target_ts, max(issue_ts) issue_ts"
+            " FROM pv_forecast_archive"
+            " WHERE issue_ts <= ? AND target_ts >= ? AND target_ts < ?"
+            " GROUP BY source, target_ts)"
+            f" SELECT a.target_ts, {agg}(a.{col})"
+            " FROM pv_forecast_archive a JOIN latest l"
+            " ON a.source=l.source AND a.target_ts=l.target_ts"
+            " AND a.issue_ts=l.issue_ts"
+            f" WHERE a.{col} IS NOT NULL GROUP BY a.target_ts ORDER BY a.target_ts",
+            (issue_iso, s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    src = pd.Series([r[1] for r in rows], index=idx,
+                    dtype="float64").tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz),
+                         freq=f"{slot_minutes}min", inclusive="left")
+    spl = max(1, 30 // slot_minutes)
+    return src.reindex(src.index.union(grid)).ffill(limit=spl - 1).reindex(grid)
+
+
+def read_weather_forecast_asof(path: str, issue_time, start, end, tz: str,
+                               freq: str, field: str = "temp") -> pd.Series:
+    """Jüngsten Open-Meteo-Snapshot mit issue_ts <= Origin lesen."""
+    col = {"temp": "temp_c", "radiation": "radiation_w_m2"}[field]
+    issue_iso = pd.Timestamp(issue_time).tz_convert("UTC").isoformat()
+    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "WITH latest AS ("
+            " SELECT target_ts, max(issue_ts) issue_ts"
+            " FROM weather_forecast_archive"
+            " WHERE issue_ts <= ? AND target_ts >= ? AND target_ts < ?"
+            " GROUP BY target_ts)"
+            f" SELECT a.target_ts, a.{col}"
+            " FROM weather_forecast_archive a JOIN latest l"
+            " ON a.target_ts=l.target_ts AND a.issue_ts=l.issue_ts"
+            f" WHERE a.{col} IS NOT NULL ORDER BY a.target_ts",
+            (issue_iso, s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    src = pd.Series([r[1] for r in rows], index=idx,
+                    dtype="float64").tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
+                         pd.Timestamp(end).tz_convert(tz), freq=freq,
+                         inclusive="left")
+    out = src.reindex(src.index.union(grid)).interpolate(method="time").reindex(grid)
+    return out.clip(lower=0.0) if field == "radiation" else out
 
 
 def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,

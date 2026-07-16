@@ -205,9 +205,48 @@ def _segment_metrics(df: pd.DataFrame, tz: str) -> dict:
     return out
 
 
+def _issue_time_archive_reader(cfg):
+    """Liefert die am historischen Origin zuletzt bekannten Zukunftsreihen.
+
+    Ein Fold gilt erst ab 90 % Abdeckung für alle aktivierten lokalen
+    Prognosequellen als kompatibel mit dem Live-Modell. Dadurch wird während
+    der Anlaufphase automatisch weiter der leakage-freie Fallback verwendet.
+    """
+    from ems.local_history import (read_pv_forecast_asof,
+                                   read_weather_forecast_asof)
+
+    db = cfg.e3dc_rscp.history_db_path
+    tz = cfg.general.timezone
+    slot_minutes = cfg.general.slot_minutes
+    freq = f"{slot_minutes}min"
+    use_weather = bool(cfg.weather.enabled)
+    use_pv = bool(cfg.solcast.enabled)
+
+    def read(origin, end):
+        expected = max(1, int(round(
+            (pd.Timestamp(end) - pd.Timestamp(origin)).total_seconds()
+            / (slot_minutes * 60))))
+        futures = {"temp": None, "pv": None, "complete": False}
+        checks = []
+        if use_weather:
+            futures["temp"] = read_weather_forecast_asof(
+                db, origin, origin, end, tz, freq, "temp")
+            checks.append(futures["temp"].notna().sum() >= 0.9 * expected)
+        if use_pv:
+            futures["pv"] = read_pv_forecast_asof(
+                db, origin, origin, end, tz, slot_minutes,
+                cfg.solcast.combine, "pv")
+            checks.append(futures["pv"].notna().sum() >= 0.9 * expected)
+        futures["complete"] = bool(checks and all(checks))
+        return futures
+
+    return read
+
+
 def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
                              folds: int = 12, horizon_hours: int = 48,
-                             min_train_days: int = 60):
+                             min_train_days: int = 60,
+                             archive_reader=None):
     """Rolling-Origin-Backtest der Verbrauchsprognose, wie der Live-Betrieb
     sie nutzt: `folds` Startpunkte gleichmäßig über die Historie verteilt
     (Saison-Abdeckung), je Fold `horizon_hours` voraus mit ALLEM Wissen bis
@@ -255,6 +294,7 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
     orig_corr = cfg.forecast.correction_factor
     collected = {m: [] for m in methods}
     used = 0
+    archived_folds = 0
     min_train_slots = int(np.ceil(
         min_train_days * 24 * cfg.general.slots_per_hour * 0.9))
     min_actual_slots = int(np.ceil(horizon_slots * 0.9))
@@ -268,18 +308,25 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
             if len(train) < min_train_slots or len(actual) < min_actual_slots:
                 continue
             used += 1
+            archived = (archive_reader(origin, origin + horizon)
+                        if archive_reader is not None else None)
+            archive_complete = bool(archived and archived.get("complete"))
+            if archive_complete:
+                archived_folds += 1
+                hist_temp = (temp[temp.index < origin]
+                             if temp is not None else None)
+                hist_pv = (pv[pv.index < origin] if pv is not None else None)
+                fut_temp = archived.get("temp")
+                fut_pv = archived.get("pv")
+            else:
+                hist_temp = fut_temp = hist_pv = fut_pv = None
             for method in methods:
                 cfg.forecast.method = method
                 fc = LoadForecaster(cfg)
                 fc.load_hourly = None
-                # Keine Look-ahead-Leakage: Die historischen Temperatur-/PV-
-                # Reihen enthalten realisierte Werte bzw. bis kurz vor dem
-                # Ziel aktualisierte Forecasts, nicht den Stand am Fold-Origin.
-                # Ohne issue_time-Archiv sind sie als Zukunftsfeatures nicht
-                # rekonstruierbar; daher im Methodenvergleich ganz auslassen.
                 pred = fc.forecast(train, origin, horizon_slots,
-                                   hist_temp=None, fut_temp=None,
-                                   hist_pv=None, fut_pv=None)
+                                   hist_temp=hist_temp, fut_temp=fut_temp,
+                                   hist_pv=hist_pv, fut_pv=fut_pv)
                 idx = actual.index.intersection(pred.index)
                 if len(idx):
                     collected[method].append(pd.DataFrame(
@@ -289,13 +336,13 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
         cfg.forecast.method = orig_method
         cfg.forecast.correction_factor = orig_corr
 
+    compatible = bool(used and archived_folds == used)
+    mode = ("issue_time_archive" if compatible else
+            "partial_issue_time_archive" if archived_folds else
+            "disabled_no_issue_time_archive")
     res = {"folds": used, "horizon_hours": horizon_hours,
-           "exogenous_mode": "disabled_no_issue_time_archive",
-           # Die Residuen gehören zu einem Modell OHNE Zukunfts-Exogene. Das
-           # Live-Modell nutzt aktuelle Wetter-/PV-Prognosen; bis ein echtes
-           # issue_time-Archiv existiert, darf dieses Profil daher nur als
-           # Diagnose gespeichert, nicht produktiv aktiviert werden.
-           "correction_profile_compatible": False, "methods": {}}
+           "archive_folds": archived_folds, "exogenous_mode": mode,
+           "correction_profile_compatible": compatible, "methods": {}}
     combined = {}
     for method, frames in collected.items():
         if frames:
@@ -452,7 +499,8 @@ def main():
             v_pv, _ = _pv_forecast_hist(cfg, repo, start, now)
             validation = validate_forecast_series(
                 cfg, v_hist, v_temp, v_pv, now,
-                folds=args.val_folds, horizon_hours=args.val_horizon_h)
+                folds=args.val_folds, horizon_hours=args.val_horizon_h,
+                archive_reader=_issue_time_archive_reader(cfg))
     finally:
         repo.close()
 

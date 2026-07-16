@@ -526,14 +526,19 @@ def _refresh_weather_cache(config) -> None:
     w, db = config.weather, config.e3dc_rscp.history_db_path
     try:
         from .weather import fetch_forecast
-        from .local_history import write_temperature, write_radiation
+        from .local_history import (write_radiation, write_temperature,
+                                    write_weather_forecast_archive)
         temp_map, rad_map = fetch_forecast(w.latitude, w.longitude,
                                            w.past_days, w.forecast_days)
+        issue_time = pd.Timestamp.now(tz="UTC")
         n_t = write_temperature(db, temp_map)
         n_r = write_radiation(db, rad_map)
+        n_a = write_weather_forecast_archive(
+            db, issue_time, temp_map, rad_map)
         _last_weather_fetch = _time.time()
         log.info("Open-Meteo: %d Temperatur- + %d Strahlungs-Stundenwerte "
-                 "aktualisiert.", n_t, n_r)
+                 "aktualisiert; %d Zukunftszeitpunkte archiviert.",
+                 n_t, n_r, n_a)
     except Exception as exc:
         log.warning("Open-Meteo-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
 

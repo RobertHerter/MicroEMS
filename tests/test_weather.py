@@ -6,8 +6,10 @@ from __future__ import annotations
 import pandas as pd
 
 from ems import weather
-from ems.local_history import (read_temperature, write_temperature,
-                               read_radiation, write_radiation)
+from ems.local_history import (read_radiation, read_temperature,
+                               read_weather_forecast_asof, write_radiation,
+                               write_temperature,
+                               write_weather_forecast_archive)
 
 TZ = "Europe/Berlin"
 
@@ -60,6 +62,26 @@ def test_temperature_roundtrip_and_resample(tmp_path):
     # Interpolation Mitte zwischen 10 und 20 -> ~15 bei +30 min
     assert 12.0 < s.iloc[2] < 18.0
     assert str(s.index.tz) == TZ
+
+
+def test_weather_archive_excludes_past_and_selects_asof(tmp_path):
+    db = str(tmp_path / "w.sqlite")
+    target = pd.Timestamp("2026-07-10 12:00", tz="UTC")
+    issue1 = target - pd.Timedelta(hours=6)
+    issue2 = target - pd.Timedelta(hours=2)
+    past = issue1 - pd.Timedelta(hours=1)
+    assert write_weather_forecast_archive(
+        db, issue1,
+        {past.isoformat(): 9.0, target.isoformat(): 10.0},
+        {past.isoformat(): 50.0, target.isoformat(): 100.0}) == 1
+    write_weather_forecast_archive(
+        db, issue2, {target.isoformat(): 20.0}, {target.isoformat(): 200.0})
+    end = target + pd.Timedelta(hours=1)
+    old = read_weather_forecast_asof(
+        db, issue1 + pd.Timedelta(hours=1), target, end, "UTC", "15min")
+    new = read_weather_forecast_asof(
+        db, issue2 + pd.Timedelta(hours=1), target, end, "UTC", "15min")
+    assert old.iloc[0] == 10.0 and new.iloc[0] == 20.0
 
 
 def _fake_cfg_and_window(tmp_path):

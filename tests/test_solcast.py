@@ -9,7 +9,8 @@ import pandas as pd
 from ems import solcast
 from ems.config import SolcastConfig, SolcastSource
 from ems.local_history import (last_solcast_fetch, read_pv_forecast,
-                               solcast_calls_since, write_pv_forecast)
+                               read_pv_forecast_asof, solcast_calls_since,
+                               write_pv_forecast, write_pv_forecast_archive)
 
 
 def _cfg(tmp_path, **skw):
@@ -72,6 +73,24 @@ def test_combine_sum_vs_mean(tmp_path):
     assert abs(summ.iloc[1] - summ.iloc[0]) < 1e-6
     # p10-Spalte wird ebenfalls kombiniert
     assert abs(read_pv_forecast(db, s0, e0, tz, 15, "sum", "p10").iloc[0] - 2800.0) < 1e-6
+
+
+def test_pv_archive_selects_snapshot_known_at_origin(tmp_path):
+    db = str(tmp_path / "pv.sqlite")
+    target = pd.Timestamp("2026-07-10 12:00", tz="UTC")
+    issue1 = target - pd.Timedelta(hours=6)
+    issue2 = target - pd.Timedelta(hours=2)
+    write_pv_forecast_archive(
+        db, "A", issue1, {target.isoformat(): (100.0, 80.0, 120.0)})
+    write_pv_forecast_archive(
+        db, "A", issue2, {target.isoformat(): (200.0, 160.0, 240.0)})
+    end = target + pd.Timedelta(minutes=30)
+    old = read_pv_forecast_asof(
+        db, issue1 + pd.Timedelta(hours=1), target, end, "UTC", 15, "sum")
+    new = read_pv_forecast_asof(
+        db, issue2 + pd.Timedelta(hours=1), target, end, "UTC", 15, "sum")
+    assert old.tolist() == [100.0, 100.0]
+    assert new.tolist() == [200.0, 200.0]
 
 
 def test_read_pv_signal_weiche(tmp_path):
@@ -139,6 +158,11 @@ def test_refresh_budget_and_spacing(tmp_path, monkeypatch):
     since = pd.Timestamp.now(tz="UTC").normalize().isoformat()
     assert solcast_calls_since(db, "K", since) == 1
     assert last_solcast_fetch(db, "K", "res-1") is not None
+    base = pd.Timestamp.now(tz="UTC").ceil("30min")
+    archived = read_pv_forecast_asof(
+        db, pd.Timestamp.now(tz="UTC"), base, base + pd.Timedelta(hours=1),
+        "UTC", 15, "sum")
+    assert not archived.empty
 
     solcast.refresh(cfg)                          # Budget=1 erschöpft -> kein Abruf
     assert calls["n"] == 1
