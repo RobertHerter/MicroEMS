@@ -164,22 +164,27 @@ class _WarmHiGHS(pulp.HiGHS):
         super().callSolver(lp)
 
 
-def _polish_continuous(prob, cfg) -> bool:
-    """LP-Politur: Binärentscheidungen der Lösung fixieren und die kontinuier-
-    lichen Flüsse exakt (gap-frei) nachoptimieren.
+def _polish_continuous(prob, cfg, free_names=None) -> bool:
+    """Politur: Binärentscheidungen der Lösung fixieren und den Rest exakt
+    (gap-frei) nachoptimieren.
 
     Die MIP-Gap-Toleranz (gapAbs/gapRel) beendet die Suche früh - der
-    Incumbent kann dann ökonomisch dominierte KONTINUIERLICHE Reste enthalten
-    (real beobachtet: 5 kW Netzladen bei 16,5 ct, dessen Energie nur den
-    ohnehin bald vollen Akku früher füllt und dafür späteren PV-Export zu
-    7,77 ct verdrängt - ~10 ct Verlust, unterhalb der Toleranz, aber ein
-    real ausgeführter sinnloser Befehl). Gegen Binär-Artefakte helfen die
-    strukturellen Regeln (ac<=g_imp, curt-Gate, ...) - gegen kontinuierliche
-    Reste hilft nur exaktes Nachrechnen: mit fixierten Binären ist das
-    Problem ein LP, das in Sekunden beweisbar optimal löst.
+    Incumbent kann dann ökonomisch dominierte Reste enthalten. Zwei Klassen:
+
+    * KONTINUIERLICH (real beobachtet: 5 kW Netzladen bei 16,5 ct, dessen
+      Energie nur den ohnehin bald vollen Akku früher füllt und dafür
+      späteren PV-Export zu 7,77 ct verdrängt - ~10 ct Verlust): mit
+      fixierten Binären ist das Problem ein LP -> exaktes Optimum in
+      Sekunden, solche Reste verschwinden beweisbar.
+    * BINÄRE Einzel-Blasen (real beobachtet: Entladesperre GENAU in der
+      teuersten Reststunde, Import 888 W bei 42,8 ct, Nachbar-Slots entladen
+      normal - ~3 ct Schaden): dafür lässt der Aufrufer die verdächtigen
+      Binärvariablen über `free_names` FREI - es bleibt ein Mini-MIP mit
+      einer Handvoll freier Binärer, ebenfalls Sekunden.
 
     Schlägt die Politur fehl (numerische Randfälle), wird die ursprüngliche
     Lösung wiederhergestellt. Rückgabe: True, wenn poliert wurde."""
+    free_names = free_names or set()
     ints = [v for v in prob.variables() if v.cat == pulp.LpInteger]
     if not ints:
         return False
@@ -187,15 +192,17 @@ def _polish_continuous(prob, cfg) -> bool:
     bounds = [(v, v.lowBound, v.upBound) for v in ints]
     try:
         for v in ints:
+            if v.name in free_names:
+                continue
             x = int(round(v.varValue or 0.0))
             v.lowBound = v.upBound = x
         prob.solve(make_solver(cfg))
         if prob.status == pulp.LpStatusOptimal:
             return True
-        log.debug("LP-Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
+        log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
                   pulp.LpStatus[prob.status])
     except Exception as exc:   # pragma: no cover - reine Absicherung
-        log.debug("LP-Politur übersprungen (%s).", exc)
+        log.debug("Politur übersprungen (%s).", exc)
     finally:
         for v, lo, hi in bounds:
             v.lowBound, v.upBound = lo, hi
@@ -810,13 +817,22 @@ class Optimizer:
                       "Fallback 'auto' ohne Eingriffe.", status)
             return self._neutral_result(inp, status)
         infeasible = False
-        # LP-Politur: kontinuierliche Gap-Toleranz-Reste exakt wegoptimieren
-        # (Binäre fixiert -> LP, Sekunden), DANN erst die Lösung fürs
-        # Warmstarten merken - so startet der nächste Zyklus vom polierten
-        # Stand statt vom Incumbent mit Resten.
+        # Politur: Gap-Toleranz-Reste exakt wegoptimieren (Binäre fixiert ->
+        # LP), DANN erst die Lösung fürs Warmstarten merken - so startet der
+        # nächste Zyklus vom polierten Stand statt vom Incumbent mit Resten.
+        # Verdächtige Entlade-Binäre (Import trotz Entladung 0 bei nutzbarem
+        # SoC = mögliche "Entladesperre in teurer Stunde"-Blase) bleiben frei,
+        # damit die Politur auch solche Einzel-Blasen auflösen kann.
         _t1 = time.monotonic()
-        if _polish_continuous(prob, cfg):
-            log.info("LP-Politur in %.1f s.", time.monotonic() - _t1)
+        _free = {is_di[t].name for t in range(N)
+                 if (g_imp[t].varValue or 0.0) > 5.0
+                 and (dis[t].varValue or 0.0) < 1.0
+                 and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0}
+        if len(_free) > 96:      # Sicherheitsdeckel: Mini-MIP klein halten
+            _free = set(sorted(_free)[:96])
+        if _polish_continuous(prob, cfg, free_names=_free):
+            log.info("Politur in %.1f s (%d freie Entlade-Binäre).",
+                     time.monotonic() - _t1, len(_free))
         # Lösung für den Warmstart des nächsten Zyklus merken.
         _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
