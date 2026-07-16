@@ -241,7 +241,16 @@ class E3DCLink:
                 t += pd.Timedelta(minutes=15)
                 continue
             if d:
-                out[t.tz_convert("UTC").isoformat()] = self._house_load_w(d)
+                w = self._house_load_w(d)
+                # Unfertige E3DC-Aggregate können eine negative Bilanz liefern,
+                # die _house_load_w defensiv zu 0 begrenzt. Ein echter Haushalt
+                # hat hier keine exakt 0 W; nicht persistieren, sondern beim
+                # überlappenden Folgelauf mit dem finalen Wert nachholen.
+                if w > 0.0:
+                    out[t.tz_convert("UTC").isoformat()] = w
+                else:
+                    log.debug("RSCP Hauslast %s noch unplausibel (%.0f W) – "
+                              "wird später erneut gelesen.", t, w)
             t += pd.Timedelta(minutes=15)
         return out
 

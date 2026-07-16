@@ -352,6 +352,9 @@ class ForecastConfig:
     # Globaler Korrekturfaktor auf die Verbrauchsprognose (aus kalibrierung.py).
     # 1.0 = keine Korrektur; z.B. 1.05 = Prognose 5 % anheben.
     correction_factor: float = 1.0
+    # Konservativer Betriebswert, falls überhaupt keine verwertbare
+    # Verbrauchshistorie vorhanden ist (nie mit 0 W optimieren).
+    fallback_load_w: float = 1500.0
     # Temperatur-Ähnlichkeit: historische Tage mit ähnlicher Temperatur höher
     # gewichten (Heiz-/Kühllast). weight_same_temp = Stärke, temp_sigma = Breite
     # (°C) des Gauß-Kerns. 0 = Temperatur ignorieren.
@@ -541,6 +544,10 @@ class E3DCRscpConfig:
     history_source: bool = False
     history_db_path: str = "./e3dc_history.sqlite"
     history_backfill_days: int = 730     # Tiefe des einmaligen Backfills
+    # E3DC-DB-Werte kurz nach Slotende können noch unvollständig sein. Nur
+    # gereifte Fenster lesen und einige Stunden überlappend erneut schreiben.
+    history_settle_minutes: int = 60
+    history_overlap_hours: int = 3
 
 
 @dataclass
@@ -884,6 +891,7 @@ def load_config(path: str) -> Config:
         weight_same_season=float(f.get("weight_same_season", 1.0)),
         min_samples=int(f.get("min_samples", 3)),
         correction_factor=float(f.get("correction_factor", 1.0)),
+        fallback_load_w=float(f.get("fallback_load_w", 1500.0)),
         weight_same_temp=float(f.get("weight_same_temp", 2.0)),
         temp_sigma=float(f.get("temp_sigma", 4.0)),
         half_life_days=float(f.get("half_life_days", 120.0)),
@@ -1037,6 +1045,8 @@ def load_config(path: str) -> Config:
         history_source=bool(e.get("history_source", False)),
         history_db_path=e.get("history_db_path", "./e3dc_history.sqlite"),
         history_backfill_days=int(e.get("history_backfill_days", 730)),
+        history_settle_minutes=int(e.get("history_settle_minutes", 60)),
+        history_overlap_hours=int(e.get("history_overlap_hours", 3)),
     )
 
     return Config(

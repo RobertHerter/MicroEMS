@@ -103,8 +103,11 @@ nichts):
      config.yaml --days 730` – 1 RSCP-Aufruf je 15-min-Fenster (2 Jahre
      ≈ 70 000, mehrere Stunden). Danach `history_source: true` setzen.
   2. **Zyklisch**: der Dienst führt vor jeder Prognose (alle 15 min) die neuen
-     Fenster nach – idempotent und auf 3 Tage gekappt, sodass ein Lauf nie den
-     ganzen Backfill zieht und kurze Lücken sich selbst heilen. Nach einem
+     Fenster nach – mit Reifeverzug (`history_settle_minutes`), weil die
+     jüngsten E3DC-Aggregate noch unvollständig sein können, und überlappend
+     (`history_overlap_hours`), damit Zwischenstände automatisch ersetzt werden.
+     Nichtpositive Zwischenbilanzen werden verworfen. Der Abruf ist idempotent
+     und auf 3 Tage gekappt, sodass ein Lauf nie den ganzen Backfill zieht. Nach einem
      längeren Ausfall (> 3 Tage) den Backfill einmal manuell erneut laufen
      lassen.
 

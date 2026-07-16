@@ -312,6 +312,7 @@ forecast:
   weight_same_month: 1.5
   weight_same_season: 1.0
   min_samples: 3              # min. Stichproben pro Slot, sonst Fallback
+  fallback_load_w: 1500       # konservativ bei komplett fehlender Historie
   # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
   # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
   half_life_days: 120
@@ -435,6 +436,8 @@ e3dc_rscp:
   history_source: false
   history_db_path: "./e3dc_history.sqlite"
   history_backfill_days: 730
+  history_settle_minutes: 60  # E3DC-Aggregation ausreifen lassen
+  history_overlap_hours: 3    # gereifte Fenster überlappend aktualisieren
 
 # -----------------------------------------------------------------------------
 # Dashboard

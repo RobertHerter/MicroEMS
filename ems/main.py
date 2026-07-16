@@ -55,6 +55,46 @@ CONTROL_COLS = [
     "batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
     "car_charge_w", "grid_import_w", "grid_export_w", "pv_curtail_w",
 ]
+
+
+def _house_history_refresh_window(now, last, slot_minutes: int,
+                                  settle_minutes: int,
+                                  overlap_hours: int):
+    """Sicheres RSCP-Historienfenster: gereift, überlappend, max. drei Tage."""
+    freq = pd.Timedelta(minutes=slot_minutes)
+    now = pd.Timestamp(now)
+    safe_end = (now - pd.Timedelta(minutes=settle_minutes)).floor(freq)
+    if last is None:
+        start = safe_end - timedelta(days=1)
+    else:
+        start = min(pd.Timestamp(last) + freq,
+                    safe_end - pd.Timedelta(hours=overlap_hours))
+    return max(start, safe_end - timedelta(days=3)), safe_end
+
+
+def _complete_operational_series(series, index, fallback,
+                                 interpolate_limit: int = 0,
+                                 edge_limit: int = 0):
+    """Zeitreihe sicher aufs Betriebsraster bringen, ohne lange Lücken zu tarnen.
+
+    Kurze interne Lücken dürfen optional interpoliert werden; Randwerte werden
+    nur begrenzt gehalten. Alles danach Fehlende erhält einen expliziten,
+    konservativen Fallback. Rückgabe zusätzlich: Zahl der Fallback-Slots.
+    """
+    s = (pd.Series(dtype="float64") if series is None else pd.Series(series))
+    out = s.reindex(index).astype(float)
+    if interpolate_limit > 0 and out.notna().any():
+        out = out.interpolate(method="time", limit=interpolate_limit,
+                              limit_area="inside")
+    if edge_limit > 0:
+        out = out.ffill(limit=edge_limit).bfill(limit=edge_limit)
+    missing = out.isna()
+    if missing.any():
+        if isinstance(fallback, pd.Series):
+            out = out.fillna(fallback.reindex(index))
+        else:
+            out = out.fillna(float(fallback))
+    return out, int(missing.sum())
 PREDICTION_COLS = [
     "house_soc_wh", "house_soc_percent", "car_soc_wh", "car_soc_percent",
     "slot_cost_ct", "price_ct_kwh", "feedin_ct_kwh", "pv_w", "house_load_w",
@@ -105,15 +145,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if e3dc and config.e3dc_rscp.history_source:
             try:
                 from .local_history import last_timestamp, write_house_load, count
-                slot_td = pd.Timedelta(freq)
                 last = last_timestamp(config.e3dc_rscp.history_db_path)
-                frm = (last + slot_td) if last is not None else now - timedelta(days=1)
-                frm = max(frm, now - timedelta(days=3))   # Kappung
-                data = e3dc.read_house_load_15min(frm, now)
+                frm, safe_end = _house_history_refresh_window(
+                    now, last, config.general.slot_minutes,
+                    config.e3dc_rscp.history_settle_minutes,
+                    config.e3dc_rscp.history_overlap_hours)
+                data = (e3dc.read_house_load_15min(frm, safe_end)
+                        if frm < safe_end else {})
                 n = write_house_load(config.e3dc_rscp.history_db_path, data)
                 total = count(config.e3dc_rscp.history_db_path)
-                log.info("Hauslast-Historie aktualisiert: +%d Fenster (gesamt %d).",
-                         n, total)
+                log.info("Hauslast-Historie aktualisiert: %d Fenster geschrieben "
+                         "(bis %s, gesamt %d).", n, safe_end, total)
                 if total == 0:
                     log.warning("Lokale Hauslast-Historie ist leer – Backfill "
                                 "starten: python rscp_import.py --config config.yaml")
@@ -143,9 +185,19 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         hist_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
                                          now - timedelta(days=config.forecast.lookback_days), now)
         fut_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
-                                        now, forecast_end)
-        load_fc = forecaster.forecast(history, now, config.general.n_forecast_slots,
-                                      hist_temp=temp, fut_temp=temp, hist_pv=hist_pv, fut_pv=fut_pv)
+                                        now, forecast_end,
+                                        require_complete=config.solcast.enabled)
+        if history.dropna().empty:
+            load_fc = pd.Series(
+                config.forecast.fallback_load_w,
+                index=pd.date_range(now, periods=config.general.n_forecast_slots,
+                                    freq=freq, tz=config.general.timezone))
+            log.warning("Keine verwertbare Verbrauchshistorie – verwende "
+                        "konservativ %.0f W.", config.forecast.fallback_load_w)
+        else:
+            load_fc = forecaster.forecast(
+                history, now, config.general.n_forecast_slots,
+                hist_temp=temp, fut_temp=temp, hist_pv=hist_pv, fut_pv=fut_pv)
 
         # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf
         # die Zukunft anwenden (abklingend) - fängt Tagesabweichungen, die das
@@ -170,7 +222,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Optimierungshorizont: jetzt bis Ende des letzten Tages (ganze Tage)
         opt_index = pd.date_range(now, opt_end, freq=freq,
                                   tz=config.general.timezone, inclusive="left")
-        house_load = load_fc.reindex(opt_index).ffill().bfill().values
+        house_series, n_load_fallback = _complete_operational_series(
+            load_fc, opt_index, config.forecast.fallback_load_w,
+            interpolate_limit=2, edge_limit=1)
+        if n_load_fallback:
+            log.warning("Lastprognose: %d fehlende Slots durch %.0f W ersetzt.",
+                        n_load_fallback, config.forecast.fallback_load_w)
+        house_load = house_series.values
 
         # --- 2) Eingangsdaten lesen ------------------------------------- #
         cal_profile = None
@@ -178,10 +236,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .calibration import load_profile
             cal_profile = load_profile(config.calibration.pv_profile)
 
-        def _pv_series(signal: str) -> pd.Series:
+        def _pv_series(signal: str, required: bool = True) -> pd.Series:
             """PV-Signal auf den Horizont + Kalibrierprofil + Intraday-Korrektur."""
-            s = solcast.read_pv_signal(config, repo, signal, now, opt_end
-                                       ).reindex(opt_index).ffill().bfill()
+            s = solcast.read_pv_signal(
+                config, repo, signal, now, opt_end,
+                require_complete=config.solcast.enabled).reindex(opt_index)
+            missing = int(s.isna().sum())
+            if required and missing:
+                # Keine Energie erfinden: fehlende PV konservativ als 0 W.
+                s = s.fillna(0.0)
+                log.warning("%s: %d fehlende Slots konservativ als 0 W.",
+                            signal, missing)
             if cal_profile:
                 from .calibration import apply_pv_correction
                 s = apply_pv_correction(s, cal_profile, config.general.timezone)
@@ -200,7 +265,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                      config.forecast.intraday_pv_decay_hours)
         # Pessimistische PV (Solcast p10, optional): dimensioniert die
         # Einspeise-Linie an Peak-Tagen wolken-robust.
-        pv10 = (_pv_series("pv_forecast_p10")
+        pv10 = (_pv_series("pv_forecast_p10", required=False)
                 if solcast.available(config, repo, "pv_forecast_p10") else None)
         price = _price_series(repo, config, opt_index, now)
 
@@ -289,6 +354,26 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # --- 3) Optimierung --------------------------------------------- #
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
         load_state = _read_load_state(config, publisher)
+        if temp is not None:
+            recent_temp = temp[(temp.index >= now - pd.Timedelta(hours=24))
+                               & (temp.index < now)].dropna()
+            temp_fallback = float(recent_temp.median()) if len(recent_temp) else 20.0
+            ambient, n_temp_fallback = _complete_operational_series(
+                temp, opt_index, temp_fallback, interpolate_limit=8, edge_limit=4)
+            if n_temp_fallback:
+                log.warning("Außentemperatur: %d fehlende Slots durch %.1f °C "
+                            "ersetzt.", n_temp_fallback, temp_fallback)
+        else:
+            ambient = None
+        if solar is not None:
+            solar_safe, n_solar_fallback = _complete_operational_series(
+                solar, opt_index, 0.0, interpolate_limit=8, edge_limit=4)
+            if n_solar_fallback:
+                log.warning("Solarstrahlung: %d fehlende Slots als 0 W/m².",
+                            n_solar_fallback)
+        else:
+            solar_safe = None
+
         inputs = OptimizerInputs(
             index=opt_index,
             house_load_w=np.asarray(house_load, dtype=float),
@@ -299,10 +384,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             initial_car_soc_wh=init_car_soc,
             car_present=car_present,
             pv10_w=(pv10.values.astype(float) if pv10 is not None else None),
-            ambient_temp_c=(temp.reindex(opt_index).ffill().bfill().values.astype(float)
-                            if temp is not None else None),
-            solar_w_m2=(solar.reindex(opt_index).ffill().bfill().values.astype(float)
-                       if solar is not None else None),
+            ambient_temp_c=(ambient.values.astype(float)
+                            if ambient is not None else None),
+            solar_w_m2=(solar_safe.values.astype(float)
+                        if solar_safe is not None else None),
             load_state=load_state,
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
@@ -612,7 +697,7 @@ def _read_temp(repo, config, start, end):
     if not repo.signal_available("temperature"):
         return None
     try:
-        return repo.read_slots("temperature", start, end)
+        return repo.read_slots("temperature", start, end, fill=False)
     except Exception as exc:  # pragma: no cover
         log.warning("Temperatur konnte nicht gelesen werden (%s).", exc)
         return None

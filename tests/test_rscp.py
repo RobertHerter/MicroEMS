@@ -5,6 +5,25 @@ from ems.rscp import E3DCLink
 from tests.test_synthetic import make_config
 
 
+def test_house_history_refresh_window_waits_and_overlaps():
+    import pandas as pd
+    from ems.main import _house_history_refresh_window
+    now = pd.Timestamp("2026-07-16 15:30", tz="Europe/Berlin")
+    last = now - pd.Timedelta(minutes=15)  # möglicherweise unreifer Nullwert
+    start, end = _house_history_refresh_window(now, last, 15, 60, 3)
+    assert end == now - pd.Timedelta(minutes=60)
+    assert start == end - pd.Timedelta(hours=3)
+
+
+def test_house_history_refresh_window_initial_read_is_one_day():
+    import pandas as pd
+    from ems.main import _house_history_refresh_window
+    now = pd.Timestamp("2026-07-16 15:37", tz="Europe/Berlin")
+    start, end = _house_history_refresh_window(now, None, 15, 60, 3)
+    assert end == pd.Timestamp("2026-07-16 14:30", tz="Europe/Berlin")
+    assert end - start == pd.Timedelta(days=1)
+
+
 class FakeE3DC:
     # Struktur wie pye3dc 0.10 poll() gegen echte Hardware verifiziert:
     # Akku steht unter consumption.battery (+ = Laden), PV unter production.solar.
@@ -264,6 +283,19 @@ def test_house_load_15min_queries_local_time():
     # Speicher-Schlüssel bleibt die ECHTE UTC-Zeit (04:00Z)
     data = link.read_house_load_15min(start, start + pd.Timedelta(minutes=15))
     assert list(data.keys())[0].startswith("2026-07-01T04:00:00")
+
+
+def test_house_load_15min_skips_unfinished_zero_balance():
+    """Unfertige E3DC-Fenster dürfen keine dauerhaften 0-Werte erzeugen."""
+    import pandas as pd
+    cfg, link = _link()
+    link._e3dc.get_db_data_timestamp = lambda **kwargs: {
+        "solarProduction": 100.0, "bat_power_out": 0.0,
+        "grid_power_out": 0.0, "bat_power_in": 500.0,
+        "grid_power_in": 0.0}
+    start = pd.Timestamp("2026-07-01 06:00", tz="Europe/Berlin")
+    assert link.read_house_load_15min(
+        start, start + pd.Timedelta(minutes=15)) == {}
 
 
 def test_actuals_roundtrip_and_routing(tmp_path):
