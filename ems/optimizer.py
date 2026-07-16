@@ -216,14 +216,17 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None):
 
     solver_name = getattr(cfg.optimization, "solver", "cbc").lower()
     if solver_name == "highs":
-        # Fester Zufallsseed: HiGHS' Branch-and-Bound-Suche (Zweigwahl,
-        # Heuristik-Timing) ist sonst nicht deterministisch - bei mehreren
-        # innerhalb der Gap-Toleranz gleichwertigen Lösungen kann derselbe
-        # Input je Lauf eine ANDERE davon liefern (beobachtet: identischer
-        # Plan lieferte einmal ein sinnloses Netzladen, im Neulauf nicht).
-        # Fester Seed macht "derselbe Input -> derselbe Lösung" reproduzierbar
-        # (behebt nicht die zugrunde liegende Entartung, aber die Willkür).
-        highs_kwargs = dict(kwargs, random_seed=42)
+        # Fester Zufallsseed + threads=1: HiGHS' Branch-and-Bound-Suche
+        # (parallele Baumsuche, Zweigwahl, Heuristik-Timing) ist sonst nicht
+        # deterministisch - bei mehreren innerhalb der Gap-Toleranz gleich-
+        # wertigen Lösungen kann derselbe Input je Lauf eine ANDERE davon
+        # liefern (beobachtet: identischer Plan lieferte einmal ein sinn-
+        # loses Netzladen, im Neulauf nicht). threads>1 macht die parallele
+        # Baumsuche zusätzlich lauf-timing-abhängig (welcher Zweig zuerst
+        # einen Incumbent findet, ist nicht allein vom Seed bestimmt) - nur
+        # threads=1 + Seed ergibt "derselbe Input -> IMMER dieselbe Lösung".
+        # Kostet auf dieser Instanz kaum Zeit (Solve bleibt << Zeitlimit).
+        highs_kwargs = dict(kwargs, random_seed=42, threads=1)
         try:
             highs = _WarmHiGHS(warm_values=warm_values, **highs_kwargs)
             if highs.available():
