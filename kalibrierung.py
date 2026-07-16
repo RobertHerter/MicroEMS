@@ -158,6 +158,155 @@ def _temp_hist(repo, cfg, start, now):
     return None
 
 
+def _mae(a: np.ndarray, p: np.ndarray) -> float:
+    m = np.isfinite(a) & np.isfinite(p)
+    return float(np.mean(np.abs(p[m] - a[m]))) if m.any() else float("nan")
+
+
+def _wape(a: np.ndarray, p: np.ndarray) -> float:
+    """WAPE (%): Summe |Fehler| / Summe Ist - robust gegen Werte nahe 0
+    (im Gegensatz zu MAPE) und direkt als 'Anteil verfehlter Energie' lesbar."""
+    m = np.isfinite(a) & np.isfinite(p)
+    a, p = a[m], p[m]
+    if len(a) == 0 or np.abs(a).sum() < 1e-9:
+        return float("nan")
+    return float(np.abs(p - a).sum() / np.abs(a).sum() * 100)
+
+
+_DAYPARTS = [(0, 6, "Nacht 00-06"), (6, 12, "Morgen 06-12"),
+             (12, 18, "Mittag 12-18"), (18, 24, "Abend 18-24")]
+_SEASONS = {12: "Winter", 1: "Winter", 2: "Winter",
+            3: "Fruehling", 4: "Fruehling", 5: "Fruehling",
+            6: "Sommer", 7: "Sommer", 8: "Sommer",
+            9: "Herbst", 10: "Herbst", 11: "Herbst"}
+
+
+def _segment_metrics(df: pd.DataFrame, tz: str) -> dict:
+    """MAE/WAPE gesamt + je Tageszeit, Werktag/WE und Saison."""
+    a, p = df["a"].values, df["p"].values
+    loc = df.index.tz_convert(tz)
+    out = {"gesamt": {"n": int(len(df)), "mae_W": round(_mae(a, p), 1),
+                      "wape_pct": round(_wape(a, p), 2)}}
+    for lo, hi, name in _DAYPARTS:
+        m = (loc.hour >= lo) & (loc.hour < hi)
+        if m.any():
+            out[name] = {"mae_W": round(_mae(a[m], p[m]), 1),
+                         "wape_pct": round(_wape(a[m], p[m]), 2)}
+    for name, m in (("Werktag", loc.weekday < 5), ("Wochenende", loc.weekday >= 5)):
+        if m.any():
+            out[name] = {"mae_W": round(_mae(a[m], p[m]), 1),
+                         "wape_pct": round(_wape(a[m], p[m]), 2)}
+    seasons = pd.Series([_SEASONS[mth] for mth in loc.month], index=df.index)
+    for name in ("Winter", "Fruehling", "Sommer", "Herbst"):
+        m = (seasons == name).values
+        if m.any():
+            out[name] = {"mae_W": round(_mae(a[m], p[m]), 1),
+                         "wape_pct": round(_wape(a[m], p[m]), 2)}
+    return out
+
+
+def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
+                             folds: int = 12, horizon_hours: int = 48,
+                             min_train_days: int = 60):
+    """Rolling-Origin-Backtest der Verbrauchsprognose, wie der Live-Betrieb
+    sie nutzt: `folds` Startpunkte gleichmäßig über die Historie verteilt
+    (Saison-Abdeckung), je Fold `horizon_hours` voraus mit ALLEM Wissen bis
+    zum Startpunkt - einmal je Methode (ml UND similar_days, dieselben
+    Folds). Korrekturen (correction_factor/Stundenprofil) sind neutralisiert:
+    gemessen wird das rohe Modell, nicht die Kalibrierung.
+
+    Rückgabe: {"folds", "horizon_hours", "methods": {m: Segment-Metriken},
+    "empfehlung": Methode mit kleinerem Gesamt-WAPE} oder None (zu wenig
+    Daten). Der einfache Hold-out in calibrate_load bleibt daneben bestehen
+    (er liefert die Korrekturfaktoren); diese Validierung beantwortet die
+    Modellwahl-Frage."""
+    tz = cfg.general.timezone
+    horizon_slots = horizon_hours * cfg.general.slots_per_hour
+    hist = hist.dropna()
+    if hist.empty:
+        return None
+    methods = ["similar_days"]
+    try:
+        import sklearn  # noqa: F401
+        methods.insert(0, "ml")
+    except ImportError:
+        print("  [Hinweis] scikit-learn fehlt - nur similar_days validiert.")
+    end = (pd.Timestamp(now).tz_convert(tz).normalize()
+           - pd.Timedelta(days=horizon_hours // 24))
+    first = (hist.index.min().tz_convert(tz).normalize()
+             + pd.Timedelta(days=min_train_days))
+    usable_days = (end - first).days
+    folds = max(1, min(folds, usable_days)) if usable_days >= 1 else 0
+    if folds < 1:
+        return None
+    step = (end - first) / folds
+    origins = [(first + (k + 1) * step).normalize() for k in range(folds)]
+
+    orig_method = cfg.forecast.method
+    orig_corr = cfg.forecast.correction_factor
+    collected = {m: [] for m in methods}
+    used = 0
+    try:
+        cfg.forecast.correction_factor = 1.0
+        for origin in origins:
+            train = hist[hist.index < origin]
+            actual = hist[(hist.index >= origin)
+                          & (hist.index < origin
+                             + pd.Timedelta(hours=horizon_hours))]
+            if len(train) < min_train_days * 90 or len(actual) < horizon_slots // 2:
+                continue
+            used += 1
+            for method in methods:
+                cfg.forecast.method = method
+                fc = LoadForecaster(cfg)
+                fc.load_hourly = None
+                pred = fc.forecast(train, origin, horizon_slots,
+                                   hist_temp=temp, fut_temp=temp,
+                                   hist_pv=pv, fut_pv=pv)
+                idx = actual.index.intersection(pred.index)
+                if len(idx):
+                    collected[method].append(pd.DataFrame(
+                        {"a": actual.reindex(idx).values,
+                         "p": pred.reindex(idx).values}, index=idx))
+    finally:
+        cfg.forecast.method = orig_method
+        cfg.forecast.correction_factor = orig_corr
+
+    res = {"folds": used, "horizon_hours": horizon_hours, "methods": {}}
+    for method, frames in collected.items():
+        if frames:
+            res["methods"][method] = _segment_metrics(pd.concat(frames), tz)
+    if not res["methods"]:
+        return None
+    res["empfehlung"] = min(
+        res["methods"],
+        key=lambda m: res["methods"][m]["gesamt"].get("wape_pct", float("inf")))
+    return res
+
+
+def _print_validation(res):
+    print("\n" + "=" * 62 + "\nPrognose-Validierung (Rolling-Origin, "
+          f"{res['folds']} Folds x {res['horizon_hours']} h, roh ohne "
+          "Korrekturen)\n" + "-" * 62)
+    methods = list(res["methods"])
+    head = "  {:<14}".format("") + "".join(f"{m:>22}" for m in methods)
+    print(head)
+    segs = []
+    for m in methods:                       # Reihenfolge des ersten Vorkommens
+        for s in res["methods"][m]:
+            if s not in segs:
+                segs.append(s)
+    for s in segs:
+        cells = []
+        for m in methods:
+            v = res["methods"][m].get(s)
+            cells.append(f"{v['wape_pct']:6.1f}% {v['mae_W']:7.0f}W"
+                         if v else " " * 15)
+        print(f"  {s:<14}" + "".join(f"{c:>22}" for c in cells))
+    print(f"  -> Empfehlung forecast.method: '{res['empfehlung']}' "
+          f"(kleinster Gesamt-WAPE)")
+
+
 def calibrate_load(repo, cfg, now, lookback_days, test_days):
     use_local = cfg.e3dc_rscp.history_source
     if not use_local and not repo.signal_available("house_consumption"):
@@ -240,15 +389,31 @@ def main():
     ap.add_argument("--lookback-days", type=int, default=365)
     ap.add_argument("--test-days", type=int, default=60)
     ap.add_argument("--output", default="kalibrierung.yaml")
+    ap.add_argument("--val-folds", type=int, default=12,
+                    help="Rolling-Origin-Folds der Prognose-Validierung "
+                         "(0 = überspringen)")
+    ap.add_argument("--val-horizon-h", type=int, default=48,
+                    help="Prognosehorizont je Fold in Stunden (wie live)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     repo = InfluxRepository(cfg)
     now = pd.Timestamp.now(tz=cfg.general.timezone).floor(f"{cfg.general.slot_minutes}min")
+    validation = None
     try:
         print(f"Kalibrierung über {args.lookback_days} Tage (Test: letzte {args.test_days} Tage) ...")
         pv = calibrate_pv(repo, cfg, now, args.lookback_days)
         load = calibrate_load(repo, cfg, now, args.lookback_days, args.test_days)
+        if args.val_folds > 0:
+            print(f"Prognose-Validierung ({args.val_folds} Folds x "
+                  f"{args.val_horizon_h} h, ml vs. similar_days) ...")
+            start = now - timedelta(days=args.lookback_days)
+            v_hist = _load_hist(repo, cfg, start, now).dropna()
+            v_temp = _temp_hist(repo, cfg, start, now)
+            v_pv, _ = _pv_forecast_hist(cfg, repo, start, now)
+            validation = validate_forecast_series(
+                cfg, v_hist, v_temp, v_pv, now,
+                folds=args.val_folds, horizon_hours=args.val_horizon_h)
     finally:
         repo.close()
 
@@ -270,6 +435,8 @@ def main():
         print(f"     Werktag/Wochenende:  {load['daytype']}")
         if load.get("by_temperature"):
             print(f"     Faktor nach Temperaturbereich: {load['by_temperature']}")
+    if validation:
+        _print_validation(validation)
 
     out = {
         "generated": now.isoformat(),
@@ -277,6 +444,7 @@ def main():
         "test_days": args.test_days,
         "pv_forecast": pv,
         "load_forecast": load,
+        "forecast_validation": validation,
         "empfohlene_config": {
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
             "forecast.correction_factor": load["suggested_correction_factor"] if load else None,
