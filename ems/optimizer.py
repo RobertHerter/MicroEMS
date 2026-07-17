@@ -48,9 +48,9 @@ class OptimizerInputs:
     initial_house_soc_wh: float
     initial_car_soc_wh: Optional[float] = None
     car_present: bool = False
-    # Pessimistische PV-Vorhersage (Solcast p10, W). Wenn vorhanden, wird die
-    # Einspeise-Linie an Peak-Tagen dagegen dimensioniert: der Akku wird auch
-    # dann voll, wenn der Tag bewölkter ausfällt als der Erwartungswert.
+    # Pessimistische PV-Vorhersage (Solcast p10, W). Im Auto-Modus dient sie
+    # der konservativen Tageswahl und Fruehladeabsicherung; explizites Peak
+    # bleibt reines Peak-Shaving anhand des Erwartungswerts.
     pv10_w: Optional[np.ndarray] = None
     # Außentemperatur (°C) je Slot – Wärmeverlust thermischer Lasten (Pool).
     ambient_temp_c: Optional[np.ndarray] = None
@@ -516,9 +516,12 @@ class Optimizer:
             _day_last_hour[_k] = max(_day_last_hour.get(_k, -1), _ts.hour)
         line_day = [bool(_day_last_hour[_uniq[i]] >= 15) for i in range(len(_uniq))]
 
-        # Ladestrategie PRO TAG. "auto": Tage mit deutlich mehr PV-Überschuss als
-        # nutzbarer Akkukapazität -> peak (Spitze abschöpfen); sonst asap (verfüg-
-        # bare PV früh einsammeln). "peak"/"asap" = alle Tage gleich.
+        # Ladestrategie PRO TAG. "auto": Die Peak-Schwelle beruecksichtigt den
+        # pessimistisch fortgeschriebenen SoC zum Beginn des Tagesueberschusses:
+        # freie Kapazitaet + Reserve, gedeckelt auf einen konfigurierbaren Anteil
+        # der gesamten nutzbaren Kapazitaet. So muss ein teilgeladener Akku nicht
+        # mehr so behandelt werden, als waere er morgens sicher leer.
+        # "peak"/"asap" = alle Tage gleich.
         # Für die Entscheidung zählt das pessimistische p10 (falls vorhanden):
         # ein nur auf dem Erwartungswert "sichere" Peak-Tag wird konservativ
         # als asap behandelt (früh einsammeln statt auf die Spitze wetten).
@@ -528,14 +531,60 @@ class Optimizer:
         for i in range(N):
             _day_surplus[slot_day[i]] += max(0.0, float(pv_for_mode[i]) - float(inp.house_load_w[i])) * dt
         if strategy == "auto":
-            day_mode = ["peak" if _day_surplus[i] >= usable_wh else "asap"
-                        for i in range(len(_uniq))]
+            # p10-basierte SoC-Fortschreibung bis zum ersten belastbaren
+            # Tagesueberschuss. Sie ist absichtlich unabhaengig vom spaeteren
+            # Optimierungsergebnis und damit nicht zirkulaer.
+            sim_soc = min(hb.max_soc_wh, max(hb.min_soc_wh,
+                                             float(inp.initial_house_soc_wh)))
+            dawn_soc = [None] * len(_uniq)
+            day_first_soc = [None] * len(_uniq)
+            for i in range(N):
+                d = slot_day[i]
+                if day_first_soc[d] is None:
+                    day_first_soc[d] = sim_soc
+                net = float(pv_for_mode[i]) - float(inp.house_load_w[i])
+                if dawn_soc[d] is None and net >= 100.0:
+                    dawn_soc[d] = sim_soc
+                if net >= 0.0:
+                    sim_soc = min(hb.max_soc_wh, sim_soc
+                                  + hb.charge_efficiency
+                                  * min(net, hb.max_dc_charge_w) * dt)
+                else:
+                    sim_soc = max(hb.min_soc_wh, sim_soc
+                                  - min(-net, hb.max_discharge_w) * dt
+                                  / hb.discharge_efficiency)
+
+            cap_ratio = max(0.0, min(1.0, float(getattr(
+                cfg.optimization, "auto_peak_threshold_percent", 85.0)) / 100.0))
+            reserve_ratio = max(0.0, float(getattr(
+                cfg.optimization, "auto_peak_soc_reserve_percent", 10.0)) / 100.0)
+            auto_threshold = []
+            for d in range(len(_uniq)):
+                soc0 = dawn_soc[d] if dawn_soc[d] is not None else day_first_soc[d]
+                free_wh = max(0.0, hb.max_soc_wh - float(soc0))
+                auto_threshold.append(min(cap_ratio * usable_wh,
+                                          free_wh + reserve_ratio * usable_wh))
+            day_mode = [
+                "peak" if line_day[i] and _day_surplus[i] >= auto_threshold[i]
+                else "asap"
+                for i in range(len(_uniq))
+            ]
+            log.info("Auto-Peak-Bewertung: %s", {
+                str(_uniq[i]): {
+                    "p10_kwh": round(_day_surplus[i] / 1000.0, 1),
+                    "soc_start_pct": round(100.0 * float(
+                        dawn_soc[i] if dawn_soc[i] is not None else day_first_soc[i]
+                    ) / hb.capacity_wh, 1),
+                    "threshold_kwh": round(auto_threshold[i] / 1000.0, 1),
+                    "mode": day_mode[i],
+                } for i in range(len(_uniq))
+            })
         elif strategy == "peak":
             day_mode = ["peak"] * len(_uniq)
         else:
             day_mode = ["asap"] * len(_uniq)
         log.info("Ladestrategie '%s'%s -> Tage: %s", strategy,
-                 " (p10-basiert)" if pv10 is not None else "",
+                 " (p10-basiert)" if pv10 is not None and strategy == "auto" else "",
                  {str(_uniq[i]): day_mode[i] for i in range(len(_uniq))})
 
         # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
@@ -772,6 +821,15 @@ class Optimizer:
             # genug, dass die MIP-Gap-Toleranz (gapAbs) nie "Abregeln statt
             # Einspeisen" als gleichwertig durchwinkt.
             cost_terms.append(0.5 * curt[t] * kwh)
+            # Peak-Tie-Breaker: Bei gleicher Tageslinie und Energiebilanz
+            # PV-Laden spaeter am Tag bevorzugen. So exportiert Peak unterhalb
+            # der Linie und sammelt erst die Erzeugungsspitze ein, statt
+            # beliebige 15-min-Ladezacken zu verteilen. 0,01 ct/kWh ist rein
+            # deterministisch und viel kleiner als wirtschaftliche Zielterme.
+            if day_mode[slot_day[t]] == "peak":
+                local_minute = _local[t].hour * 60 + _local[t].minute
+                early_weight = (24 * 60 - local_minute) / (24 * 60)
+                cost_terms.append(0.01 * early_weight * dc[t] * kwh)
 
         # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
         # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
@@ -790,17 +848,36 @@ class Optimizer:
         # Weich (15 ct/kWh Slack): deutlich teurer als entgangene Einspeisung
         # -> es wird früh geladen, wann immer physikalisch möglich; aber kein
         # hartes Veto (Anfangs-SoC kann die Grenze anfangs unterschreiten).
-        if pv10 is not None and _peak_line_days:
+        # Im explizit gewaehlten "peak"-Modus erwartet der Nutzer reines
+        # Peak-Shaving entlang der Einspeise-Linie. Die konservative p10-
+        # Fruehladung wuerde darunter schon am Vormittag laden und erzeugte
+        # ein gezacktes Laden/Exportieren. Sie bleibt deshalb dem adaptiven
+        # "auto"-Modus vorbehalten; dort ist die Risikoabsicherung Teil der
+        # automatischen Strategieentscheidung.
+        if pv10 is not None and _peak_line_days and strategy == "auto":
             P10_PEN_CT_KWH = 15.0
+            # Der Mindestpfad darf erst einsetzen, nachdem der p10-Ueberschuss
+            # dieses Kalendertags wirklich begonnen hat. Andernfalls koppelt
+            # der Pfad den Vorabend/die Nacht an die PV des Folgetags: Der
+            # Optimierer haelt dann den Akku nachts kuenstlich voll, nur damit
+            # er trotz einer schwachen p10-Prognose am Folgetag 100 % erreicht.
+            # Das erzeugt Entladesperren vor Sonnenaufgang und widerspricht dem
+            # Zweck der Absicherung (bereits vorhandenes PV-Laden nicht zu weit
+            # aufschieben). 100 W blendet reine Prognose-/Rundungsreste aus.
+            P10_START_SURPLUS_W = 100.0
             sd_arr = np.asarray(slot_day)
             loads = np.maximum(np.asarray(inp.house_load_w, dtype=float), 0.0)
             surplus10 = np.maximum(pv10 - loads, 0.0)
             for d in _peak_line_days:
                 idxs = np.where(sd_arr == d)[0]
                 s10 = surplus10[idxs]
+                surplus_started = np.maximum.accumulate(
+                    s10 >= P10_START_SURPLUS_W)
                 # künftiger Tages-Überschuss NACH Slot j (exklusiv)
                 suffix = np.concatenate([np.cumsum(s10[::-1])[::-1][1:], [0.0]])
                 for j, t in enumerate(idxs):
+                    if not surplus_started[j]:
+                        continue
                     # Nur solange noch p10-Überschuss aussteht: die Grenze soll
                     # das AUFSCHIEBEN des Ladens begrenzen. Nach PV-Ende wäre
                     # floor = max_soc und würde das normale (teure!) Abend-

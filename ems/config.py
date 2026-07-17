@@ -323,6 +323,13 @@ class OptimizationConfig:
     #   "asap" = Akku so früh wie möglich aus PV voll laden (Eigenverbrauch).
     #   "auto" = pro Tag automatisch: viel PV-Überschuss -> peak, sonst asap. (Standard)
     charge_strategy: str = "auto"
+    # Auto -> Peak, wenn der pessimistische Tagesueberschuss mindestens diese
+    # Obergrenze der nutzbaren Akkukapazitaet erreicht. Der tatsaechliche
+    # Schwellwert kann bei voraussichtlich teilgeladenem Akku kleiner sein.
+    auto_peak_threshold_percent: float = 85.0
+    # Zusaetzliche freie Kapazitaet als SoC-/Lastprognose-Reserve bei der
+    # dynamischen Auto-Schwelle (Prozent der nutzbaren Akkukapazitaet).
+    auto_peak_soc_reserve_percent: float = 10.0
     # Gewicht, wie stark die Einspeise-Linie L minimiert wird.
     peak_charge_weight: float = 30.0
     # WR-Sockellast: fixer Verlust (W), der bei JEDEM Entlade-Slot dem Akku
@@ -874,6 +881,8 @@ def load_config(path: str) -> Config:
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
+        auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
+        auto_peak_soc_reserve_percent=float(o.get("auto_peak_soc_reserve_percent", 10.0)),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),

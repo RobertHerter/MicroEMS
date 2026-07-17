@@ -65,6 +65,53 @@ def test_peak_strategy_shaves_and_fills_battery():
         "Entladen trotz PV-Überschuss"
 
 
+def test_auto_peak_uses_relaxed_p10_capacity_threshold():
+    """Auto schaltet bei 90 % p10-Tagesueberschuss auf Peak, bei 70 % aber
+    weiterhin konservativ auf ASAP. Die konfigurierte Grenze liegt bei 85 %."""
+    cfg = make_config()                       # 10 kWh, 9 kWh nutzbar
+    cfg.optimization.charge_strategy = "auto"
+    idx = _day_index("2026-06-10")
+    daylight = (idx.hour >= 10) & (idx.hour < 14)  # 4 h
+    load = np.full(len(idx), 500.0)
+
+    def solve_for(fraction):
+        target_wh = fraction * (
+            cfg.house_battery.max_soc_wh - cfg.house_battery.min_soc_wh)
+        pv10 = np.where(daylight, 500.0 + target_wh / 4.0, 0.0)
+        pv = np.where(daylight, 1.5 * pv10, 0.0)
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=pv, pv10_w=pv10, load=load,
+            soc=cfg.house_battery.min_soc_wh,
+        ))
+
+    peak = solve_for(0.90)
+    asap = solve_for(0.70)
+    assert peak.table["export_line_w"].notna().any(), \
+        "90 % p10-Ueberschuss sollte mit 85-%-Schwelle Peak waehlen"
+    assert asap.table["export_line_w"].isna().all(), \
+        "70 % p10-Ueberschuss muss weiterhin ASAP bleiben"
+
+
+def test_auto_peak_accounts_for_soc_at_surplus_start():
+    """Ein teilgeladener Akku braucht keinen vollen Tagesueberschuss: Auto
+    nutzt die freie Kapazitaet am prognostizierten PV-Beginn plus Reserve."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "auto"
+    idx = _day_index("2026-06-10")[(8 * 4):]  # vollstaendiger Nachmittag im Horizont
+    daylight = (idx.hour >= 10) & (idx.hour < 14)
+    load = np.full(len(idx), 500.0)
+    # Nur 4,5 kWh p10-Ueberschuss (< 85 % von 9 kWh), aber der Akku startet
+    # mit 80 % und hat selbst nach der Morgenlast samt 10-%-Reserve genug Platz.
+    pv10 = np.where(daylight, 500.0 + 4500.0 / 4.0, 0.0)
+    pv = np.where(daylight, 1.5 * pv10, 0.0)
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=pv, pv10_w=pv10, load=load,
+        soc=0.80 * cfg.house_battery.capacity_wh,
+    ))
+    assert res.table["export_line_w"].notna().any(), \
+        "Auto ignoriert den teilgeladenen Akku bei der Peak-Entscheidung"
+
+
 def test_auto_terminal_does_not_curtail_exportable_pv():
     """Regression: bei vollem Akku und PV-Überschuss darf PV nicht ABGEREGELT
     werden, solange sie einspeisbar ist (Einspeisung > 0). Der frühere aggressive
@@ -213,7 +260,9 @@ def test_p10_floor_forces_early_charging():
     """p10-Absicherung: Der Plan hält je Slot den SoC-Mindestpfad ein, sodass
     selbst der restliche p10-Überschuss des Tages den Akku noch füllt."""
     cfg = make_config()
-    cfg.optimization.charge_strategy = "peak"
+    cfg.optimization.charge_strategy = "auto"
+    # Genug p10-Tagesueberschuss fuer die automatische Peak-Einstufung.
+    cfg.house_battery.capacity_wh = 8000.0
     idx = _day_index("2026-06-10")
     pv = _pv_gauss(idx, 8000)
     load = 500.0
@@ -245,7 +294,9 @@ def test_p10_floor_forces_early_charging():
     # oder gleich, irgendwo echt niedriger)
     base = Optimizer(cfg).solve(_inputs(idx, pv=pv, load=load, price=price,
                                         soc=1500))
-    morning = idx.hour < 12
+    # Erst ab Beginn eines belastbaren p10-Ueberschusses vergleichen. Nachts
+    # soll der abgesicherte Plan ausdruecklich NICHT mehr Energie reservieren.
+    morning = (idx.hour < 12) & (np.maximum.accumulate(surplus10 >= 100.0))
     soc_base = base.table["house_soc_wh"].values
     assert (soc[morning] >= soc_base[morning] - 1.0).all()
     assert (soc[morning] > soc_base[morning] + 100.0).any(), \
@@ -258,6 +309,59 @@ def test_p10_floor_forces_early_charging():
         "Abends muss der Akku die Last decken dürfen (kein hold)"
     assert not (t.loc[evening, "mode"] == "hold").any(), \
         "p10-Pfad darf abends keine Entladesperre erzeugen"
+
+
+def test_p10_floor_does_not_reserve_battery_before_sunrise():
+    """Regression: Die p10-Absicherung eines Peak-Tags darf nicht schon in
+    der Nacht Energie fuer die spaetere PV-Vollladung reservieren.
+
+    Bei hohem Anfangs-SoC erzeugte der Mindestpfad sonst stundenlange
+    Entladesperren: Der Akku musste vor Sonnenaufgang auf dem aus dem
+    *zukuenftigen* p10-Ueberschuss abgeleiteten SoC-Floor bleiben.
+    """
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "auto"
+    cfg.house_battery.capacity_wh = 8000.0
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 8000)
+    pv10 = 0.35 * pv
+    load = 500.0
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=pv, pv10_w=pv10, load=load, price=30.0,
+        soc=cfg.house_battery.max_soc_wh,
+    ))
+    assert not res.infeasible
+
+    surplus10 = pv10 - load
+    first_surplus = int(np.flatnonzero(surplus10 >= 100.0)[0])
+    before_pv = res.table.iloc[:first_surplus]
+    # Nur echte Restlast pruefen. Der Erwartungswert kann schon vor dem
+    # konservativeren p10 einen PV-Ueberschuss zeigen; dort ist 0 W Entladung
+    # natuerlich und keine Sperre.
+    deficit = before_pv["pv_w"] < before_pv["house_load_w"] - 100.0
+    night = before_pv.loc[deficit]
+    assert (night["batt_discharge_w"] > TOL).all(), \
+        "p10-Pfad reserviert den Akku schon vor dem ersten PV-Ueberschuss"
+    assert not night["mode"].isin(["hold", "limit_discharge"]).any(), \
+        "p10-Pfad erzeugt vor Sonnenaufgang eine Entladesperre"
+
+
+def test_forced_peak_ignores_p10_early_charge_path():
+    """Explizites Peak ist reines Peak-Shaving; p10 darf keine zusaetzlichen
+    Vormittags-Ladebloecke unterhalb der Einspeise-Linie erzwingen."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "peak"
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 8000)
+    common = dict(pv=pv, load=500.0, price=25.0, soc=1500.0)
+
+    plain = Optimizer(cfg).solve(_inputs(idx, **common))
+    guarded = Optimizer(cfg).solve(_inputs(idx, pv10_w=0.35 * pv, **common))
+    assert not plain.infeasible and not guarded.infeasible
+    np.testing.assert_allclose(
+        guarded.table["batt_dc_charge_w"],
+        plain.table["batt_dc_charge_w"], atol=TOL,
+    )
 
 
 def test_grid_charge_is_explicit_not_disguised():
