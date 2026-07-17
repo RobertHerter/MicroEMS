@@ -330,6 +330,12 @@ class OptimizationConfig:
     # Zusaetzliche freie Kapazitaet als SoC-/Lastprognose-Reserve bei der
     # dynamischen Auto-Schwelle (Prozent der nutzbaren Akkukapazitaet).
     auto_peak_soc_reserve_percent: float = 10.0
+    # Bei einem sehr breiten Solcast-Band darf ein eindeutig starker
+    # Erwartungswert p10 plausibilisieren: p10 muss mindestens diesen Anteil
+    # der dynamischen Schwelle erreichen ...
+    auto_peak_p10_floor_percent: float = 60.0
+    # ... und der Erwartungsueberschuss mindestens diesen Anteil der Schwelle.
+    auto_peak_expected_override_percent: float = 150.0
     # Gewicht, wie stark die Einspeise-Linie L minimiert wird.
     peak_charge_weight: float = 30.0
     # Weicher Glaettungsmalus (ct je kW Leistungssprung) fuer PV-Akkuladung an
@@ -894,6 +900,10 @@ def load_config(path: str) -> Config:
         charge_strategy=str(o.get("charge_strategy", "auto")),
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
         auto_peak_soc_reserve_percent=float(o.get("auto_peak_soc_reserve_percent", 10.0)),
+        auto_peak_p10_floor_percent=float(o.get(
+            "auto_peak_p10_floor_percent", 60.0)),
+        auto_peak_expected_override_percent=float(o.get(
+            "auto_peak_expected_override_percent", 150.0)),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
         peak_charge_ramp_penalty_ct_kw=float(o.get(
             "peak_charge_ramp_penalty_ct_kw", 0.25)),

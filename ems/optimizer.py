@@ -528,8 +528,11 @@ class Optimizer:
         usable_wh = hb.max_soc_wh - hb.min_soc_wh
         pv_for_mode = pv10 if pv10 is not None else inp.pv_w
         _day_surplus = [0.0] * len(_uniq)
+        _day_expected_surplus = [0.0] * len(_uniq)
         for i in range(N):
             _day_surplus[slot_day[i]] += max(0.0, float(pv_for_mode[i]) - float(inp.house_load_w[i])) * dt
+            _day_expected_surplus[slot_day[i]] += max(
+                0.0, float(inp.pv_w[i]) - float(inp.house_load_w[i])) * dt
         if strategy == "auto":
             # p10-basierte SoC-Fortschreibung bis zum ersten belastbaren
             # Tagesueberschuss. Sie ist absichtlich unabhaengig vom spaeteren
@@ -558,24 +561,38 @@ class Optimizer:
                 cfg.optimization, "auto_peak_threshold_percent", 85.0)) / 100.0))
             reserve_ratio = max(0.0, float(getattr(
                 cfg.optimization, "auto_peak_soc_reserve_percent", 10.0)) / 100.0)
+            p10_floor_ratio = max(0.0, float(getattr(
+                cfg.optimization, "auto_peak_p10_floor_percent", 60.0)) / 100.0)
+            expected_override_ratio = max(1.0, float(getattr(
+                cfg.optimization, "auto_peak_expected_override_percent", 150.0)) / 100.0)
             auto_threshold = []
             for d in range(len(_uniq)):
                 soc0 = dawn_soc[d] if dawn_soc[d] is not None else day_first_soc[d]
                 free_wh = max(0.0, hb.max_soc_wh - float(soc0))
                 auto_threshold.append(min(cap_ratio * usable_wh,
                                           free_wh + reserve_ratio * usable_wh))
-            day_mode = [
-                "peak" if line_day[i] and _day_surplus[i] >= auto_threshold[i]
-                else "asap"
+            robust_peak = [
+                (_day_surplus[i] >= auto_threshold[i]
+                 or (pv10 is not None
+                     and _day_surplus[i] >= p10_floor_ratio * auto_threshold[i]
+                     and _day_expected_surplus[i]
+                     >= expected_override_ratio * auto_threshold[i]))
                 for i in range(len(_uniq))
             ]
+            day_mode = ["peak" if line_day[i] and robust_peak[i] else "asap"
+                        for i in range(len(_uniq))]
             log.info("Auto-Peak-Bewertung: %s", {
                 str(_uniq[i]): {
                     "p10_kwh": round(_day_surplus[i] / 1000.0, 1),
+                    "expected_kwh": round(
+                        _day_expected_surplus[i] / 1000.0, 1),
                     "soc_start_pct": round(100.0 * float(
                         dawn_soc[i] if dawn_soc[i] is not None else day_first_soc[i]
                     ) / hb.capacity_wh, 1),
                     "threshold_kwh": round(auto_threshold[i] / 1000.0, 1),
+                    "basis": ("p10" if _day_surplus[i] >= auto_threshold[i]
+                              else "expected+p10-floor" if robust_peak[i]
+                              else "insufficient"),
                     "mode": day_mode[i],
                 } for i in range(len(_uniq))
             })

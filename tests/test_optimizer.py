@@ -112,6 +112,32 @@ def test_auto_peak_accounts_for_soc_at_surplus_start():
         "Auto ignoriert den teilgeladenen Akku bei der Peak-Entscheidung"
 
 
+def test_auto_peak_uses_expected_surplus_when_p10_band_is_extremely_wide():
+    """Ein sehr hoher Erwartungsueberschuss darf ein noch belastbares, aber
+    unter der normalen Schwelle liegendes p10 plausibilisieren. Das bildet
+    klare 80+-kWh-Tage mit ungewoehnlich breitem Solcast-Band ab."""
+    cfg = make_config()                       # 10 kWh, 9 kWh nutzbar
+    cfg.optimization.charge_strategy = "auto"
+    idx = _day_index("2026-06-10")
+    daylight = (idx.hour >= 10) & (idx.hour < 14)
+    load = np.full(len(idx), 500.0)
+    usable = cfg.house_battery.max_soc_wh - cfg.house_battery.min_soc_wh
+    # p10 = 70 % nutzbare Kapazitaet: unter der regulaeren 85-%-Schwelle,
+    # aber ueber dem neuen 60-%-Mindestboden. Erwartung = 240 % und damit
+    # eindeutig genug fuer Peak-Shaving.
+    p10_wh, expected_wh = 0.70 * usable, 2.40 * usable
+    pv10 = np.where(daylight, 500.0 + p10_wh / 4.0, 0.0)
+    pv = np.where(daylight, 500.0 + expected_wh / 4.0, 0.0)
+
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=pv, pv10_w=pv10, load=load,
+        soc=cfg.house_battery.min_soc_wh,
+    ))
+
+    assert res.table["export_line_w"].notna().any(), \
+        "Extrem breites p10-Band blockiert trotz starkem Erwartungswert Peak"
+
+
 def test_auto_terminal_does_not_curtail_exportable_pv():
     """Regression: bei vollem Akku und PV-Überschuss darf PV nicht ABGEREGELT
     werden, solange sie einspeisbar ist (Einspeisung > 0). Der frühere aggressive
