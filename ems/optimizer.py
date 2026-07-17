@@ -789,14 +789,17 @@ class Optimizer:
                 prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
             cost_terms.append(pen_sw * pulp.lpSum(car_start))
 
-        # Batterie-Taktung: Nur eine einzelne Haltepause INNERHALB einer
-        # zusammenhängenden Defizitphase bestrafen. Allgemeine Ein/Aus-Wechsel
-        # zu bestrafen wäre falsch: Beim Übergang PV-Überschuss -> Restlast ist
-        # das Einschalten natürlich und soll keinen Malus bekommen.
+        # Batterie-Taktung: Eine einzelne Haltepause INNERHALB einer
+        # zusammenhängenden Defizitphase und materielle Teilentladung bei
+        # gleichzeitigem Netzbezug bestrafen. Letztere umging bisher den
+        # Pausen-Malus, indem der Akku z.B. 382 W statt 0 W weiter entlud.
+        # Allgemeine Ein/Aus-Wechsel zu bestrafen wäre falsch: Beim Übergang
+        # PV-Überschuss -> Restlast ist das Einschalten natürlich.
         bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
         if bat_pen and N > 2:
             threshold = max(min_dis, 1.0)
             pauses = []
+            partial_imports = []
             deficits = [max(0.0, float(inp.house_load_w[t])
                             - float(inp.pv_w[t])) for t in range(N)]
             for t in range(1, N - 1):
@@ -807,8 +810,21 @@ class Optimizer:
                 # für alle anderen Kombinationen 0).
                 prob += pause >= is_di[t - 1] + is_di[t + 1] - is_di[t] - 1
                 pauses.append(pause)
-            if pauses:
-                cost_terms.append(bat_pen * pulp.lpSum(pauses))
+            # Erst ab derselben 100-W-Schwelle bewerten, ab der der Slot
+            # später als limit_discharge publiziert würde. Bei realer Last
+            # oberhalb der Akku-Maximalleistung bleibt Teildeckung möglich;
+            # ihr Energievorteil ist deutlich größer als dieser kleine Malus.
+            material_w = 100.0
+            for t in range(N):
+                has_import = pulp.LpVariable(
+                    f"matimp_{t}", 0, 1, cat="Binary")
+                partial = pulp.LpVariable(
+                    f"partdis_{t}", 0, 1, cat="Binary")
+                prob += g_imp[t] <= material_w + BIGG * has_import
+                prob += partial >= has_import + is_di[t] - 1
+                partial_imports.append(partial)
+            cost_terms.append(bat_pen * (
+                pulp.lpSum(pauses) + pulp.lpSum(partial_imports)))
 
         # Bewusst zurueckgehaltene Entladung proportional zur NICHT gedeckten
         # Restlast bestrafen (ct/kWh). Der fruehere binaere Malus auf
@@ -882,9 +898,11 @@ class Optimizer:
                 [export_line[i] for i in _peak_line_days]) / 1000.0)
 
         # p10-Absicherung an Peak-Tagen: Laden darf nur so weit aufgeschoben
-        # werden, dass selbst der RESTLICHE p10-Überschuss des Tages den Akku
-        # noch füllt. SoC-Untergrenze je Slot:
-        #   soc[t] >= max_soc - eff * (künftiger p10-Überschuss des Tages).
+        # werden, dass der RESTLICHE p10-Überschuss das aus dem natürlich
+        # prognostizierten Morgen-SoC erreichbare Tagesziel noch schafft.
+        # Reicht p10 nicht für 100 %, wird das Ziel entsprechend gekappt;
+        # sonst würde der Optimierer vor PV-Beginn Akkuenergie horten, um ein
+        # unter p10 physikalisch unmögliches Voll-Ziel anzunähern.
         # Weich (15 ct/kWh Slack): deutlich teurer als entgangene Einspeisung
         # -> es wird früh geladen, wann immer physikalisch möglich; aber kein
         # hartes Veto (Anfangs-SoC kann die Grenze anfangs unterschreiten).
@@ -913,6 +931,12 @@ class Optimizer:
                 s10 = surplus10[idxs]
                 surplus_started = np.maximum.accumulate(
                     s10 >= P10_START_SURPLUS_W)
+                natural_dawn = float(
+                    dawn_soc[d] if dawn_soc[d] is not None
+                    else day_first_soc[d])
+                p10_target = min(
+                    hb.max_soc_wh,
+                    natural_dawn + hb.charge_efficiency * float(s10.sum()) * dt)
                 # künftiger Tages-Überschuss NACH Slot j (exklusiv)
                 suffix = np.concatenate([np.cumsum(s10[::-1])[::-1][1:], [0.0]])
                 for j, t in enumerate(idxs):
@@ -920,11 +944,11 @@ class Optimizer:
                         continue
                     # Nur solange noch p10-Überschuss aussteht: die Grenze soll
                     # das AUFSCHIEBEN des Ladens begrenzen. Nach PV-Ende wäre
-                    # floor = max_soc und würde das normale (teure!) Abend-
+                    # floor = p10_target und würde das normale (teure!) Abend-
                     # entladen blockieren - genau dann muss sie entfallen.
                     if suffix[j] <= 0.0:
                         continue
-                    floor = hb.max_soc_wh - hb.charge_efficiency * suffix[j] * dt
+                    floor = p10_target - hb.charge_efficiency * suffix[j] * dt
                     if floor <= hb.min_soc_wh:
                         continue
                     slack = pulp.LpVariable(f"p10s_{t}", 0)

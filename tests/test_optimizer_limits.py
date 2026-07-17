@@ -83,6 +83,33 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     assert not ((dis[1:-1] < 1.0) & (dis[:-2] > 1.0) & (dis[2:] > 1.0)).any()
 
 
+def test_battery_switch_penalty_avoids_partial_discharge_with_grid_import():
+    """Regression 18.07. 01:45: Ein billigerer Einzelslot darf den Pausen-
+    Malus nicht mit kleiner Teilentladung und gleichzeitigem Netzbezug umgehen.
+    """
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([33.0, 33.0, 33.0, 32.09, 33.01, 32.60, 35.665, 35.0])
+
+    def solve(penalty):
+        cfg = make_config()
+        cfg.optimization.terminal_soc_value = 32.0
+        cfg.optimization.battery_switch_penalty_ct = penalty
+        cfg.optimization.battery_hold_penalty_ct_kwh = 1.0
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=0.0, load=900.0, price=price, soc=2500.0)).table
+
+    unpenalized = solve(0.0)
+    fixed = solve(1.0)
+    unpenalized_partial = ((unpenalized["grid_import_w"] > 100.0)
+                           & (unpenalized["batt_discharge_w"] > 1.0))
+    fixed_partial = ((fixed["grid_import_w"] > 100.0)
+                     & (fixed["batt_discharge_w"] > 1.0))
+
+    assert unpenalized_partial.any(), "Testszenario bildet den Fehler nicht ab"
+    assert not fixed_partial.any(), \
+        "Teilentladung mit Netzbezug umgeht weiterhin den Taktungsmalus"
+
+
 def test_battery_hold_penalty_avoids_micro_optimization():
     """Ein Cent-Bruchteil Ersparnis rechtfertigt keinen realen 0-W-Eingriff."""
     cfg = make_config()

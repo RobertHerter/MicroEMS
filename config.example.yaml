@@ -283,8 +283,8 @@ optimization:
   # Malus (ct) je Wallbox-Einschaltvorgang gegen Dauer-Takten bei zappeligen
   # Preisen (Schützverschleiß). 0 = aus.
   car_switch_penalty_ct: 5.0
-  # Malus (ct) je Wechsel zwischen Akku-Entladen und Halten. Verhindert
-  # isolierte 15-min-Entladesperren, die den E3DC unnötig auf 0 W begrenzen.
+  # Malus (ct) für isoliertes Halten oder Teilentladen bei gleichzeitigem
+  # Netzbezug. Verhindert kurze Entladedrosselungen für Cent-Bruchteile.
   # 0 = aus.
   battery_switch_penalty_ct: 1.0
   # Malus (ct) je bewusstem Halte-Slot trotz deckbarer Restlast. Verhindert

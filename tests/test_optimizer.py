@@ -372,6 +372,34 @@ def test_p10_floor_does_not_reserve_battery_before_sunrise():
         "p10-Pfad erzeugt vor Sonnenaufgang eine Entladesperre"
 
 
+def test_expected_override_caps_unreachable_p10_target_at_natural_dawn_soc():
+    """Wenn nur der hohe Erwartungswert Auto-Peak auslöst, darf der deutlich
+    schwächere p10-Pfad vor PV-Beginn nicht für ein unerreichbares 100-%-Ziel
+    Akkuenergie reservieren (Regression 18.07. 06:00/06:15)."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "auto"
+    cfg.optimization.terminal_soc_value = 0.0
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 9000.0)
+    pv10 = 0.36 * pv  # p10 unter Normalschwelle, aber über 60-%-Mindestboden
+    common = dict(pv=pv, load=1500.0, price=30.0,
+                  soc=cfg.house_battery.max_soc_wh)
+
+    plain = Optimizer(cfg).solve(_inputs(idx, **common))
+    guarded = Optimizer(cfg).solve(_inputs(idx, pv10_w=pv10, **common))
+    assert guarded.table["export_line_w"].notna().any(), \
+        "Testszenario muss den erwartungswertbasierten Peak-Override auslösen"
+
+    first_p10_surplus = int(np.flatnonzero(pv10 - 1500.0 >= 100.0)[0])
+    before = slice(0, first_p10_surplus)
+    expected_deficit = pv[before] < 1400.0
+    guarded_dis = guarded.table["batt_discharge_w"].values[before]
+    plain_dis = plain.table["batt_discharge_w"].values[before]
+    assert (guarded_dis[expected_deficit]
+            >= plain_dis[expected_deficit] - TOL).all(), \
+        "Unerreichbarer p10-Pfad reserviert weiter Akku vor PV-Beginn"
+
+
 def test_forced_peak_ignores_p10_early_charge_path():
     """Explizites Peak ist reines Peak-Shaving; p10 darf keine zusaetzlichen
     Vormittags-Ladebloecke unterhalb der Einspeise-Linie erzwingen."""

@@ -294,9 +294,9 @@ class OptimizationConfig:
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
     car_switch_penalty_ct: float = 5.0
-    # Malus (ct) je Wechsel zwischen Akku-Entladen und Halten. Verhindert
-    # isolierte 15-min-Haltepausen, die als 0-W-Entladelimit real in die
-    # E3DC-Regelung eingreifen würden. 0 = aus.
+    # Malus (ct) für isoliertes Halten oder materielle Teilentladung bei
+    # gleichzeitigem Netzbezug. Verhindert 15-min-Drosselungen für
+    # Cent-Bruchteile, ohne notwendige Lastdeckung generell zu verbieten.
     battery_switch_penalty_ct: float = 1.0
     # Malus (ct/kWh) auf bewusst nicht aus dem Akku gedeckte Restlast.
     # Unterdrueckt Mikro-Optimierungen, ohne den frueheren binaeren 100-W-
