@@ -256,6 +256,14 @@ optimization:
   # Kleiner Zyklus-Malus in ct je voll zyklierter kWh (rein + raus)
   # gegen unnötiges Laden/Entladen.
   cycle_penalty_ct_kwh: 0.1
+  # PV-Ladestrategie: auto entscheidet tageweise zwischen frühem Laden und
+  # Peak-Shaving. Ein starkes Erwartungssignal darf ein extrem breites
+  # Solcast-p10-Band plausibilisieren, bleibt aber durch den p10-Boden abgesichert.
+  charge_strategy: "auto"
+  auto_peak_threshold_percent: 85.0
+  auto_peak_soc_reserve_percent: 10.0
+  auto_peak_p10_floor_percent: 60.0
+  auto_peak_expected_override_percent: 150.0
   # Welcher Solver genutzt werden soll ("cbc" oder "highs").
   # "highs" erfordert ein installiertes `highspy` Paket.
   solver: "cbc"
