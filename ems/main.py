@@ -1056,7 +1056,8 @@ def _sd_notify(message: str) -> None:
 
 
 def start_dashboard_server(config: Config, publisher=None, e3dc=None,
-                           config_path: str = "config.yaml") -> None:
+                           config_path: str = "config.yaml",
+                           schedule_runner=None) -> None:
     """Startet im Dienstmodus einen kleinen HTTP-Server, der das Dashboard
     im Browser abrufbar macht (http://<host>:<port>/). Läuft als Daemon-Thread.
 
@@ -1074,12 +1075,73 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
     fname = os.path.basename(out)
     snap_path = os.path.abspath(config.report.snapshot_path)
 
+    # Ein gemeinsamer Cache für alle Browser: auch bei mehreren geöffneten
+    # Dashboards wird E3/DC höchstens einmal je Live-Intervall gepollt. Die
+    # E3DCLink-interne Sperre serialisiert diese Abfrage mit Optimierung und
+    # Steuer-Watchdog auf derselben persistenten RSCP-Verbindung.
+    live_interval = max(0.0, float(getattr(
+        config.dashboard, "live_refresh_seconds", 5.0) or 0.0))
+    live_guard = threading.Lock()
+    live_cache = {"at": 0.0, "data": None}
+
+    pwa_manifest = json.dumps({
+        "name": "E3DC EMS Steuerung", "short_name": "E3DC EMS",
+        "description": "Livewerte, Prognose und Steuerung des E3/DC EMS",
+        "start_url": "/", "scope": "/", "display": "standalone",
+        "background_color": "#111820", "theme_color": "#1769c2",
+        "icons": [{"src": "/app-icon.svg", "sizes": "any",
+                   "type": "image/svg+xml", "purpose": "any maskable"}],
+    }, ensure_ascii=False).encode("utf-8")
+    pwa_icon = b'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="104" fill="#1769c2"/>
+<path d="M292 48 119 285h116l-28 179 186-257H278z" fill="#fff8d8"/>
+</svg>'''
+    service_worker = b'''const CACHE="e3dc-ems-v1";
+self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(["/plotly.min.js","/app-icon.svg"])).then(()=>self.skipWaiting())));
+self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
+self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==location.origin)return;if(u.pathname==="/plotly.min.js"||u.pathname==="/app-icon.svg")e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));});'''
+
+    def _read_dashboard_live():
+        if e3dc is None or live_interval <= 0.0:
+            return None
+        with live_guard:
+            mono = _time.monotonic()
+            if (live_cache["data"] is not None
+                    and mono - live_cache["at"] < live_interval * 0.9):
+                return dict(live_cache["data"])
+            live = e3dc.read_live(force=True)
+            if not live:
+                return None
+            fields = ("soc_percent", "pv_w", "house_load_w", "grid_w",
+                      "battery_w", "wallbox_w")
+            data = {k: (float(live[k]) if live.get(k) is not None else None)
+                    for k in fields}
+            data["updated"] = pd.Timestamp.now(
+                tz=config.general.timezone).isoformat()
+            live_cache["at"], live_cache["data"] = mono, data
+            return dict(data)
+
+    def _power_profile(value):
+        """Dashboard-Payload -> sichere 15-min-Leistungskurve oder None."""
+        if value in (None, ""):
+            return None
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("power_profile_w muss eine Liste sein")
+        if len(value) > 192:
+            raise ValueError("Leistungskurve darf höchstens 192 Werte enthalten")
+        out = [float(x) for x in value]
+        if any(not np.isfinite(x) or x < 0.0 or x > 100000.0 for x in out):
+            raise ValueError("Leistungskurve enthält ungültige Wattwerte")
+        return out or None
+
     # Kernparameter, die im Dashboard je Lasttyp editierbar sind (Whitelist).
     _LOAD_PARAMS = {
         "thermal": {"target_c": float, "min_c": float, "max_c": float,
                    "surface_m2": float, "solar_absorption": float},
         "deferrable": {"power_w": float, "runtime_minutes": float,
-                       "window_from_hour": int, "window_to_hour": int},
+                       "window_from_hour": int, "window_to_hour": int,
+                       "deadline_hours": float,
+                       "power_profile_w": _power_profile},
     }
 
     def _find_load(name):
@@ -1139,6 +1201,15 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
             watts = float(payload.get("watts", 0) or 0)
             minutes = float(payload.get("minutes", 15) or 15)
             return e3dc.manual_power(act, watts, minutes * 60.0)
+        if action == "battery_schedule":
+            if schedule_runner is None:
+                raise ValueError("Akku-Zeitplanung ist nicht verfügbar")
+            op = str(payload.get("op", "add")).lower()
+            if op == "add":
+                return schedule_runner.add(payload)
+            if op == "cancel":
+                return schedule_runner.cancel(int(payload.get("id", 0)))
+            raise ValueError("Unbekannte Planungsaktion")
         raise KeyError(action)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
@@ -1161,6 +1232,14 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
             body = json.dumps(obj).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _raw_reply(self, body: bytes, content_type: str, cache="no-cache"):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", cache)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1223,8 +1302,41 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
             if not self._authed():
                 return
 
+            path = self.path.split("?")[0]
+            if path == "/manifest.webmanifest":
+                self._raw_reply(pwa_manifest,
+                                "application/manifest+json; charset=utf-8")
+                return
+            if path == "/app-icon.svg":
+                self._raw_reply(pwa_icon, "image/svg+xml; charset=utf-8",
+                                "public, max-age=86400")
+                return
+            if path == "/sw.js":
+                self._raw_reply(service_worker,
+                                "application/javascript; charset=utf-8")
+                return
+
+            # Leichtgewichtige E3/DC-Livewerte für die Kacheln. Die Abfrage
+            # startet weder Optimierer noch Dashboard-Neugenerierung.
+            if path == "/api/live.json":
+                data = _read_dashboard_live()
+                if data is None:
+                    self._reply({"status": "unavailable"}, 503)
+                else:
+                    self._reply(data)
+                return
+
+            if path == "/api/battery-schedule.json":
+                if not getattr(config.dashboard, "controls_enabled", False):
+                    self._reply({"status": "disabled"}, 403)
+                elif schedule_runner is None:
+                    self._reply({"status": "unavailable"}, 503)
+                else:
+                    self._reply(schedule_runner.snapshot())
+                return
+
             # API Endpunkt für Optimierungsdaten
-            if getattr(config.dashboard, "api_enabled", False) and self.path.split("?")[0] == "/api/data.json":
+            if getattr(config.dashboard, "api_enabled", False) and path == "/api/data.json":
                 api_path = os.path.join(directory, "api_data.json")
                 try:
                     with open(api_path, "rb") as fh:
@@ -1241,7 +1353,7 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
 
             # Leichtgewichtiger Versions-Endpunkt: mtime der Dashboard-Datei.
             # Die Seite pollt diesen und lädt bei Änderung (neue Berechnung) neu.
-            if self.path.split("?")[0] in ("/version",):
+            if path in ("/version",):
                 try:
                     body = ("%.0f" % os.path.getmtime(out)).encode()
                 except OSError:
@@ -1254,7 +1366,7 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
                 self.wfile.write(body)
                 return
             # Debug-Schnappschuss als Download (Button im Dashboard).
-            if self.path.split("?")[0] == "/report.json":
+            if path == "/report.json":
                 try:
                     with open(snap_path, "rb") as fh:
                         body = fh.read()
@@ -1349,6 +1461,7 @@ def main() -> None:
     # Zyklen (Mode 3/4 alle 5 s). Stirbt der Prozess, fällt der E3DC nach 10 s
     # selbst auf auto zurück (Fail-safe).
     e3dc = None
+    schedule_runner = None
     if config.e3dc_rscp.enabled:
         try:
             from .rscp import E3DCLink
@@ -1362,11 +1475,23 @@ def main() -> None:
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
 
+    # Persistente manuelle Lade-/Entladepläne laufen unabhängig von Browser
+    # und 15-min-Optimierungszyklus. Nur bei explizit aktivierter Dashboard-
+    # Steuerung starten, da sie reale RSCP-Eingriffe ausführen.
+    if e3dc is not None and config.dashboard.controls_enabled:
+        try:
+            from .manual_schedule import ManualScheduleRunner
+            schedule_runner = ManualScheduleRunner(config, e3dc)
+            schedule_runner.start()
+        except Exception as exc:
+            log.warning("Manuelle Akku-Zeitplanung nicht verfügbar (%s).", exc)
+
     # Dashboard-Server NACH publisher/e3dc starten, damit die interaktive
     # Steuerung (/api/control/*) direkt auf deren Laufzeit-Mechanik zugreift.
     if config.dashboard.enabled and config.dashboard.serve:
         start_dashboard_server(config, publisher=publisher, e3dc=e3dc,
-                               config_path=args.config)
+                               config_path=args.config,
+                               schedule_runner=schedule_runner)
 
     # Geordnetes Beenden: SIGTERM (systemctl stop/restart) und SIGINT lösen ein
     # SystemExit aus, damit der finally-Block läuft und u. a. die persistenten
@@ -1401,6 +1526,11 @@ def main() -> None:
         log.info("EMS wird beendet – Verbindungen werden geschlossen.")
     finally:
         _sd_notify("STOPPING=1")
+        if schedule_runner is not None:
+            try:
+                schedule_runner.close()
+            except Exception:  # pragma: no cover
+                pass
         if e3dc is not None:
             try:
                 e3dc.close()   # gibt persistente Lade-/Entlade-Limits frei

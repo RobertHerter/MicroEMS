@@ -435,6 +435,10 @@ class DashboardConfig:
     host: str = "0.0.0.0"
     port: int = 8080
     api_enabled: bool = True
+    # E3/DC-Livewerte im Dashboard. Der Server begrenzt die RSCP-Abfragen
+    # unabhängig von der Zahl geöffneter Browser auf höchstens eine je Intervall.
+    # 0 deaktiviert die Live-Anzeige und den Endpunkt /api/live.json.
+    live_refresh_seconds: float = 5.0
     username: str = ""
     password: str = ""
     # POST-Ingest-Endpunkte (/api/ingest/<kind>): Live- und Historienwerte extern
@@ -724,6 +728,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
         ov = (overrides or {}).get(_load_slug(load.name))
         if isinstance(ov, dict):
             _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
+                        "power_profile_w",
                         "runtime_minutes", "window_from_hour", "window_to_hour",
                         "surface_m2", "solar_absorption", "deadline_hours",
                         # von der Thermomodell-Kalibrierung geschrieben
@@ -965,6 +970,7 @@ def load_config(path: str) -> Config:
         host=d.get("host", "0.0.0.0"),
         port=int(d.get("port", 8080)),
         api_enabled=bool(d.get("api_enabled", True)),
+        live_refresh_seconds=float(d.get("live_refresh_seconds", 5.0)),
         username=str(d.get("username", "")),
         password=str(d.get("password", "")),
         ingest_enabled=bool(d.get("ingest_enabled", False)),

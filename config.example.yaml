@@ -446,6 +446,7 @@ dashboard:
   enabled: true
   output_path: "./dashboard.html"
   api_enabled: true          # GET /api/data.json (Optimierungsdaten)
+  live_refresh_seconds: 5    # E3/DC-Livekacheln; 0 = deaktiviert
   username: ""               # Basic-Auth (leer = kein Auth); gilt auch fürs Ingest
   password: ""
   # POST-Ingest: Live-/Historienwerte extern einspielen (Betrieb ohne RSCP/InfluxDB).

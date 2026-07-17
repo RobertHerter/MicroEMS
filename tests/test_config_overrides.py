@@ -37,6 +37,19 @@ def test_parse_controllable_loads_applies_overrides():
     assert loads[0].min_c == 27.0            # unverändert
 
 
+def test_parse_controllable_loads_applies_power_profile_override():
+    raw = [{"name": "Waschmaschine", "type": "deferrable",
+            "power_w": 1200, "runtime_minutes": 60,
+            "power_profile_w": [1000, 500]}]
+    over = {"Waschmaschine": {"power_profile_w": [2100.0, 300.0, 150.0],
+                               "deadline_hours": 8.0}}
+
+    load = parse_controllable_loads(raw, over)[0]
+
+    assert load.power_profile_w == [2100.0, 300.0, 150.0]
+    assert load.deadline_hours == 8.0
+
+
 def test_load_config_merges_overlay(tmp_path):
     """End-to-end: reale config.yaml + Overlay -> gemergter Wert."""
     import shutil

@@ -66,6 +66,12 @@ class E3DCLink:
         self._limits_active = False
         # Auto-Rücksetz-Timer für manuelles Laden/Entladen (Dashboard).
         self._manual_timer: Optional[threading.Timer] = None
+        # Handbetrieb hat bis zum Ablauf Vorrang vor dem normalen Optimierer-
+        # Sollwert. RLock schützt Timer-, Scheduler- und Hauptthread gegeneinander.
+        self._manual_lock = threading.RLock()
+        self._manual_active = False
+        self._manual_action: Optional[str] = None
+        self._manual_until: Optional[float] = None
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -293,7 +299,7 @@ class E3DCLink:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
             mode, value = self._wd_mode, self._wd_value
-            if mode in (2, 3, 4):
+            if mode in (1, 2, 3, 4):
                 try:
                     self._set_power(mode, value)
                 except Exception as exc:  # pragma: no cover
@@ -310,52 +316,78 @@ class E3DCLink:
                      seconds: float = 900.0) -> dict:
         """Manuelles Laden/Entladen vom Dashboard (expliziter Nutzer-Eingriff).
 
-        action: "charge" (Mode 4, Netzladen), "discharge" (Mode 2) oder
+        action: "charge"/"grid_charge" (Mode 4, Netzladen), "pv_charge"
+        (Mode 3, Laden), "discharge" (Mode 2), "idle" (Mode 1) oder
         "auto"/"stop" (Mode 0). Läuft über den 10-s-Watchdog und setzt sich nach
         `seconds` selbst auf auto zurück; stirbt der Prozess, fällt der E3DC nach
         10 s ohnehin auf auto (Fail-safe). GREIFT REAL IN DEN SPEICHER EIN – läuft
         bewusst auch ohne control_enabled (nur über das Dashboard-Opt-in erreichbar).
         Rückgabe: {mode, watts, seconds}."""
-        hb = self.cfg.house_battery
-        mode = {"charge": 4, "discharge": 2, "auto": 0, "stop": 0}.get(action)
-        if mode is None:
-            raise ValueError(f"Unbekannte Aktion: {action!r} (charge|discharge|auto)")
-        cap = hb.max_dc_charge_w if mode == 4 else \
-            (hb.max_discharge_w if mode == 2 else 0.0)
-        val = int(max(0.0, min(float(watts or 0.0), float(cap))))
-        # laufenden Rücksetz-Timer abbrechen
-        if self._manual_timer is not None:
-            self._manual_timer.cancel()
+        with self._manual_lock:
+            hb = self.cfg.house_battery
+            mode = {"charge": 4, "grid_charge": 4, "pv_charge": 3,
+                    "discharge": 2, "idle": 1,
+                    "auto": 0, "stop": 0}.get(action)
+            if mode is None:
+                raise ValueError(
+                    f"Unbekannte Aktion: {action!r} "
+                    "(charge|grid_charge|pv_charge|discharge|idle|auto)")
+            cap = hb.max_dc_charge_w if mode in (3, 4) else \
+                (hb.max_discharge_w if mode == 2 else 0.0)
+            val = int(max(0.0, min(float(watts or 0.0), float(cap))))
+            if self._manual_timer is not None:
+                self._manual_timer.cancel()
+                self._manual_timer = None
+            if mode == 0:
+                self._manual_active = False
+                self._manual_action = None
+                self._manual_until = None
+                self._wd_mode, self._wd_value = 0, 0
+                try:
+                    self._set_power(0, 0)
+                except Exception as exc:  # pragma: no cover
+                    log.warning("RSCP: Auto-Rücksetzen fehlgeschlagen (%s).", exc)
+                log.info("RSCP: manueller Eingriff beendet -> auto.")
+                return {"mode": 0, "watts": 0, "seconds": 0,
+                        "active": False}
+            self._set_limits(False)                   # etwaige Limits raus
+            secs = max(0.0, float(seconds))
+            self._manual_active = True
+            self._manual_action = action
+            self._manual_until = time.time() + secs if secs > 0 else None
+            self._wd_mode, self._wd_value = mode, val
+            self._ensure_watchdog()
+            self._set_power(mode, val)
+            if secs > 0:
+                self._manual_timer = threading.Timer(secs, self._manual_revert)
+                self._manual_timer.daemon = True
+                self._manual_timer.start()
+            log.info("RSCP: manuelles %s %d W für %.0f min (Mode %d).",
+                     action, val, secs / 60.0, mode)
+            return {"mode": mode, "watts": val, "seconds": secs,
+                    "active": True, "until_epoch": self._manual_until}
+
+    def manual_status(self) -> dict:
+        """Thread-sicherer Zustand für Dashboard und Ablaufsteuerung."""
+        with self._manual_lock:
+            return {"active": self._manual_active,
+                    "action": self._manual_action,
+                    "mode": self._wd_mode if self._manual_active else 0,
+                    "watts": self._wd_value if self._manual_active else 0,
+                    "until_epoch": self._manual_until}
+
+    def _manual_revert(self) -> None:
+        with self._manual_lock:
             self._manual_timer = None
-        if mode == 0:
+            self._manual_active = False
+            self._manual_action = None
+            self._manual_until = None
             self._wd_mode, self._wd_value = 0, 0
             try:
                 self._set_power(0, 0)
+                log.info("RSCP: manueller Eingriff abgelaufen -> auto.")
             except Exception as exc:  # pragma: no cover
-                log.warning("RSCP: Auto-Rücksetzen fehlgeschlagen (%s).", exc)
-            log.info("RSCP: manueller Eingriff beendet -> auto.")
-            return {"mode": 0, "watts": 0, "seconds": 0}
-        self._set_limits(False)                       # etwaige Limits raus
-        self._wd_mode, self._wd_value = mode, val
-        self._ensure_watchdog()
-        self._set_power(mode, val)
-        secs = max(0.0, float(seconds))
-        if secs > 0:
-            self._manual_timer = threading.Timer(secs, self._manual_revert)
-            self._manual_timer.daemon = True
-            self._manual_timer.start()
-        log.info("RSCP: manuelles %s %d W für %.0f min (Mode %d).",
-                 action, val, secs / 60.0, mode)
-        return {"mode": mode, "watts": val, "seconds": secs}
-
-    def _manual_revert(self) -> None:
-        self._manual_timer = None
-        self._wd_mode, self._wd_value = 0, 0
-        try:
-            self._set_power(0, 0)
-            log.info("RSCP: manueller Eingriff abgelaufen -> auto.")
-        except Exception as exc:  # pragma: no cover
-            log.warning("RSCP: Auto-Rücksetzen nach Ablauf fehlgeschlagen (%s).", exc)
+                log.warning("RSCP: Auto-Rücksetzen nach Ablauf fehlgeschlagen (%s).", exc)
 
     def apply_control(self, row) -> None:
         """Plan-Slot -> E3DC-Steuerung. Nur mit control_enabled=true.
@@ -364,38 +396,44 @@ class E3DCLink:
         GREIFT REAL IN DEN SPEICHER EIN."""
         if not self.rc.control_enabled:
             return
-        hb = self.cfg.house_battery
-        gc = float(row.get("batt_grid_charge_w", 0.0))
-        gd = float(row.get("batt_grid_discharge_w", 0.0))
-        try:
-            if gc > 5.0:
-                # Netzladen: Mode 4 (grid_charge), Wert = Gesamt-Ladeleistung
-                # (PV zuerst, Netz für den Rest). Verifiziert @8 kW.
-                total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
-                self._set_limits(False)          # Limits aus, Mode regelt
-                self._wd_mode, self._wd_value = 4, total
-                self._ensure_watchdog()
-                self._set_power(4, total)
-                log.info("RSCP: Netzladen aktiv, Mode 4, %d W (Watchdog).", total)
-            elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
-                # Netz-Entladen: Mode 2 (discharge), Wert = Entladeleistung.
-                # Verifiziert @3 kW (Akku -3042 W, Export).
-                val = round(float(row.get("batt_discharge_w", 0.0)))
-                self._set_limits(False)
-                self._wd_mode, self._wd_value = 2, val
-                self._ensure_watchdog()
-                self._set_power(2, val)
-                log.info("RSCP: Netz-Entladen aktiv, Mode 2, %d W (Watchdog).", val)
-            else:
-                # auto + persistente Lade-/Entlade-Limits gemäß Plan
-                if self._wd_mode != 0:
-                    self._wd_mode, self._wd_value = 0, 0
-                    self._set_power(0, 0)        # aktiv auf auto zurück
-                cl = float(row.get("batt_charge_limit_w", hb.max_dc_charge_w))
-                dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
-                limited = cl < hb.max_dc_charge_w - 1 or dl < hb.max_discharge_w - 1
-                self._set_limits(limited, cl, dl)
-                log.debug("RSCP: auto, Limit aktiv=%s (Laden≤%.0f, Entladen≤%.0f).",
-                          limited, cl, dl)
-        except Exception as exc:
-            log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+        with self._manual_lock:
+            if self._manual_active:
+                log.debug("RSCP: Optimierer-Sollwert ausgesetzt – Handbetrieb aktiv.")
+                return
+            hb = self.cfg.house_battery
+            gc = float(row.get("batt_grid_charge_w", 0.0))
+            gd = float(row.get("batt_grid_discharge_w", 0.0))
+            try:
+                if gc > 5.0:
+                    # Netzladen: Mode 4 (grid_charge), Wert = Gesamt-Ladeleistung
+                    # (PV zuerst, Netz für den Rest). Verifiziert @8 kW.
+                    total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
+                    self._set_limits(False)      # Limits aus, Mode regelt
+                    self._wd_mode, self._wd_value = 4, total
+                    self._ensure_watchdog()
+                    self._set_power(4, total)
+                    log.info("RSCP: Netzladen aktiv, Mode 4, %d W (Watchdog).",
+                             total)
+                elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
+                    # Netz-Entladen: Mode 2 (discharge), Wert = Entladeleistung.
+                    val = round(float(row.get("batt_discharge_w", 0.0)))
+                    self._set_limits(False)
+                    self._wd_mode, self._wd_value = 2, val
+                    self._ensure_watchdog()
+                    self._set_power(2, val)
+                    log.info("RSCP: Netz-Entladen aktiv, Mode 2, %d W (Watchdog).",
+                             val)
+                else:
+                    # auto + persistente Lade-/Entlade-Limits gemäß Plan
+                    if self._wd_mode != 0:
+                        self._wd_mode, self._wd_value = 0, 0
+                        self._set_power(0, 0)    # aktiv auf auto zurück
+                    cl = float(row.get("batt_charge_limit_w", hb.max_dc_charge_w))
+                    dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
+                    limited = (cl < hb.max_dc_charge_w - 1
+                               or dl < hb.max_discharge_w - 1)
+                    self._set_limits(limited, cl, dl)
+                    log.debug("RSCP: auto, Limit aktiv=%s "
+                              "(Laden≤%.0f, Entladen≤%.0f).", limited, cl, dl)
+            except Exception as exc:
+                log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)

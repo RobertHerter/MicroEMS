@@ -248,11 +248,36 @@ def test_manual_power_discharge_clamped_and_auto():
     assert link._e3dc.last_power == (0, 0)
 
 
+def test_manual_power_pv_charge_and_idle_modes():
+    _cfg, link = _link(control_enabled=False)
+    assert link.manual_power("pv_charge", 2400, seconds=0)["mode"] == 3
+    assert link._e3dc.last_power == (3, 2400)
+    assert link.manual_power("idle", 9999, seconds=0)["mode"] == 1
+    assert link._e3dc.last_power == (1, 0)
+    link.manual_power("auto")
+
+
 def test_manual_power_rejects_unknown_action():
     import pytest
     _cfg, link = _link(control_enabled=False)
     with pytest.raises(ValueError):
         link.manual_power("bogus", 1000)
+
+
+def test_manual_power_has_priority_over_optimizer_control():
+    """Ein laufender Handplan darf vom 15-min-Optimierer nicht beendet werden."""
+    cfg, link = _link(control_enabled=True)
+    link.manual_power("charge", 3000, seconds=0)
+    before = list(link._e3dc.power_calls)
+
+    link.apply_control({"batt_grid_charge_w": 0,
+                        "batt_grid_discharge_w": 0,
+                        "batt_charge_limit_w": cfg.house_battery.max_dc_charge_w,
+                        "batt_discharge_limit_w": cfg.house_battery.max_discharge_w})
+
+    assert link._e3dc.power_calls == before
+    assert link.manual_status()["active"] is True
+    link.manual_power("auto")
 
 
 def test_house_load_15min_balance_and_keys():

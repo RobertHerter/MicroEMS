@@ -371,6 +371,9 @@ per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
 
 - **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt, Akku-SoC,
   Modus jetzt (mit Limits), Eingriffe im Plan
+- **E3/DC-Livekacheln**: Solarerzeugung, Hauslast, Netzfluss, Batterieleistung,
+  SoC und Wallbox im konfigurierbaren Raster (Default 5 s). Der Server cached
+  die RSCP-Abfrage, sodass mehrere Browser die Geräteabfrage nicht vervielfachen.
 - **Leistung** (PV mit Solcast-p10–p90-Band, Verbrauch, Netz, Einspeise-Linie;
   Ist durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
   Einspeisevergütung, **Steuerung** (Ladebefehle, Abregelung, Ist-Akkuleistung)
@@ -383,7 +386,16 @@ per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
 - Vergangenheit grau hinterlegt, Tagesgrenzen mit Wochentag, Jetzt-Linie
 - **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten
   an/aus + Kernparameter, Optimierungsmodus (auto/asap/peak), manuelles
-  Akku-Laden/-Entladen – direkt aus dem Dashboard, ohne MQTT
+  Akku-Laden/-Entladen – direkt aus dem Dashboard, ohne MQTT. Das Panel ist
+  einklappbar; bei verschiebbaren Lasten kann `power_profile_w` als Folge von
+  15-Minuten-Wattwerten bearbeitet und unmittelbar als Balkenkurve geprüft werden.
+- **Manuelle Akku-Zeitplanung**: Netzladen und Entladen mit Start, Leistung und
+  Dauer auf einem grafischen 48-h-Zeitstrahl planen. Einträge liegen persistent
+  in der lokalen SQLite, werden auch ohne geöffneten Browser ausgeführt und
+  können vor oder während der Ausführung abgebrochen werden. Während eines
+  Handplans ist der normale Optimierer-Sollwert ausgesetzt; danach wird E3/DC
+  automatisch freigegeben. SoC-Minimum/-Maximum und Hardware-Leistungsgrenzen
+  werden vor und während der Ausführung geprüft.
 
 Die interaktive Beispielausgabe (Bild oben, **synthetische Daten**) liegt als
 [dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
@@ -398,10 +410,12 @@ chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
 ### Webserver & API (Basic Auth)
 
 Der eingebaute HTTP-Server liefert das Dashboard aus und bietet zusätzlich einen
-**JSON-API-Endpunkt**. Unter `http://<host>:<port>/api/data.json` kann der
+**JSON-API-Endpunkte**. Unter `http://<host>:<port>/api/data.json` kann der
 vollständige Optimierungs-Zustand (Ist-Werte und Zukunftspläne für alle Slots) als
 maschinenlesbares JSON abgerufen werden – ideal zur Anbindung an Drittsysteme
-(Grafana, Node-RED, etc.).
+(Grafana, Node-RED, etc.). `/api/live.json` liefert bei aktiver RSCP-Anbindung
+den aktuellen E3/DC-Snapshot; das Abfrageintervall wird mit
+`dashboard.live_refresh_seconds` eingestellt (`0` deaktiviert die Liveanzeige).
 
 **Sicherheit:** Die gesamte Weboberfläche (Dashboard, Report-Download und API) kann 
 mit Basic Authentication abgesichert werden. Dazu in der `config.yaml` unter `dashboard`
