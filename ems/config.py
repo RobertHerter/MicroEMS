@@ -298,10 +298,10 @@ class OptimizationConfig:
     # isolierte 15-min-Haltepausen, die als 0-W-Entladelimit real in die
     # E3DC-Regelung eingreifen würden. 0 = aus.
     battery_switch_penalty_ct: float = 1.0
-    # Malus (ct) je bewusstem Halte-Slot trotz ausreichend großer Restlast.
-    # Unterdrückt Mikro-Optimierungen im Cent-Bruchteil, für die der E3DC real
-    # mit einem 0-W-Entladelimit eingegriffen werden müsste. 0 = aus.
-    battery_hold_penalty_ct: float = 1.0
+    # Malus (ct/kWh) auf bewusst nicht aus dem Akku gedeckte Restlast.
+    # Unterdrueckt Mikro-Optimierungen, ohne den frueheren binaeren 100-W-
+    # Mindestentlade-Trick zu erzeugen. 0 = aus.
+    battery_hold_penalty_ct_kwh: float = 1.0
     # Strafe (ct/kWh) je fehlender kWh zum Auto-Ziel-SoC bei Abfahrt. Das Ziel
     # ist eine WEICHE Nebenbedingung: ist es unerreichbar, lädt der Plan so
     # viel wie möglich statt komplett auf 'auto' zurückzufallen.
@@ -876,7 +876,10 @@ def load_config(path: str) -> Config:
         solver_mip_gap_abs_ct=float(o.get("solver_mip_gap_abs_ct", 25.0)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
         battery_switch_penalty_ct=float(o.get("battery_switch_penalty_ct", 1.0)),
-        battery_hold_penalty_ct=float(o.get("battery_hold_penalty_ct", 1.0)),
+        # Alter Schluessel bleibt als Lese-Fallback kompatibel; seine Einheit
+        # war frueher ct/Slot, wird ab jetzt als ct/kWh interpretiert.
+        battery_hold_penalty_ct_kwh=float(o.get(
+            "battery_hold_penalty_ct_kwh", o.get("battery_hold_penalty_ct", 1.0))),
         car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),

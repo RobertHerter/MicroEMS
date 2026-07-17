@@ -71,7 +71,7 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     """
     cfg = make_config()
     cfg.optimization.battery_switch_penalty_ct = 1.0
-    cfg.optimization.battery_hold_penalty_ct = 0.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
     idx = _day_index("2026-01-15")[:8]
     price = np.array([30.0, 30.0, 30.0, 29.8, 30.0, 30.0, 30.0, 30.0])
     res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=900.0, price=price,
@@ -89,7 +89,7 @@ def test_battery_hold_penalty_avoids_micro_optimization():
     cfg.optimization.min_discharge_w = 100.0
     cfg.optimization.standby_discharge_w = 40.0
     cfg.optimization.battery_switch_penalty_ct = 1.0
-    cfg.optimization.battery_hold_penalty_ct = 1.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 1.0
     idx = _day_index("2026-07-17")[:4]
     load = np.array([1759.0, 1480.0, 1161.0, 1184.0])
     pv = np.array([2212.0, 1344.0, 1344.0, 870.0])
@@ -101,3 +101,24 @@ def test_battery_hold_penalty_avoids_micro_optimization():
     row = res.table.iloc[1]
     assert row["batt_discharge_w"] >= 100.0
     assert row["discharge_limited"] == 0.0
+
+
+def test_hold_penalty_cannot_be_evaded_with_minimum_discharge():
+    """Bei knappem SoC wird Energie fuer die spaetere Hochpreisphase gehalten.
+    Der Halte-Malus darf dabei keine nutzlose 100-W-Entladung provozieren."""
+    cfg = make_config()
+    cfg.optimization.min_discharge_w = 100.0
+    cfg.optimization.standby_discharge_w = 40.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 1.0
+    cfg.optimization.terminal_soc_value = 0.0
+    cfg.house_battery.max_ac_charge_w = 0.0
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([10.0] * 4 + [40.0] * 4)
+    soc = cfg.house_battery.min_soc_wh + 1100.0
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=1000.0, price=price, soc=soc))
+    assert not res.infeasible
+    dis = res.table["batt_discharge_w"].values
+    assert (dis[:4] < 1.0).all(), \
+        "Halte-Malus wird weiterhin mit Mindestentladung umgangen"
+    assert (dis[4:] > 100.0).any(), "Hochpreisphase sollte Akkuenergie nutzen"

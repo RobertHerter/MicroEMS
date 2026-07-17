@@ -793,21 +793,26 @@ class Optimizer:
             if pauses:
                 cost_terms.append(bat_pen * pulp.lpSum(pauses))
 
-        # Bewusstes Halten trotz einer vom Akku deckbaren Basis-Restlast ist
-        # ein realer 0-W-Steuereingriff. Für Cent-Bruchteile Preisvorteil lohnt
-        # dieses Takten nicht. Bei einem deutlichen späteren Preisvorteil darf
-        # der Optimierer den kleinen Malus weiterhin bewusst akzeptieren.
-        hold_pen = float(getattr(cfg.optimization, "battery_hold_penalty_ct", 0.0) or 0.0)
+        # Bewusst zurueckgehaltene Entladung proportional zur NICHT gedeckten
+        # Restlast bestrafen (ct/kWh). Der fruehere binaere Malus auf
+        # (1-is_di) war durch exakt die Mindestentladung umgehbar: Der Plan
+        # entlud dann in langen Winterphasen 100 W und meldete trotzdem eine
+        # Drosselung. Der kontinuierliche Term bewertet 0 W, 100 W und jede
+        # Teilentladung korrekt nach der tatsaechlich gehaltenen Energie.
+        hold_pen = float(getattr(
+            cfg.optimization, "battery_hold_penalty_ct_kwh", 0.0) or 0.0)
         if hold_pen:
-            hold_candidates = []
-            threshold = max(min_dis, 1.0)
+            held_power = []
             for t in range(N):
                 base_deficit = max(0.0, float(inp.house_load_w[t])
                                    - float(inp.pv_w[t]))
-                if base_deficit >= threshold:
-                    hold_candidates.append(1 - is_di[t])
-            if hold_candidates:
-                cost_terms.append(hold_pen * pulp.lpSum(hold_candidates))
+                natural_dis = min(base_deficit, max_dis)
+                if natural_dis > 0.0:
+                    held = pulp.LpVariable(f"helddis_{t}", 0, natural_dis)
+                    prob += held >= natural_dis - dis[t]
+                    held_power.append(held)
+            if held_power:
+                cost_terms.append(hold_pen * pulp.lpSum(held_power) * kwh)
 
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
