@@ -364,6 +364,30 @@ def test_forced_peak_ignores_p10_early_charge_path():
     )
 
 
+def test_peak_charge_ramp_penalty_smooths_p10_catchup():
+    """p10-Sicherung darf keine einzelne Lade-Spitze zwischen Linien-Slots
+    erzeugen; der weiche Rampenmalus reduziert die Gesamtvariation."""
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 8000)
+    pv10 = 0.35 * pv
+
+    def solve(ramp_penalty):
+        cfg = make_config()
+        cfg.optimization.charge_strategy = "auto"
+        cfg.optimization.peak_charge_ramp_penalty_ct_kw = ramp_penalty
+        cfg.house_battery.capacity_wh = 8000.0
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=pv, pv10_w=pv10, load=500.0, price=25.0, soc=1500.0,
+        )).table["batt_dc_charge_w"].values
+
+    raw = solve(0.0)
+    smooth = solve(0.25)
+    tv_raw = float(np.abs(np.diff(raw)).sum())
+    tv_smooth = float(np.abs(np.diff(smooth)).sum())
+    assert tv_smooth < tv_raw - 100.0, \
+        "Rampenmalus glaettet den Peak-Ladeverlauf nicht messbar"
+
+
 def test_grid_charge_is_explicit_not_disguised():
     """Billig-Laden zur Preisdelle muss als expliziter Netzlade-Befehl (ac)
     erscheinen. DC-Laden ist auf den PV-Überschuss begrenzt - 'ganze PV in

@@ -836,6 +836,24 @@ class Optimizer:
                 early_weight = (24 * 60 - local_minute) / (24 * 60)
                 cost_terms.append(0.01 * early_weight * dc[t] * kwh)
 
+        # p10-Mindestpfad und "moeglichst spaet"-Tie-Breaker koennen sonst
+        # gegeneinander arbeiten: Die noetige Zusatzladung wird in EINEN Slot
+        # gepackt (Linie -> volle PV-Ladung -> Linie). Ein kleiner Total-
+        # Variation-Malus verteilt sie auf benachbarte Peak-Slots, ohne die
+        # Tageslinie oder wirtschaftliche Entscheidungen nennenswert zu
+        # veraendern. Einheit: ct je kW Aenderung zwischen zwei 15-min-Slots.
+        ramp_pen = float(getattr(
+            cfg.optimization, "peak_charge_ramp_penalty_ct_kw", 0.0) or 0.0)
+        if ramp_pen:
+            for t in range(1, N):
+                if (slot_day[t] != slot_day[t - 1]
+                        or day_mode[slot_day[t]] != "peak"):
+                    continue
+                ramp = pulp.LpVariable(f"peakram_d{t}", 0)
+                prob += ramp >= dc[t] - dc[t - 1]
+                prob += ramp >= dc[t - 1] - dc[t]
+                cost_terms.append(ramp_pen * ramp / 1000.0)
+
         # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
         # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
         # harte Nebenbedingung oben.

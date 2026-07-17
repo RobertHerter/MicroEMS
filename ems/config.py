@@ -332,6 +332,9 @@ class OptimizationConfig:
     auto_peak_soc_reserve_percent: float = 10.0
     # Gewicht, wie stark die Einspeise-Linie L minimiert wird.
     peak_charge_weight: float = 30.0
+    # Weicher Glaettungsmalus (ct je kW Leistungssprung) fuer PV-Akkuladung an
+    # Peak-Tagen. Verhindert einzelne Voll-Ladeslots zwischen Linien-Slots.
+    peak_charge_ramp_penalty_ct_kw: float = 0.25
     # WR-Sockellast: fixer Verlust (W), der bei JEDEM Entlade-Slot dem Akku
     # entnommen wird (Wechselrichter-Eigenverbrauch). Macht Kleinstleistungs-
     # Entladen unwirtschaftlich. 0 = aus.
@@ -887,6 +890,8 @@ def load_config(path: str) -> Config:
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
         auto_peak_soc_reserve_percent=float(o.get("auto_peak_soc_reserve_percent", 10.0)),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
+        peak_charge_ramp_penalty_ct_kw=float(o.get(
+            "peak_charge_ramp_penalty_ct_kw", 0.25)),
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),
         power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),
