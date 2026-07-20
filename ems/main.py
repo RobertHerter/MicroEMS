@@ -41,8 +41,8 @@ from .validate import summarize, validate_plan
 log = logging.getLogger("ems.main")
 
 _intraday_state = {
-    "load": {"issue": None, "ratio": 1.0, "applied": None},
-    "pv": {"issue": None, "ratio": 1.0, "applied": None},
+    "load": {"issue": None, "ratio": 1.0, "applied": None, "seeded": False},
+    "pv": {"issue": None, "ratio": 1.0, "applied": None, "seeded": False},
 }
 _intraday_raw = {"load": None, "pv": None}
 
@@ -614,12 +614,20 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None)
         issue = pd.Timestamp(now)
         if state["issue"] == issue:
             return state["applied"]
+        # Kaltstart (erster Lauf nach Prozessstart): direkt vom Rohwert seeden,
+        # OHNE max_step-Rampe von 1.0. Sonst wäre die Verbrauchskurve nach jedem
+        # Neustart unter-korrigiert (z.B. x1.10 statt x1.17) und würde erst über
+        # mehrere Zyklen hochrampen -> sichtbarer Sprung bei jedem Restart. Der
+        # Rohwert stammt aus den letzten Stunden Ist-Daten, ist also sofort
+        # belastbar; max_step glättet nur die Übergänge ZWISCHEN Live-Zyklen.
+        step = 0.0 if not state["seeded"] else max_step
         applied = stabilize_intraday_ratio(
-            ratio, state["ratio"], deadband=deadband, max_step=max_step)
+            ratio, state["ratio"], deadband=deadband, max_step=step)
         state["issue"] = issue
         state["applied"] = applied
         if applied is not None:
             state["ratio"] = applied
+            state["seeded"] = True
         return applied
 
     def archive(signal, start, details, applied):

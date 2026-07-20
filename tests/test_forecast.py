@@ -114,6 +114,10 @@ def test_intraday_stabilization_deadband_and_step_limit():
     assert stabilize_intraday_ratio(1.5, 1.0, max_step=0.1) == pytest.approx(1.1)
     assert stabilize_intraday_ratio(0.5, 1.0, max_step=0.1) == pytest.approx(0.9)
     assert stabilize_intraday_ratio(None, 1.2) is None
+    # Kaltstart (max_step=0): direkt vom Rohwert seeden, KEINE 1.0-Rampe -
+    # so bleibt die Verbrauchskurve nach einem Neustart wie im Dauerbetrieb.
+    assert stabilize_intraday_ratio(1.5, 1.0, deadband=0.1, max_step=0.0) == pytest.approx(1.5)
+    assert stabilize_intraday_ratio(1.05, 1.0, deadband=0.1, max_step=0.0) == 1.0
 
 
 def test_intraday_diagnostic_archive(tmp_path):
