@@ -248,11 +248,12 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
                              min_train_days: int = 60,
                              archive_reader=None):
     """Rolling-Origin-Backtest der Verbrauchsprognose, wie der Live-Betrieb
-    sie nutzt: `folds` Startpunkte gleichmäßig über die Historie verteilt
-    (Saison-Abdeckung), je Fold `horizon_hours` voraus mit ALLEM Wissen bis
-    zum Startpunkt - einmal je Methode (ml UND similar_days, dieselben
-    Folds). Korrekturen (correction_factor/Stundenprofil) sind neutralisiert:
-    gemessen wird das rohe Modell, nicht die Kalibrierung.
+    sie nutzt zwei leakage-freie Ebenen: `folds` Startpunkte gleichmäßig über
+    die Historie verteilt als konservativen Bootstrap ohne Zukunfts-Wetter/PV
+    sowie bis zu 12 wöchentliche Origins mit echten Issue-Time-Snapshots.
+    Letztere ersetzen den Bootstrap schrittweise. Korrekturen
+    (correction_factor/Stundenprofil) sind neutralisiert: gemessen wird das
+    rohe Modell, nicht die Kalibrierung.
 
     Rückgabe: {"folds", "horizon_hours", "methods": {m: Segment-Metriken},
     "empfehlung": Methode mit kleinerem Gesamt-WAPE} oder None (zu wenig
@@ -293,56 +294,83 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
     orig_method = cfg.forecast.method
     orig_corr = cfg.forecast.correction_factor
     collected = {m: [] for m in methods}
+    archived = {m: [] for m in methods}
     used = 0
     archived_folds = 0
     min_train_slots = int(np.ceil(
         min_train_days * 24 * cfg.general.slots_per_hour * 0.9))
     min_actual_slots = int(np.ceil(horizon_slots * 0.9))
+
+    def evaluate(origin, futures=None, target=None):
+        """Einen Origin leakage-frei auswerten.
+
+        Historische Bootstrap-Folds laufen bewusst ohne Zukunfts-Wetter/PV.
+        Nur echte Issue-Time-Snapshots dürfen die produktionsnahe Sammlung
+        speisen.
+        """
+        train = hist[hist.index < origin]
+        actual = hist[(hist.index >= origin)
+                      & (hist.index < origin + horizon)]
+        if len(train) < min_train_slots or len(actual) < min_actual_slots:
+            return False
+        hist_temp = hist_pv = fut_temp = fut_pv = None
+        if futures is not None:
+            hist_temp = temp[temp.index < origin] if temp is not None else None
+            hist_pv = pv[pv.index < origin] if pv is not None else None
+            fut_temp, fut_pv = futures.get("temp"), futures.get("pv")
+        bucket = collected if target is None else target
+        for method in methods:
+            cfg.forecast.method = method
+            fc = LoadForecaster(cfg)
+            fc.load_hourly = None
+            pred = fc.forecast(
+                train, origin, horizon_slots,
+                hist_temp=hist_temp, fut_temp=fut_temp,
+                hist_pv=hist_pv, fut_pv=fut_pv)
+            idx = actual.index.intersection(pred.index)
+            if len(idx):
+                bucket[method].append(pd.DataFrame(
+                    {"a": actual.reindex(idx).values,
+                     "p": pred.reindex(idx).values}, index=idx))
+        return True
+
     try:
         cfg.forecast.correction_factor = 1.0
+        # 1) Sofort nutzbarer Langzeit-Bootstrap: saisonal verteilte Origins,
+        # aber ohne rückblickend bekannte Zukunfts-Wetter-/PV-Werte.
         for origin in origins:
-            train = hist[hist.index < origin]
-            actual = hist[(hist.index >= origin)
-                          & (hist.index < origin
-                             + pd.Timedelta(hours=horizon_hours))]
-            if len(train) < min_train_slots or len(actual) < min_actual_slots:
-                continue
-            used += 1
-            archived = (archive_reader(origin, origin + horizon)
-                        if archive_reader is not None else None)
-            archive_complete = bool(archived and archived.get("complete"))
-            if archive_complete:
-                archived_folds += 1
-                hist_temp = (temp[temp.index < origin]
-                             if temp is not None else None)
-                hist_pv = (pv[pv.index < origin] if pv is not None else None)
-                fut_temp = archived.get("temp")
-                fut_pv = archived.get("pv")
-            else:
-                hist_temp = fut_temp = hist_pv = fut_pv = None
-            for method in methods:
-                cfg.forecast.method = method
-                fc = LoadForecaster(cfg)
-                fc.load_hourly = None
-                pred = fc.forecast(train, origin, horizon_slots,
-                                   hist_temp=hist_temp, fut_temp=fut_temp,
-                                   hist_pv=hist_pv, fut_pv=fut_pv)
-                idx = actual.index.intersection(pred.index)
-                if len(idx):
-                    collected[method].append(pd.DataFrame(
-                        {"a": actual.reindex(idx).values,
-                         "p": pred.reindex(idx).values}, index=idx))
+            used += int(evaluate(origin))
+
+        # 2) Echte Produktions-Folds ausschließlich innerhalb des vorhandenen
+        # Archivs: wöchentlich rückwärts ab dem jüngsten vollständigen Horizont.
+        # So wächst die Evidenz jede Woche, statt erst nach 670 Tagen alle über
+        # die Langzeithistorie verteilten Origins abzudecken.
+        if archive_reader is not None:
+            for k in range(min(12, len(origins))):
+                origin = (end - pd.Timedelta(days=7 * k)).floor(freq)
+                if origin < first:
+                    break
+                futures = archive_reader(origin, origin + horizon)
+                if not (futures and futures.get("complete")):
+                    continue
+                if evaluate(origin, futures=futures, target=archived):
+                    archived_folds += 1
     finally:
         cfg.forecast.method = orig_method
         cfg.forecast.correction_factor = orig_corr
 
-    compatible = bool(used and archived_folds == used)
+    min_archive_folds = min(6, max(1, len(origins)))
+    compatible = archived_folds >= min_archive_folds
+    archive_weight = min(1.0, archived_folds / float(min_archive_folds))
     mode = ("issue_time_archive" if compatible else
-            "partial_issue_time_archive" if archived_folds else
-            "disabled_no_issue_time_archive")
+            "hybrid_issue_time_archive" if archived_folds else
+            "historical_bootstrap")
     res = {"folds": used, "horizon_hours": horizon_hours,
            "archive_folds": archived_folds, "exogenous_mode": mode,
-           "correction_profile_compatible": compatible, "methods": {}}
+           "archive_min_folds": min_archive_folds,
+           "archive_weight": round(archive_weight, 3),
+           "correction_profile_compatible": compatible, "methods": {},
+           "archive_methods": {}}
     combined = {}
     for method, frames in collected.items():
         if frames:
@@ -350,18 +378,61 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
             res["methods"][method] = _segment_metrics(combined[method], tz)
     if not res["methods"]:
         return None
-    res["empfehlung"] = min(
+    bootstrap_method = min(
         combined, key=lambda m: _wape(combined[m]["a"].values,
                                       combined[m]["p"].values))
-    best = combined[res["empfehlung"]]
-    # Produktive Korrektur ebenfalls out-of-fold bestimmen. Der alte einzelne
-    # 60-Tage-Horizont verlor beim ML nach Tag 7 sein lag_7d-Feature und konnte
-    # die Stundenfaktoren dadurch systematisch aufblasen.
-    res["global_correction"] = round(
-        float(best["a"].sum() / best["p"].sum()), 4)
-    res["hourly_correction"] = _factor_table(
-        best["a"], best["p"],
+    archive_combined = {}
+    for method, frames in archived.items():
+        if frames:
+            archive_combined[method] = pd.concat(frames)
+            res["archive_methods"][method] = _segment_metrics(
+                archive_combined[method], tz)
+    archive_method = (min(
+        archive_combined,
+        key=lambda m: _wape(archive_combined[m]["a"].values,
+                            archive_combined[m]["p"].values))
+        if archive_combined else None)
+    res["bootstrap_empfehlung"] = bootstrap_method
+    res["archive_empfehlung"] = archive_method
+    res["empfehlung"] = archive_method if compatible else bootstrap_method
+
+    bootstrap_best = combined[bootstrap_method]
+    bootstrap_global = float(
+        bootstrap_best["a"].sum() / bootstrap_best["p"].sum())
+    bootstrap_hourly = _factor_table(
+        bootstrap_best["a"], bootstrap_best["p"],
         lambda i: i.tz_convert(cfg.general.timezone).hour)
+    archive_global = bootstrap_global
+    archive_hourly = {}
+    if archive_method is not None:
+        archive_best = archive_combined[archive_method]
+        archive_global = float(
+            archive_best["a"].sum() / archive_best["p"].sum())
+        archive_hourly = _factor_table(
+            archive_best["a"], archive_best["p"],
+            lambda i: i.tz_convert(cfg.general.timezone).hour)
+
+    # Startprofil konservativ zur globalen Korrektur schrumpfen. Echte
+    # Archivdaten ersetzen es linear bis zum sechsten vollständigen Wochenfold.
+    productive_hourly = {}
+    for hour in range(24):
+        boot_raw = float(bootstrap_hourly.get(hour, bootstrap_global))
+        boot = bootstrap_global + 0.5 * (boot_raw - bootstrap_global)
+        real = float(archive_hourly.get(hour, archive_global))
+        factor = (1.0 - archive_weight) * boot + archive_weight * real
+        productive_hourly[hour] = round(min(1.8, max(0.6, factor)), 3)
+    productive_global = ((1.0 - archive_weight) * bootstrap_global
+                         + archive_weight * archive_global)
+    res["bootstrap_global_correction"] = round(bootstrap_global, 4)
+    res["archive_global_correction"] = (
+        round(archive_global, 4) if archive_method is not None else None)
+    res["global_correction"] = round(productive_global, 4)
+    res["bootstrap_hourly_correction"] = bootstrap_hourly
+    res["archive_hourly_correction"] = archive_hourly
+    res["hourly_correction"] = productive_hourly
+    res["correction_profile_source"] = (
+        "issue_time_archive" if compatible else
+        "hybrid" if archived_folds else "historical_bootstrap")
     return res
 
 
@@ -388,9 +459,11 @@ def _print_validation(res):
           f"(kleinster Gesamt-WAPE)")
     print(f"  -> Rolling-Origin-Korrekturfaktor: "
           f"{res.get('global_correction', 1.0):.3f}")
-    if not res.get("correction_profile_compatible", False):
-        print("     (nur Diagnose; nicht live angewandt, da Origin-Archive für "
-              "Wetter/PV fehlen)")
+    print(f"  -> Archiv-Folds: {res.get('archive_folds', 0)}/"
+          f"{res.get('archive_min_folds', 0)}, Anteil echte Archive "
+          f"{100 * res.get('archive_weight', 0.0):.0f} %")
+    print(f"  -> Produktives Korrekturprofil: "
+          f"{res.get('correction_profile_source', 'unbekannt')}")
 
 
 def calibrate_load(repo, cfg, now, lookback_days, test_days):
@@ -536,7 +609,7 @@ def main():
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
             "forecast.correction_factor": (
                 validation.get("global_correction")
-                if validation and validation.get("correction_profile_compatible")
+                if validation
                 else load["suggested_correction_factor"] if load else None),
         },
     }
@@ -555,23 +628,25 @@ def main():
                 "pv_hour": pv.get("hourly", {}),
                 "pv_month": pv.get("monthly", {}),
             })
-        # NUR das archiv-kompatible Rolling-Profil darf produktiv werden. Der
-        # Hold-out ist als Quelle GESPERRT: sein 365-Tage-Horizont verliert
-        # beim ML nach Tag 7 das lag_7d-Feature und bläst die Faktoren
-        # systematisch auf (real gemessen: Hold-out-Stundenfaktoren im Mittel
-        # x1,44 / nachts bis x1,66, während die Rolling-Diagnose global x1,06
-        # ergab - eine produktive 40-%-Überkorrektur). Ohne kompatibles
-        # Rolling-Profil bleibt load_hourly leer -> die Pipeline nutzt den
-        # globalen forecast.correction_factor, bis das issue_time-Archiv die
-        # ehrliche Stunden-Korrektur freischaltet.
-        rolling_hourly = ((validation or {}).get("hourly_correction")
-                          if (validation or {}).get("correction_profile_compatible")
-                          else None)
+        # Hybridprofil: saisonal verteilte, leakage-freie Bootstrap-Folds
+        # liefern sofort gedämpfte Startwerte. Echte wöchentliche Issue-Time-
+        # Folds ersetzen sie bis zum sechsten Fold linear. Der alte einzelne
+        # 365-Tage-Hold-out bleibt als Quelle gesperrt, weil das ML-Modell dort
+        # nach Tag 7 sein lag_7d-Feature verliert und Faktoren aufblasen kann.
+        rolling_hourly = (validation or {}).get("hourly_correction")
         if rolling_hourly:
             # Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
             profile["load_hourly"] = {
                 int(h): round(float(min(1.8, max(0.6, f))), 3)
                 for h, f in rolling_hourly.items()}
+            profile["load_profile_source"] = validation.get(
+                "correction_profile_source", "historical_bootstrap")
+            profile["load_archive_folds"] = int(validation.get(
+                "archive_folds", 0))
+            profile["load_archive_min_folds"] = int(validation.get(
+                "archive_min_folds", 6))
+            profile["load_archive_weight"] = float(validation.get(
+                "archive_weight", 0.0))
         with open("kalibrierung_profil.yaml", "w", encoding="utf-8") as fh:
             yaml.safe_dump(profile, fh, allow_unicode=True, sort_keys=True)
         print("Korrekturprofil (PV Monat x Stunde, Last je Stunde) -> "

@@ -795,6 +795,8 @@ class Optimizer:
         # Pausen-Malus, indem der Akku z.B. 382 W statt 0 W weiter entlud.
         # Allgemeine Ein/Aus-Wechsel zu bestrafen wäre falsch: Beim Übergang
         # PV-Überschuss -> Restlast ist das Einschalten natürlich.
+        material_import_flags = [None] * N
+        partial_discharge_flags = [None] * N
         bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
         if bat_pen and N > 2:
             threshold = max(min_dis, 1.0)
@@ -820,32 +822,103 @@ class Optimizer:
                     f"matimp_{t}", 0, 1, cat="Binary")
                 partial = pulp.LpVariable(
                     f"partdis_{t}", 0, 1, cat="Binary")
+                material_import_flags[t] = has_import
+                partial_discharge_flags[t] = partial
                 prob += g_imp[t] <= material_w + BIGG * has_import
                 prob += partial >= has_import + is_di[t] - 1
                 partial_imports.append(partial)
             cost_terms.append(bat_pen * (
                 pulp.lpSum(pauses) + pulp.lpSum(partial_imports)))
 
-        # Bewusst zurueckgehaltene Entladung proportional zur NICHT gedeckten
-        # Restlast bestrafen (ct/kWh). Der fruehere binaere Malus auf
-        # (1-is_di) war durch exakt die Mindestentladung umgehbar: Der Plan
-        # entlud dann in langen Winterphasen 100 W und meldete trotzdem eine
-        # Drosselung. Der kontinuierliche Term bewertet 0 W, 100 W und jede
-        # Teilentladung korrekt nach der tatsaechlich gehaltenen Energie.
+        # Netzbezug trotz noch nutzbarer Akkuenergie bestrafen (ct/kWh).
+        # Anders als ein pauschaler Malus auf alle ungedeckte Restlast ist das
+        # NICHT konstant, wenn der Akku insgesamt nicht fuer die ganze Nacht
+        # reicht: frueher Netzbezug bei hohem SoC kostet den Malus, spaeter
+        # physikalisch unvermeidbarer Bezug am Mindest-SoC nicht. So darf ein
+        # Preisvorteil die reale Entladesperre nur bei einem ausreichend grossen
+        # Spread rechtfertigen. g_imp-ac nimmt echtes Netzladen aus dem Malus.
         hold_pen = float(getattr(
             cfg.optimization, "battery_hold_penalty_ct_kwh", 0.0) or 0.0)
+        hold_energy_flags = [None] * N
         if hold_pen:
-            held_power = []
+            avoidable_import = []
+            soc_buffer_wh = 100.0
+            usable_wh = max(1.0, hb.max_soc_wh - hb.min_soc_wh)
+            base_deficits = np.maximum(
+                np.asarray(inp.house_load_w, dtype=float)
+                - np.asarray(inp.pv_w, dtype=float), 0.0)
+            # Zusammenhaengende Restlastphasen enden mit dem naechsten
+            # erwarteten PV-Ueberschuss. Eine Binaervariable je Phase prueft,
+            # ob die am Start nutzbare Akkuenergie den gesamten Bedarf deckt.
+            deficit_end = [None] * N
+            deficit_segments = []
+            s = 0
+            while s < N:
+                if base_deficits[s] <= 1.0:
+                    s += 1
+                    continue
+                e = s + 1
+                while e < N and base_deficits[e] > 1.0:
+                    e += 1
+                deficit_segments.append((s, e))
+                for k in range(s, e):
+                    deficit_end[k] = e
+                s = e
+
+            enforce_sufficiency = not bool(
+                getattr(cfg.optimization, "allow_grid_discharge", False))
+            for seg_no, (start, end) in enumerate(
+                    deficit_segments if enforce_sufficiency else []):
+                sufficient = pulp.LpVariable(
+                    f"batsuff_{seg_no}", 0, 1, cat="Binary")
+                need_wh = pulp.lpSum(
+                    (base_deficits[k] + car[k] + cl_power[k])
+                    * dt / hb.discharge_efficiency
+                    + standby_w * dt
+                    for k in range(start, end))
+                available_wh = soc[start] - hb.min_soc_wh
+                # sufficient=0 ist nur erlaubt, wenn der Bedarf die verfuegbare
+                # Energie wirklich uebersteigt (1 Wh numerischer Abstand).
+                prob += (available_wh - need_wh + 1.0
+                         <= usable_wh * sufficient)
+                for k in range(start, end):
+                    local_import = g_imp[k] - ac[k]
+                    unavoidable_base = max(
+                        0.0, float(inp.house_load_w[k])
+                        - float(inp.pv_w[k]) - max_dis)
+                    prob += (local_import <= unavoidable_base + standby_w
+                             + car[k] + cl_power[k]
+                             + BIGG * (1 - sufficient))
+
             for t in range(N):
-                base_deficit = max(0.0, float(inp.house_load_w[t])
-                                   - float(inp.pv_w[t]))
-                natural_dis = min(base_deficit, max_dis)
-                if natural_dis > 0.0:
-                    held = pulp.LpVariable(f"helddis_{t}", 0, natural_dis)
-                    prob += held >= natural_dis - dis[t]
-                    held_power.append(held)
-            if held_power:
-                cost_terms.append(hold_pen * pulp.lpSum(held_power) * kwh)
+                has_energy = pulp.LpVariable(
+                    f"hasbat_{t}", 0, 1, cat="Binary")
+                hold_energy_flags[t] = has_energy
+                avoidable = pulp.LpVariable(f"avoidimp_{t}", 0, BIGG)
+                # has_energy muss 1 sein, sobald nach dem Slot mehr als der
+                # kleine Rundungs-/Sockelpuffer ueber Mindest-SoC verbleibt.
+                prob += (soc[t + 1] - hb.min_soc_wh
+                         <= soc_buffer_wh + usable_wh * has_energy)
+                local_import = g_imp[t] - ac[t]
+                prob += avoidable >= local_import - BIGG * (1 - has_energy)
+                # Ist die Phase nicht suffizient, darf unvermeidbarer Netzbezug
+                # trotzdem nur bei einem deutlichen Preisvorteil vorgezogen
+                # werden. Verglichen wird bis zum naechsten PV-Ueberschuss.
+                end = deficit_end[t]
+                future_prices = (inp.price_ct_kwh[t + 1:end]
+                                 if end is not None else [])
+                future_high = (float(np.max(future_prices))
+                               if len(future_prices) else float("-inf"))
+                if (enforce_sufficiency
+                        and future_high < float(inp.price_ct_kwh[t]) + hold_pen):
+                    unavoidable_base = max(
+                        0.0, float(inp.house_load_w[t])
+                        - float(inp.pv_w[t]) - max_dis)
+                    prob += (local_import <= unavoidable_base + standby_w + car[t]
+                             + cl_power[t] + BIGG * (1 - has_energy))
+                avoidable_import.append(avoidable)
+            cost_terms.append(
+                hold_pen * pulp.lpSum(avoidable_import) * kwh)
 
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
@@ -1059,6 +1132,16 @@ class Optimizer:
                 curt_susp = (curt[t].varValue or 0.0) > 5.0
                 if hold_susp:
                     core.add(is_di[t].name)
+                    # Ein Hold-Incumbent hat diese Hilfsvariablen typischerweise
+                    # auf Import=1/Teilentladung=0 fixiert. Blieben sie in der
+                    # Politur fest, erzwingt partdis >= matimp+is_di-1 weiterhin
+                    # is_di=0 und die freigegebene Entladung kann gar nicht
+                    # anlaufen.
+                    for aux in (material_import_flags[t],
+                                partial_discharge_flags[t],
+                                hold_energy_flags[t]):
+                        if aux is not None:
+                            core.add(aux.name)
                 if curt_susp:
                     core.update({b_grid[t].name, is_full[t].name,
                                  at_max[t].name})

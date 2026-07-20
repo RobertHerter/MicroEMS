@@ -41,8 +41,10 @@ def test_validation_compares_methods_on_same_folds():
         # Segment-Aufschlüsselung vorhanden (Sommer-Folds -> Saison Sommer)
         assert "Nacht 00-06" in seg and "Werktag" in seg and "Sommer" in seg
     assert res["empfehlung"] in res["methods"]
-    assert res["exogenous_mode"] == "disabled_no_issue_time_archive"
+    assert res["exogenous_mode"] == "historical_bootstrap"
     assert res["correction_profile_compatible"] is False
+    assert res["correction_profile_source"] == "historical_bootstrap"
+    assert res["archive_weight"] == 0.0
     assert len(res["hourly_correction"]) == 24
     assert res["global_correction"] > 0.0
     best = res["empfehlung"]
@@ -124,7 +126,41 @@ def test_validation_uses_complete_issue_time_archive(monkeypatch):
     assert res["archive_folds"] == res["folds"] == 2
     assert res["exogenous_mode"] == "issue_time_archive"
     assert res["correction_profile_compatible"] is True
-    assert seen and all(all(v is not None for v in call) for call in seen)
+    assert res["archive_weight"] == 1.0
+    assert res["correction_profile_source"] == "issue_time_archive"
+    # Langzeit-Bootstrap bleibt bewusst ohne Zukunftsmerkmale; die getrennten
+    # Archiv-Folds müssen dagegen die damaligen Wetter-/PV-Reihen erhalten.
+    assert seen and any(all(v is None for v in call) for call in seen)
+    assert any(all(v is not None for v in call) for call in seen)
+
+
+def test_validation_blends_partial_weekly_archive_into_bootstrap():
+    cfg, hist, now = _setup()
+    temp = pd.Series(20.0, index=hist.index)
+    pv = pd.Series(1000.0, index=hist.index)
+    calls = 0
+
+    def archive_reader(origin, end):
+        nonlocal calls
+        calls += 1
+        idx = pd.date_range(origin, end,
+                            freq=f"{cfg.general.slot_minutes}min",
+                            inclusive="left")
+        return {"temp": pd.Series(18.0, index=idx),
+                "pv": pd.Series(800.0, index=idx),
+                "complete": calls <= 3}
+
+    res = validate_forecast_series(
+        cfg, hist, temp, pv, now, folds=6, horizon_hours=24,
+        min_train_days=30, archive_reader=archive_reader)
+
+    assert res["archive_folds"] == 3
+    assert res["archive_min_folds"] == 6
+    assert res["archive_weight"] == 0.5
+    assert res["exogenous_mode"] == "hybrid_issue_time_archive"
+    assert res["correction_profile_compatible"] is False
+    assert res["correction_profile_source"] == "hybrid"
+    assert len(res["hourly_correction"]) == 24
 
 
 def test_validation_supports_hourly_slots_and_36h_horizon():

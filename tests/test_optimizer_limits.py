@@ -149,3 +149,49 @@ def test_hold_penalty_cannot_be_evaded_with_minimum_discharge():
     assert (dis[:4] < 1.0).all(), \
         "Halte-Malus wird weiterhin mit Mindestentladung umgangen"
     assert (dis[4:] > 100.0).any(), "Hochpreisphase sollte Akkuenergie nutzen"
+
+
+def test_energy_sufficiency_forbids_hold_until_next_pv_surplus():
+    """Reicht der Akku fuer die gesamte Restlastphase, darf selbst ein grosser
+    Preissprung keinen kuenstlichen Netzbezug erzeugen."""
+    cfg = make_config()
+    cfg.optimization.terminal_soc_value = 0.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 5.0
+    cfg.optimization.standby_discharge_w = 0.0
+    cfg.house_battery.max_ac_charge_w = 0.0
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([10.0] * 4 + [40.0] * 4)
+    # 8 x 0,25 kWh Last inklusive Wirkungsgrad sicher abdeckbar.
+    soc = cfg.house_battery.min_soc_wh + 3000.0
+    table = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=1000.0, price=price, soc=soc)).table
+
+    assert (table["grid_import_w"] < 1.0).all()
+    assert (table["discharge_limited"] == 0.0).all()
+
+
+def test_hold_penalty_rejects_small_price_shift_but_keeps_large_spreads():
+    """Ein Unterschied von nur 2 ct/kWh rechtfertigt keinen realen Hold,
+    während die separate 10/40-ct-Regression weiterhin große Spreads schützt.
+    """
+    idx = _day_index("2026-01-15")[:2]
+
+    def solve(penalty):
+        cfg = make_config()
+        cfg.optimization.terminal_soc_value = 0.0
+        cfg.optimization.battery_switch_penalty_ct = 0.0
+        cfg.optimization.battery_hold_penalty_ct_kwh = penalty
+        cfg.optimization.standby_discharge_w = 0.0
+        cfg.house_battery.max_ac_charge_w = 0.0
+        soc = cfg.house_battery.min_soc_wh + 280.0
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=0.0, load=1000.0,
+            price=np.array([30.0, 32.0]), soc=soc)).table
+
+    economic = solve(0.0)
+    stable = solve(3.0)
+    assert economic.iloc[0]["grid_import_w"] > 100.0
+    assert economic.iloc[0]["discharge_limited"] == 1.0
+    assert stable.iloc[0]["batt_discharge_w"] > economic.iloc[0]["batt_discharge_w"]
+    assert stable.iloc[0]["discharge_limited"] == 0.0
+    assert stable.iloc[0]["mode"] == "auto"

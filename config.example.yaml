@@ -287,10 +287,10 @@ optimization:
   # Netzbezug. Verhindert kurze Entladedrosselungen für Cent-Bruchteile.
   # 0 = aus.
   battery_switch_penalty_ct: 1.0
-  # Malus (ct) je bewusstem Halte-Slot trotz deckbarer Restlast. Verhindert
-  # Mikro-Sperren für Cent-Bruchteile; deutliche Preisvorteile können den
-  # Malus weiterhin überstimmen. 0 = aus.
-  battery_hold_penalty_ct: 1.0
+  # Energiesuffizienz + Deadband (ct/kWh): Reicht der Akku bis zum nächsten
+  # PV-Überschuss, ist Netzbezug durch Halten verboten. Reicht er nicht, muss
+  # der spätere Preis mindestens so viel höher sein. Mindest-SoC bleibt erlaubt.
+  battery_hold_penalty_ct_kwh: 5.0
   # Strafe (ct/kWh) je fehlender kWh zum Auto-Ziel-SoC bei Abfahrt (weiche
   # Nebenbedingung: unerreichbares Ziel -> so viel wie möglich laden + Alarm).
   car_target_penalty_ct_kwh: 200.0
