@@ -364,6 +364,7 @@ def test_no_grid_import_wp_never_runs_on_grid():
     PV-Überschuss UND Akku dürfen die WP decken - Netzstrom nie. Mit leerem
     Akku und ohne PV bleibt die WP aus, auch wenn min_c unterschritten wird."""
     cfg = make_config()
+    cfg.optimization.solver_time_limit_s = 300   # gegen Last-Flake (s.o.)
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = True
     cfg.controllable_loads = [pool]
@@ -387,6 +388,11 @@ def test_no_grid_import_allows_battery_heating():
     """Akku-Deckung ist erlaubt: nachts (keine PV), Akku voll, billige WP-Slots
     -> die WP darf aus dem Akku laufen, solange kein Netzbezug entsteht."""
     cfg = make_config()
+    # Großzügiges Solver-Zeitlimit: der thermische MILP-Solve lief unter der
+    # CPU-Last der vollen Suite ins 60s-Default und lieferte einen suboptimalen
+    # Incumbent (WP aus) -> lastabhängiger Flake. Mit hohem Limit erreicht er
+    # last-unabhängig das Optimum (Ergebnis deterministisch, seed+threads=1).
+    cfg.optimization.solver_time_limit_s = 300
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = True
     cfg.controllable_loads = [pool]
@@ -409,6 +415,7 @@ def test_no_grid_import_off_allows_grid_heating():
     """Gegenprobe: ohne no_grid_import darf (bei leerem Akku) aus dem Netz
     geheizt werden, um das Band zu halten."""
     cfg = make_config()
+    cfg.optimization.solver_time_limit_s = 300   # gegen Last-Flake (s.o.)
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = False
     cfg.controllable_loads = [pool]
