@@ -502,7 +502,7 @@ def _sources_block(source_status) -> str:
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
                     load_temp_actual=None, ambient_temp_c=None,
-                    source_status=None) -> str:
+                    source_status=None, pv_compare=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -564,6 +564,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                  hoverinfo="skip"), row=1, col=1)
     line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist")
     line("pv_w", "PV (Prognose)", "#ff7f0e", 1, "prog", dash="dash")
+    # Vergleichs-Overlay: pvlib-Modell (shadow) neben der aktiven Prognose,
+    # zum Bewerten Solcast vs. pv_model. Nur wenn Vergleichsdaten vorliegen.
+    if pv_compare is not None and len(pv_compare) > 0:
+        pvc = pv_compare.reindex(x)
+        if pvc.notna().any():
+            fig.add_trace(go.Scatter(
+                x=x, y=pvc, name="PV (pv_model)", mode="lines",
+                line=dict(color="#8c564b", width=2, dash="dot"),
+                hovertemplate=HOVER_W, legendgroup="prog",
+                legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
     line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist")
     line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.

@@ -566,13 +566,25 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             ambient_temp_display = (
                 temp[(temp.index >= display.index[0]) & (temp.index <= display.index[-1])]
                 if temp is not None else None)
+            # Vergleichs-Overlay Solcast vs. pvlib-Modell (nur bei shadow/enabled
+            # konfiguriertem pv_model; beeinflusst den Optimierer nicht).
+            pv_compare = None
+            try:
+                from . import pvforecast
+                if config.pv_model.arrays:
+                    pvc = pvforecast.read_compare(config, display.index[0],
+                                                  display.index[-1])
+                    pv_compare = pvc if not pvc.empty else None
+            except Exception as exc:  # pragma: no cover
+                log.debug("PV-Vergleichsreihe nicht verfügbar: %s", exc)
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
                             violations=violations,
                             load_temp_actual=load_temp_actual,
                             ambient_temp_c=ambient_temp_display,
-                            source_status=_source_status(config, now))
+                            source_status=_source_status(config, now),
+                            pv_compare=pv_compare)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:

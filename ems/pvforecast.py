@@ -34,7 +34,15 @@ _SIGNAL_WHICH = {"pv_forecast": "pv", "pv_forecast_p10": "p10",
 
 
 def enabled(config) -> bool:
+    """Aktive PV-Quelle (füttert Optimierer/Kalibrierung). Shadow zählt NICHT."""
     return bool(config.pv_model.enabled and config.pv_model.arrays)
+
+
+def active(config) -> bool:
+    """Soll pvlib gerechnet/geschrieben werden? Auch im reinen Vergleichs-
+    (shadow-)Modus - dann aber ohne Einfluss auf den Optimierer (enabled=False)."""
+    pm = config.pv_model
+    return bool((pm.enabled or pm.shadow) and pm.arrays)
 
 
 def source_ids(config) -> list:
@@ -106,6 +114,16 @@ def compute(config, maps: dict) -> dict:
     return out
 
 
+def read_compare(config, start, end):
+    """Kombinierte pvlib-PV-Prognose [start, end) für den Dashboard-Vergleich
+    (Summe der Arrays). Leer, wenn kein pv_model konfiguriert/gerechnet."""
+    if not (config.pv_model.arrays):
+        return pd.Series(dtype="float64")
+    return local_history.read_pv_forecast(
+        config.e3dc_rscp.history_db_path, start, end, config.general.timezone,
+        config.general.slot_minutes, "sum", "pv", source_ids(config))
+
+
 _last_refresh = 0.0
 
 
@@ -114,7 +132,7 @@ def refresh(config, force: bool = False) -> int:
     höchstens ~einmal je 5 min). Deckt past_days (Historie für die Kalibrierung)
     + forecast_days ab. Rückgabe: Anzahl geschriebener (source,ts)-Werte."""
     global _last_refresh
-    if not enabled(config):
+    if not active(config):
         return 0
     import time as _t
     if not force and _t.time() - _last_refresh <= 300:

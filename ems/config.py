@@ -533,6 +533,10 @@ class PvModelConfig:
     (Ausrichtungen) werden je Slot summiert - dieselbe pv_forecast-Tabelle und
     derselbe Kalibrierpfad (kalibrierung.py) wie bei Solcast."""
     enabled: bool = False
+    # shadow: pvlib-Prognose NUR zum Vergleich mitrechnen (Dashboard-Overlay
+    # Solcast vs. pv_model), OHNE den Optimierer zu beeinflussen. So lässt sich
+    # das Modell im Live-Betrieb neben Solcast bewerten, bevor man umschaltet.
+    shadow: bool = False
     arrays: list = field(default_factory=list)     # [PvArray]
     # PVWatts: Temperaturkoeffizient der Leistung (1/°C, negativ) und pauschale
     # Systemverluste (Verkabelung, Wechselrichter, Verschmutzung; 0..1 = Anteil,
@@ -1095,6 +1099,7 @@ def load_config(path: str) -> Config:
     pm = raw.get("pv_model", {})
     pv_model = PvModelConfig(
         enabled=bool(pm.get("enabled", False)),
+        shadow=bool(pm.get("shadow", False)),
         arrays=[PvArray(name=str(a.get("name", f"array{i}")),
                         kwp=float(a["kwp"]), tilt=float(a["tilt"]),
                         azimuth=float(a["azimuth"]))
@@ -1107,8 +1112,9 @@ def load_config(path: str) -> Config:
     if pv_model.enabled and solcast.enabled:
         raise ValueError("solcast und pv_model nicht gleichzeitig aktivieren "
                          "(beide schreiben die PV-Prognose).")
-    if pv_model.enabled and not pv_model.arrays:
-        raise ValueError("pv_model.enabled ohne arrays - mind. ein Panel-Feld nötig.")
+    if (pv_model.enabled or pv_model.shadow) and not pv_model.arrays:
+        raise ValueError("pv_model (enabled/shadow) ohne arrays - mind. ein "
+                         "Panel-Feld nötig.")
 
     controllable_loads = parse_controllable_loads(
         raw.get("controllable_loads"), raw.get("controllable_loads_overrides"))
