@@ -10,6 +10,7 @@ Schlüssel = UTC-ISO-Zeitstempel (monoton, DST-sicher). Werte = W (Mittel des
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 from typing import Dict, Optional
@@ -83,8 +84,45 @@ def _con(path: str) -> sqlite3.Connection:
     # Freigabe "an" entscheidet das WP-Thermostat selbst, ob geheizt wird.
     con.execute("CREATE TABLE IF NOT EXISTS load_cmd ("
                 " name TEXT, ts TEXT, permit INTEGER, PRIMARY KEY(name, ts))")
+    # Zuletzt an den E3DC gesendeter Steuerbefehl (aktueller Slot), als JSON.
+    # Beim Dienststart sofort wieder anwendbar, um die Peak-/Steuer-Lücke
+    # zwischen sauberem Herunterfahren (Limits freigegeben) und dem ersten
+    # Solve zu schließen. Immer nur EINE Zeile (id=1).
+    con.execute("CREATE TABLE IF NOT EXISTS last_control ("
+                " id INTEGER PRIMARY KEY CHECK(id=1), ts TEXT, cmd_json TEXT)")
     con.commit()
     return con
+
+
+def write_last_control(path: str, ts, mapping: Dict[str, float]) -> None:
+    """Aktuellen Steuerbefehl (Slot-Zeitstempel + Feld->Wert) sichern."""
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT INTO last_control(id, ts, cmd_json) VALUES(1, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET ts=excluded.ts, cmd_json=excluded.cmd_json",
+        (key, json.dumps({k: (None if v is None else float(v))
+                          for k, v in mapping.items()})))
+    con.commit()
+    con.close()
+
+
+def read_last_control(path: str, tz: str):
+    """Zuletzt gesicherten Steuerbefehl lesen. Rückgabe (ts_lokal, mapping) oder
+    (None, None)."""
+    try:
+        con = _con(path)
+        row = con.execute("SELECT ts, cmd_json FROM last_control WHERE id=1").fetchone()
+        con.close()
+    except Exception:
+        return None, None
+    if not row or not row[0]:
+        return None, None
+    try:
+        ts = pd.Timestamp(row[0]).tz_convert(tz)
+        return ts, json.loads(row[1])
+    except Exception:
+        return None, None
 
 
 # Signalname (InfluxDB-Konvention) -> Spalte in der actuals-Tabelle

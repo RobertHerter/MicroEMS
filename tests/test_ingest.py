@@ -83,3 +83,29 @@ def test_noop_repository_when_influx_disabled():
     repo.write_frame("control_table", None)          # no-op, kein Fehler
     assert repo.read_slots_output("predicted_state", "x", None, None) is None
     repo.close()
+
+
+def test_last_control_roundtrip_and_types(tmp_path):
+    """Sofort-Reapply: aktueller Steuerbefehl wird gesichert und beim Start
+    wieder gelesen (numerische + bool-Felder; genau EINE Zeile)."""
+    import pandas as pd
+    from ems.local_history import write_last_control, read_last_control
+    db = str(tmp_path / "h.sqlite")
+    ts = pd.Timestamp("2026-07-20 11:30", tz="Europe/Berlin")
+    cmd = {"batt_charge_limit_w": 5000.0, "batt_discharge_limit_w": 12000.0,
+           "batt_grid_charge_w": 0.0, "charge_limited": True,
+           "discharge_limited": False}
+    write_last_control(db, ts, cmd)
+    # zweiter Schreibvorgang überschreibt (nur eine Zeile)
+    write_last_control(db, ts + pd.Timedelta(minutes=15),
+                       {**cmd, "batt_charge_limit_w": 3000.0})
+    r_ts, r_cmd = read_last_control(db, "Europe/Berlin")
+    assert r_ts == ts + pd.Timedelta(minutes=15)
+    assert r_cmd["batt_charge_limit_w"] == 3000.0
+    assert r_cmd["charge_limited"] == 1.0 and r_cmd["discharge_limited"] == 0.0
+
+
+def test_read_last_control_empty(tmp_path):
+    from ems.local_history import read_last_control
+    ts, cmd = read_last_control(str(tmp_path / "empty.sqlite"), "Europe/Berlin")
+    assert ts is None and cmd is None

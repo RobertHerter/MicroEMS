@@ -519,7 +519,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if e3dc and config.e3dc_rscp.control_enabled and not result.infeasible:
             try:
                 pos = result.table.index.get_indexer([now], method="ffill")[0]
-                e3dc.apply_control(result.table.iloc[max(pos, 0)])
+                row = result.table.iloc[max(pos, 0)]
+                e3dc.apply_control(row)
+                # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
+                # sofort re-applybar (schließt die Steuer-Lücke bis zum 1. Solve).
+                try:
+                    from .local_history import write_last_control
+                    write_last_control(
+                        config.e3dc_rscp.history_db_path, now,
+                        {c: row.get(c) for c in CONTROL_COLS if c in row.index})
+                except Exception as exc:   # pragma: no cover
+                    log.debug("last_control-Sicherung fehlgeschlagen (%s).", exc)
             except Exception as exc:
                 log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
 
@@ -545,7 +555,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if config.dashboard.enabled:
             display = _build_display_frame(repo, config, now, history, result,
                                            intraday=(load_ratio, pv_ratio),
-                                           hist_pv=hist_pv, fut_pv=fut_pv)
+                                           hist_pv=hist_pv, fut_pv=fut_pv,
+                                           e3dc=e3dc)
             # Ist-Temperatur-Verlauf thermischer Lasten für das Temperatur-Panel.
             load_temp_actual = {}
             try:
@@ -934,7 +945,8 @@ def _price_series(repo, config, index, now, return_estimated=False):
 
 
 def _build_display_frame(repo, config, now, history, result,
-                         intraday=(None, None), hist_pv=None, fut_pv=None) -> pd.DataFrame:
+                         intraday=(None, None), hist_pv=None, fut_pv=None,
+                         e3dc=None) -> pd.DataFrame:
     """Anzeigetabelle heute 00:00 -> Horizontende.
 
     Enthält Prognosewerte über den gesamten Bereich (pv_w, house_load_w,
@@ -1074,11 +1086,31 @@ def _build_display_frame(repo, config, now, history, result,
             hl = read_house_load(config.e3dc_rscp.history_db_path,
                                  day_start, now + slot, config.general.timezone)
             hl = hl.where(hl > 0.0)                 # 0/negativ = unreife Bilanz
-            if not hl.empty:
-                mean = hl.reindex(full).where(past_mask)
-                snap = df["actual_load_w"]           # Momentan-Fallback (Tail)
-                df["actual_load_w"] = (mean.combine_first(snap)
-                                       .where(past_mask).ffill().where(past_mask))
+            mean = hl.reindex(full) if not hl.empty else pd.Series(index=full, dtype=float)
+            mean = mean.where(past_mask)
+            # Jüngste, noch nicht in house_load gereifte Slots direkt aus der
+            # E3DC-15-min-Historie (Energiebilanz-MITTEL) nachholen - so ist die
+            # Ist-Kurve bis JETZT glatt statt momentanwert-verzackt. Read-only,
+            # gedeckelt auf die letzten ~2 h; schlägt er fehl, bleibt der
+            # Momentan-Snapshot als Fallback.
+            if e3dc is not None:
+                covered = mean.dropna()
+                gap_from = (covered.index.max() + slot if not covered.empty
+                            else now - pd.Timedelta(hours=2))
+                gap_from = max(gap_from, now - pd.Timedelta(hours=2))
+                if gap_from <= now:
+                    try:
+                        recent = e3dc.read_house_load_15min(gap_from, now + slot)
+                        if recent:
+                            rs = pd.Series({pd.Timestamp(k): v for k, v in recent.items()},
+                                           dtype=float).tz_convert(config.general.timezone)
+                            rs = rs.where(rs > 0.0).reindex(full).where(past_mask)
+                            mean = mean.combine_first(rs)
+                    except Exception:  # pragma: no cover
+                        pass
+            snap = df["actual_load_w"]               # Momentan-Fallback (Tail)
+            df["actual_load_w"] = (mean.combine_first(snap)
+                                   .where(past_mask).ffill().where(past_mask))
         except Exception:  # pragma: no cover
             pass
     return df
@@ -1523,6 +1555,33 @@ def main() -> None:
                                 "(%s) – nutze Config-Werte.", exc)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
+
+    # Sofort-Reapply: den zuletzt gesicherten Steuerbefehl direkt beim Start
+    # anwenden, BEVOR der erste (10-20s) Solve läuft. Schließt die Steuer-Lücke
+    # nach einem Neustart (sauberes Herunterfahren gibt die Limits frei ->
+    # Peak-Shaping würde sonst bis zum ersten Zyklus aussetzen). Nur wenn der
+    # Befehl frisch ist (<= 2 Slots alt), sonst ist er überholt und der erste
+    # Solve regelt ohnehin gleich.
+    if e3dc is not None and config.e3dc_rscp.control_enabled:
+        try:
+            from .local_history import read_last_control
+            ts, cmd = read_last_control(config.e3dc_rscp.history_db_path,
+                                        config.general.timezone)
+            if ts is not None and cmd:
+                age = pd.Timestamp.now(tz=config.general.timezone) - ts
+                if age <= pd.Timedelta(minutes=2 * config.general.run_interval_minutes):
+                    e3dc.apply_control(cmd)
+                    log.info("Sofort-Reapply: letzter Steuerbefehl (%s, Laden<=%.0f "
+                             "Entladen<=%.0f W, Netzladen %.0f W) beim Start "
+                             "angewandt.", ts.strftime("%H:%M"),
+                             cmd.get("batt_charge_limit_w") or 0.0,
+                             cmd.get("batt_discharge_limit_w") or 0.0,
+                             cmd.get("batt_grid_charge_w") or 0.0)
+                else:
+                    log.info("Sofort-Reapply übersprungen: letzter Befehl zu alt "
+                             "(%s).", ts.strftime("%d.%m %H:%M"))
+        except Exception as exc:  # pragma: no cover
+            log.warning("Sofort-Reapply fehlgeschlagen (%s).", exc)
 
     # Persistente manuelle Lade-/Entladepläne laufen unabhängig von Browser
     # und 15-min-Optimierungszyklus. Nur bei explizit aktivierter Dashboard-
