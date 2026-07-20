@@ -364,11 +364,16 @@ def test_no_grid_import_wp_never_runs_on_grid():
     PV-Überschuss UND Akku dürfen die WP decken - Netzstrom nie. Mit leerem
     Akku und ohne PV bleibt die WP aus, auch wenn min_c unterschritten wird."""
     cfg = make_config()
-    cfg.optimization.solver_time_limit_s = 300   # gegen Last-Flake (s.o.)
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = True
     cfg.controllable_loads = [pool]
-    idx = _day_index("2026-06-10")
+    # Kurzer Tagfenster-Horizont (10 h inkl. Mittag) statt voller 24 h: kleiner
+    # thermischer MILP -> löst auch unter CPU-Konkurrenz mit dem laufenden
+    # ems.service (15-min-Zyklus) schnell zum Optimum. Der frühere volle Tag
+    # lief unter Last ins Zeitlimit -> nicht-optimal -> flaky (mehr Zeit half
+    # NICHT, da der Optimalitäts-Beweis wall-clock-abhängig ist).
+    idx = pd.date_range("2026-06-10 08:00", "2026-06-10 18:00", freq="15min",
+                        tz="Europe/Berlin", inclusive="left")
     n = len(idx)
     res = Optimizer(cfg).solve(_inputs(
         idx, pv=_pv_gauss(idx, 6000), load=800.0, price=30.0,
@@ -388,15 +393,14 @@ def test_no_grid_import_allows_battery_heating():
     """Akku-Deckung ist erlaubt: nachts (keine PV), Akku voll, billige WP-Slots
     -> die WP darf aus dem Akku laufen, solange kein Netzbezug entsteht."""
     cfg = make_config()
-    # Großzügiges Solver-Zeitlimit: der thermische MILP-Solve lief unter der
-    # CPU-Last der vollen Suite ins 60s-Default und lieferte einen suboptimalen
-    # Incumbent (WP aus) -> lastabhängiger Flake. Mit hohem Limit erreicht er
-    # last-unabhängig das Optimum (Ergebnis deterministisch, seed+threads=1).
-    cfg.optimization.solver_time_limit_s = 300
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = True
     cfg.controllable_loads = [pool]
-    idx = _day_index("2026-06-10")
+    # Kurzer Nachtfenster-Horizont (10 h, pv=0): kleiner thermischer MILP, löst
+    # auch unter CPU-Konkurrenz mit dem laufenden ems.service schnell zum
+    # Optimum (voller Tag lief unter Last ins Zeitlimit -> flaky).
+    idx = pd.date_range("2026-06-10 00:00", "2026-06-10 10:00", freq="15min",
+                        tz="Europe/Berlin", inclusive="left")
     n = len(idx)
     res = Optimizer(cfg).solve(_inputs(
         idx, pv=0.0, load=300.0, price=40.0,
@@ -415,11 +419,12 @@ def test_no_grid_import_off_allows_grid_heating():
     """Gegenprobe: ohne no_grid_import darf (bei leerem Akku) aus dem Netz
     geheizt werden, um das Band zu halten."""
     cfg = make_config()
-    cfg.optimization.solver_time_limit_s = 300   # gegen Last-Flake (s.o.)
     pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
     pool.no_grid_import = False
     cfg.controllable_loads = [pool]
-    idx = _day_index("2026-06-10")
+    # Kurzer Nachtfenster-Horizont (10 h, pv=0): s. o. gegen Last-Flake.
+    idx = pd.date_range("2026-06-10 00:00", "2026-06-10 10:00", freq="15min",
+                        tz="Europe/Berlin", inclusive="left")
     n = len(idx)
     res = Optimizer(cfg).solve(_inputs(
         idx, pv=0.0, load=800.0, price=30.0,
