@@ -165,11 +165,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # --- 0b) Day-Ahead-Spotpreis (Energy-Charts) nachführen ---------- #
         _refresh_spot(config)
 
-        # --- 0c) PV-Vorhersage (Solcast) nachführen (Budget/Verteilung) -- #
+        # --- 0c) PV-Vorhersage nachführen: Solcast ODER freies pvlib-Modell -- #
         try:
             solcast.refresh(config)
         except Exception as exc:  # pragma: no cover
             log.warning("Solcast-Nachführung fehlgeschlagen (%s).", exc)
+        try:
+            from . import pvforecast
+            pvforecast.refresh(config)
+        except Exception as exc:  # pragma: no cover
+            log.warning("PV-Modell-Nachführung fehlgeschlagen (%s).", exc)
 
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")

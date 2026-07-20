@@ -45,7 +45,8 @@ Steuerbefehle per MQTT.
 | `ems/local_history.py` | Lokaler SQLite-Speicher (Hauslast, Ist-Werte, Temperatur, Spotpreis, PV-Prognose) + Quellen-Weichen |
 | `ems/weather.py` | Temperatur direkt von Open-Meteo (kein Key) |
 | `ems/energycharts.py` + `ems/tariff.py` | Spotpreis von Energy-Charts + Tarifmodell → Endkunden-Bezugspreis (§14a EnWG) |
-| `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) |
+| `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) + Dispatcher fürs freie PV-Modell |
+| `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + Open-Meteo (kein Key): Paneldaten (kWp/Neigung/Azimut) je Ausrichtung, gegen reale Ertragsdaten kalibrierbar |
 | `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher, z.B. Pool) |
 | `ems/ingest.py` | Externe Einspeisung (REST-Ingest) von Live-/Historienwerten -> Betrieb ohne RSCP/InfluxDB |
 | `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |

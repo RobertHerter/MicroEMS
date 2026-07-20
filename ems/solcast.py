@@ -141,24 +141,39 @@ def refresh(config) -> None:
         log.info("Solcast: %d Quelle(n) aktualisiert (combine=%s).", fetched, sc.combine)
 
 
+def _local_pv(config):
+    """Ist eine lokale PV-Prognose aktiv? Rückgabe (combine, source_ids) oder
+    None. Solcast und pvlib-Modell schreiben beide in die pv_forecast-Tabelle;
+    hier wird die aktive Quelle gewählt (nie beide, s. config-Validierung)."""
+    if config.solcast.enabled:
+        return config.solcast.combine, [s.resource_id for s in config.solcast.sources]
+    from . import pvforecast
+    if pvforecast.enabled(config):
+        return "sum", pvforecast.source_ids(config)
+    return None
+
+
 def available(config, repo, signal: str) -> bool:
-    """Ist das PV-Signal verfügbar? Bei solcast.enabled lokal (p10/p90 inklusive)."""
-    if config.solcast.enabled and signal in _SIGNAL_WHICH:
+    """Ist das PV-Signal verfügbar? Bei aktiver lokaler Quelle (Solcast oder
+    pvlib-Modell) lokal (p10/p90 inklusive)."""
+    if signal in _SIGNAL_WHICH and _local_pv(config) is not None:
         return True
     return repo.signal_available(signal)
 
 
 def read_pv_signal(config, repo, signal: str, start, end,
                    require_complete: bool = False) -> pd.Series:
-    """PV-Signal [start, end): kombinierte Solcast-Quellen (lokal) oder InfluxDB."""
-    if config.solcast.enabled and signal in _SIGNAL_WHICH:
+    """PV-Signal [start, end): kombinierte lokale Quellen (Solcast ODER
+    pvlib-Modell) oder InfluxDB."""
+    local = _local_pv(config)
+    if signal in _SIGNAL_WHICH and local is not None:
+        combine, ids = local
         s = local_history.read_pv_forecast(
             config.e3dc_rscp.history_db_path, start, end, config.general.timezone,
-            config.general.slot_minutes, config.solcast.combine, _SIGNAL_WHICH[signal],
-            ([src.resource_id for src in config.solcast.sources]
-             if require_complete else None))
+            config.general.slot_minutes, combine, _SIGNAL_WHICH[signal],
+            ids if require_complete else None)
         # Übergangslücke (noch kein Abruf im Cache): auf InfluxDB zurückfallen,
-        # solange dort vorhanden – verhindert NaN-PV vor dem ersten Solcast-Abruf.
+        # solange dort vorhanden – verhindert NaN-PV vor dem ersten Abruf.
         if s.empty and repo is not None and repo.signal_available(signal):
             return repo.read_slots(signal, start, end, fill=False)
         return s

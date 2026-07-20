@@ -142,6 +142,28 @@ solcast:
     # - {api_key: "DEIN_KEY_2", resource_id: "..."}
 
 # -----------------------------------------------------------------------------
+# Freie PV-Ertragsprognose mit pvlib + Open-Meteo (Alternative zu Solcast)
+# -----------------------------------------------------------------------------
+# enabled: true = die PV-Prognose wird aus den eigenen Paneldaten (kWp, Neigung,
+# Ausrichtung) und den Open-Meteo-Einstrahlungskomponenten (GHI/DNI/DHI) mit
+# pvlib berechnet - kein API-Key, kein Kontingent. Nutzt weather.latitude/
+# longitude (weather-Block muss lat/lon haben; enabled dort optional). NICHT
+# gleichzeitig mit solcast.enabled. Mehrere Ausrichtungen werden je Slot
+# summiert. Gegen reale Ertragsdaten (actuals.pv_w) kalibrierbar wie Solcast
+# (python -m kalibrierung ...). Braucht `pip install pvlib`.
+pv_model:
+  enabled: false
+  # azimuth in pvlib-Konvention: 0=Nord, 90=Ost, 180=Süd, 270=West.
+  # tilt = Neigung gegen die Horizontale (0=flach, 90=senkrecht).
+  arrays:
+    - {name: "Ost",  kwp: 5.0, tilt: 30, azimuth: 90}
+    - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270}
+  temp_coeff_per_c: -0.0035   # PVWatts-Temperaturkoeffizient der Leistung (1/°C)
+  system_loss: 0.14           # pauschale Systemverluste (Verkabelung/WR/Schmutz)
+  p10_uncertainty: 0.35       # heuristisches p10-Band = pv*(1-0.35); dimensioniert
+  p90_uncertainty: 0.15       # die Peak-Einspeise-Linie konservativ (kein echtes Quantil)
+
+# -----------------------------------------------------------------------------
 # Steuerbare / verschiebbare Lasten (optional)
 # -----------------------------------------------------------------------------
 # Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die

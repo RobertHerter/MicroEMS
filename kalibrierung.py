@@ -86,12 +86,17 @@ def _month_hour_table(actual: pd.Series, pred: pd.Series, tz: str) -> dict:
 
 
 def _pv_forecast_hist(cfg, repo, start, now):
-    """PV-Prognose wie im Live-Betrieb: kombinierte Solcast-Quellen (lokal) bei
-    solcast.enabled, sonst InfluxDB. (str-Quelle mit zurückgeben.)"""
+    """PV-Prognose wie im Live-Betrieb: kombinierte lokale Quellen (Solcast ODER
+    freies pvlib-Modell) bei aktiver Quelle, sonst InfluxDB. (str-Quelle mit
+    zurückgeben.) So wird die aktive Prognose gegen die realen Ertragsdaten
+    (actuals.pv_w) kalibriert - egal ob Solcast oder pvlib."""
+    from ems import solcast, pvforecast
     if cfg.solcast.enabled:
-        from ems import solcast
         return (solcast.read_pv_signal(cfg, repo, "pv_forecast", start, now),
-                "lokal (Solcast Ost+West / influx_hist)")
+                "lokal (Solcast-Quellen / influx_hist)")
+    if pvforecast.enabled(cfg):
+        return (solcast.read_pv_signal(cfg, repo, "pv_forecast", start, now),
+                "lokal (pvlib-Modell / Open-Meteo)")
     return repo.read_slots("pv_forecast", start, now), "InfluxDB (pv_forecast)"
 
 
@@ -219,8 +224,9 @@ def _issue_time_archive_reader(cfg):
     tz = cfg.general.timezone
     slot_minutes = cfg.general.slot_minutes
     freq = f"{slot_minutes}min"
+    from ems import pvforecast
     use_weather = bool(cfg.weather.enabled)
-    use_pv = bool(cfg.solcast.enabled)
+    use_pv = bool(cfg.solcast.enabled) or pvforecast.enabled(cfg)
 
     def read(origin, end):
         expected = max(1, int(round(

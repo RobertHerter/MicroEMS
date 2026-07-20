@@ -516,6 +516,37 @@ class SolcastConfig:
 
 
 @dataclass
+class PvArray:
+    """Ein Panel-Feld mit eigener Ausrichtung. azimuth in pvlib-Konvention:
+    0=Nord, 90=Ost, 180=Süd, 270=West. tilt = Neigung gegen die Horizontale
+    (0=flach, 90=senkrecht). kwp = installierte DC-Nennleistung (kWp)."""
+    name: str
+    kwp: float
+    tilt: float
+    azimuth: float
+
+
+@dataclass
+class PvModelConfig:
+    """Freie PV-Ertragsprognose mit pvlib + Open-Meteo (Alternative zu Solcast,
+    kein API-Key/Kontingent). Nutzt weather.latitude/longitude. Mehrere Arrays
+    (Ausrichtungen) werden je Slot summiert - dieselbe pv_forecast-Tabelle und
+    derselbe Kalibrierpfad (kalibrierung.py) wie bei Solcast."""
+    enabled: bool = False
+    arrays: list = field(default_factory=list)     # [PvArray]
+    # PVWatts: Temperaturkoeffizient der Leistung (1/°C, negativ) und pauschale
+    # Systemverluste (Verkabelung, Wechselrichter, Verschmutzung; 0..1 = Anteil,
+    # der VERLOREN geht). Ab Werk konservative Standardwerte.
+    temp_coeff_per_c: float = -0.0035
+    system_loss: float = 0.14
+    # Heuristische Unsicherheitsbänder um den Punktwert (pvlib liefert - anders
+    # als Solcast - keine echten Quantile). p10 = pv*(1-low), p90 = pv*(1+high).
+    # p10 dimensioniert die Einspeise-Linie an Peak-Tagen -> konservativ tief.
+    p10_uncertainty: float = 0.35
+    p90_uncertainty: float = 0.15
+
+
+@dataclass
 class GridFeeWindow:
     """Ein §14a-EnWG-Zeitfenster: Netzentgelt (ct/kWh netto) für die Slots, die
     ALLE gesetzten Filter erfüllen. Nicht gesetzte Filter (None) = egal.
@@ -601,6 +632,7 @@ class Config:
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     tariff: TariffConfig = field(default_factory=TariffConfig)
     solcast: SolcastConfig = field(default_factory=SolcastConfig)
+    pv_model: PvModelConfig = field(default_factory=PvModelConfig)
     controllable_loads: list = field(default_factory=list)   # [ControllableLoad]
 
 
@@ -1060,6 +1092,24 @@ def load_config(path: str) -> Config:
     if solcast.combine not in ("sum", "mean"):
         raise ValueError("solcast.combine muss 'sum' oder 'mean' sein.")
 
+    pm = raw.get("pv_model", {})
+    pv_model = PvModelConfig(
+        enabled=bool(pm.get("enabled", False)),
+        arrays=[PvArray(name=str(a.get("name", f"array{i}")),
+                        kwp=float(a["kwp"]), tilt=float(a["tilt"]),
+                        azimuth=float(a["azimuth"]))
+                for i, a in enumerate(pm.get("arrays") or [])],
+        temp_coeff_per_c=float(pm.get("temp_coeff_per_c", -0.0035)),
+        system_loss=float(pm.get("system_loss", 0.14)),
+        p10_uncertainty=float(pm.get("p10_uncertainty", 0.35)),
+        p90_uncertainty=float(pm.get("p90_uncertainty", 0.15)),
+    )
+    if pv_model.enabled and solcast.enabled:
+        raise ValueError("solcast und pv_model nicht gleichzeitig aktivieren "
+                         "(beide schreiben die PV-Prognose).")
+    if pv_model.enabled and not pv_model.arrays:
+        raise ValueError("pv_model.enabled ohne arrays - mind. ein Panel-Feld nötig.")
+
     controllable_loads = parse_controllable_loads(
         raw.get("controllable_loads"), raw.get("controllable_loads_overrides"))
     if solcast.distribution not in ("daytime", "24h"):
@@ -1103,5 +1153,6 @@ def load_config(path: str) -> Config:
         weather=weather,
         tariff=tariff,
         solcast=solcast,
+        pv_model=pv_model,
         controllable_loads=controllable_loads,
     )

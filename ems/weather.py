@@ -70,3 +70,41 @@ def fetch_archive(lat: float, lon: float, start_date: str, end_date: str):
         "start_date": start_date, "end_date": end_date, "timezone": "UTC"},
         timeout=60.0)
     return _to_map(d, "temperature_2m"), _to_map(d, "shortwave_radiation")
+
+
+# Einstrahlungs-KOMPONENTEN für die pvlib-Ertragsprognose (ems/pvforecast.py):
+# GHI (shortwave_radiation), DNI (direct_normal_irradiance) und DHI
+# (diffuse_radiation) - alle drei braucht pvlib für die POA-Transposition auf
+# geneigte Module. Plus Lufttemperatur (Zelltemperatur) und Windgeschwindigkeit
+# (Faiman-Zelltemperaturmodell). Eigener Call, nur wenn das PV-Modell aktiv ist.
+_PV_FIELDS = ("shortwave_radiation", "direct_normal_irradiance",
+              "diffuse_radiation", "temperature_2m", "wind_speed_10m")
+
+
+def _pv_maps(payload):
+    return {f: _to_map(payload, f) for f in _PV_FIELDS}
+
+
+def fetch_pv_weather(lat: float, lon: float, past_days: int = 92,
+                     forecast_days: int = 4):
+    """GHI/DNI/DHI + Temperatur + Wind (Forecast-API, EIN Call) für pvlib.
+    Rückgabe: dict {feld: {UTC-ISO-Stunde: Wert}}."""
+    d = _get(_FORECAST, {
+        "latitude": lat, "longitude": lon,
+        "hourly": ",".join(_PV_FIELDS),
+        "past_days": max(0, min(92, int(past_days))),
+        "forecast_days": max(1, min(16, int(forecast_days))),
+        "timezone": "UTC"})
+    return _pv_maps(d)
+
+
+def fetch_pv_weather_archive(lat: float, lon: float, start_date: str,
+                             end_date: str):
+    """GHI/DNI/DHI + Temperatur + Wind aus dem ERA5-Archiv (tiefe Historie,
+    EIN Call) - für den einmaligen pvlib-Kalibrier-Backfill."""
+    d = _get(_ARCHIVE, {
+        "latitude": lat, "longitude": lon,
+        "hourly": ",".join(_PV_FIELDS),
+        "start_date": start_date, "end_date": end_date, "timezone": "UTC"},
+        timeout=60.0)
+    return _pv_maps(d)
