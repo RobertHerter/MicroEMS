@@ -73,6 +73,7 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "schedule-chart" in html
     assert "api/battery-schedule.json" in html
     assert "emsScheduleAdd" in html and "emsScheduleCancel" in html
+    assert "emsScheduleDelete" in html and ">Löschen</button>" in html
     assert "Jetzt starten" in html and "Auto / Stop" in html
     assert "id='bat_w'" not in html and "id='bat_min'" not in html
     assert "value='grid_charge'>Netzladen" in html

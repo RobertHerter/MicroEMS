@@ -58,6 +58,22 @@ def test_runner_starts_due_plan_and_cancel_returns_to_auto(tmp_path):
     assert runner.store.get(row["id"])["status"] == "cancelled"
 
 
+def test_runner_deletes_finished_schedule_but_not_active_one(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    runner = ManualScheduleRunner(cfg, FakeLink(soc=50.0))
+    row = runner.add({"action": "charge",
+                      "start": pd.Timestamp.now(tz=cfg.general.timezone).isoformat(),
+                      "watts": 2500, "duration_minutes": 30})
+
+    with pytest.raises(ValueError, match="zuerst abbrechen"):
+        runner.delete(row["id"])
+
+    runner.cancel(row["id"])
+    assert runner.delete(row["id"]) == {"id": row["id"], "deleted": True}
+    assert runner.store.get(row["id"]) is None
+
+
 def test_runner_skips_discharge_at_minimum_soc(tmp_path):
     cfg = make_config()
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")

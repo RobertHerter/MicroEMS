@@ -158,6 +158,23 @@ class ManualScheduleStore:
             con.commit()
             con.close()
 
+    def delete(self, entry_id: int) -> bool:
+        """Entfernt ausschließlich einen bereits beendeten Planeintrag.
+
+        Die Statusbedingung liegt absichtlich im DELETE selbst, damit ein
+        parallel anlaufender Scheduler-Tick nicht zwischen Prüfung und
+        Löschen einen aktiven realen E3/DC-Eingriff hinterlassen kann.
+        """
+        with self._lock:
+            con = self._con()
+            cur = con.execute(
+                "DELETE FROM manual_battery_schedule "
+                "WHERE id=? AND status NOT IN (?,?)",
+                (int(entry_id), *_ACTIVE))
+            con.commit()
+            deleted = cur.rowcount > 0
+            con.close()
+        return deleted
 
 class ManualScheduleRunner:
     """Führt gespeicherte Aktionen aus und hält SoC-Sicherheitsgrenzen ein."""
@@ -214,6 +231,16 @@ class ManualScheduleRunner:
                 self._active_id = None
             self.store.set_status(entry_id, "cancelled", "Vom Benutzer abgebrochen")
             return self.store.get(entry_id)
+
+    def delete(self, entry_id: int) -> dict:
+        row = self.store.get(entry_id)
+        if row is None:
+            raise ValueError("Planeintrag nicht gefunden")
+        if row["status"] in _ACTIVE:
+            raise ValueError("Aktiven Vorgang zuerst abbrechen")
+        if not self.store.delete(entry_id):
+            raise ValueError("Planeintrag konnte nicht gelöscht werden")
+        return {"id": int(entry_id), "deleted": True}
 
     def _soc_allows(self, action: str) -> tuple[bool, str]:
         live = self.e3dc.read_live(force=True)

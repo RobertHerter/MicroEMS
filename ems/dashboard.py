@@ -427,6 +427,9 @@ function emsScheduleAdd(){
 function emsScheduleCancel(id){
   if(confirm('Geplanten Vorgang #'+id+' wirklich abbrechen?'))emsSchedulePost({op:'cancel',id});
 }
+function emsScheduleDelete(id){
+  if(confirm('Abgelaufenen Planeintrag #'+id+' endgültig löschen?'))emsSchedulePost({op:'delete',id});
+}
 function emsEsc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function emsActionName(a){return ({charge:'Netzladen',grid_charge:'Netzladen',pv_charge:'Laden',discharge:'Entladen',idle:'Idle'})[a]||a;}
 function emsScheduleRender(data){
@@ -447,8 +450,10 @@ function emsScheduleRender(data){
   const names={planned:'geplant',running:'läuft',completed:'beendet',cancelled:'abgebrochen',failed:'Fehler',skipped:'übersprungen'};
   document.getElementById('schedule-list').innerHTML=entries.length?entries.slice().reverse().map(e=>{
     const s=new Date(e.start_ts), action=emsActionName(e.action);
-    const cancel=['planned','running'].includes(e.status)?'<button class="stop mini" onclick="emsScheduleCancel('+e.id+')">Abbrechen</button>':'';
-    return '<div class="schedule-item '+e.status+'"><span class="schedule-color '+e.action+'"></span><div><b>'+action+' · '+Math.round(e.watts).toLocaleString('de-DE')+' W</b><small>'+s.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' · '+Number(e.duration_minutes).toLocaleString('de-DE')+' min</small></div><span class="schedule-state">'+emsEsc(names[e.status]||e.status)+(e.note?' · '+emsEsc(e.note):'')+'</span>'+cancel+'</div>';
+    const active=['planned','running'].includes(e.status), actionButton=active
+      ?'<button class="stop mini" onclick="emsScheduleCancel('+e.id+')">Abbrechen</button>'
+      :'<button class="mini schedule-delete" onclick="emsScheduleDelete('+e.id+')">Löschen</button>';
+    return '<div class="schedule-item '+e.status+'"><span class="schedule-color '+e.action+'"></span><div><b>'+action+' · '+Math.round(e.watts).toLocaleString('de-DE')+' W</b><small>'+s.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' · '+Number(e.duration_minutes).toLocaleString('de-DE')+' min</small></div><span class="schedule-state">'+emsEsc(names[e.status]||e.status)+(e.note?' · '+emsEsc(e.note):'')+'</span>'+actionButton+'</div>';
   }).join(''):'<div class="schedule-empty">Noch keine manuellen Vorgänge geplant.</div>';
   const man=data.manual||{}, badge=document.getElementById('schedule-running');
   badge.textContent=man.active?(emsActionName(man.action)+(man.action==='idle'?' aktiv':' '+Math.round(man.watts).toLocaleString('de-DE')+' W aktiv')):'kein Handplan aktiv';
@@ -1040,6 +1045,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .schedule-item.running {{ border-color: #85addb; background: #f1f7ff; }}
  .schedule-item.cancelled, .schedule-item.completed, .schedule-item.skipped {{ opacity: .68; }}
  .controls button.mini {{ padding: 4px 8px; font-size: 11px; }}
+ .controls button.schedule-delete {{ color: #6b4b4b; background: #f7eeee; border-color: #e8cece; }}
  .schedule-empty {{ color: #7c858e; text-align: center; padding: 12px; font-size: 12px; }}
  .plotly-graph-div {{ border-radius: 12px; box-shadow: 0 3px 14px rgba(28,45,68,.07); }}
  html.dark {{ background: #111820; color-scheme: dark; }}
@@ -1069,6 +1075,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .schedule-grid {{ background: rgba(205,220,235,.2); }}
  html.dark .schedule-now {{ background: #f4f7fa; }}
  html.dark .schedule-legend .now {{ color: #f4f7fa; }}
+ html.dark .controls button.schedule-delete {{ color: #ffc7c7; background: #40282b; border-color: #6e4045; }}
  html.dark .live-tiles .live-solar {{ background: #3a3319; border-color: #6d5e26; }}
  html.dark .live-tiles .live-house {{ background: #292238; border-color: #50436b; }}
  html.dark .live-tiles .live-soc {{ background: #173634; border-color: #2d615d; }}

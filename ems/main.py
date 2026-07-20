@@ -1209,6 +1209,8 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 return schedule_runner.add(payload)
             if op == "cancel":
                 return schedule_runner.cancel(int(payload.get("id", 0)))
+            if op == "delete":
+                return schedule_runner.delete(int(payload.get("id", 0)))
             raise ValueError("Unbekannte Planungsaktion")
         raise KeyError(action)
 
