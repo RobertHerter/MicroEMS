@@ -1059,6 +1059,28 @@ def _build_display_frame(repo, config, now, history, result,
                 df[col] = s.where(past_mask).ffill().where(past_mask)
         except Exception:  # pragma: no cover
             pass
+
+    # Ist-Hauslast bevorzugt aus dem 15-min-MITTEL (house_load, Energiebilanz)
+    # statt aus dem MOMENTAN-Snapshot (actuals.house_w). Der Snapshot ist ein
+    # Spot-Messwert je Zyklus und schwankt stark; bei einem Neustart mitten im
+    # Slot schreibt er einen willkürlichen Intra-Slot-Moment (oft ein
+    # Momentan-Tief -> tiefer Notch, "Ist zu tief"). Das gereifte 15-min-Mittel
+    # ist die korrekte Slot-Ist-Last. Der Momentan-Snapshot füllt nur die
+    # jüngsten, noch nicht gereiften Slots (letzte ~Stunde), damit die Ist-Linie
+    # den Jetzt-Marker erreicht.
+    if config.e3dc_rscp.history_source and "actual_load_w" in df.columns:
+        try:
+            from .local_history import read_house_load
+            hl = read_house_load(config.e3dc_rscp.history_db_path,
+                                 day_start, now + slot, config.general.timezone)
+            hl = hl.where(hl > 0.0)                 # 0/negativ = unreife Bilanz
+            if not hl.empty:
+                mean = hl.reindex(full).where(past_mask)
+                snap = df["actual_load_w"]           # Momentan-Fallback (Tail)
+                df["actual_load_w"] = (mean.combine_first(snap)
+                                       .where(past_mask).ffill().where(past_mask))
+        except Exception:  # pragma: no cover
+            pass
     return df
 
 
