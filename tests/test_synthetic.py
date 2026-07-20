@@ -14,6 +14,7 @@ import sys
 from datetime import time, timedelta
 
 import numpy as np
+import pytest
 import pandas as pd
 
 from ems.config import (
@@ -43,7 +44,13 @@ def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
             charge_efficiency=0.92,
         ),
         optimization=OptimizationConfig(
-            terminal_soc_value="auto", cycle_penalty_ct_kwh=0.1, solver_time_limit_s=60
+            # 180s statt 60s: unter der PARALLELEN Testausführung (-n auto) +
+            # dem live ems.service konkurrieren mehrere MILP-Solves um die CPU;
+            # 60s wurden wall-clock-seitig überschritten -> suboptimaler
+            # Incumbent -> optimalitätsabhängige Asserts (z.B. "kein Netzbezug")
+            # schlugen fehl. Bestandene Tests stoppen bei erreichter Gap
+            # (1%/25ct), NICHT am Limit -> keine Verlangsamung, nur Reserve.
+            terminal_soc_value="auto", cycle_penalty_ct_kwh=0.1, solver_time_limit_s=180
         ),
         forecast=ForecastConfig(lookback_days=400, holiday_country="DE",
                                 holiday_subdivision="BY"),
@@ -149,6 +156,7 @@ def main() -> int:
     return 0
 
 
+@pytest.mark.slow
 def test_end_to_end():
     """pytest-Wrapper für den Synthetik-E2E-Lauf."""
     assert main() == 0

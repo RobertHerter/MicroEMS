@@ -1,0 +1,4 @@
+# Entwicklungs-/Test-Abhängigkeiten (nicht für den Laufzeitbetrieb nötig).
+#   pip install -r requirements-dev.txt
+pytest>=8.0
+pytest-xdist>=3.5      # parallele Testausführung (-n auto), s. pytest.ini

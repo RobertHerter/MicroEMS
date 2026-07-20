@@ -9,6 +9,8 @@ from ems import forecast as fc_mod
 from ems.forecast import LoadForecaster
 from tests.test_synthetic import make_config
 
+pytestmark = pytest.mark.slow
+
 TZ = "Europe/Berlin"
 FREQ = "15min"
 START = pd.Timestamp("2026-05-01 00:00", tz=TZ)

@@ -17,6 +17,8 @@ import pytest
 from kalibrierung import validate_forecast_series
 from tests.test_synthetic import make_config, synthetic_history
 
+pytestmark = pytest.mark.slow
+
 
 def _setup(days=120):
     cfg = make_config()

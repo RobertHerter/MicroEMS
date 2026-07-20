@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import pandas as pd
 
 from ems.config import ControllableLoad, LoadStage
@@ -239,6 +240,7 @@ def test_thermal_load_no_spurious_charge_block():
         "Pool-Verbrauch aus PV fälschlich als Lade-Sperre/-Drossel gemeldet"
 
 
+@pytest.mark.slow
 def test_deferrable_deadline_keeps_run_today():
     """Regression: ohne Deadline schob der Optimierer die Waschmaschine für
     Cent-Bruchteile ans Horizontende ("erst übermorgen"). Mit deadline_hours

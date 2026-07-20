@@ -236,6 +236,7 @@ def test_negative_prices_charge_from_grid():
     assert not both.any(), "Gleichzeitiger Import und Export"
 
 
+@pytest.mark.slow
 def test_grid_discharge_arbitrage():
     """Akku->Netz nur, wenn künftiger Importpreis unter der Einspeisung liegt:
     jetzt zu 8 ct einspeisen, später zu 2 ct zurückladen."""
@@ -482,6 +483,7 @@ def test_export_cap_at_grid_connection():
     assert (res.table["grid_export_w"] <= 2000.0 + TOL).all()
 
 
+@pytest.mark.slow
 def test_car_switch_penalty_limits_toggling():
     """Hoher Schalt-Malus: Auto lädt in EINEM zusammenhängenden Block, auch
     wenn die Preise zappeln."""
