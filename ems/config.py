@@ -294,9 +294,10 @@ class OptimizationConfig:
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
     car_switch_penalty_ct: float = 5.0
-    # Malus (ct) für isoliertes Halten oder materielle Teilentladung bei
-    # gleichzeitigem Netzbezug. Verhindert 15-min-Drosselungen für
-    # Cent-Bruchteile, ohne notwendige Lastdeckung generell zu verbieten.
+    # Malus (ct) je begonnenem Halteblock innerhalb einer Restlastphase sowie
+    # für materielle Teilentladung bei gleichzeitigem Netzbezug. Verhindert
+    # auch mehrslotige Drosselungen für Cent-Bruchteile, ohne notwendige
+    # Lastdeckung generell zu verbieten.
     battery_switch_penalty_ct: float = 1.0
     # Malus (ct/kWh) auf Netzbezug, obwohl nach dem Slot noch nutzbare
     # Akkuenergie vorhanden ist. Reicht der Akku bis zum nächsten erwarteten
@@ -342,7 +343,7 @@ class OptimizationConfig:
     peak_charge_weight: float = 30.0
     # Weicher Glaettungsmalus (ct je kW Leistungssprung) fuer PV-Akkuladung an
     # Peak-Tagen. Verhindert einzelne Voll-Ladeslots zwischen Linien-Slots.
-    peak_charge_ramp_penalty_ct_kw: float = 0.25
+    peak_charge_ramp_penalty_ct_kw: float = 2.0
     # WR-Sockellast: fixer Verlust (W), der bei JEDEM Entlade-Slot dem Akku
     # entnommen wird (Wechselrichter-Eigenverbrauch). Macht Kleinstleistungs-
     # Entladen unwirtschaftlich. 0 = aus.
@@ -944,7 +945,7 @@ def load_config(path: str) -> Config:
             "auto_peak_expected_override_percent", 150.0)),
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
         peak_charge_ramp_penalty_ct_kw=float(o.get(
-            "peak_charge_ramp_penalty_ct_kw", 0.25)),
+            "peak_charge_ramp_penalty_ct_kw", 2.0)),
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),
         power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),

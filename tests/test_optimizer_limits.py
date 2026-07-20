@@ -83,6 +83,35 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     assert not ((dis[1:-1] < 1.0) & (dis[:-2] > 1.0) & (dis[2:] > 1.0)).any()
 
 
+def test_battery_switch_penalty_avoids_multislot_hold_block():
+    """Auch zwei aufeinanderfolgende billige Sperrslots sind ein Eingriff.
+
+    Der fruehere 1,0,1-Malus erkannte diesen Fall nicht, obwohl die gesamte
+    Verschiebung weniger als einen Cent spart.
+    """
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([38.0, 38.0, 34.0, 34.0, 42.0, 42.0, 42.0, 42.0])
+
+    def solve(penalty):
+        cfg = make_config()
+        cfg.optimization.terminal_soc_value = 0.0
+        cfg.optimization.battery_switch_penalty_ct = penalty
+        cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
+        cfg.optimization.min_discharge_w = 0.0
+        cfg.optimization.standby_discharge_w = 0.0
+        cfg.house_battery.max_ac_charge_w = 0.0
+        soc = cfg.house_battery.min_soc_wh + 300.0
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=0.0, load=200.0, price=price, soc=soc)).table
+
+    economic = solve(0.0)
+    stable = solve(1.0)
+    assert (economic.iloc[2:4]["discharge_limited"] == 1.0).all(), \
+        "Testszenario bildet den zweislotigen Halteblock nicht ab"
+    assert (stable.iloc[2:4]["discharge_limited"] == 0.0).all(), \
+        "Mehrslotiger Mikro-Halteblock bleibt trotz Eingriffsmalus bestehen"
+
+
 def test_battery_switch_penalty_avoids_partial_discharge_with_grid_import():
     """Regression 18.07. 01:45: Ein billigerer Einzelslot darf den Pausen-
     Malus nicht mit kleiner Teilentladung und gleichzeitigem Netzbezug umgehen.

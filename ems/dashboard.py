@@ -743,12 +743,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         fig.add_vrect(x0=x[0], x1=min(now, x[-1]), fillcolor="rgba(0,0,0,0.05)",
                       line_width=0, layer="below", row="all", col=1)
     fig.add_vline(x=now, line=dict(color="#0d6efd", width=2), row="all", col=1)
-    # "Jetzt"-Label INNERHALB von Panel 1 (oben), damit es weder die
-    # Panel-Titel noch die Datums-Zeile überlappt.
-    fig.add_annotation(x=now, y=1.0, xref="x", yref="paper", yanchor="top",
-                       text=f"● Jetzt {now.strftime('%H:%M')}", showarrow=False,
-                       font=dict(color="#0d6efd", size=12),
-                       bgcolor="rgba(255,255,255,0.8)")
+    # "Jetzt"-Label in den freien oberen Rand setzen. Innerhalb von Panel 1
+    # verdeckte die Box genau am aktuellen Zeitpunkt Leistungs-/PV-Kurven.
+    # Die senkrechte Linie bleibt im Plot die eindeutige Zeitmarkierung.
+    fig.add_annotation(x=now, y=1.01, xref="x", yref="paper",
+                       yanchor="bottom",
+                       text=f"▼ Jetzt {now.strftime('%H:%M')}", showarrow=False,
+                       font=dict(color="#0d6efd", size=11))
     # Datums-Zeile OBERHALB der Panel-Titel (eigene Ebene, kein Überlappen)
     day = x[0].normalize()
     while day <= x[-1]:

@@ -789,29 +789,32 @@ class Optimizer:
                 prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
             cost_terms.append(pen_sw * pulp.lpSum(car_start))
 
-        # Batterie-Taktung: Eine einzelne Haltepause INNERHALB einer
+        # Batterie-Taktung: Jeden begonnenen Halteblock INNERHALB einer
         # zusammenhängenden Defizitphase und materielle Teilentladung bei
-        # gleichzeitigem Netzbezug bestrafen. Letztere umging bisher den
-        # Pausen-Malus, indem der Akku z.B. 382 W statt 0 W weiter entlud.
+        # gleichzeitigem Netzbezug bestrafen. Ein Blockstart statt nur des
+        # Musters 1,0,1 erfasst auch mehrslotige Sperren. Teilentladung umging
+        # den Malus sonst, indem der Akku z.B. 382 W statt 0 W weiter entlud.
         # Allgemeine Ein/Aus-Wechsel zu bestrafen wäre falsch: Beim Übergang
         # PV-Überschuss -> Restlast ist das Einschalten natürlich.
         material_import_flags = [None] * N
         partial_discharge_flags = [None] * N
         bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
-        if bat_pen and N > 2:
+        if bat_pen and N > 1:
             threshold = max(min_dis, 1.0)
-            pauses = []
+            hold_blocks = []
             partial_imports = []
             deficits = [max(0.0, float(inp.house_load_w[t])
                             - float(inp.pv_w[t])) for t in range(N)]
-            for t in range(1, N - 1):
-                if min(deficits[t - 1:t + 2]) < threshold:
+            for t in range(1, N):
+                if min(deficits[t - 1:t + 1]) < threshold:
                     continue
-                pause = pulp.LpVariable(f"batpause_{t}", 0, 1)
-                # pause=1 genau für Muster 1,0,1 (bei Minimierung bleibt sie
-                # für alle anderen Kombinationen 0).
-                prob += pause >= is_di[t - 1] + is_di[t + 1] - is_di[t] - 1
-                pauses.append(pause)
+                hold_block = pulp.LpVariable(f"batholdblock_{t}", 0, 1)
+                # Die Wiederaufnahme der Entladung beendet genau einen
+                # internen Halteblock, unabhängig von dessen Länge. Das
+                # natürliche Ende einer Entladephase am Mindest-SoC darf keinen
+                # Malus erhalten, weil dort später keine Entladung mehr folgt.
+                prob += hold_block >= is_di[t] - is_di[t - 1]
+                hold_blocks.append(hold_block)
             # Erst ab derselben 100-W-Schwelle bewerten, ab der der Slot
             # später als limit_discharge publiziert würde. Bei realer Last
             # oberhalb der Akku-Maximalleistung bleibt Teildeckung möglich;
@@ -828,7 +831,7 @@ class Optimizer:
                 prob += partial >= has_import + is_di[t] - 1
                 partial_imports.append(partial)
             cost_terms.append(bat_pen * (
-                pulp.lpSum(pauses) + pulp.lpSum(partial_imports)))
+                pulp.lpSum(hold_blocks) + pulp.lpSum(partial_imports)))
 
         # Netzbezug trotz noch nutzbarer Akkuenergie bestrafen (ct/kWh).
         # Anders als ein pauschaler Malus auf alle ungedeckte Restlast ist das

@@ -435,11 +435,15 @@ def test_peak_charge_ramp_penalty_smooths_p10_catchup():
         )).table["batt_dc_charge_w"].values
 
     raw = solve(0.0)
-    smooth = solve(0.25)
+    smooth = solve(2.0)
     tv_raw = float(np.abs(np.diff(raw)).sum())
     tv_smooth = float(np.abs(np.diff(smooth)).sum())
+    jump_raw = float(np.abs(np.diff(raw)).max())
+    jump_smooth = float(np.abs(np.diff(smooth)).max())
     assert tv_smooth < tv_raw - 100.0, \
         "Rampenmalus glaettet den Peak-Ladeverlauf nicht messbar"
+    assert jump_smooth < jump_raw - 100.0, \
+        "Rampenmalus reduziert die groesste einzelne Ladeleistungs-Spitze nicht"
 
 
 def test_grid_charge_is_explicit_not_disguised():
