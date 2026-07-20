@@ -573,33 +573,47 @@ def write_intraday_diagnostic(path: str, issue_time, signal: str,
 
 def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
                      combine: str, which: str,
+                     sources=None, require_complete: bool = False,
                      expected_sources=None) -> pd.Series:
     """Kombinierte PV-Vorhersage [start, end) auf dem Slot-Raster (W).
     which: 'pv' | 'p10' | 'p90'. combine: 'sum' (Arrays addieren) | 'mean'
     (redundante Quellen mitteln). Gröbere Quellschritte werden ZEITLICH auf das
     Slot-Raster interpoliert (auflösungsagnostisch: Solcast 30-min ODER pvlib
-    stündlich); nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden."""
+    stündlich); nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden.
+
+    sources: NUR diese Quellen einbeziehen (Filter). WICHTIG, seit Solcast und
+    das pvlib-Schattenmodell GLEICHZEITIG in dieselbe Tabelle schreiben - ohne
+    Filter würde ein blindes SUM(pv_w) GROUP BY ts beide Quellenarten addieren
+    (an gemeinsamen Zeitstempeln -> Verdopplung/Sägezahn). require_complete:
+    nur Zeitpunkte behalten, an denen ALLE Quellen liefern (dropna how=any).
+    expected_sources: veralteter Alias (filtern UND require_complete zugleich)."""
     col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
     agg = "sum" if combine == "sum" else "avg"
+    if expected_sources is not None:          # Rückwärtskompatibler Alias
+        sources, require_complete = expected_sources, True
     s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=1)).tz_convert("UTC").isoformat()
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     try:
         con = _con(path)
-        expected = list(dict.fromkeys(expected_sources or []))
-        if expected:
-            marks = ",".join("?" for _ in expected)
+        srcs = list(dict.fromkeys(sources or []))
+        if srcs:
+            marks = ",".join("?" for _ in srcs)
             raw_rows = con.execute(
                 f"SELECT ts, source, {col} FROM pv_forecast "
                 f"WHERE ts >= ? AND ts < ? AND {col} IS NOT NULL "
                 f"AND source IN ({marks}) ORDER BY ts",
-                (s_utc, e_utc, *expected)).fetchall()
+                (s_utc, e_utc, *srcs)).fetchall()
             if raw_rows:
                 frame = pd.DataFrame(raw_rows, columns=["ts", "source", "value"])
                 wide = frame.pivot_table(index="ts", columns="source",
                                          values="value", aggfunc="last")
-                wide = wide.reindex(columns=expected).dropna(how="any")
-                combined = wide.sum(axis=1) if combine == "sum" else wide.mean(axis=1)
-                rows = list(combined.items())
+                wide = wide.reindex(columns=srcs)
+                if require_complete:
+                    # nur Zeitpunkte, an denen ALLE Quellen liefern
+                    wide = wide.dropna(how="any")
+                combined = (wide.sum(axis=1) if combine == "sum"
+                            else wide.mean(axis=1))
+                rows = list(combined.dropna().items())
             else:
                 rows = []
         else:

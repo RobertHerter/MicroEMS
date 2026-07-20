@@ -154,3 +154,29 @@ def test_read_pv_forecast_interpolates_hourly_without_gaps(tmp_path):
     # linear interpoliert: 08:15/08:30 liegen zwischen 08:00 und 09:00
     v0 = float(s.iloc[0]); v4 = float(s.iloc[4])          # 08:00 und 09:00
     assert v0 < float(s.iloc[1]) < float(s.iloc[2]) < v4, "nicht monoton interpoliert"
+
+
+def test_read_pv_forecast_filters_sources_no_cross_pollution(tmp_path):
+    """Regression: Solcast UND pvlib-Schatten schreiben in dieselbe Tabelle.
+    Ein Read der einen Quelle (ohne require_complete) darf die andere NICHT
+    mitsummieren - sonst Verdopplung/Sägezahn an gemeinsamen Zeitstempeln."""
+    from ems import local_history
+    db = str(tmp_path / "h.sqlite")
+    base = pd.Timestamp("2026-07-15 08:00", tz="UTC")
+    # Solcast (30-min) und pvmodel (stündlich) mit teils GLEICHEN Zeitstempeln
+    sol = {(base + pd.Timedelta(minutes=30 * k)).isoformat(): (1000.0, 700.0, 1200.0)
+           for k in range(5)}
+    pvm = {(base + pd.Timedelta(hours=k)).isoformat(): (5000.0, 3000.0, 6000.0)
+           for k in range(3)}
+    local_history.write_pv_forecast(db, "solA", sol)
+    local_history.write_pv_forecast(db, "pvmodel:X", pvm)
+    start = base.tz_convert("Europe/Berlin")
+    end = (base + pd.Timedelta(hours=3)).tz_convert("Europe/Berlin")
+    # nur Solcast lesen (kein require_complete) -> nie den pvmodel-Wert dazu
+    s = local_history.read_pv_forecast(db, start, end, "Europe/Berlin", 15,
+                                       "sum", "pv", sources=["solA"])
+    assert float(s.dropna().max()) < 1100.0, "pvmodel wurde mitsummiert"
+    # pvmodel getrennt lesbar
+    p = local_history.read_pv_forecast(db, start, end, "Europe/Berlin", 15,
+                                       "sum", "pv", sources=["pvmodel:X"])
+    assert 4900.0 < float(p.dropna().max()) < 5100.0

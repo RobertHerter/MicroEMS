@@ -168,10 +168,15 @@ def read_pv_signal(config, repo, signal: str, start, end,
     local = _local_pv(config)
     if signal in _SIGNAL_WHICH and local is not None:
         combine, ids = local
+        # IMMER auf die aktive Quelle filtern (sources=ids) - seit Solcast und
+        # das pvlib-Schattenmodell parallel in dieselbe Tabelle schreiben, würde
+        # ohne Filter ein blindes SUM über beide Quellenarten summieren
+        # (Verdopplung/Sägezahn im Dashboard). require_complete steuert nur, ob
+        # unvollständige Zeitpunkte verworfen werden.
         s = local_history.read_pv_forecast(
             config.e3dc_rscp.history_db_path, start, end, config.general.timezone,
             config.general.slot_minutes, combine, _SIGNAL_WHICH[signal],
-            ids if require_complete else None)
+            sources=ids, require_complete=require_complete)
         # Übergangslücke (noch kein Abruf im Cache): auf InfluxDB zurückfallen,
         # solange dort vorhanden – verhindert NaN-PV vor dem ersten Abruf.
         if s.empty and repo is not None and repo.signal_available(signal):

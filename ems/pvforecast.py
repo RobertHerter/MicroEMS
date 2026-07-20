@@ -121,7 +121,7 @@ def read_compare(config, start, end):
         return pd.Series(dtype="float64")
     return local_history.read_pv_forecast(
         config.e3dc_rscp.history_db_path, start, end, config.general.timezone,
-        config.general.slot_minutes, "sum", "pv", source_ids(config))
+        config.general.slot_minutes, "sum", "pv", sources=source_ids(config))
 
 
 _last_refresh = 0.0
