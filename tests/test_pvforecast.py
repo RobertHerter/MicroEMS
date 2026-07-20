@@ -123,3 +123,34 @@ def test_config_rejects_pvmodel_without_arrays(tmp_path):
     p.write_text(yaml.safe_dump(base))
     with pytest.raises(ValueError, match="arrays"):
         load_config(str(p))
+
+
+def test_read_pv_forecast_interpolates_hourly_without_gaps(tmp_path):
+    """Regression: pvlib schreibt STÜNDLICHE Zeitstempel. read_pv_forecast muss
+    sie glatt aufs 15-min-Raster interpolieren - das alte ffill(limit=1) hielt
+    nur EINEN Sub-Slot und ließ danach NaN-Löcher (Zackenkurve im Dashboard)."""
+    from ems import local_history
+    db = str(tmp_path / "h.sqlite")
+    base = pd.Timestamp("2026-07-15 08:00", tz="UTC")
+    # zwei Arrays, je stündlich 08:00..14:00
+    for arr, scale in (("pvmodel:Ost", 1.0), ("pvmodel:West", 0.8)):
+        m = {}
+        for h in range(7):
+            ts = (base + pd.Timedelta(hours=h)).isoformat()
+            w = 1000.0 * (h + 1) * scale
+            m[ts] = (w, 0.7 * w, 1.2 * w)
+        local_history.write_pv_forecast(db, arr, m)
+    start = base.tz_convert("Europe/Berlin")
+    end = (base + pd.Timedelta(hours=8)).tz_convert("Europe/Berlin")   # > letzter Punkt
+    s = local_history.read_pv_forecast(db, start, end, "Europe/Berlin", 15,
+                                       "sum", "pv",
+                                       ["pvmodel:Ost", "pvmodel:West"])
+    last_real = (base + pd.Timedelta(hours=6)).tz_convert("Europe/Berlin")  # 14:00
+    # zwischen den Stundenwerten (bis zum letzten echten Punkt) KEIN NaN-Loch
+    interior = s[s.index <= last_real]
+    assert interior.notna().all(), "NaN-Löcher zwischen Stundenwerten"
+    # nach dem letzten echten Punkt bleibt NaN (löst Schätzung/Frische aus)
+    assert s[s.index > last_real].isna().all()
+    # linear interpoliert: 08:15/08:30 liegen zwischen 08:00 und 09:00
+    v0 = float(s.iloc[0]); v4 = float(s.iloc[4])          # 08:00 und 09:00
+    assert v0 < float(s.iloc[1]) < float(s.iloc[2]) < v4, "nicht monoton interpoliert"

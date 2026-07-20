@@ -576,8 +576,9 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
                      expected_sources=None) -> pd.Series:
     """Kombinierte PV-Vorhersage [start, end) auf dem Slot-Raster (W).
     which: 'pv' | 'p10' | 'p90'. combine: 'sum' (Arrays addieren) | 'mean'
-    (redundante Quellen mitteln). Gröbere Quellschritte (30-min) werden gehalten;
-    nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden."""
+    (redundante Quellen mitteln). Gröbere Quellschritte werden ZEITLICH auf das
+    Slot-Raster interpoliert (auflösungsagnostisch: Solcast 30-min ODER pvlib
+    stündlich); nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden."""
     col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
     agg = "sum" if combine == "sum" else "avg"
     s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=1)).tz_convert("UTC").isoformat()
@@ -618,9 +619,17 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
                          freq=f"{slot_minutes}min", inclusive="left")
     if len(grid) == 0:
         return src
-    spl = max(1, 30 // slot_minutes)      # Solcast-Periode 30-min -> Sub-Slots halten
+    # Zeitliche Interpolation auf das Slot-Raster: bridge't sowohl Solcasts
+    # 30-min als auch pvlibs stündliche Quellschritte glatt. limit deckt bis
+    # ~90 min Lücke ab; limit_area="inside" verhindert Extrapolation über den
+    # letzten echten Punkt hinaus (danach bleibt NaN -> löst die Schätzung /
+    # Frische-Erkennung aus, wie bisher). ffill(limit=1) hielt vorher nur EINEN
+    # Sub-Slot -> bei Stundenwerten NaN-Löcher alle 30 min (Zackenkurve).
+    step_min = max(1.0, float(slot_minutes))
+    limit = max(1, int(90.0 / step_min))
     allidx = src.index.union(grid)
-    return src.reindex(allidx).ffill(limit=spl - 1).reindex(grid)
+    return (src.reindex(allidx).interpolate(method="time", limit=limit,
+                                            limit_area="inside").reindex(grid))
 
 
 def log_solcast_call(path: str, api_key: str, resource: str, ts_iso: str) -> None:
