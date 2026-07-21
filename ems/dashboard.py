@@ -36,7 +36,7 @@ _MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476",
                "grid_charge": "#1f77b4", "grid_discharge": "#9400d3"}
 # Legenden-Swatch: auto wäre auf Weiß unsichtbar
 _MODE_SWATCH = dict(_MODE_COLOR, auto="#c8c8c8")
-_GROUPS = {"ist": "Ist", "prog": "Prognose", "progb": "Netz/Preis (Prognose)",
+_GROUPS = {"ist": "Ist", "prog": "Prognose", "progb": "Netz/Preis",
            "soc": "Ladezustand", "ctrl": "Steuerung"}
 # Spaltenreihenfolge der (nebeneinander stehenden) Legendengruppen. Die beiden
 # Prognose-Spalten (prog + progb) stehen so direkt nebeneinander -> die früher
@@ -820,7 +820,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             cl_sum = t[_cl_cols].sum(axis=1)
             if float(cl_sum.abs().sum()) > 0:
                 fig.add_trace(go.Scatter(
-                    x=x, y=cl_sum, name="Steuerb. Lasten (Prognose)", mode="lines",
+                    x=x, y=cl_sum, name="Steuerb. Lasten", mode="lines",
                     line=dict(color="#9467bd", width=1.6, dash="dot"),
                     hovertemplate=HOVER_W, legendgroup="prog",
                     legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
