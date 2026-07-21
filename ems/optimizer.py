@@ -120,6 +120,43 @@ def _complete_pv10(pv10_w, expected_pv_w):
     return np.maximum(completed, 0.0), missing, factor
 
 
+def _seasonal_peak_values(optimization, ts) -> tuple[float, float, float]:
+    """Auto-Peak-Schwelle und Rampenmalus glatt nach Sonnenjahreszeit.
+
+    Der Faktor ist am 21. Juni 1 und am 21. Dezember nahezu 0. Dadurch gibt es
+    keine Spruenge an Monats- oder Saisonwechseln. Rueckgabe:
+    (Schwelle in %, Rampenmalus ct/kW, Sommerfaktor).
+    """
+    base_threshold = float(getattr(
+        optimization, "auto_peak_threshold_percent", 85.0))
+    base_ramp = float(getattr(
+        optimization, "peak_charge_ramp_penalty_ct_kw", 0.0) or 0.0)
+    if not bool(getattr(optimization, "seasonal_peak_tuning", False)):
+        return float(np.clip(base_threshold, 0.0, 100.0)), max(0.0, base_ramp), 0.5
+
+    stamp = pd.Timestamp(ts)
+    year = stamp.year
+    year_days = 366 if pd.Timestamp(f"{year}-12-31").dayofyear == 366 else 365
+    summer_doy = pd.Timestamp(f"{year}-06-21").dayofyear
+    delta = abs(stamp.dayofyear - summer_doy)
+    delta = min(delta, year_days - delta)
+    summer_factor = 0.5 + 0.5 * np.cos(2.0 * np.pi * delta / year_days)
+
+    winter_threshold = float(getattr(
+        optimization, "auto_peak_threshold_winter_percent", 95.0))
+    summer_threshold = float(getattr(
+        optimization, "auto_peak_threshold_summer_percent", 75.0))
+    winter_ramp = float(getattr(
+        optimization, "peak_charge_ramp_penalty_winter_ct_kw", 0.5))
+    summer_ramp = float(getattr(
+        optimization, "peak_charge_ramp_penalty_summer_ct_kw", 2.0))
+    threshold = winter_threshold + summer_factor * (
+        summer_threshold - winter_threshold)
+    ramp = winter_ramp + summer_factor * (summer_ramp - winter_ramp)
+    return (float(np.clip(threshold, 0.0, 100.0)), max(0.0, float(ramp)),
+            float(summer_factor))
+
+
 def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
     """Warm-Werte des letzten Laufs auf den neuen Horizont verschieben:
     alter Slot-Index -> neuer = alt - Versatz. Nicht-Slot-Variablen (z.B.
@@ -545,6 +582,9 @@ class Optimizer:
         _uniq = sorted(set(_daykey))
         _dayidx = {d: i for i, d in enumerate(_uniq)}
         slot_day = [_dayidx[k] for k in _daykey]
+        seasonal_peak = [_seasonal_peak_values(
+            cfg.optimization, pd.Timestamp(d).tz_localize(
+                cfg.general.timezone) + pd.Timedelta(hours=12)) for d in _uniq]
         export_line = [pulp.LpVariable(f"L_day_{i}", 0) for i in range(len(_uniq))]
         # Linie nur auf Tage anwenden, deren Nachmittags-/Erzeugungsspitze im
         # Horizont liegt. Reine Vormittags-Teiltage am Rand (letzter Tag) bekommen
@@ -595,8 +635,6 @@ class Optimizer:
                                   - min(-net, hb.max_discharge_w) * dt
                                   / hb.discharge_efficiency)
 
-            cap_ratio = max(0.0, min(1.0, float(getattr(
-                cfg.optimization, "auto_peak_threshold_percent", 85.0)) / 100.0))
             reserve_ratio = max(0.0, float(getattr(
                 cfg.optimization, "auto_peak_soc_reserve_percent", 10.0)) / 100.0)
             p10_floor_ratio = max(0.0, float(getattr(
@@ -607,6 +645,7 @@ class Optimizer:
             for d in range(len(_uniq)):
                 soc0 = dawn_soc[d] if dawn_soc[d] is not None else day_first_soc[d]
                 free_wh = max(0.0, hb.max_soc_wh - float(soc0))
+                cap_ratio = seasonal_peak[d][0] / 100.0
                 auto_threshold.append(min(cap_ratio * usable_wh,
                                           free_wh + reserve_ratio * usable_wh))
             robust_peak = [
@@ -628,6 +667,8 @@ class Optimizer:
                         dawn_soc[i] if dawn_soc[i] is not None else day_first_soc[i]
                     ) / hb.capacity_wh, 1),
                     "threshold_kwh": round(auto_threshold[i] / 1000.0, 1),
+                    "threshold_pct": round(seasonal_peak[i][0], 1),
+                    "ramp_penalty_ct_kw": round(seasonal_peak[i][1], 2),
                     "basis": ("p10" if _day_surplus[i] >= auto_threshold[i]
                               else "expected+p10-floor" if robust_peak[i]
                               else "insufficient"),
@@ -972,6 +1013,41 @@ class Optimizer:
             cost_terms.append(
                 hold_pen * pulp.lpSum(avoidable_import) * kwh)
 
+        # ---- Abend-Reserve (weicher SoC-Boden im Abendfenster) ----------- #
+        # Hält den Akku im Fenster [start, end) über einem Mindest-SoC, damit er
+        # nicht vor der teuren Abendspitze leerläuft. Als Malus (ct je fehlender
+        # kWh) statt harter Grenze: nie infeasible (an trüben Tagen ist die
+        # Reserve schlicht unerreichbar), und ein hinreichend großer Preisvorteil
+        # überstimmt sie. Nach 'end' greift kein Boden mehr -> gezielte Entladung
+        # in die Spitze. soc[t+1] = SoC NACH Slot t.
+        ev_pct = float(getattr(
+            cfg.optimization, "evening_reserve_soc_percent", 0.0) or 0.0)
+        ev_pen = float(getattr(
+            cfg.optimization, "evening_reserve_penalty_ct_kwh", 0.0) or 0.0)
+        if ev_pct > 0.0 and ev_pen > 0.0:
+            ev_start = cfg.optimization.evening_reserve_start
+            ev_end = cfg.optimization.evening_reserve_end
+            reserve_wh = min(hb.max_soc_wh,
+                             max(hb.min_soc_wh, ev_pct / 100.0 * hb.capacity_wh))
+
+            def _in_evening_window(ts):
+                tod = ts.time()
+                if ev_start <= ev_end:            # normales Fenster am selben Tag
+                    return ev_start <= tod < ev_end
+                return tod >= ev_start or tod < ev_end   # über Mitternacht
+
+            window_slots = [t for t in range(N) if _in_evening_window(_local[t])]
+            if window_slots:
+                # EIN Slack = tiefste Unterschreitung der Reserve im Fenster (Wh).
+                # Nur der Drawdown-Betrag zählt (nicht seine Dauer), damit ev_pen
+                # ein sauberer ct/kWh-Regler bleibt, direkt mit einem Preis-Spread
+                # vergleichbar: "unter die Reserve zu gehen kostet ev_pen je kWh".
+                deficit = pulp.LpVariable("evres_deficit", 0)
+                for t in window_slots:
+                    prob += deficit >= reserve_wh - soc[t + 1]
+                # deficit in Wh -> /1000 auf kWh (wie die p10-/Stabilitäts-Slacks)
+                cost_terms.append(ev_pen * deficit / 1000.0)
+
         # Kleiner Tie-Breaker: DC-Laden (PV) gegenüber AC-Laden (Netz) bevorzugen,
         # wenn kostengleich. So wird AC-Laden nur genutzt, wenn es echten Vorteil
         # bringt (günstiger Netzbezug), nicht zum Wegrouten von PV-Überschuss.
@@ -1000,11 +1076,10 @@ class Optimizer:
         # Variation-Malus verteilt sie auf benachbarte Peak-Slots, ohne die
         # Tageslinie oder wirtschaftliche Entscheidungen nennenswert zu
         # veraendern. Einheit: ct je kW Aenderung zwischen zwei 15-min-Slots.
-        ramp_pen = float(getattr(
-            cfg.optimization, "peak_charge_ramp_penalty_ct_kw", 0.0) or 0.0)
+        ramp_pen_by_day = [v[1] for v in seasonal_peak]
         ramp_limit = float(getattr(
             cfg.optimization, "peak_charge_max_ramp_w", 0.0) or 0.0)
-        if ramp_pen or ramp_limit > 0.0:
+        if any(ramp_pen_by_day) or ramp_limit > 0.0:
             for t in range(1, N):
                 if (slot_day[t] != slot_day[t - 1]
                         or day_mode[slot_day[t]] != "peak"):
@@ -1013,6 +1088,7 @@ class Optimizer:
                     # Nur den Anstieg begrenzen: beim Erreichen von 100 % SoC
                     # muss die Ladeleistung physikalisch sofort abfallen duerfen.
                     prob += dc[t] - dc[t - 1] <= ramp_limit
+                ramp_pen = ramp_pen_by_day[slot_day[t]]
                 if ramp_pen:
                     ramp = pulp.LpVariable(f"peakram_d{t}", 0)
                     prob += ramp >= dc[t] - dc[t - 1]
@@ -1161,6 +1237,13 @@ class Optimizer:
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
+        variables = prob.variables()
+        binary_count = sum(
+            1 for v in variables
+            if v.cat == pulp.LpInteger and v.lowBound == 0 and v.upBound == 1)
+        log.info("MILP-Größe: %d Slots, %d Variablen (%d binär), %d Regeln; "
+                 "Warmstart %s.", N, len(variables), binary_count,
+                 len(prob.constraints), "ja" if warm else "nein")
         _t0 = time.monotonic()
         prob.solve(make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0

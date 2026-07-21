@@ -21,6 +21,9 @@ import yaml
 class GeneralConfig:
     timezone: str = "Europe/Berlin"
     optimization_horizon_hours: int = 48
+    # True: Horizontende bis zur darauf folgenden Mitternacht erweitern.
+    # Liegt das reguläre Ende bereits auf 00:00, wird NICHT weiter verlängert.
+    optimization_horizon_round_to_midnight: bool = False
     forecast_horizon_hours: int = 72
     slot_minutes: int = 15
     run_interval_minutes: int = 15
@@ -259,6 +262,11 @@ class ControllableLoad:
     # 60 min viertelt die Binärvariablen (Solver-Laufzeit!) und schont die WP-
     # Kompressoren. 0 = Default (thermal 60, deferrable = Slotraster).
     decision_minutes: int = 0
+    # Rolling-Horizon für thermische Lasten: nur die nächsten X Stunden werden
+    # als echte Ein/Aus-Binärentscheidungen modelliert. Weiter entfernte Blöcke
+    # sind ein mittlerer Duty-Cycle [0..1]; sie werden vor ihrer Ausführung bei
+    # jedem Folgelauf wieder binär. 0 = gesamter Horizont binär.
+    binary_horizon_hours: float = 12.0
 
     @property
     def capacity_wh_per_k(self) -> float:
@@ -330,6 +338,13 @@ class OptimizationConfig:
     # Obergrenze der nutzbaren Akkukapazitaet erreicht. Der tatsaechliche
     # Schwellwert kann bei voraussichtlich teilgeladenem Akku kleiner sein.
     auto_peak_threshold_percent: float = 85.0
+    # Glatte saisonale Abstimmung zwischen Winter- und Sommerwerten. Deaktiviert
+    # bleibt auto_peak_threshold_percent/peak_charge_ramp_penalty_ct_kw wirksam.
+    seasonal_peak_tuning: bool = False
+    auto_peak_threshold_winter_percent: float = 95.0
+    auto_peak_threshold_summer_percent: float = 75.0
+    peak_charge_ramp_penalty_winter_ct_kw: float = 0.5
+    peak_charge_ramp_penalty_summer_ct_kw: float = 2.0
     # Zusaetzliche freie Kapazitaet als SoC-/Lastprognose-Reserve bei der
     # dynamischen Auto-Schwelle (Prozent der nutzbaren Akkukapazitaet).
     auto_peak_soc_reserve_percent: float = 10.0
@@ -364,6 +379,18 @@ class OptimizationConfig:
     # Sub-Slot-Lastspitzen (15-min-Mittelung sieht diese nicht). Hinweis: kann an
     # sonnigen Tagen minimale PV-Abregelung verursachen. 0 = aus.
     power_headroom_percent: float = 0.0
+    # Abend-Reserve: optionaler Mindest-SoC (% der Gesamtkapazität), den der Akku
+    # im Fenster [start, end) mindestens halten SOLL, damit er nicht vor der
+    # teuren Abendspitze leerläuft (Ursache der sporadischen "19:00-Entladesperre":
+    # der Akku war abends knapp). WEICHE Nebenbedingung – ein Malus (ct/kWh) je
+    # fehlender kWh unter der Reserve, KEINE harte Grenze -> nie infeasible und von
+    # einem echten Preisvorteil überstimmbar. Das Fenster schützt nur den VORLAUF;
+    # NACH end ist die Reserve frei, sodass der Akku gezielt in die Spitze entlädt.
+    # Über-Mitternacht-Fenster (start > end) werden unterstützt. 0 = aus.
+    evening_reserve_soc_percent: float = 0.0
+    evening_reserve_start: time = time(16, 0)
+    evening_reserve_end: time = time(20, 0)
+    evening_reserve_penalty_ct_kwh: float = 3.0
 
 
 @dataclass
@@ -779,6 +806,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             season_to=(str(w.get("season_to") or seas.get("to"))
                        if (w.get("season_to") or seas.get("to")) else None),
             decision_minutes=int(w.get("decision_minutes", 0)),
+            binary_horizon_hours=float(w.get("binary_horizon_hours", 12.0)),
         )
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "
@@ -859,6 +887,8 @@ def load_config(path: str) -> Config:
     general = GeneralConfig(
         timezone=g.get("timezone", "Europe/Berlin"),
         optimization_horizon_hours=int(g.get("optimization_horizon_hours", 48)),
+        optimization_horizon_round_to_midnight=bool(g.get(
+            "optimization_horizon_round_to_midnight", False)),
         forecast_horizon_hours=int(g.get("forecast_horizon_hours", 72)),
         slot_minutes=int(g.get("slot_minutes", 15)),
         run_interval_minutes=int(g.get("run_interval_minutes", 15)),
@@ -951,6 +981,15 @@ def load_config(path: str) -> Config:
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
+        seasonal_peak_tuning=bool(o.get("seasonal_peak_tuning", False)),
+        auto_peak_threshold_winter_percent=float(o.get(
+            "auto_peak_threshold_winter_percent", 95.0)),
+        auto_peak_threshold_summer_percent=float(o.get(
+            "auto_peak_threshold_summer_percent", 75.0)),
+        peak_charge_ramp_penalty_winter_ct_kw=float(o.get(
+            "peak_charge_ramp_penalty_winter_ct_kw", 0.5)),
+        peak_charge_ramp_penalty_summer_ct_kw=float(o.get(
+            "peak_charge_ramp_penalty_summer_ct_kw", 2.0)),
         auto_peak_soc_reserve_percent=float(o.get("auto_peak_soc_reserve_percent", 10.0)),
         auto_peak_p10_floor_percent=float(o.get(
             "auto_peak_p10_floor_percent", 60.0)),
@@ -967,6 +1006,11 @@ def load_config(path: str) -> Config:
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),
         power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),
+        evening_reserve_soc_percent=float(o.get("evening_reserve_soc_percent", 0.0)),
+        evening_reserve_start=_parse_time(str(o.get("evening_reserve_start", "16:00"))),
+        evening_reserve_end=_parse_time(str(o.get("evening_reserve_end", "20:00"))),
+        evening_reserve_penalty_ct_kwh=float(o.get(
+            "evening_reserve_penalty_ct_kwh", 3.0)),
     )
 
     f = raw.get("forecast", {})

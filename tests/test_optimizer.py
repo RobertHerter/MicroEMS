@@ -10,12 +10,47 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ems.optimizer import Optimizer, OptimizerInputs, _complete_pv10
+from ems.optimizer import (
+    Optimizer, OptimizerInputs, _complete_pv10, _seasonal_peak_values,
+)
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
 FREQ = "15min"
 TOL = 1.0  # W
+
+
+def test_seasonal_peak_tuning_interpolates_smoothly_between_solstices():
+    cfg = make_config()
+    o = cfg.optimization
+    o.seasonal_peak_tuning = True
+    o.auto_peak_threshold_winter_percent = 95.0
+    o.auto_peak_threshold_summer_percent = 75.0
+    o.peak_charge_ramp_penalty_winter_ct_kw = 0.5
+    o.peak_charge_ramp_penalty_summer_ct_kw = 2.0
+
+    summer = _seasonal_peak_values(o, pd.Timestamp("2026-06-21", tz=TZ))
+    winter = _seasonal_peak_values(o, pd.Timestamp("2026-12-21", tz=TZ))
+    spring = _seasonal_peak_values(o, pd.Timestamp("2026-03-21", tz=TZ))
+
+    assert summer[0] == pytest.approx(75.0)
+    assert summer[1] == pytest.approx(2.0)
+    assert winter[0] == pytest.approx(95.0, abs=0.02)
+    assert winter[1] == pytest.approx(0.5, abs=0.002)
+    assert 84.0 < spring[0] < 86.0
+    assert 1.20 < spring[1] < 1.30
+
+
+def test_seasonal_peak_tuning_disabled_preserves_legacy_values():
+    cfg = make_config()
+    o = cfg.optimization
+    o.seasonal_peak_tuning = False
+    o.auto_peak_threshold_percent = 82.0
+    o.peak_charge_ramp_penalty_ct_kw = 1.25
+    threshold, ramp, _ = _seasonal_peak_values(
+        o, pd.Timestamp("2026-12-21", tz=TZ))
+    assert threshold == 82.0
+    assert ramp == 1.25
 
 
 def test_partial_p10_gap_uses_conservative_slot_fallback():
@@ -679,3 +714,65 @@ def test_max_import_w_caps_grid_draw():
     assert (imp <= 3000.0 + TOL).all(), f"max Import {imp.max():.0f} W > Limit"
     assert (res.table["batt_ac_charge_w"].values > 5).any(), \
         "Szenario prüft nichts - bei -10 ct sollte netzgeladen werden"
+
+
+def _evening_reserve_scenario(cfg):
+    """Voller Akku, keine PV, konstante Last; das Abendfenster 16-20 Uhr ist
+    das teuerste (30 ct) - ohne Reserve entlädt der Akku genau dort und läuft
+    im Fenster leer. Der Akku (9 kWh nutzbar) deckt nicht den ganzen Tag."""
+    idx = _day_index("2026-01-20")
+    hour = np.asarray(idx.hour, dtype=float)
+    price = np.where((hour >= 16) & (hour < 20), 30.0, 20.0)
+    # Störeinfluss ausblenden, um den Reserve-Mechanismus isoliert zu prüfen.
+    cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
+    return idx, _inputs(idx, pv=0.0, load=2000.0, price=price,
+                        soc=cfg.house_battery.max_soc_wh)
+
+
+def _in_window_min_soc(table, idx):
+    mask = (idx.hour >= 16) & (idx.hour < 20)
+    return float(table.loc[mask, "house_soc_percent"].min())
+
+
+def _enable_evening_reserve(cfg, penalty):
+    from datetime import time
+    o = cfg.optimization
+    o.evening_reserve_soc_percent = 70.0
+    o.evening_reserve_start = time(16, 0)
+    o.evening_reserve_end = time(20, 0)
+    o.evening_reserve_penalty_ct_kwh = penalty
+
+
+def test_evening_reserve_holds_soc_before_peak():
+    """Abend-Reserve (weicher SoC-Boden) hält den Akku im Fenster über der
+    konfigurierten Reserve, obwohl er dort ohne Reserve am günstigsten leerläuft."""
+    cfg_off = make_config()
+    idx, inp = _evening_reserve_scenario(cfg_off)
+    off = Optimizer(cfg_off).solve(inp)
+    assert not off.infeasible
+    soc_off = _in_window_min_soc(off.table, idx)
+
+    cfg_on = make_config()
+    _, inp_on = _evening_reserve_scenario(cfg_on)
+    _enable_evening_reserve(cfg_on, penalty=100.0)   # >> Preis-Spread (10 ct)
+    on = Optimizer(cfg_on).solve(inp_on)
+    assert not on.infeasible
+    soc_on = _in_window_min_soc(on.table, idx)
+
+    assert soc_off < 40.0, \
+        f"Ohne Reserve sollte der Akku im Fenster leerlaufen (min {soc_off:.0f} %)"
+    assert soc_on >= 68.0, \
+        f"Mit Reserve muss der SoC im Fenster >= ~70 % bleiben (min {soc_on:.0f} %)"
+
+
+def test_evening_reserve_yields_to_large_price_advantage():
+    """Weiche Grenze: ein hinreichend großer Spread überstimmt die Reserve -
+    bei kleinem Malus entlädt der Akku trotzdem in die teure Stunde."""
+    cfg = make_config()
+    idx, inp = _evening_reserve_scenario(cfg)
+    _enable_evening_reserve(cfg, penalty=1.0)        # << Preis-Spread (10 ct)
+    res = Optimizer(cfg).solve(inp)
+    assert not res.infeasible
+    soc = _in_window_min_soc(res.table, idx)
+    assert soc < 40.0, \
+        f"Kleiner Malus darf die Arbitrage nicht blockieren (min {soc:.0f} %)"

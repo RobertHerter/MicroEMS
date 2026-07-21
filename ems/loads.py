@@ -243,11 +243,21 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     dm = ld.decision_minutes or 60
     blk = max(1, int(round(dm / (dt * 60.0))))
     n_blocks = (N + blk - 1) // blk
+    binary_h = max(0.0, float(getattr(ld, "binary_horizon_hours", 12.0)))
+    binary_blocks = (n_blocks if binary_h <= 0.0 else min(
+        n_blocks, int(np.ceil(binary_h / (blk * dt)))))
     stage_on: dict = {}
     for st in ld.stages:
         ssg = _slug(st.name)
-        blk_var = [pulp.LpVariable(f"cl_{sg}_{ssg}_b{b}", cat="Binary")
-                   for b in range(n_blocks)]
+        # Rolling Horizon: Nur zeitnah auszuführende Blöcke müssen diskret sein.
+        # Fernere Blöcke als Duty-Cycle halten die thermische Energiebilanz und
+        # Kostenwirkung, ohne den Branch-and-Bound-Baum über mehrere Tage zu
+        # vervielfachen. Bevor sie real geschaltet werden, rücken sie in einem
+        # Folgelauf automatisch in den binären Bereich.
+        blk_var = [pulp.LpVariable(
+            f"cl_{sg}_{ssg}_b{b}", 0, 1,
+            cat="Binary" if b < binary_blocks else "Continuous")
+            for b in range(n_blocks)]
         on = [blk_var[t // blk] for t in range(N)]     # je Slot -> Block-Variable
         stage_on[st.name] = on
         on_by_key[f"{ld.name}/{st.name}"] = on

@@ -578,11 +578,30 @@ def _sources_block(source_status) -> str:
     return f'<div class="chips">Datenquellen: {chips}</div>'
 
 
+def _forecast_quality_block(quality) -> str:
+    """Operative Prognosequalität je Quelle und aktuellem Horizont."""
+    if not quality:
+        return ""
+    items = []
+    for source in quality:
+        level = source.get("level", "replaced")
+        items.append(
+            f"<article class='quality-item {level}'>"
+            f"<div class='quality-source'>{_esc(source.get('name', 'Quelle'))}</div>"
+            f"<div class='quality-state'>{_esc(source.get('state', 'unbekannt'))}</div>"
+            f"<div class='quality-detail'>{_esc(source.get('detail', ''))}</div>"
+            "</article>")
+    return ("<details class='forecast-quality'><summary>"
+            "<span>Prognosequalität</span><small>verwendete Daten im aktuellen "
+            "Optimierungshorizont</small></summary><div class='quality-grid'>"
+            f"{''.join(items)}</div></details>")
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
                     load_temp_actual=None, ambient_temp_c=None,
                     source_status=None, pv_compare=None,
-                    control_status=None) -> str:
+                    control_status=None, forecast_quality=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -1016,6 +1035,33 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .flow-idle {{ background: #f4f5f6; border-color: #d7dadd; }}
  .live-tiles .flow-idle .v {{ color: #62676d; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
+ .forecast-quality {{ margin: 10px 0 0; padding: 0; background: #fff;
+        border: 1px solid #dfe6ed; border-radius: 11px;
+        box-shadow: 0 2px 8px rgba(25,42,65,.05); }}
+ .forecast-quality > summary {{ display: flex; align-items: baseline; gap: 9px;
+        padding: 11px 38px 11px 12px; cursor: pointer; position: relative;
+        font-weight: 700; list-style: none; }}
+ .forecast-quality > summary::-webkit-details-marker {{ display: none; }}
+ .forecast-quality > summary::after {{ content: '⌄'; position: absolute;
+        right: 13px; top: 8px; font-size: 18px; transition: transform .16s; }}
+ .forecast-quality[open] > summary::after {{ transform: rotate(180deg); }}
+ .forecast-quality > summary small {{ color: #737d87; font-size: 11px;
+        font-weight: 400; }}
+ .quality-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr));
+        gap: 7px; padding: 0 12px 12px; }}
+ .quality-item {{ position: relative; min-width: 0; padding: 8px 9px 8px 12px;
+        border: 1px solid #dfe5eb; border-left: 4px solid #999;
+        border-radius: 8px; background: #f8fafb; }}
+ .quality-item.current {{ border-left-color: #2ca02c; background: #f1faf4; }}
+ .quality-item.partial {{ border-left-color: #e6a700; background: #fff9e8; }}
+ .quality-item.replaced {{ border-left-color: #d62728; background: #fdf0ef; }}
+ .quality-source {{ font-size: 12px; font-weight: 700; }}
+ .quality-state {{ margin-top: 2px; font-size: 12px; font-weight: 650; }}
+ .quality-item.current .quality-state {{ color: #237a3b; }}
+ .quality-item.partial .quality-state {{ color: #8a6d00; }}
+ .quality-item.replaced .quality-state {{ color: #b3261e; }}
+ .quality-detail {{ margin-top: 2px; color: #727c86; font-size: 10px;
+        line-height: 1.3; }}
  .live-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
         margin-right: 4px; background: #999; }}
  .live-dot.ok {{ background: #2ca02c; }}
@@ -1239,6 +1285,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
  html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
+ html.dark .forecast-quality {{ background: #18212b; border-color: #354352; }}
+ html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
+ html.dark .quality-item {{ background: #202b36; border-color: #43515f; }}
+ html.dark .quality-item.current {{ background: #173326; border-left-color: #58b879; }}
+ html.dark .quality-item.partial {{ background: #3a3219; border-left-color: #d9b83f; }}
+ html.dark .quality-item.replaced {{ background: #402124; border-left-color: #df6c68; }}
+ html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
+ html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
+ html.dark .quality-item.replaced .quality-state {{ color: #f1a29c; }}
  html.dark .banner.ok {{ background: #173326; border-color: #285b40; color: #8fd7a9; }}
  html.dark .banner.warn {{ background: #3a3219; border-color: #6a5925; color: #e1c96b; }}
  html.dark .banner.err {{ background: #402124; border-color: #73383d; color: #f1a29c; }}
@@ -1303,6 +1358,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {decision_html}
+{_forecast_quality_block(forecast_quality)}
 {report_html}
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;

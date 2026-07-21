@@ -138,6 +138,26 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return pd.Timestamp.now(tz=config.general.timezone).floor(freq)
 
 
+def _optimization_index(config: Config, now) -> pd.DatetimeIndex:
+    """Konfigurierten Horizont, optional bis zur nächsten Mitternacht."""
+    start = pd.Timestamp(now)
+    freq = f"{config.general.slot_minutes}min"
+    if not config.general.optimization_horizon_round_to_midnight:
+        return pd.date_range(
+            start, periods=config.general.n_opt_slots, freq=freq,
+            tz=config.general.timezone)
+
+    raw_end = start + pd.Timedelta(
+        hours=config.general.optimization_horizon_hours)
+    rounded_end = raw_end.normalize()
+    # Nur ein NICHT bereits auf Mitternacht liegendes Ende aufrunden. Das alte
+    # <= machte aus 48 h genau um 00:00 versehentlich 72 h.
+    if rounded_end < raw_end:
+        rounded_end += pd.DateOffset(days=1)
+    return pd.date_range(start, rounded_end, freq=freq,
+                         tz=config.general.timezone, inclusive="left")
+
+
 def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
              e3dc=None) -> None:
     """Ein Rechenzyklus. `publisher`/`e3dc`: persistente Verbindungen im Loop-
@@ -165,12 +185,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             publisher.apply_vehicle_overrides(config.vehicle)
             publisher.apply_battery_overrides(config.house_battery)
             publisher.apply_load_overrides(config.controllable_loads)
-        # Horizont bis ENDE des letzten Tages (nächste Mitternacht) aufrunden ->
-        # immer ganze Tage, kein verzerrter Teiltag am Ende.
-        _raw_end = now + timedelta(hours=config.general.optimization_horizon_hours)
-        opt_end = _raw_end.normalize()
-        if opt_end <= _raw_end:
-            opt_end = opt_end + timedelta(days=1)
+        # Konfigurierten Horizont modellieren; optional kontrolliert bis zur
+        # nächsten Mitternacht erweitern. Ohne Option bleiben es konstant 48 h.
+        opt_index = _optimization_index(config, now)
+        opt_end = opt_index[-1] + pd.Timedelta(freq)
 
         # --- 0) Lokale Hauslast-Historie aus dem E3DC nachführen --------- #
         # Vor der Prognose die seit dem letzten Stand fehlenden 15-min-Fenster
@@ -226,7 +244,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         fut_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
                                         now, forecast_end,
                                         require_complete=config.solcast.enabled)
-        if history.dropna().empty:
+        load_source_missing = history.dropna().empty
+        if load_source_missing:
             load_fc = pd.Series(
                 config.forecast.fallback_load_w,
                 index=pd.date_range(now, periods=config.general.n_forecast_slots,
@@ -258,9 +277,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         )
         log.info("Verbrauchsprognose (%d Slots) in InfluxDB geschrieben.", len(load_fc))
 
-        # Optimierungshorizont: jetzt bis Ende des letzten Tages (ganze Tage)
-        opt_index = pd.date_range(now, opt_end, freq=freq,
-                                  tz=config.general.timezone, inclusive="left")
+        # Optimierungshorizont: exakt oder optional bis Mitternacht erweitert.
         house_series, n_load_fallback = _complete_operational_series(
             load_fc, opt_index, config.forecast.fallback_load_w,
             interpolate_limit=2, edge_limit=1)
@@ -275,12 +292,15 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .calibration import load_profile
             cal_profile = load_profile(config.calibration.pv_profile)
 
+        pv_missing_slots = {}
+
         def _pv_series(signal: str, required: bool = True) -> pd.Series:
             """PV-Signal auf den Horizont + Kalibrierprofil + Intraday-Korrektur."""
             s = solcast.read_pv_signal(
                 config, repo, signal, now, opt_end,
                 require_complete=config.solcast.enabled).reindex(opt_index)
             missing = int(s.isna().sum())
+            pv_missing_slots[signal] = missing
             if required and missing:
                 # Keine Energie erfinden: fehlende PV konservativ als 0 W.
                 s = s.fillna(0.0)
@@ -309,6 +329,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         price, price_estimated = _price_series(
             repo, config, opt_index, now, return_estimated=True)
 
+        missing_feed = 0
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots(
                 "feed_in_tariff", now, opt_end, fill=False).reindex(opt_index)
@@ -427,6 +448,48 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             n_solar_fallback)
         else:
             solar_safe = None
+
+        # Qualität der TATSÄCHLICH an den Optimierer übergebenen Prognosen.
+        # Die Einstufung bezieht sich auf den aktuellen Horizont und trennt
+        # echte Quelldaten klar von Slot-Fallbacks bzw. Modellergänzungen.
+        total_slots = len(opt_index)
+        forecast_quality = [
+            _forecast_quality_entry(
+                "Hauslast", total_slots,
+                total_slots if load_source_missing else n_load_fallback,
+                "konservativer Lastwert"),
+            _forecast_quality_entry(
+                "PV", total_slots, pv_missing_slots.get("pv_forecast", total_slots),
+                "0 W"),
+        ]
+        if pv10 is None:
+            forecast_quality.append(_forecast_quality_entry(
+                "PV-p10", total_slots, total_slots, "PV-Erwartungswert"))
+        else:
+            forecast_quality.append(_forecast_quality_entry(
+                "PV-p10", total_slots,
+                pv_missing_slots.get("pv_forecast_p10", total_slots),
+                "konservative PV-Ableitung"))
+        forecast_quality.append(_forecast_quality_entry(
+            "Strompreis", total_slots, int(price_estimated.sum()),
+            "Ähnliche-Tage-Preisprognose"))
+        if config.weather.enabled:
+            forecast_quality.extend([
+                _forecast_quality_entry(
+                    "Außentemperatur", total_slots,
+                    total_slots if temp is None else n_temp_fallback,
+                    "Temperatur-Ersatzwert"),
+                _forecast_quality_entry(
+                    "Solarstrahlung", total_slots,
+                    total_slots if solar is None else n_solar_fallback,
+                    "0 W/m²"),
+            ])
+        if config.feed_in.mode == "db":
+            forecast_quality.append(_forecast_quality_entry(
+                "Einspeisetarif", total_slots,
+                total_slots if not repo.signal_available("feed_in_tariff")
+                else missing_feed,
+                "fester Einspeisetarif"))
 
         # Den tatsächlich verwendeten, vollständig aufbereiteten Prognosesatz
         # unveränderlich archivieren. Damit kann ein späterer Backtest genau
@@ -690,7 +753,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             ambient_temp_c=ambient_temp_display,
                             source_status=_source_status(config, now),
                             pv_compare=pv_compare,
-                            control_status=control_status)
+                            control_status=control_status,
+                            forecast_quality=forecast_quality)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -892,6 +956,26 @@ def _refresh_spot(config):
         log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
 
 
+def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,
+                            replacement: str) -> dict:
+    """Einheitliche Qualitätsstufe für eine operative Prognosereihe."""
+    total = max(0, int(total_slots))
+    replaced = min(total, max(0, int(replaced_slots)))
+    available = total - replaced
+    if total == 0 or replaced >= total:
+        state, level = "vollständig ersetzt", "replaced"
+        detail = f"alle {total} Slots durch {replacement}"
+    elif replaced > 0:
+        state, level = "teilweise ergänzt", "partial"
+        detail = f"{replaced} von {total} Slots durch {replacement}"
+    else:
+        state, level = "aktuell", "current"
+        detail = f"{available} von {total} Slots aus der Prognosequelle"
+    return {"name": name, "state": state, "level": level,
+            "detail": detail, "available_slots": available,
+            "replaced_slots": replaced, "total_slots": total}
+
+
 def _source_status(config, now):
     """Frische der externen Datenquellen fürs Dashboard (Ampel je Quelle).
     Fällt eine API aus, läuft das EMS still auf Cache/Schätzung weiter -
@@ -1054,8 +1138,7 @@ def _build_display_frame(repo, config, now, history, result,
     slot = pd.Timedelta(freq)
     day_start = now.normalize()
     end = result.table.index[-1]
-    # Horizont endet bereits an einer Tagesgrenze (Mitternacht) -> ganze Tage,
-    # kein Abschneiden nötig.
+    # Vom Tagesbeginn bis zum letzten optimierten Slot anzeigen.
     full = pd.date_range(day_start, end, freq=freq, tz=tz)  # inkl. Ende
     df = pd.DataFrame(index=full)
 

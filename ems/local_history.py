@@ -775,7 +775,14 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
     if expected_sources is not None:          # Rückwärtskompatibler Alias
         sources, require_complete = expected_sources, True
     s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=1)).tz_convert("UTC").isoformat()
-    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    # Rechts einen Quellschritt mitlesen: Der Slot direkt vor ``end`` braucht
+    # bei 30-/60-minütlichen Quellen den Stützpunkt exakt auf ``end`` zur
+    # Interpolation. Die frühere SQL-Grenze < end ließ deshalb abhängig von
+    # der Viertelstunde genau den letzten PV- und p10-Slot als NaN stehen.
+    # Das Ausgaberaster bleibt [start, end); limit_area="inside" extrapoliert
+    # weiterhin niemals über den letzten echten Quellwert hinaus.
+    e_utc = (pd.Timestamp(end) + pd.Timedelta(hours=1)).tz_convert(
+        "UTC").isoformat()
     try:
         con = _con(path)
         srcs = list(dict.fromkeys(sources or []))

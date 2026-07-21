@@ -6,11 +6,58 @@ import pandas as pd
 import pytest
 
 from ems.forecast import LoadForecaster
+from ems.main import _forecast_quality_entry, _optimization_index
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
 FREQ = "15min"
 START = pd.Timestamp("2026-05-01 00:00", tz=TZ)
+
+
+def test_forecast_quality_entry_has_three_unambiguous_states():
+    current = _forecast_quality_entry("PV", 192, 0, "0 W")
+    partial = _forecast_quality_entry("PV", 192, 3, "0 W")
+    replaced = _forecast_quality_entry("PV", 192, 192, "0 W")
+    assert current["state"] == "aktuell" and current["level"] == "current"
+    assert partial["state"] == "teilweise ergänzt"
+    assert partial["replaced_slots"] == 3
+    assert replaced["state"] == "vollständig ersetzt"
+    assert replaced["available_slots"] == 0
+
+
+def test_optimization_horizon_is_exact_and_not_rounded_to_midnight():
+    cfg = make_config()
+    cfg.general.optimization_horizon_hours = 48
+    for value in ("2026-07-20 23:45", "2026-07-21 00:00",
+                  "2026-07-21 08:15"):
+        now = pd.Timestamp(value, tz=TZ)
+        index = _optimization_index(cfg, now)
+        assert len(index) == 192
+        assert index[0] == now
+        assert index[-1] == now + pd.Timedelta(hours=47, minutes=45)
+
+
+def test_optimization_horizon_can_round_to_midnight_without_extra_day():
+    cfg = make_config()
+    cfg.general.optimization_horizon_hours = 48
+    cfg.general.optimization_horizon_round_to_midnight = True
+
+    # Reguläres Ende 23:45 -> einen Slot bis 00:00 ergänzen.
+    late = _optimization_index(cfg, pd.Timestamp("2026-07-20 23:45", tz=TZ))
+    assert len(late) == 193
+    assert late[-1] == pd.Timestamp("2026-07-22 23:45", tz=TZ)
+
+    # Reguläres Ende bereits 00:00: niemals einen dritten Tag anhängen.
+    midnight = _optimization_index(
+        cfg, pd.Timestamp("2026-07-21 00:00", tz=TZ))
+    assert len(midnight) == 192
+    assert midnight[-1] == pd.Timestamp("2026-07-22 23:45", tz=TZ)
+
+    # Morgens wird bewusst bis zur übernächsten Mitternacht erweitert.
+    morning = _optimization_index(
+        cfg, pd.Timestamp("2026-07-21 08:00", tz=TZ))
+    assert len(morning) == 256
+    assert morning[-1] == pd.Timestamp("2026-07-23 23:45", tz=TZ)
 
 
 def _history(days: int, old_w: float, new_w: float, split_days: int) -> pd.Series:

@@ -8,6 +8,9 @@ general:
   timezone: "Europe/Berlin"
   # Länge der Steuertabelle (Optimierungshorizont)
   optimization_horizon_hours: 48
+  # Optional bis zur nächsten Mitternacht erweitern. false hält Modellgröße
+  # und Laufzeit konstant; true kann bei 48 h bis fast 72 h ergeben.
+  optimization_horizon_round_to_midnight: false
   # Länge der Verbrauchsprognose, die in die DB geschrieben wird
   forecast_horizon_hours: 72
   # Zeitraster in Minuten (15 = 96 Slots/Tag)
@@ -162,6 +165,8 @@ pv_model:
   system_loss: 0.14           # pauschale Systemverluste (Verkabelung/WR/Schmutz)
   p10_uncertainty: 0.35       # heuristisches p10-Band = pv*(1-0.35); dimensioniert
   p90_uncertainty: 0.15       # die Peak-Einspeise-Linie konservativ (kein echtes Quantil)
+  # Aus echten Residuen kalibrierbar (statt Heuristik): python pv_source_report.py
+  # vergleicht pvlib vs. Solcast gegen die Ist-PV und empfiehlt p10/p90_uncertainty.
 
 # -----------------------------------------------------------------------------
 # Steuerbare / verschiebbare Lasten (optional)
@@ -190,6 +195,7 @@ controllable_loads: []
   #   # Entscheidungsraster (min): WP-Schaltentscheidungen nur alle X Minuten
   #   # (weniger Binärvariablen -> Solver deutlich schneller); Default 60.
   #   decision_minutes: 60
+  #   binary_horizon_hours: 12  # fernere Thermik als Duty-Cycle (0 = alles binär)
   #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE - bei
   #   # Ist-Temperatur >= target_c bleibt sie AN (die WP hält per eigenem
   #   # Thermostat), "aus" nur, wenn Heizen aktiv verhindert werden soll.
@@ -283,6 +289,12 @@ optimization:
   # Solcast-p10-Band plausibilisieren, bleibt aber durch den p10-Boden abgesichert.
   charge_strategy: "auto"
   auto_peak_threshold_percent: 85.0
+  # Glatte automatische Abstimmung zwischen Winter- und Sommer-Sonnenstand.
+  seasonal_peak_tuning: true
+  auto_peak_threshold_winter_percent: 95.0
+  auto_peak_threshold_summer_percent: 75.0
+  peak_charge_ramp_penalty_winter_ct_kw: 0.5
+  peak_charge_ramp_penalty_summer_ct_kw: 2.0
   auto_peak_soc_reserve_percent: 10.0
   auto_peak_p10_floor_percent: 60.0
   auto_peak_expected_override_percent: 150.0
@@ -339,6 +351,15 @@ optimization:
   # Mittelung sieht diese nicht). Kann an sonnigen Tagen minimale PV-Abregelung
   # verursachen. 0 = aus, z.B. 10.
   power_headroom_percent: 0.0
+  # Abend-Reserve: hält den Akku im Fenster [start, end) über einem Mindest-SoC
+  # (% der Kapazität), damit er nicht vor der teuren Abendspitze leerläuft.
+  # WEICHE Grenze (Malus je fehlender kWh) -> nie infeasible, von echtem
+  # Preisvorteil überstimmbar. Nach 'end' ist die Reserve frei (Entladung in die
+  # Spitze). Über Mitternacht (start > end) erlaubt. 0 = aus.
+  evening_reserve_soc_percent: 0.0
+  evening_reserve_start: "16:00"
+  evening_reserve_end: "20:00"
+  evening_reserve_penalty_ct_kwh: 3.0   # ct je kWh Unterschreitung der Reserve
 
 # -----------------------------------------------------------------------------
 # Verbrauchsprognose (Ähnliche-Tage-Mittelung)

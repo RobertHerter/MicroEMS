@@ -5,6 +5,7 @@ import io
 import json
 
 import pandas as pd
+import pytest
 
 from ems import solcast
 from ems.config import SolcastConfig, SolcastSource
@@ -73,6 +74,27 @@ def test_combine_sum_vs_mean(tmp_path):
     assert abs(summ.iloc[1] - summ.iloc[0]) < 1e-6
     # p10-Spalte wird ebenfalls kombiniert
     assert abs(read_pv_forecast(db, s0, e0, tz, 15, "sum", "p10").iloc[0] - 2800.0) < 1e-6
+
+
+def test_pv_interpolation_uses_right_edge_anchor(tmp_path):
+    """Der 15-min-Slot vor dem Abfrageende darf nicht fehlen, wenn der zur
+    Interpolation nötige 30-min-Stützpunkt exakt auf dem Abfrageende liegt."""
+    db = str(tmp_path / "pv.sqlite")
+    base = pd.Timestamp("2026-07-21 06:00", tz="UTC")
+    values = {
+        base.isoformat(): (1000.0, 700.0, 1300.0),
+        (base + pd.Timedelta(minutes=30)).isoformat(): (2000.0, 1400.0, 2600.0),
+        (base + pd.Timedelta(minutes=60)).isoformat(): (3000.0, 2100.0, 3900.0),
+    }
+    write_pv_forecast(db, "A", values)
+    start = base.tz_convert("Europe/Berlin")
+    end = (base + pd.Timedelta(minutes=60)).tz_convert("Europe/Berlin")
+    pv = read_pv_forecast(db, start, end, "Europe/Berlin", 15, "sum", "pv")
+    p10 = read_pv_forecast(db, start, end, "Europe/Berlin", 15, "sum", "p10")
+    assert len(pv) == 4 and pv.notna().all()
+    assert len(p10) == 4 and p10.notna().all()
+    assert pv.iloc[-1] == pytest.approx(2500.0)
+    assert p10.iloc[-1] == pytest.approx(1750.0)
 
 
 def test_pv_archive_selects_snapshot_known_at_origin(tmp_path):

@@ -3,7 +3,8 @@ from types import SimpleNamespace
 from ems.config import ControllableLoad
 import pandas as pd
 
-from ems.dashboard import (_control_banner, _controls_block, _decision_block, _live_block,
+from ems.dashboard import (_control_banner, _controls_block, _decision_block,
+                           _forecast_quality_block, _live_block,
                            _mobile_plot_block)
 
 
@@ -69,6 +70,23 @@ def test_control_failure_has_prominent_dashboard_alarm():
     assert "E3DC-Steuer-Ausfall" in html
     assert "Limit nicht übernommen" in html
     assert _control_banner({"ok": True, "message": "bestätigt"}) == ""
+
+
+def test_forecast_quality_block_renders_all_quality_states():
+    html = _forecast_quality_block([
+        {"name": "Hauslast", "level": "current", "state": "aktuell",
+         "detail": "192 von 192 Slots aus der Prognosequelle"},
+        {"name": "PV", "level": "partial", "state": "teilweise ergänzt",
+         "detail": "1 von 192 Slots durch 0 W"},
+        {"name": "Strompreis", "level": "replaced",
+         "state": "vollständig ersetzt", "detail": "alle Slots ersetzt"},
+    ])
+    assert "Prognosequalität" in html
+    assert html.startswith("<details class='forecast-quality'>")
+    assert "<details class='forecast-quality' open>" not in html
+    assert "aktuell" in html and "teilweise ergänzt" in html
+    assert "vollständig ersetzt" in html
+    assert "quality-item current" in html and "quality-item partial" in html
 
 
 def test_controls_are_collapsible_and_render_editable_power_profile():

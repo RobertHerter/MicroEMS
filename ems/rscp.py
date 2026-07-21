@@ -333,27 +333,43 @@ class E3DCLink:
             return self._control_status(
                 None, "unverified", mode, "Befehl gesendet; Rücklesung deaktiviert.",
                 expected=expected)
-        try:
-            actual = self.read_control_limits()
-        except Exception as exc:
+        tolerance = max(0.0, float(self.rc.control_verify_tolerance_w))
+        actual, problems, last_exc = None, [], None
+        # Direkt nach EMS_REQ_SET_POWER_SETTINGS liefert manche E3DC-Firmware
+        # für wenige 100 ms noch powerLimitsUsed vom vorherigen Zustand. Bis zu
+        # vier kurze Rücklesungen vermeiden diesen falschen Ausfallalarm, ohne
+        # echte Schreib-/Übernahmefehler zu verdecken.
+        for attempt in range(4):
+            try:
+                candidate = self.read_control_limits()
+                candidate_problems = []
+                if candidate["power_limits_used"] != bool(enabled):
+                    candidate_problems.append(
+                        f"Limit-Aktivierung Soll {enabled}, Ist "
+                        f"{candidate['power_limits_used']}")
+                if enabled:
+                    for key, label in (("max_charge_w", "Laden"),
+                                       ("max_discharge_w", "Entladen")):
+                        value = candidate.get(key)
+                        if value is None or abs(value - expected[key]) > tolerance:
+                            candidate_problems.append(
+                                f"{label} Soll {expected[key]:.0f} W, Ist "
+                                f"{'unbekannt' if value is None else f'{value:.0f} W'}")
+                actual, problems, last_exc = candidate, candidate_problems, None
+                if not problems:
+                    if attempt:
+                        log.info("RSCP-Rücklesung nach %d Wiederholung(en) bestätigt.",
+                                 attempt)
+                    break
+            except Exception as exc:
+                last_exc = exc
+            if attempt < 3:
+                time.sleep(0.25)
+        if actual is None:
             return self._control_status(
                 False, "readback_failed", mode,
-                f"E3DC-Limits konnten nicht zurückgelesen werden: {exc}",
+                f"E3DC-Limits konnten nicht zurückgelesen werden: {last_exc}",
                 expected=expected)
-        problems = []
-        if actual["power_limits_used"] != bool(enabled):
-            problems.append(
-                f"Limit-Aktivierung Soll {enabled}, Ist "
-                f"{actual['power_limits_used']}")
-        tolerance = max(0.0, float(self.rc.control_verify_tolerance_w))
-        if enabled:
-            for key, label in (("max_charge_w", "Laden"),
-                               ("max_discharge_w", "Entladen")):
-                value = actual.get(key)
-                if value is None or abs(value - expected[key]) > tolerance:
-                    problems.append(
-                        f"{label} Soll {expected[key]:.0f} W, Ist "
-                        f"{'unbekannt' if value is None else f'{value:.0f} W'}")
         if problems:
             return self._control_status(
                 False, "mismatch", mode, "; ".join(problems),

@@ -4,8 +4,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import pandas as pd
+import pulp
 
 from ems.config import ControllableLoad, LoadStage
+from ems.loads import add_controllable_loads
 from ems.optimizer import Optimizer
 from tests.test_optimizer import _day_index, _inputs, _pv_gauss
 from tests.test_synthetic import make_config
@@ -54,6 +56,26 @@ def _pool_load(loss=100.0, min_c=27.0, target=28.0):
         stages=[LoadStage(name="klein", power_w=400.0, heat_w=3000.0),
                 LoadStage(name="gross", power_w=650.0, heat_w=4000.0,
                           requires="klein")])
+
+
+def test_thermal_binary_horizon_relaxes_only_distant_blocks():
+    cfg = make_config()
+    pool = _pool_load()
+    pool.decision_minutes = 60
+    pool.binary_horizon_hours = 2
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")[:20]  # fünf Stunden
+    inp = _inputs(idx, ambient_temp_c=np.full(len(idx), 20.0),
+                  load_state={"pool": 27.0})
+    prob = pulp.LpProblem("thermal_horizon", pulp.LpMinimize)
+    g_imp = [pulp.LpVariable(f"test_imp_{t}", 0) for t in range(len(idx))]
+    add_controllable_loads(prob, cfg, inp, len(idx), DT_H, g_imp=g_imp)
+    variables = {v.name: v for v in prob.variables()}
+
+    assert variables["cl_pool_klein_b0"].cat == pulp.LpInteger
+    assert variables["cl_pool_klein_b1"].cat == pulp.LpInteger
+    assert variables["cl_pool_klein_b2"].cat == pulp.LpContinuous
+    assert variables["cl_pool_gross_b4"].cat == pulp.LpContinuous
 
 
 def test_thermal_holds_band_and_coupling():

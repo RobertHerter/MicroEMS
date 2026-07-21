@@ -147,8 +147,15 @@ def refresh(config, force: bool = False) -> int:
         return 0
     per_source = compute(config, maps)
     db = config.e3dc_rscp.history_db_path
-    n = sum(local_history.write_pv_forecast(db, src, m)
-            for src, m in per_source.items())
+    # issue_ts = jetzt: unveränderlicher Snapshot je Lauf (Rolling-Origin). So
+    # kann pv_source_report.py pvlib fair gegen Solcast (das ebenso archiviert
+    # wird, ems/solcast.py) und die realen actuals.pv_w messen, statt nur den
+    # ständig überschriebenen Live-Cache zu sehen.
+    issue = pd.Timestamp.now(tz="UTC")
+    n = 0
+    for src, m in per_source.items():
+        n += local_history.write_pv_forecast(db, src, m)
+        local_history.write_pv_forecast_archive(db, src, issue, m)
     _last_refresh = _t.time()
     log.info("PV-Modell (pvlib): %d Array-Zeitwerte aus %d Arrays aktualisiert.",
              n, len(per_source))

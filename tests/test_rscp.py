@@ -176,6 +176,30 @@ def test_control_limit_readback_mismatch_is_failure():
     assert "Laden Soll 1200 W, Ist 2500 W" in status["message"]
 
 
+def test_control_limit_readback_retries_transient_device_state(monkeypatch):
+    import ems.rscp as rscp
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    calls = []
+
+    def settings(keepAlive=False):
+        calls.append(1)
+        return {
+            "powerLimitsUsed": len(calls) > 1,
+            "maxChargePower": 1200,
+            "maxDischargePower": hb.max_discharge_w,
+        }
+
+    monkeypatch.setattr(rscp.time, "sleep", lambda _seconds: None)
+    link._e3dc.get_power_settings = settings
+    status = link.apply_control({
+        "batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+        "batt_discharge_limit_w": hb.max_discharge_w,
+        "batt_grid_discharge_w": 0})
+    assert status["ok"] is True
+    assert len(calls) == 2
+
+
 def test_control_limit_readback_failure_is_alarm_state():
     cfg, link = _link(control_enabled=True)
     hb = cfg.house_battery
