@@ -144,7 +144,11 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
  function render(){{
   if(!window.matchMedia('(max-width:620px)').matches||!window.Plotly)return;
   var src=source(); if(!src||!src.data)return; var axis=axes[current], c=colors();
-  var traces=src.data.filter(function(t){{return (t.yaxis||'y')===axis;}}).map(function(t){{var n=Object.assign({{}},t);n.xaxis='x';n.yaxis='y';return n;}});
+  var traces=src.data.filter(function(t){{return (t.yaxis||'y')===axis;}}).map(function(t){{var n=Object.assign({{}},t);n.xaxis='x';n.yaxis='y';
+   // Auf dem schmalen Handy-Screen die zweite Prognose-Spalte (progb) wieder in
+   // die Prognose-Gruppe legen -> eine kompakte Gruppe statt zwei enger Spalten.
+   if(n.legendgroup==='progb'){{n.legendgroup='prog';n.legendgrouptitle=undefined;}}
+   return n;}});
   var btn=document.querySelector('.mobile-plot-tabs button[data-panel="'+current+'"]');
   if(!traces.length){{var fallback=document.querySelector('.mobile-plot-tabs button:not([hidden])');if(fallback&&fallback!==btn){{current=fallback.dataset.panel;render();}}return;}}
   var end=new Date(new Date(now).getTime()+hours*3600000).toISOString();

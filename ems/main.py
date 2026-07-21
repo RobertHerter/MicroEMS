@@ -660,9 +660,24 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "PV-p10", total_slots,
                 pv_missing_slots.get("pv_forecast_p10", total_slots),
                 "konservative PV-Ableitung", pv_issue, pv_note))
+        # Strompreis: der Day-Ahead wird erst mittags für morgen veröffentlicht,
+        # der ferne Horizont ist also IMMER geschätzt -> die reine Ersatzquote
+        # wäre dauerhaft gelb. Ampel daher am nächsten Tag ausrichten: grün,
+        # sobald morgen real vorliegt; gelb, solange morgen (noch) geschätzt ist;
+        # rot nur ohne jeden realen Preis.
+        _est = price_estimated.to_numpy(dtype=bool)
+        _next_day_end = now.normalize() + pd.Timedelta(days=2)
+        _next_day = opt_index < _next_day_end
+        if int(price_estimated.sum()) >= total_slots or total_slots == 0:
+            _p_level, _p_state = "replaced", "keine realen Preise"
+        elif bool(_est[_next_day].any()):
+            _p_level, _p_state = "partial", "morgen noch geschätzt"
+        else:
+            _p_level, _p_state = "current", "morgen real vorhanden"
         forecast_quality.append(_forecast_quality_entry(
             "Strompreis", total_slots, int(price_estimated.sum()),
-            "Ähnliche-Tage-Preisprognose", forecast_issue))
+            "Ähnliche-Tage-Preisprognose", forecast_issue,
+            level_override=_p_level, state_override=_p_state))
         if config.weather.enabled:
             forecast_quality.extend([
                 _forecast_quality_entry(
@@ -1214,8 +1229,14 @@ def _refresh_spot(config):
 
 def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,
                             replacement: str, issued_at=None,
-                            note: str | None = None) -> dict:
-    """Einheitliche Qualitätsstufe für eine operative Prognosereihe."""
+                            note: str | None = None,
+                            level_override: str | None = None,
+                            state_override: str | None = None) -> dict:
+    """Einheitliche Qualitätsstufe für eine operative Prognosereihe.
+
+    level_override/state_override erlauben eine abweichende Ampel-Logik (z.B.
+    Strompreis: der ferne Horizont ist immer geschätzt -> die reine
+    Ersatzquote wäre dauerhaft gelb; stattdessen am nächsten Tag ausrichten)."""
     total = max(0, int(total_slots))
     replaced = min(total, max(0, int(replaced_slots)))
     available = total - replaced
@@ -1228,6 +1249,10 @@ def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,
     else:
         state, level = "aktuell", "current"
         detail = f"{available} von {total} Slots aus der Prognosequelle"
+    if level_override:
+        level = level_override
+        if state_override:
+            state = state_override
     if note:
         detail += f" · {note}"
     issue = None
