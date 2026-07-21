@@ -147,7 +147,7 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
   var srcAxis=src.layout[axis==='y'?'yaxis':'yaxis'+axis.slice(1)]||{{}};
   var layout={{height:420,autosize:true,hovermode:'x unified',separators:',.',showlegend:true,
    paper_bgcolor:c.paper,plot_bgcolor:c.plot,font:{{color:c.font}},margin:{{l:48,r:12,t:18,b:85}},
-   legend:{{orientation:'h',x:0,y:-.2,font:{{size:10}},entrywidthmode:'fraction',entrywidth:0.5}},
+   legend:{{orientation:'h',x:0,y:-.2,font:{{size:10}}}},
    xaxis:{{range:[now,end],gridcolor:c.grid,tickformat:'%a %H:%M'}},
    yaxis:{{title:srcAxis.title||'',gridcolor:c.grid,zerolinecolor:c.grid}}}};
   if(current==='soc')layout.yaxis.range=[0,101];
@@ -1038,12 +1038,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # Großer Fußbereich: die (im Quermodus mehrzeilig umbrechende) Legende und
         # die Modus-Zeile müssen UNTER dem letzten Panel Platz haben, sonst
         # überlappen sie auf dem Handy das unterste Panel (steuerbare Lasten).
-        margin=dict(l=60, r=30, t=80, b=170),
-        # Zweispaltige Legende: entrywidth=0.5 (Anteil der Legendenbreite) legt je
-        # zwei Einträge nebeneinander -> ~halbe Legendenhöhe gegenüber einspaltig.
+        margin=dict(l=60, r=30, t=80, b=210),
         legend=dict(orientation="h", yanchor="top", y=-0.135, xanchor="left",
-                    x=0, font=dict(size=11), groupclick="toggleitem",
-                    entrywidthmode="fraction", entrywidth=0.5),
+                    x=0, font=dict(size=11), groupclick="toggleitem"),
     )
 
     # ---------- KPI-Kacheln ----------
