@@ -202,6 +202,12 @@ class LoadStage:
     heat_w: float = 0.0                  # thermische Leistung (W), nur type=thermal
     requires: Optional[str] = None       # Name einer anderen Stufe (Kopplung: nur an, wenn jene an)
     mqtt_topic: Optional[str] = None     # Schaltbefehl (0/1) je Slot
+    # Optionale echte Rückmeldung vom Gerät/Homey. feedback_topic liefert
+    # on/off; power_topic eine gemessene elektrische Leistung in W. Liegen
+    # beide vor, entscheidet die Leistung oberhalb feedback_on_threshold_w.
+    feedback_topic: Optional[str] = None
+    power_topic: Optional[str] = None
+    feedback_on_threshold_w: float = 50.0
 
 
 @dataclass
@@ -267,6 +273,8 @@ class ControllableLoad:
     # sind ein mittlerer Duty-Cycle [0..1]; sie werden vor ihrer Ausführung bei
     # jedem Folgelauf wieder binär. 0 = gesamter Horizont binär.
     binary_horizon_hours: float = 12.0
+    feedback_required: bool = False
+    feedback_max_age_minutes: float = 20.0
 
     @property
     def capacity_wh_per_k(self) -> float:
@@ -816,6 +824,12 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             heat_w=float(s.get("heat_w", 0.0)),
             requires=(str(s["requires"]) if s.get("requires") else None),
             mqtt_topic=(str(s["mqtt_topic"]) if s.get("mqtt_topic") else None),
+            feedback_topic=(str(s["feedback_topic"])
+                            if s.get("feedback_topic") else None),
+            power_topic=(str(s["power_topic"])
+                         if s.get("power_topic") else None),
+            feedback_on_threshold_w=float(
+                s.get("feedback_on_threshold_w", 50.0)),
         ) for s in (w.get("stages") or [])]
         prof = w.get("power_profile_w")
         win = w.get("window", {}) or {}
@@ -851,6 +865,9 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                        if (w.get("season_to") or seas.get("to")) else None),
             decision_minutes=int(w.get("decision_minutes", 0)),
             binary_horizon_hours=float(w.get("binary_horizon_hours", 12.0)),
+            feedback_required=bool(w.get("feedback_required", False)),
+            feedback_max_age_minutes=float(
+                w.get("feedback_max_age_minutes", 20.0)),
         )
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "
@@ -867,6 +884,12 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)
+            stage_heat = ov.get("stage_heat_w")
+            if isinstance(stage_heat, dict):
+                for stage in load.stages:
+                    value = stage_heat.get(_load_slug(stage.name))
+                    if value is not None:
+                        stage.heat_w = float(value)
         out.append(load)
     return out
 
@@ -1294,7 +1317,7 @@ def load_config(path: str) -> Config:
         history_overlap_hours=int(e.get("history_overlap_hours", 3)),
     )
 
-    return Config(
+    config = Config(
         general=general,
         influxdb=influxdb,
         feed_in=feed_in,
@@ -1318,3 +1341,9 @@ def load_config(path: str) -> Config:
         sanity=sanity,
         controllable_loads=controllable_loads,
     )
+    config._source_path = os.path.abspath(path)
+    try:
+        config._overrides_mtime = os.path.getmtime(_overrides_path(path))
+    except OSError:
+        config._overrides_mtime = 0.0
+    return config

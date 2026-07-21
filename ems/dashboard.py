@@ -647,12 +647,56 @@ def _operations_block(solver, execution) -> str:
             f"<div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
+def _thermal_feedback_block(feedback, calibrations) -> str:
+    if not feedback and not calibrations:
+        return ""
+    cards = []
+    for item in feedback or []:
+        if not item.get("configured"):
+            state, level, detail = "nicht konfiguriert", "partial", (
+                "feedback_topic oder power_topic ergänzen")
+        elif item.get("fresh"):
+            state, level = ("läuft" if item.get("on") else "aus"), "current"
+            power = item.get("power_w")
+            age = item.get("age_seconds")
+            detail = ((f"{power:,.0f} W".replace(",", ".")
+                       if power is not None else "Statusrückmeldung")
+                      + (f" · vor {age:.0f} s" if age is not None else ""))
+        else:
+            state, level, detail = "Rückmeldung veraltet", "replaced", "keine frischen Istwerte"
+        cards.append(
+            f"<article class='quality-item {level}'><div class='quality-source'>"
+            f"{_esc(item.get('label', 'Wärmepumpe'))}</div>"
+            f"<div class='quality-state'>{state}</div>"
+            f"<div class='quality-detail'>{detail}</div></article>")
+    for cal in calibrations or []:
+        applied = cal.get("applied") or {}
+        state = ("automatisch übernommen" if applied else
+                 ("Qualität reicht noch nicht" if cal.get("status") != "applied"
+                  else "geprüft"))
+        level = "current" if applied else "partial"
+        r2 = cal.get("r2")
+        detail = (f"{cal.get('n_windows') or 0} Fenster"
+                  + (f" · R² {r2:.2f}" if r2 is not None else "")
+                  + (f" · {cal.get('message')}" if cal.get("message") else ""))
+        cards.append(
+            f"<article class='quality-item {level}'><div class='quality-source'>"
+            f"Thermomodell {_esc(cal.get('name', ''))}</div>"
+            f"<div class='quality-state'>{state}</div>"
+            f"<div class='quality-detail'>{_esc(detail)}</div></article>")
+    return ("<details class='forecast-quality'><summary><span>Pool-Rückkopplung"
+            "</span><small>reale Wärmepumpen und Thermomodell</small></summary>"
+            f"<div class='quality-grid'>{''.join(cards)}</div></details>")
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
                     load_temp_actual=None, ambient_temp_c=None,
                     source_status=None, pv_compare=None,
                     control_status=None, forecast_quality=None,
-                    solver_status=None, execution_status=None) -> str:
+                    solver_status=None, execution_status=None,
+                    load_feedback_status=None,
+                    thermal_calibration=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -1433,6 +1477,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {mobile_plot_html}
 {decision_html}
 {_operations_block(solver_status, execution_status)}
+{_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
 {report_html}
 <script>(function(){{

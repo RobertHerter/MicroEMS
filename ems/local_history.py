@@ -90,6 +90,19 @@ def _con(path: str) -> sqlite3.Connection:
     # Freigabe "an" entscheidet das WP-Thermostat selbst, ob geheizt wird.
     con.execute("CREATE TABLE IF NOT EXISTS load_cmd ("
                 " name TEXT, ts TEXT, permit INTEGER, PRIMARY KEY(name, ts))")
+    # Echte Rückmeldung je thermischer Stufe (Kompressorstatus/Leistung) und
+    # gesendeter Befehl. Trennt Heizfreigabe klar vom realen Betrieb.
+    con.execute("CREATE TABLE IF NOT EXISTS load_feedback ("
+                " name TEXT, stage TEXT, ts TEXT, actual_on INTEGER,"
+                " power_w REAL, fresh INTEGER NOT NULL, age_seconds REAL,"
+                " PRIMARY KEY(name, stage, ts))")
+    con.execute("CREATE TABLE IF NOT EXISTS load_stage_cmd ("
+                " name TEXT, stage TEXT, ts TEXT, commanded_on INTEGER,"
+                " PRIMARY KEY(name, stage, ts))")
+    con.execute("CREATE TABLE IF NOT EXISTS thermal_calibration ("
+                " name TEXT, ts TEXT, status TEXT, n_windows INTEGER, r2 REAL,"
+                " old_json TEXT, fitted_json TEXT, applied_json TEXT,"
+                " message TEXT, PRIMARY KEY(name, ts))")
     # Zuletzt an den E3DC gesendeter Steuerbefehl (aktueller Slot), als JSON.
     # Beim Dienststart sofort wieder anwendbar, um die Peak-/Steuer-Lücke
     # zwischen sauberem Herunterfahren (Limits freigegeben) und dem ersten
@@ -513,6 +526,141 @@ def write_load_cmd(path: str, ts, name: str, permit: int) -> None:
         (str(name), key, int(permit)))
     con.commit()
     con.close()
+
+
+def write_load_feedback(path: str, ts, name: str, stage: str,
+                        feedback: dict) -> None:
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    on = feedback.get("on")
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO load_feedback VALUES(?,?,?,?,?,?,?)",
+        (str(name), str(stage), key, None if on is None else int(bool(on)),
+         feedback.get("power_w"), int(bool(feedback.get("fresh"))),
+         feedback.get("age_seconds")))
+    con.commit()
+    con.close()
+
+
+def write_load_stage_cmd(path: str, ts, name: str, stage: str,
+                         commanded_on: int) -> None:
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute("INSERT OR REPLACE INTO load_stage_cmd VALUES(?,?,?,?)",
+                (str(name), str(stage), key, int(bool(commanded_on))))
+    con.commit()
+    con.close()
+
+
+def read_load_actual_on(path: str, name: str, stages: list[str], start, end,
+                        tz: str) -> pd.Series:
+    """Realer Gesamt-Heizstatus; nur Slots mit Rückmeldung ALLER Stufen."""
+    if not stages:
+        return pd.Series(dtype="float64")
+    s = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        marks = ",".join("?" for _ in stages)
+        rows = con.execute(
+            f"SELECT ts, stage, actual_on FROM load_feedback WHERE name=? "
+            f"AND stage IN ({marks}) AND ts>=? AND ts<=? AND fresh=1 "
+            f"AND actual_on IS NOT NULL ORDER BY ts", (name, *stages, s, e)
+        ).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.Series(dtype="float64")
+    frame = pd.DataFrame(rows, columns=["ts", "stage", "on"])
+    wide = frame.pivot_table(index="ts", columns="stage", values="on",
+                             aggfunc="last").reindex(columns=stages).dropna()
+    idx = pd.to_datetime(wide.index, utc=True, format="ISO8601")
+    return pd.Series(wide.max(axis=1).to_numpy(dtype=float), index=idx
+                     ).tz_convert(tz)
+
+
+def read_load_stage_on(path: str, name: str, stages: list[str], start, end,
+                       tz: str) -> dict[str, pd.Series]:
+    """Frische reale Ein/Aus-Reihen je Stufe; fehlende Werte bleiben Lücken."""
+    if not stages:
+        return {}
+    s = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        marks = ",".join("?" for _ in stages)
+        rows = con.execute(
+            f"SELECT ts,stage,actual_on FROM load_feedback WHERE name=? "
+            f"AND stage IN ({marks}) AND ts>=? AND ts<=? AND fresh=1 "
+            f"AND actual_on IS NOT NULL ORDER BY ts", (name, *stages, s, e)
+        ).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    out = {}
+    for stage in stages:
+        selected = [(r[0], r[2]) for r in rows if r[1] == stage]
+        if selected:
+            idx = pd.to_datetime([r[0] for r in selected], utc=True,
+                                 format="ISO8601")
+            out[stage] = pd.Series([r[1] for r in selected], index=idx,
+                                   dtype="float64").tz_convert(tz)
+    return out
+
+
+def read_latest_load_feedback(path: str, tz: str) -> list[dict]:
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT f.name,f.stage,f.ts,f.actual_on,f.power_w,f.fresh,f.age_seconds "
+            "FROM load_feedback f JOIN (SELECT name,stage,MAX(ts) ts "
+            "FROM load_feedback GROUP BY name,stage) x "
+            "ON f.name=x.name AND f.stage=x.stage AND f.ts=x.ts "
+            "ORDER BY f.name,f.stage").fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    return [{"name": r[0], "stage": r[1],
+             "ts": pd.Timestamp(r[2]).tz_convert(tz).isoformat(),
+             "on": None if r[3] is None else bool(r[3]), "power_w": r[4],
+             "fresh": bool(r[5]), "age_seconds": r[6]} for r in rows]
+
+
+def write_thermal_calibration(path: str, name: str, status: dict) -> None:
+    ts = pd.Timestamp(status.get("ts", pd.Timestamp.now(tz="UTC")))
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO thermal_calibration VALUES(?,?,?,?,?,?,?,?,?)",
+        (str(name), ts.tz_convert("UTC").isoformat(),
+         str(status.get("status", "unknown")), status.get("n_windows"),
+         status.get("r2"), json.dumps(status.get("old") or {}),
+         json.dumps(status.get("fitted") or {}),
+         json.dumps(status.get("applied") or {}),
+         str(status.get("message", ""))))
+    con.commit()
+    con.close()
+
+
+def read_latest_thermal_calibration(path: str, tz: str) -> list[dict]:
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT c.name,c.ts,c.status,c.n_windows,c.r2,c.old_json,"
+            "c.fitted_json,c.applied_json,c.message FROM thermal_calibration c "
+            "JOIN (SELECT name,MAX(ts) ts FROM thermal_calibration GROUP BY name) x "
+            "ON c.name=x.name AND c.ts=x.ts ORDER BY c.name").fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    return [{"name": r[0], "ts": pd.Timestamp(r[1]).tz_convert(tz).isoformat(),
+             "status": r[2], "n_windows": r[3], "r2": r[4],
+             "old": json.loads(r[5] or "{}"),
+             "fitted": json.loads(r[6] or "{}"),
+             "applied": json.loads(r[7] or "{}"), "message": r[8]}
+            for r in rows]
 
 
 def read_load_cmd(path: str, name: str, start, end, tz: str) -> pd.Series:

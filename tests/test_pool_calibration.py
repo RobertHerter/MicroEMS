@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ems.local_history import read_load_cmd, write_load_cmd
 from ems.pool_calibration import fit_thermal_params
@@ -63,6 +64,34 @@ def test_fit_ignores_permitted_slots():
     assert abs(fit.a_solar_w_per_wm2 - A_SOLAR) / A_SOLAR < 0.20, fit.a_solar_w_per_wm2
 
 
+def test_fit_learns_effective_heat_from_real_stage_feedback():
+    idx = pd.date_range("2026-06-01", periods=12 * 96, freq="15min", tz=TZ)
+    hour = idx.hour + idx.minute / 60.0
+    day = idx.dayofyear.to_numpy()
+    ambient = pd.Series(19.0 + 3.0 * np.sin(2 * np.pi * hour / 24), index=idx)
+    solar = pd.Series(np.maximum(0.0, 700.0 * np.sin(np.pi * (hour - 6) / 14)),
+                      index=idx)
+    wp1 = pd.Series(((day % 3 == 0) & (hour >= 2) & (hour < 5)).astype(float),
+                    index=idx)
+    wp2 = pd.Series(((day % 4 == 0) & (hour >= 20) & (hour < 23)).astype(float),
+                    index=idx)
+    temp = np.empty(len(idx) + 1)
+    temp[0] = 27.0
+    for i in range(len(idx)):
+        heat = 4000.0 * wp1.iloc[i] + 2800.0 * wp2.iloc[i]
+        gain = 6.0 * solar.iloc[i]
+        loss = 120.0 * (temp[i] - ambient.iloc[i])
+        temp[i + 1] = temp[i] + (heat + gain - loss) * 0.25 / CAP
+    pool = pd.Series(temp[:-1], index=idx)
+    permit = pd.Series(1.0, index=idx)
+    fit = fit_thermal_params(pool, ambient, solar, permit, CAP,
+                             stage_on={"WP1": wp1, "WP2": wp2})
+    assert fit is not None and fit.r2 > 0.95
+    assert fit.condition_number < 100
+    assert fit.stage_heat_w["WP1"] == pytest.approx(4000, rel=0.12)
+    assert fit.stage_heat_w["WP2"] == pytest.approx(2800, rel=0.12)
+
+
 def test_fit_needs_enough_windows():
     t_pool, t_amb, g, permit = _synthetic(days=1)
     assert fit_thermal_params(t_pool, t_amb, g, permit, CAP,
@@ -87,16 +116,18 @@ def test_maybe_apply_writes_damped_values_to_overlay(tmp_path):
     cfg = load_config(cfg_path)
     ld = cfg.controllable_loads[0]
     fit = FitResult(loss_w_per_k=500.0, a_solar_w_per_wm2=8.0,  # absorption 1.0
-                    n_windows=200, r2=0.8)
+                    n_windows=200, r2=0.8, stage_heat_w={"WP": 5000.0})
     changed = maybe_apply(fit, ld, cfg_path)
     assert changed == {"loss_w_per_k": 400.0,          # 0.5*300 + 0.5*500
-                       "solar_absorption": 0.8}        # 0.5*0.6 + 0.5*1.0
+                       "solar_absorption": 0.8,        # 0.5*0.6 + 0.5*1.0
+                       "heat_w:WP": 4000.0}            # 0.5*3000 + 0.5*5000
     ov = yaml.safe_load(open(tmp_path / "config_overrides.yaml"))
     assert ov["controllable_loads_overrides"]["Pool"]["loss_w_per_k"] == 400.0
     # und die Whitelist lässt loss_w_per_k durch (Rundreise über load_config)
     ld2 = load_config(cfg_path).controllable_loads[0]
     assert ld2.loss_w_per_k == 400.0
     assert ld2.solar_absorption == 0.8
+    assert ld2.stages[0].heat_w == 4000.0
 
 
 def test_maybe_apply_respects_quality_gates(tmp_path):
@@ -160,3 +191,20 @@ def test_load_cmd_roundtrip(tmp_path):
     assert list(s.values) == [1.0, 0.0, 0.0]
     assert len(s) == 3                      # Lücke wird NICHT aufgefüllt
     assert read_load_cmd(db, "Sauna", base, base + pd.Timedelta(hours=1), TZ).empty
+
+
+def test_real_stage_feedback_roundtrip(tmp_path):
+    from ems.local_history import (read_load_actual_on, read_load_stage_on,
+                                   write_load_feedback)
+    db = str(tmp_path / "hist.sqlite")
+    base = pd.Timestamp("2026-07-15 12:00", tz=TZ)
+    write_load_feedback(db, base, "Pool", "WP1", {
+        "on": True, "power_w": 620.0, "fresh": True, "age_seconds": 2.0})
+    write_load_feedback(db, base, "Pool", "WP2", {
+        "on": False, "power_w": 0.0, "fresh": True, "age_seconds": 3.0})
+    total = read_load_actual_on(db, "Pool", ["WP1", "WP2"],
+                                base, base, TZ)
+    stages = read_load_stage_on(db, "Pool", ["WP1", "WP2"],
+                                base, base, TZ)
+    assert total.iloc[0] == 1.0
+    assert stages["WP1"].iloc[0] == 1.0 and stages["WP2"].iloc[0] == 0.0

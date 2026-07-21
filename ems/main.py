@@ -49,6 +49,7 @@ _intraday_raw = {"load": None, "pv": None}
 _control_alarm = {"failed": False, "key": None, "last": 0.0}
 _execution_alarm = {"failed": False}
 _solver_alarm = {"failed": False}
+_load_feedback_alarm = {"failed": set()}
 
 
 def _audit_execution(config, now, live):
@@ -118,6 +119,23 @@ def _publish_solver_alarm(publisher, status) -> None:
     elif not status.get("slow") and _solver_alarm["failed"]:
         publisher.publish_alert("info", "Solver-Laufzeit wieder normal.")
         _solver_alarm["failed"] = False
+
+
+def _publish_load_feedback_alarm(publisher, statuses) -> None:
+    if publisher is None:
+        return
+    if (hasattr(publisher, "feedback_alarm_ready") and
+            not publisher.feedback_alarm_ready()):
+        return
+    bad = {item["label"] for item in (statuses or [])
+           if item.get("required") and not item.get("fresh")}
+    old = set(_load_feedback_alarm["failed"])
+    for label in sorted(bad - old):
+        publisher.publish_alert(
+            "warning", f"Pool-Rückmeldung fehlt oder ist veraltet: {label}.")
+    for label in sorted(old - bad):
+        publisher.publish_alert("info", f"Pool-Rückmeldung wieder aktuell: {label}.")
+    _load_feedback_alarm["failed"] = bad
 
 
 def _publish_control_alarm(publisher, config, status) -> None:
@@ -253,6 +271,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
+        _reload_thermal_calibration(config)
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
         # Per MQTT gesetzte Overrides (ems/cmd/car_departure_time,
@@ -548,6 +567,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # --- 3) Optimierung --------------------------------------------- #
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
         load_state = _read_load_state(config, publisher)
+        load_feedback, load_feedback_status = _read_load_feedback(
+            config, publisher, now)
         if temp is not None:
             recent_temp = temp[(temp.index >= now - pd.Timedelta(hours=24))
                                & (temp.index < now)].dropna()
@@ -670,6 +691,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             solar_w_m2=(solar_safe.values.astype(float)
                         if solar_safe is not None else None),
             load_state=load_state,
+            load_feedback=load_feedback,
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
         # bewusst UNABHÄNGIG von enabled: die Pool-Temperatur ist auch dann
@@ -779,6 +801,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                f"Modell weicht von der Realität ab.")
             _publish_solver_alarm(publisher, solver_status)
             _publish_execution_alarm(publisher, config, execution_status)
+            _publish_load_feedback_alarm(publisher, load_feedback_status)
             load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
             plan_published = True
             # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
@@ -801,6 +824,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         if lbl == ld.name or lbl.startswith(f"{ld.name}/")))
                     write_load_cmd(config.e3dc_rscp.history_db_path, slot_ts,
                                    ld.name, permit)
+                    from .local_history import write_load_stage_cmd
+                    for st in ld.stages:
+                        label = f"{ld.name}/{st.name}"
+                        cmd = (load_cmds or {}).get(label)
+                        if cmd in (0, 1, False, True):
+                            write_load_stage_cmd(
+                                config.e3dc_rscp.history_db_path, slot_ts,
+                                ld.name, st.name, int(bool(cmd)))
             except Exception as exc:
                 log.debug("load_cmd-Log fehlgeschlagen (%s).", exc)
         except Exception as exc:
@@ -925,6 +956,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     pv_compare = pvc if not pvc.empty else None
             except Exception as exc:  # pragma: no cover
                 log.debug("PV-Vergleichsreihe nicht verfügbar: %s", exc)
+            try:
+                from .local_history import read_latest_thermal_calibration
+                thermal_calibration = read_latest_thermal_calibration(
+                    config.e3dc_rscp.history_db_path,
+                    config.general.timezone)
+            except Exception:
+                thermal_calibration = []
             build_dashboard(config, display, result.total_cost_ct,
                             export_line_w=result.export_line_w,
                             savings_eur=savings_eur,
@@ -936,7 +974,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             control_status=control_status,
                             forecast_quality=forecast_quality,
                             solver_status=solver_status,
-                            execution_status=execution_status)
+                            execution_status=execution_status,
+                            load_feedback_status=load_feedback_status,
+                            thermal_calibration=thermal_calibration)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -1274,6 +1314,76 @@ def _read_load_state(config, publisher):
             if t is not None and np.isfinite(float(t)):
                 st[ld.name] = float(t)
     return st or None
+
+
+def _reload_thermal_calibration(config) -> None:
+    """Extern automatisch kalibrierte Overlay-Werte ohne Neustart übernehmen."""
+    path = getattr(config, "_source_path", None)
+    if not path:
+        return
+    from .config import _overrides_path, load_config
+    try:
+        mtime = os.path.getmtime(_overrides_path(path))
+    except OSError:
+        mtime = 0.0
+    if mtime <= getattr(config, "_overrides_mtime", 0.0):
+        return
+    fresh = load_config(path)
+    by_name = {ld.name: ld for ld in fresh.controllable_loads
+               if ld.type == "thermal"}
+    changes = []
+    for current in config.controllable_loads:
+        newer = by_name.get(current.name)
+        if current.type != "thermal" or newer is None:
+            continue
+        for field in ("loss_w_per_k", "solar_absorption"):
+            old, new = getattr(current, field), getattr(newer, field)
+            if old != new:
+                setattr(current, field, new)
+                changes.append(f"{current.name}.{field}={new}")
+        stages = {stage.name: stage for stage in newer.stages}
+        for stage in current.stages:
+            if stage.name in stages and stage.heat_w != stages[stage.name].heat_w:
+                stage.heat_w = stages[stage.name].heat_w
+                changes.append(f"{current.name}/{stage.name}.heat_w={stage.heat_w}")
+    config._overrides_mtime = mtime
+    if changes:
+        log.info("Thermokalibrierung automatisch übernommen: %s",
+                 ", ".join(changes))
+
+
+def _read_load_feedback(config, publisher, now):
+    """Echte thermische Stufenzustände lesen, archivieren und verdichten."""
+    state, statuses = {}, []
+    if publisher is None:
+        return None, statuses
+    from .local_history import write_load_feedback
+    for ld in getattr(config, "controllable_loads", []):
+        if ld.type != "thermal":
+            continue
+        for stage in ld.stages:
+            label = f"{ld.name}/{stage.name}"
+            configured = bool(stage.feedback_topic or stage.power_topic)
+            feedback = publisher.get_load_feedback(
+                label, ld.feedback_max_age_minutes) if configured else None
+            item = {"label": label, "name": ld.name, "stage": stage.name,
+                    "configured": configured,
+                    "required": bool(ld.feedback_required),
+                    "fresh": bool(feedback and feedback.get("fresh")),
+                    "on": feedback.get("on") if feedback else None,
+                    "power_w": feedback.get("power_w") if feedback else None,
+                    "age_seconds": (feedback.get("age_seconds")
+                                    if feedback else None)}
+            statuses.append(item)
+            if feedback is not None:
+                try:
+                    write_load_feedback(config.e3dc_rscp.history_db_path, now,
+                                        ld.name, stage.name, feedback)
+                except Exception as exc:
+                    log.debug("Last-Rückmeldung nicht speicherbar (%s).", exc)
+            if item["fresh"] and item["on"] is not None:
+                state[label] = bool(item["on"])
+    return state or None, statuses
 
 
 def _price_series(repo, config, index, now, return_estimated=False):
@@ -1918,6 +2028,13 @@ def main() -> None:
     # Persistente MQTT-Verbindung mit Last Will: stirbt der Prozess, setzt der
     # Broker ems/status selbst auf "offline" (Watchdog-Signal für Homey).
     publisher = HomeyMqttPublisher(config)
+    try:
+        # Temperatur-, Kommando- und WP-Rückmeldungen bereits vor dem ersten
+        # Solve abonnieren. So stehen retained/live Istwerte rechtzeitig zur
+        # Verfügung und erzeugen beim Dienststart keinen Fehlalarm.
+        publisher.start()
+    except Exception as exc:
+        log.warning("Früher MQTT-Verbindungsaufbau fehlgeschlagen (%s).", exc)
     # Persistente RSCP-Verbindung: hält den Steuer-Watchdog-Thread über die
     # Zyklen (Mode 3/4 alle 5 s). Stirbt der Prozess, fällt der E3DC nach 10 s
     # selbst auf auto zurück (Fail-safe).

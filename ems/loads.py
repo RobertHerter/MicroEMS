@@ -64,9 +64,13 @@ def _season_mask(load, md_list) -> np.ndarray:
     return out
 
 
-def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag):
+def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag, initial_on=None):
     if pen_ct <= 0:
         return
+    if initial_on is not None and N:
+        sw = pulp.LpVariable(f"{tag}_sw_0", 0)
+        prob += sw >= on[0] - int(bool(initial_on))
+        cost_terms.append(pen_ct * sw)
     for t in range(1, N):
         sw = pulp.LpVariable(f"{tag}_sw_{t}", 0)
         prob += sw >= on[t] - on[t - 1]
@@ -306,8 +310,10 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
 
     for st in ld.stages:
         ssg = _slug(st.name)
+        feedback = inp.load_feedback or {}
+        initial = feedback.get(f"{ld.name}/{st.name}")
         _switch_penalty(prob, stage_on[st.name], N, ld.switch_penalty_ct,
-                        cost_terms, f"cl_{sg}_{ssg}")
+                        cost_terms, f"cl_{sg}_{ssg}", initial_on=initial)
         col = f"load_{sg}_{ssg}_w"
         outputs[col] = [st.power_w * stage_on[st.name][t] for t in range(N)]
         mqtt_map.append({"label": f"{ld.name}/{st.name}", "column": col,

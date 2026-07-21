@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import time as dtime
 
+from ems.config import ControllableLoad, LoadStage
 from ems.homey_mqtt import HomeyMqttPublisher
 from tests.test_synthetic import make_config
 
@@ -155,6 +156,45 @@ def test_pool_temp_cached_from_mqtt():
     assert topic in pub._temp_topics
     pub._on_message(None, None, Msg(topic, "27,4"))     # Dezimal-Komma zulässig
     assert pub.get_load_temp(topic) == 27.4
+
+
+def test_pool_stage_feedback_uses_real_power_as_running_state():
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", volume_l=7000,
+        feedback_required=True, feedback_max_age_minutes=20,
+        stages=[LoadStage("WP", 650, 4000, feedback_topic="pool/wp/on",
+                          power_topic="pool/wp/power",
+                          feedback_on_threshold_w=50)])]
+    pub = HomeyMqttPublisher(cfg)
+    assert {"pool/wp/on", "pool/wp/power"} <= set(pub._feedback_topics)
+    pub._on_message(None, None, Msg("pool/wp/on", "off"))
+    assert pub.get_load_feedback("Pool/WP")["on"] is False
+    pub._on_message(None, None, Msg("pool/wp/power", "612,5"))
+    feedback = pub.get_load_feedback("Pool/WP")
+    assert feedback["fresh"] and feedback["on"] is True
+    assert feedback["power_w"] == 612.5
+
+
+def test_shared_power_topic_derives_multiple_pool_stages():
+    cfg = make_config()
+    shared = "pool/wp/total-power"
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", feedback_required=True,
+        stages=[LoadStage("Grundstufe", 650, 4000, power_topic=shared,
+                          feedback_on_threshold_w=10),
+                LoadStage("Zusatzstufe", 400, 3000, power_topic=shared,
+                          feedback_on_threshold_w=700)])]
+    pub = HomeyMqttPublisher(cfg)
+    assert len(pub._feedback_topics[shared]) == 2
+
+    pub._on_message(None, None, Msg(shared, "645"))
+    assert pub.get_load_feedback("Pool/Grundstufe")["on"] is True
+    assert pub.get_load_feedback("Pool/Zusatzstufe")["on"] is False
+
+    pub._on_message(None, None, Msg(shared, "1040"))
+    assert pub.get_load_feedback("Pool/Grundstufe")["on"] is True
+    assert pub.get_load_feedback("Pool/Zusatzstufe")["on"] is True
 
 
 def test_load_lanes_includes_disabled_loads():

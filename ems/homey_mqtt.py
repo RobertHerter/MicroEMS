@@ -81,6 +81,7 @@ class HomeyMqttPublisher:
         self.cfg = config.mqtt
         self.vehicle = config.vehicle
         self._client = None
+        self._connected_at = None
         # Von Homey per ems/cmd/# steuerbar:
         self.recalc_event = threading.Event()
         self.car_boost = False
@@ -104,6 +105,21 @@ class HomeyMqttPublisher:
         # einen Startwert hat.
         self._temp_topics = [ld.temp_signal for ld in self.loads
                              if ld.type == "thermal" and ld.temp_signal]
+        self.load_feedback: Dict[str, dict] = {}
+        # Ein gemeinsamer Leistungsmesser darf mehrere Stufen ableiten, z.B.
+        # Gesamtleistung >10 W = Grundstufe und >700 W = zweite Stufe.
+        self._feedback_topics: Dict[str, list[tuple]] = {}
+        for ld in self.loads:
+            if ld.type != "thermal":
+                continue
+            for st in ld.stages:
+                label = f"{ld.name}/{st.name}"
+                if st.feedback_topic:
+                    self._feedback_topics.setdefault(st.feedback_topic, []).append(
+                        (label, "state", st.feedback_on_threshold_w))
+                if st.power_topic:
+                    self._feedback_topics.setdefault(st.power_topic, []).append(
+                        (label, "power", st.feedback_on_threshold_w))
         # Enable/Disable je Last per ems/cmd/load/<slug>; leer = Konfigwert.
         self.load_overrides: Dict[str, bool] = {}
         self._load_defaults = {_slug(ld.name): ld.enabled for ld in self.loads}
@@ -148,6 +164,42 @@ class HomeyMqttPublisher:
         """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None)."""
         return self.load_temps.get(topic)
 
+    def get_load_feedback(self, label: str, max_age_minutes: float = 20.0
+                          ) -> Optional[dict]:
+        """Letzte echte Stufenrückmeldung mit Frischebewertung."""
+        item = self.load_feedback.get(label)
+        if not item:
+            return None
+        out = dict(item)
+        now = pd.Timestamp.now(tz="UTC")
+        limit_s = max(0.0, float(max_age_minutes)) * 60.0
+        power_ts, state_ts = out.get("power_updated"), out.get("state_updated")
+        power_age = ((now - power_ts).total_seconds() if power_ts is not None
+                     else float("inf"))
+        state_age = ((now - state_ts).total_seconds() if state_ts is not None
+                     else float("inf"))
+        if out.get("power_w") is not None and power_age <= limit_s:
+            out["on"] = bool(float(out["power_w"]) >=
+                             out.get("threshold_w", 50.0))
+            age_s = power_age
+        else:
+            age_s = state_age
+        out["age_seconds"] = max(0.0, age_s)
+        out["fresh"] = age_s <= limit_s and out.get("on") is not None
+        return out
+
+    def all_load_feedback(self) -> dict:
+        out = {}
+        for ld in self.loads:
+            if ld.type != "thermal":
+                continue
+            for st in ld.stages:
+                label = f"{ld.name}/{st.name}"
+                item = self.get_load_feedback(label, ld.feedback_max_age_minutes)
+                if item is not None:
+                    out[label] = item
+        return out
+
     def _load_lanes(self):
         """Alle konfigurierten steuerbaren Lasten als [(label, column, enabled,
         topic)] – auch deaktivierte, damit deren Zustand (aus) publiziert wird."""
@@ -188,8 +240,11 @@ class HomeyMqttPublisher:
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).
+        self._connected_at = pd.Timestamp.now(tz="UTC")
         client.subscribe(f"{self.cfg.base_topic}/cmd/#", qos=1)
         for topic in self._temp_topics:      # Pool-/Puffer-Ist-Temperatur
+            client.subscribe(topic, qos=1)
+        for topic in self._feedback_topics:
             client.subscribe(topic, qos=1)
 
     def _on_message(self, client, userdata, msg):
@@ -202,6 +257,31 @@ class HomeyMqttPublisher:
                 self.load_temps[msg.topic] = float(payload.replace(",", "."))
             except ValueError:
                 pass
+            return
+        if msg.topic in self._feedback_topics:
+            try:
+                now = pd.Timestamp.now(tz="UTC")
+                numeric = (float(payload.replace(",", "."))
+                           if any(kind == "power" for _, kind, _
+                                  in self._feedback_topics[msg.topic]) else None)
+                for label, kind, threshold in self._feedback_topics[msg.topic]:
+                    item = self.load_feedback.setdefault(label, {
+                        "on": None, "power_w": None, "threshold_w": threshold})
+                    item["threshold_w"] = threshold
+                    if kind == "power":
+                        item["power_w"] = numeric
+                        item["power_updated"] = now
+                    else:
+                        if payload in ("1", "true", "on", "an", "ein", "running"):
+                            item["on"] = True
+                        elif payload in ("0", "false", "off", "aus", "stopped"):
+                            item["on"] = False
+                        else:
+                            item["on"] = float(payload.replace(",", ".")) > 0.5
+                        item["state_updated"] = now
+                    item["updated"] = now
+            except (TypeError, ValueError):
+                log.warning("Ungültige Last-Rückmeldung %s=%r.", msg.topic, payload)
             return
         if "/cmd/load/" in msg.topic:         # steuerbare Last an/aus (enable/disable)
             slug = msg.topic.split("/cmd/load/", 1)[1].strip("/").lower()
@@ -370,6 +450,18 @@ class HomeyMqttPublisher:
             self._client = None
             log.warning("MQTT-Verbindung verloren – verbinde neu.")
         self._client = self._connect()
+
+    def start(self) -> None:
+        """Empfangsverbindung früh starten, bevor der erste EMS-Lauf rechnet."""
+        if self.cfg.enabled:
+            self._ensure_connected()
+
+    def feedback_alarm_ready(self, grace_seconds: float = 30.0) -> bool:
+        """Fehlalarme vermeiden, solange MQTT nach Start/Reconnect anläuft."""
+        if self._connected_at is None:
+            return False
+        age = (pd.Timestamp.now(tz="UTC") - self._connected_at).total_seconds()
+        return age >= max(0.0, float(grace_seconds))
 
     def close(self) -> None:
         """Sauber beenden: Status 'offline' setzen und Verbindung trennen

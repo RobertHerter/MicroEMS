@@ -61,6 +61,9 @@ class OptimizerInputs:
     # Ist-Zustand steuerbarer Lasten beim Start: {load_name: aktuelle Temperatur °C}
     # für thermische Lasten (T[0]). Fehlt ein Wert -> target_c als Startwert.
     load_state: Optional[dict] = None
+    # Tatsächlich rückgemeldeter Stufenzustand {"Pool/WP": bool}; dient als
+    # Anfangszustand für Schaltkosten und verhindert unnötiges Takten.
+    load_feedback: Optional[dict] = None
 
 
 @dataclass
