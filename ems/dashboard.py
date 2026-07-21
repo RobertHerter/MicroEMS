@@ -1091,15 +1091,23 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                               f"bestätigt ({len(_vdf)} T)")
     except Exception:
         pass
+    # Der Akku-SoC steht bereits in den E3/DC-Live-Kacheln (Echtzeit). Die
+    # KPI-Kachel dafür nur zeigen, wenn die Live-Kacheln AUS sind - sonst wäre
+    # sie redundant.
+    live_active = float(getattr(
+        config.dashboard, "live_refresh_seconds", 5.0) or 0.0) > 0.0
     tiles = [
         _tile("Netto-Kosten Horizont", f"{total_cost_ct / 100:.2f} €",
               f"bis {_WD[x[-1].weekday()]} {x[-1].strftime('%d.%m.')}"),
         _tile("Ersparnis gesamt",
               "–" if savings_eur is None else f"{savings_eur:.2f} €",
               validated_note),
-        _tile("Akku-SoC",
-              "–" if pd.isna(soc_now) else f"{soc_now:.0f} %",
-              f"{config.house_battery.capacity_wh / 1000:.0f} kWh Speicher"),
+    ]
+    if not live_active:
+        tiles.append(_tile(
+            "Akku-SoC", "–" if pd.isna(soc_now) else f"{soc_now:.0f} %",
+            f"{config.house_battery.capacity_wh / 1000:.0f} kWh Speicher"))
+    tiles += [
         _tile("Modus jetzt", _MODE_LABEL.get(mode_now, mode_now),
               "" if pd.isna(dis_lim) else
               f"Limit Laden {ch_lim:,.0f} W · Entladen {dis_lim:,.0f} W"
