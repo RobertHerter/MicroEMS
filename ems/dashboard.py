@@ -789,7 +789,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                  name="PV p10–p90", legendgroup="prog",
                                  hoverinfo="skip"), row=1, col=1)
     line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist")
-    line("pv_w", "PV (Prognose)", "#ff7f0e", 1, "prog", dash="dash")
+    line("pv_w", "PV (Prog.)", "#ff7f0e", 1, "prog", dash="dash")
     # Vergleichs-Overlay: pvlib-Modell (shadow) neben der aktiven Prognose,
     # zum Bewerten Solcast vs. pv_model. Nur wenn Vergleichsdaten vorliegen.
     if pv_compare is not None and len(pv_compare) > 0:
@@ -812,7 +812,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             line=dict(width=0), fill="tonexty",
             fillcolor="rgba(214,39,40,0.10)", name="Verbrauch p10–p90",
             legendgroup="prog", hoverinfo="skip"), row=1, col=1)
-    line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
+    line("house_load_w", "Verbrauch (Prog.)", "#d62728", 1, "prog", dash="dash")
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
     if has_loads:
         _cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
@@ -828,7 +828,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
         net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
         net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
-        fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prognose)", mode="lines",
+        fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prog.)", mode="lines",
                                  line=dict(color="#1f77b4", width=1.5, dash="dot"),
                                  hovertemplate=HOVER_W, legendrank=_GROUP_RANK["progb"],
                                  legendgroup="progb",
@@ -846,7 +846,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 2: SoC (eigenes Panel, keine Doppelachse) ----------
     line("actual_soc_percent", "Haus-SoC (Ist)", "#111111", 2, "soc", width=3,
          hover=HOVER_PCT)
-    line("house_soc_percent", "Haus-SoC (Prognose)", "#111111", 2, "soc",
+    line("house_soc_percent", "Haus-SoC (Prog.)", "#111111", 2, "soc",
          dash="dash", width=2.5, hover=HOVER_PCT)
     line("car_soc_percent", "Auto-SoC", "#9467bd", 2, "soc", dash="dot",
          hover=HOVER_PCT)
@@ -1534,7 +1534,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prognose)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.33,'#263442'],[.34,'#329b4c'],[.66,'#329b4c'],[.67,'#596979'],[1,'#596979']]:[[0,'#e9ecef'],[.33,'#e9ecef'],[.34,'#2ca02c'],[.66,'#2ca02c'],[.67,'#adb5bd'],[1,'#adb5bd']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.33,'#263442'],[.34,'#329b4c'],[.66,'#329b4c'],[.67,'#596979'],[1,'#596979']]:[[0,'#e9ecef'],[.33,'#e9ecef'],[.34,'#2ca02c'],[.66,'#2ca02c'],[.67,'#adb5bd'],[1,'#adb5bd']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});
