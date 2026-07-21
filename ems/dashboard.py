@@ -786,7 +786,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         fig.add_trace(go.Scatter(x=x, y=t["pv10_w"], mode="lines",
                                  line=dict(width=0), fill="tonexty",
                                  fillcolor="rgba(255,127,14,0.14)",
-                                 name="PV p10–p90", legendgroup="prog",
+                                 name="PV (80%)", legendgroup="prog",
                                  hoverinfo="skip"), row=1, col=1)
     line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist")
     line("pv_w", "PV (Prog.)", "#ff7f0e", 1, "prog", dash="dash")
@@ -796,7 +796,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         pvc = pv_compare.reindex(x)
         if pvc.notna().any():
             fig.add_trace(go.Scatter(
-                x=x, y=pvc, name="PV (pv_model)", mode="lines",
+                x=x, y=pvc, name="PV (Model)", mode="lines",
                 line=dict(color="#8c564b", width=2, dash="dot"),
                 hovertemplate=HOVER_W, legendgroup="prog",
                 legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
@@ -810,7 +810,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         fig.add_trace(go.Scatter(
             x=x, y=t["house_load_p10_w"], mode="lines",
             line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(214,39,40,0.10)", name="Verbrauch p10–p90",
+            fillcolor="rgba(214,39,40,0.10)", name="Verbrauch (80%)",
             legendgroup="prog", hoverinfo="skip"), row=1, col=1)
     line("house_load_w", "Verbrauch (Prog.)", "#d62728", 1, "prog", dash="dash")
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
