@@ -36,8 +36,12 @@ _MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476",
                "grid_charge": "#1f77b4", "grid_discharge": "#9400d3"}
 # Legenden-Swatch: auto wäre auf Weiß unsichtbar
 _MODE_SWATCH = dict(_MODE_COLOR, auto="#c8c8c8")
-_GROUPS = {"ist": "Ist", "prog": "Prognose", "soc": "Ladezustand",
-           "ctrl": "Steuerung"}
+_GROUPS = {"ist": "Ist", "prog": "Prognose", "progb": "Netz/Preis (Prognose)",
+           "soc": "Ladezustand", "ctrl": "Steuerung"}
+# Spaltenreihenfolge der (nebeneinander stehenden) Legendengruppen. Die beiden
+# Prognose-Spalten (prog + progb) stehen so direkt nebeneinander -> die früher
+# sehr lange "Prognose"-Spalte wird auf zwei kürzere aufgeteilt (weniger Höhe).
+_GROUP_RANK = {"ist": 30, "prog": 10, "progb": 20, "soc": 40, "ctrl": 50}
 _WD = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
 
 # Auto-Reload: pollt /version (mtime der HTML-Datei) und lädt die Seite nur
@@ -764,7 +768,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 x=x, y=t[col], name=name, mode="lines",
                 line=dict(color=color, width=width, dash=dash,
                           shape=shape or "linear"),
-                hovertemplate=hover,
+                hovertemplate=hover, legendrank=_GROUP_RANK.get(group, 1000),
                 legendgroup=group, legendgrouptitle_text=_GROUPS[group]),
                 row=row, col=1)
 
@@ -822,10 +826,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
         fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prognose)", mode="lines",
                                  line=dict(color="#1f77b4", width=1.5, dash="dot"),
-                                 hovertemplate=HOVER_W,
-                                 legendgroup="prog"), row=1, col=1)
+                                 hovertemplate=HOVER_W, legendrank=_GROUP_RANK["progb"],
+                                 legendgroup="progb",
+                                 legendgrouptitle_text=_GROUPS["progb"]), row=1, col=1)
     if "export_line_w" in t.columns and t["export_line_w"].notna().any():
-        line("export_line_w", "Einspeise-Linie", "#2ca02c", 1, "prog",
+        line("export_line_w", "Einspeise-Linie", "#2ca02c", 1, "progb",
              dash="dash", width=1.5, shape="hv")
     elif export_line_w is not None and export_line_w > 0:
         fig.add_hline(y=float(export_line_w), row=1, col=1,
@@ -848,18 +853,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         est = (t["price_estimated"].fillna(0) > 0.5) \
             if "price_estimated" in t.columns else pd.Series(False, index=x)
         fig.add_trace(go.Scatter(x=x, y=price.mask(est), name="Börsenpreis",
-                                 mode="lines", legendgroup="prog",
+                                 mode="lines", legendgroup="progb",
+                                 legendrank=_GROUP_RANK["progb"],
+                                 legendgrouptitle_text=_GROUPS["progb"],
                                  hovertemplate=HOVER_CT,
                                  line=dict(color="#8c564b", width=2, shape="hv")),
                       row=3, col=1)
         if est.any():
             fig.add_trace(go.Scatter(
                 x=x, y=price.where(est | est.shift(-1, fill_value=False)),
-                name="Preis (Schätzung)", mode="lines", legendgroup="prog",
-                hovertemplate=HOVER_CT,
+                name="Preis (Schätzung)", mode="lines", legendgroup="progb",
+                legendrank=_GROUP_RANK["progb"],
+                legendgrouptitle_text=_GROUPS["progb"], hovertemplate=HOVER_CT,
                 line=dict(color="#8c564b", width=2, shape="hv", dash="dash")),
                 row=3, col=1)
-    line("feedin_ct_kwh", "Einspeisevergütung", "#2ca02c", 3, "prog",
+    line("feedin_ct_kwh", "Einspeisevergütung", "#2ca02c", 3, "progb",
          width=1.2, shape="hv", hover=HOVER_CT)
 
     # ---------- Panel 4: Steuerung ----------
