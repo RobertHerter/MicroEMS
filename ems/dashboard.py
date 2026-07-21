@@ -1180,6 +1180,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         margin: 2px 2px 7px; font-size: 14px; }}
  .live-head #live-status {{ color: #666; font-size: 12px; font-weight: normal; }}
  .live-tiles {{ margin-bottom: 0; }}
+ /* Live-Kacheln nach oben begrenzen: volle Zeilen füllen weiter gleichmäßig,
+    aber eine einzelne Kachel in der letzten Zeile wird nicht mehr über die ganze
+    Breite gezogen (flex-grow). */
+ .live-tiles .tile {{ max-width: 320px; }}
  .live-tiles .tile {{ transition: background-color .25s, border-color .25s,
         color .25s; }}
  .live-tiles .live-solar {{ background: #fff8d8; border-color: #efd86e; }}
