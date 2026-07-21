@@ -376,11 +376,15 @@ Modell. Benötigt die Signale `pv_generation`, `house_consumption`,
 Nach jedem Lauf entsteht `dashboard.html` (Pfad konfigurierbar, im Loop-Betrieb
 per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
 
-- **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt, Akku-SoC,
-  Modus jetzt (mit Limits), Eingriffe im Plan
+- **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt (inkl. an den Zählern
+  bestätigter Ersparnis), Modus jetzt (mit Limits), Eingriffe im Plan. Die
+  Planprüfung erscheint als eigenes Banner darüber.
 - **E3/DC-Livekacheln**: Solarerzeugung, Hauslast, Netzfluss, Batterieleistung,
-  SoC und Wallbox im konfigurierbaren Raster (Default 5 s). Der Server cached
-  die RSCP-Abfrage, sodass mehrere Browser die Geräteabfrage nicht vervielfachen.
+  Akku-SoC und Wallbox im konfigurierbaren Raster (Default 5 s), dazu – wenn
+  vorhanden – die Pool-Ist-Temperatur (bei aktiver thermischer Last) und die
+  Außentemperatur (Open-Meteo). Der Server cached die RSCP-Abfrage, sodass
+  mehrere Browser die Geräteabfrage nicht vervielfachen. (Der Akku-SoC steht nur
+  hier, nicht doppelt als KPI-Kachel.)
 - **Leistung** (PV mit Solcast-p10–p90-Band, Verbrauch, Netz, Einspeise-Linie;
   Ist durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
   Einspeisevergütung, **Steuerung** (Ladebefehle, Abregelung, Ist-Akkuleistung)

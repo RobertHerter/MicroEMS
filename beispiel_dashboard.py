@@ -26,7 +26,8 @@ def main() -> None:
             name="Pool", type="thermal", enabled=True, volume_l=8000,
             target_c=28.0, min_c=27.0, max_c=29.0, loss_w_per_k=380.0,
             surface_m2=8.0, solar_absorption=0.75, thermostat=True,
-            no_grid_import=True, switch_penalty_ct=5.0,
+            temp_signal="pool/temperature", no_grid_import=True,
+            switch_penalty_ct=5.0,
             stages=[LoadStage("WP Pinguin", 650.0, 4000.0),
                     LoadStage("WP klein", 400.0, 3000.0, requires="WP Pinguin")],
         ),
@@ -37,6 +38,7 @@ def main() -> None:
         ),
     ]
     cfg.dashboard.controls_enabled = True
+    cfg.weather.enabled = True     # zeigt die Außentemperatur-Live-Kachel
     tz = cfg.general.timezone
     rng = np.random.default_rng(7)
 
