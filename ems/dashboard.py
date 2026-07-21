@@ -1114,19 +1114,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
               .replace(",", ".")),
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
-    # Prüf-Status als eigene Kachel (grün/gelb/rot)
-    if violations is not None:
-        v_err = sum(1 for v in violations if getattr(v, "severity", "") == "error")
-        v_warn = sum(1 for v in violations if getattr(v, "severity", "") == "warning")
-        if v_err:
-            tiles.append(_tile("Planprüfung", f"{v_err} Fehler",
-                              f"{v_warn} Warnungen", color="#d62728"))
-        elif v_warn:
-            tiles.append(_tile("Planprüfung", f"{v_warn} Warnungen",
-                              "keine Fehler", color="#e6a700"))
-        else:
-            tiles.append(_tile("Planprüfung", "✓ OK", "alle Invarianten erfüllt",
-                              color="#2ca02c"))
+    # (Planprüfung wird als eigenes Banner gezeigt - _alert_banner -, daher hier
+    # KEINE zusätzliche KPI-Kachel, um die Doppelanzeige zu vermeiden.)
     if control_status:
         ok = control_status.get("ok")
         state = control_status.get("state", "unknown")
