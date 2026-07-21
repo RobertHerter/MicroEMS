@@ -491,6 +491,12 @@ monitoring:
   execution_battery_tolerance_w: 1500
   execution_soc_tolerance_percent: 5
   execution_alert_consecutive: 2
+  # Netz als Ausfuehrungsfehler werten? Standard false: die Netzleistung ist ein
+  # Bilanz-Residuum (Netz = Last - PV + Akku). Weicht PV/Last von der Prognose ab
+  # (z.B. PV ueber Prognose im Peak -> Mehr-Einspeisung ueber den E3DC), ist das
+  # kein Steuerfehler - das echte Signal ist die Akku-Abweichung. Netz bleibt
+  # informativ im Report.
+  execution_audit_grid: false
 
 # -----------------------------------------------------------------------------
 # Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer

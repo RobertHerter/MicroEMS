@@ -68,13 +68,21 @@ def _audit_execution(config, now, live):
         "battery_w": config.monitoring.execution_battery_tolerance_w,
         "soc": config.monitoring.execution_soc_tolerance_percent,
     }
+    # Netz ist ein reines Bilanz-Residuum (Netz = Last - PV + Akku): weicht die
+    # Erzeugung/Last von der Prognose ab, gleicht der E3DC die Differenz übers
+    # Netz aus (z.B. PV über Prognose im Peak -> Mehr-Einspeisung). Das ist kein
+    # Steuerfehler - das echte Ausführungssignal ist die Akku-Abweichung. Netz
+    # wird daher nur informativ erfasst und triggert nur mit ausdrücklichem Flag.
+    trigger = {"battery_w", "soc"}
+    if config.monitoring.execution_audit_grid:
+        trigger.add("grid_w")
     deviations, failed = {}, []
     for key, tolerance in tolerances.items():
         if actual[key] is None or planned.get(key) is None:
             continue
         delta = float(actual[key]) - float(planned[key])
         deviations[key] = round(delta, 2)
-        if abs(delta) > tolerance:
+        if key in trigger and abs(delta) > tolerance:
             failed.append(key)
     labels = {"grid_w": "Netz", "battery_w": "Akku", "soc": "SoC"}
     ok = not failed

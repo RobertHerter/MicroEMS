@@ -536,6 +536,12 @@ class MonitoringConfig:
     execution_battery_tolerance_w: float = 1500.0
     execution_soc_tolerance_percent: float = 5.0
     execution_alert_consecutive: int = 2
+    # Netz als Ausführungsfehler werten? Standard AUS: die Netzleistung ist ein
+    # reines Bilanz-Residuum (Netz = Last - PV + Akku). Weicht PV/Last von der
+    # Prognose ab (z.B. PV über Prognose im Peak), gleicht der E3DC die Differenz
+    # übers Netz aus - das ist KEIN Steuerfehler, sondern Prognoseabweichung, die
+    # der Akku-Check ohnehin abbildet. Netz bleibt informativ im Report.
+    execution_audit_grid: bool = False
 
 
 @dataclass
@@ -1197,6 +1203,7 @@ def load_config(path: str) -> Config:
             mon.get("execution_soc_tolerance_percent", 5.0)),
         execution_alert_consecutive=int(
             mon.get("execution_alert_consecutive", 2)),
+        execution_audit_grid=bool(mon.get("execution_audit_grid", False)),
     )
 
     rep = raw.get("report", {})
