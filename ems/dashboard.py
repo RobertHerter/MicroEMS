@@ -578,13 +578,29 @@ def _sources_block(source_status) -> str:
     return f'<div class="chips">Datenquellen: {chips}</div>'
 
 
+_LEVEL_RANK = {"current": 0, "partial": 1, "replaced": 2}
+
+
+def _panel_level(levels) -> str:
+    """Schlechtester Level einer Panel-Kartengruppe (für die Farbe am Summary,
+    auch im eingeklappten Zustand). Reihenfolge current < partial < replaced."""
+    worst, rank = "current", -1
+    for lv in levels:
+        r = _LEVEL_RANK.get(lv, 1)
+        if r > rank:
+            rank, worst = r, (lv if lv in _LEVEL_RANK else "partial")
+    return worst
+
+
 def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
     """Operative Prognosequalität je Quelle und aktuellem Horizont."""
     if not quality:
         return ""
     items = []
+    levels = []
     for source in quality:
         level = source.get("level", "replaced")
+        levels.append(level)
         issue = source.get("issued_at")
         issue_text = ""
         if issue:
@@ -602,7 +618,7 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
             f"<div class='quality-detail'>{_esc(source.get('detail', ''))}"
             f"{issue_text}</div>"
             "</article>")
-    return ("<details class='forecast-quality'><summary>"
+    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
             "<span>Prognosequalität</span><small>verwendete Daten im aktuellen "
             "Optimierungshorizont</small></summary><div class='quality-grid'>"
             f"{''.join(items)}</div></details>")
@@ -613,7 +629,9 @@ def _operations_block(solver, execution) -> str:
     if not solver and not execution:
         return ""
     cards = []
+    levels = []
     if solver:
+        levels.append("replaced" if solver.get("slow") else "current")
         typical = solver.get("median_seconds")
         detail = (f"typisch {typical:.1f} s" if typical is not None
                   else "Historie wird aufgebaut")
@@ -631,6 +649,7 @@ def _operations_block(solver, execution) -> str:
                 f"{solver.get('constraints', 0):,}".replace(",", "."),
                 " · Gap %.3g" % gap if gap is not None else ""))
     if execution:
+        levels.append("current" if execution.get("ok") else "partial")
         planned, actual = execution.get("planned", {}), execution.get("actual", {})
         def _w(value):
             return "–" if value is None else f"{value:,.0f} W".replace(",", ".")
@@ -642,7 +661,8 @@ def _operations_block(solver, execution) -> str:
             "<div class='quality-source'>Plan-Ausführung</div>"
             f"<div class='quality-state'>{_esc(execution.get('message', ''))}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
-    return ("<details class='forecast-quality'><summary><span>Betriebsdiagnose</span>"
+    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
+            "<span>Betriebsdiagnose</span>"
             "<small>Solver und geplanter Soll/Ist-Vergleich</small></summary>"
             f"<div class='quality-grid'>{''.join(cards)}</div></details>")
 
@@ -651,6 +671,7 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
     if not feedback and not calibrations:
         return ""
     cards = []
+    levels = []
     for item in feedback or []:
         if not item.get("configured"):
             state, level, detail = "nicht konfiguriert", "partial", (
@@ -664,6 +685,7 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
                       + (f" · vor {age:.0f} s" if age is not None else ""))
         else:
             state, level, detail = "Rückmeldung veraltet", "replaced", "keine frischen Istwerte"
+        levels.append(level)
         cards.append(
             f"<article class='quality-item {level}'><div class='quality-source'>"
             f"{_esc(item.get('label', 'Wärmepumpe'))}</div>"
@@ -675,6 +697,7 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
                  ("Qualität reicht noch nicht" if cal.get("status") != "applied"
                   else "geprüft"))
         level = "current" if applied else "partial"
+        levels.append(level)
         r2 = cal.get("r2")
         detail = (f"{cal.get('n_windows') or 0} Fenster"
                   + (f" · R² {r2:.2f}" if r2 is not None else "")
@@ -684,7 +707,8 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
             f"Thermomodell {_esc(cal.get('name', ''))}</div>"
             f"<div class='quality-state'>{state}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
-    return ("<details class='forecast-quality'><summary><span>Pool-Rückkopplung"
+    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
+            "<span>Pool-Rückkopplung"
             "</span><small>reale Wärmepumpen und Thermomodell</small></summary>"
             f"<div class='quality-grid'>{''.join(cards)}</div></details>")
 
@@ -1163,6 +1187,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-quality > summary::after {{ content: '⌄'; position: absolute;
         right: 13px; top: 8px; font-size: 18px; transition: transform .16s; }}
  .forecast-quality[open] > summary::after {{ transform: rotate(180deg); }}
+ /* Statusfarbe des Panels – auch eingeklappt sichtbar (Akzentrand + Punkt). */
+ .forecast-quality > summary::before {{ content: ''; width: 9px; height: 9px;
+        border-radius: 50%; background: #b6bdc5; align-self: center; flex: none; }}
+ .forecast-quality.lvl-current {{ border-left: 4px solid #2ca02c; }}
+ .forecast-quality.lvl-partial {{ border-left: 4px solid #e6a700; }}
+ .forecast-quality.lvl-replaced {{ border-left: 4px solid #d62728; }}
+ .forecast-quality.lvl-current > summary::before {{ background: #2ca02c; }}
+ .forecast-quality.lvl-partial > summary::before {{ background: #e6a700; }}
+ .forecast-quality.lvl-replaced > summary::before {{ background: #d62728; }}
  .forecast-quality > summary small {{ color: #737d87; font-size: 11px;
         font-weight: 400; }}
  .quality-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr));
@@ -1412,6 +1445,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
  html.dark .quality-item.replaced .quality-state {{ color: #f1a29c; }}
+ html.dark .forecast-quality.lvl-current {{ border-left-color: #58b879; }}
+ html.dark .forecast-quality.lvl-partial {{ border-left-color: #d9b83f; }}
+ html.dark .forecast-quality.lvl-replaced {{ border-left-color: #df6c68; }}
+ html.dark .forecast-quality.lvl-current > summary::before {{ background: #58b879; }}
+ html.dark .forecast-quality.lvl-partial > summary::before {{ background: #d9b83f; }}
+ html.dark .forecast-quality.lvl-replaced > summary::before {{ background: #df6c68; }}
  html.dark .banner.ok {{ background: #173326; border-color: #285b40; color: #8fd7a9; }}
  html.dark .banner.warn {{ background: #3a3219; border-color: #6a5925; color: #e1c96b; }}
  html.dark .banner.err {{ background: #402124; border-color: #73383d; color: #f1a29c; }}
