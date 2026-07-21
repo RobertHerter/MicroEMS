@@ -72,6 +72,10 @@ class E3DCLink:
         self._manual_active = False
         self._manual_action: Optional[str] = None
         self._manual_until: Optional[float] = None
+        self._last_control_status: Optional[dict] = None
+        self._alarm_callback = None
+        self._last_watchdog_alarm = 0.0
+        self._watchdog_failed = False
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -295,6 +299,81 @@ class E3DCLink:
                         "(EMS_POWER_LIMITS_USED) – Begrenzung greift evtl. nicht.")
         return rc
 
+    def read_control_limits(self) -> dict:
+        """Die aktuell am E3DC wirksamen SmartPower-Limits zurücklesen."""
+        with self._lock:
+            e = self._connect()
+            settings = e.get_power_settings(keepAlive=True) or {}
+        return {
+            "power_limits_used": bool(settings.get("powerLimitsUsed")),
+            "max_charge_w": (None if settings.get("maxChargePower") is None
+                             else float(settings["maxChargePower"])),
+            "max_discharge_w": (None if settings.get("maxDischargePower") is None
+                                else float(settings["maxDischargePower"])),
+        }
+
+    def _control_status(self, ok, state: str, mode: str, message: str,
+                        expected=None, actual=None) -> dict:
+        status = {
+            "ok": ok, "state": state, "mode": mode, "message": message,
+            "expected": expected or {}, "actual": actual or {},
+            "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+        }
+        self._last_control_status = status
+        return status
+
+    def _verify_limits(self, enabled: bool, max_charge: float,
+                       max_discharge: float, mode: str) -> dict:
+        expected = {
+            "power_limits_used": bool(enabled),
+            "max_charge_w": round(float(max_charge)),
+            "max_discharge_w": round(float(max_discharge)),
+        }
+        if not self.rc.verify_control:
+            return self._control_status(
+                None, "unverified", mode, "Befehl gesendet; Rücklesung deaktiviert.",
+                expected=expected)
+        try:
+            actual = self.read_control_limits()
+        except Exception as exc:
+            return self._control_status(
+                False, "readback_failed", mode,
+                f"E3DC-Limits konnten nicht zurückgelesen werden: {exc}",
+                expected=expected)
+        problems = []
+        if actual["power_limits_used"] != bool(enabled):
+            problems.append(
+                f"Limit-Aktivierung Soll {enabled}, Ist "
+                f"{actual['power_limits_used']}")
+        tolerance = max(0.0, float(self.rc.control_verify_tolerance_w))
+        if enabled:
+            for key, label in (("max_charge_w", "Laden"),
+                               ("max_discharge_w", "Entladen")):
+                value = actual.get(key)
+                if value is None or abs(value - expected[key]) > tolerance:
+                    problems.append(
+                        f"{label} Soll {expected[key]:.0f} W, Ist "
+                        f"{'unbekannt' if value is None else f'{value:.0f} W'}")
+        if problems:
+            return self._control_status(
+                False, "mismatch", mode, "; ".join(problems),
+                expected=expected, actual=actual)
+        if enabled:
+            message = (f"E3DC bestätigt Laden≤{actual['max_charge_w']:.0f} W "
+                       f"und Entladen≤{actual['max_discharge_w']:.0f} W.")
+        else:
+            message = "E3DC bestätigt: SmartPower-Limits sind freigegeben."
+        return self._control_status(
+            True, "confirmed", mode, message, expected=expected, actual=actual)
+
+    def last_control_status(self) -> Optional[dict]:
+        """Letztes Ergebnis der Schreib-/Rücklesekontrolle."""
+        return dict(self._last_control_status) if self._last_control_status else None
+
+    def set_alarm_callback(self, callback) -> None:
+        """Alarmziel für asynchrone Watchdog-Ausfälle (z.B. MQTT) setzen."""
+        self._alarm_callback = callback
+
     def _watchdog_loop(self) -> None:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
@@ -302,8 +381,24 @@ class E3DCLink:
             if mode in (1, 2, 3, 4):
                 try:
                     self._set_power(mode, value)
+                    if self._watchdog_failed and self._alarm_callback:
+                        self._alarm_callback(
+                            "info", "E3DC-Steuer-Watchdog wiederhergestellt.")
+                    self._watchdog_failed = False
                 except Exception as exc:  # pragma: no cover
                     log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s).", exc)
+                    status = self._control_status(
+                        False, "watchdog_failed", f"mode_{mode}",
+                        f"E3DC-Steuer-Watchdog ausgefallen: {exc}",
+                        expected={"mode": mode, "power_w": value})
+                    self._watchdog_failed = True
+                    now = time.time()
+                    repeat_s = max(
+                        60.0, float(self.rc.control_alarm_repeat_minutes) * 60.0)
+                    if (self._alarm_callback
+                            and now - self._last_watchdog_alarm >= repeat_s):
+                        self._alarm_callback("error", status["message"])
+                        self._last_watchdog_alarm = now
 
     def _ensure_watchdog(self) -> None:
         if self._wd_thread is None or not self._wd_thread.is_alive():
@@ -389,17 +484,20 @@ class E3DCLink:
             except Exception as exc:  # pragma: no cover
                 log.warning("RSCP: Auto-Rücksetzen nach Ablauf fehlgeschlagen (%s).", exc)
 
-    def apply_control(self, row) -> None:
+    def apply_control(self, row) -> dict:
         """Plan-Slot -> E3DC-Steuerung. Nur mit control_enabled=true.
         Aktives Netzladen/-entladen über Mode 3/4 (mit 10-s-Watchdog);
         reine Lade-/Entlade-BEGRENZUNG über persistente Limits (kein Watchdog).
         GREIFT REAL IN DEN SPEICHER EIN."""
         if not self.rc.control_enabled:
-            return
+            return self._control_status(
+                None, "disabled", "off", "E3DC-Steuerung ist deaktiviert.")
         with self._manual_lock:
             if self._manual_active:
                 log.debug("RSCP: Optimierer-Sollwert ausgesetzt – Handbetrieb aktiv.")
-                return
+                return self._control_status(
+                    None, "manual", "manual",
+                    "Optimierer-Steuerung durch Handbetrieb ausgesetzt.")
             hb = self.cfg.house_battery
             gc = float(row.get("batt_grid_charge_w", 0.0))
             gd = float(row.get("batt_grid_discharge_w", 0.0))
@@ -408,21 +506,29 @@ class E3DCLink:
                     # Netzladen: Mode 4 (grid_charge), Wert = Gesamt-Ladeleistung
                     # (PV zuerst, Netz für den Rest). Verifiziert @8 kW.
                     total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
-                    self._set_limits(False)      # Limits aus, Mode regelt
+                    if self._set_limits(False) == -1:  # Limits aus, Mode regelt
+                        raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 4, total
                     self._ensure_watchdog()
                     self._set_power(4, total)
                     log.info("RSCP: Netzladen aktiv, Mode 4, %d W (Watchdog).",
                              total)
+                    return self._verify_limits(
+                        False, hb.max_dc_charge_w, hb.max_discharge_w,
+                        "grid_charge")
                 elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
                     # Netz-Entladen: Mode 2 (discharge), Wert = Entladeleistung.
                     val = round(float(row.get("batt_discharge_w", 0.0)))
-                    self._set_limits(False)
+                    if self._set_limits(False) == -1:
+                        raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 2, val
                     self._ensure_watchdog()
                     self._set_power(2, val)
                     log.info("RSCP: Netz-Entladen aktiv, Mode 2, %d W (Watchdog).",
                              val)
+                    return self._verify_limits(
+                        False, hb.max_dc_charge_w, hb.max_discharge_w,
+                        "grid_discharge")
                 else:
                     # auto + persistente Lade-/Entlade-Limits gemäß Plan
                     if self._wd_mode != 0:
@@ -432,8 +538,16 @@ class E3DCLink:
                     dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
                     limited = (cl < hb.max_dc_charge_w - 1
                                or dl < hb.max_discharge_w - 1)
-                    self._set_limits(limited, cl, dl)
+                    if self._set_limits(limited, cl, dl) == -1:
+                        raise RuntimeError("Setzen der SmartPower-Limits abgelehnt")
                     log.debug("RSCP: auto, Limit aktiv=%s "
                               "(Laden≤%.0f, Entladen≤%.0f).", limited, cl, dl)
+                    status = self._verify_limits(limited, cl, dl, "limits")
+                    (log.info if status.get("ok") else log.warning)(
+                        "RSCP-Rücklesekontrolle: %s", status["message"])
+                    return status
             except Exception as exc:
                 log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+                return self._control_status(
+                    False, "write_failed", "control",
+                    f"E3DC-Steuerbefehl fehlgeschlagen: {exc}")

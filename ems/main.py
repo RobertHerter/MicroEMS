@@ -45,6 +45,38 @@ _intraday_state = {
     "pv": {"issue": None, "ratio": 1.0, "applied": None, "seeded": False},
 }
 _intraday_raw = {"load": None, "pv": None}
+_control_alarm = {"failed": False, "key": None, "last": 0.0}
+
+
+def _publish_control_alarm(publisher, config, status) -> None:
+    """Steuerfehler sofort, danach gedrosselt; Erholung genau einmal melden."""
+    if publisher is None or not status:
+        return
+    failed = status.get("ok") is False
+    now = _time.time()
+    if failed:
+        key = f"{status.get('state')}:{status.get('message')}"
+        repeat_s = max(
+            60.0, config.e3dc_rscp.control_alarm_repeat_minutes * 60.0)
+        if (not _control_alarm["failed"] or _control_alarm["key"] != key
+                or now - _control_alarm["last"] >= repeat_s):
+            publisher.publish_alert(
+                "error", f"E3DC-Steuer-Ausfall: {status.get('message')}")
+            _control_alarm.update(failed=True, key=key, last=now)
+    elif status.get("ok") is True and _control_alarm["failed"]:
+        publisher.publish_alert(
+            "info", "E3DC-Steuerung wieder bestätigt und funktionsfähig.")
+        _control_alarm.update(failed=False, key=None, last=now)
+
+
+def _store_control_status(config, status) -> None:
+    if not status:
+        return
+    try:
+        from .local_history import write_control_verification
+        write_control_verification(config.e3dc_rscp.history_db_path, status)
+    except Exception as exc:  # Diagnose darf die Steuerung nicht beeinträchtigen
+        log.warning("E3DC-Steuerstatus nicht speicherbar (%s).", exc)
 
 CONTROL_COLS = [
     # E3DC-Steuerbefehle (Limits nur bei Abweichung vom Eigenverbrauch):
@@ -112,6 +144,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     Betrieb (MQTT Last Will bzw. RSCP-Watchdog-Thread); ohne werden sie pro Lauf
     erzeugt und wieder geschlossen."""
     repo = make_repository(config)
+    control_status = None
     one_shot = publisher is None
     # Optionale direkte E3DC-Anbindung (RSCP); im Loop von main() übergeben,
     # sonst pro Lauf erzeugen (own_e3dc -> am Ende schließen).
@@ -120,6 +153,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         try:
             from .rscp import E3DCLink
             e3dc = E3DCLink(config)
+            e3dc.set_alarm_callback(publisher.publish_alert)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
@@ -272,7 +306,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Einspeise-Linie an Peak-Tagen wolken-robust.
         pv10 = (_pv_series("pv_forecast_p10", required=False)
                 if solcast.available(config, repo, "pv_forecast_p10") else None)
-        price = _price_series(repo, config, opt_index, now)
+        price, price_estimated = _price_series(
+            repo, config, opt_index, now, return_estimated=True)
 
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots(
@@ -393,6 +428,33 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         else:
             solar_safe = None
 
+        # Den tatsächlich verwendeten, vollständig aufbereiteten Prognosesatz
+        # unveränderlich archivieren. Damit kann ein späterer Backtest genau
+        # den Informationsstand dieses Laufs wiederverwenden (inklusive
+        # Kalibrierung, Intraday-Korrektur und markierter Preisschätzungen).
+        try:
+            from .local_history import write_optimizer_forecast_archive
+            archive_series = {
+                "house_load_w": house_series,
+                "pv_w": pv,
+                "price_ct_kwh": price,
+                "feedin_ct_kwh": feedin,
+            }
+            if pv10 is not None:
+                archive_series["pv10_w"] = pv10
+            if ambient is not None:
+                archive_series["ambient_temp_c"] = ambient
+            if solar_safe is not None:
+                archive_series["solar_w_m2"] = solar_safe
+            n_archived = write_optimizer_forecast_archive(
+                config.e3dc_rscp.history_db_path,
+                pd.Timestamp.now(tz="UTC"), archive_series,
+                estimated={"price_ct_kwh": price_estimated})
+            log.info("Optimierer-Prognosesnapshot archiviert: %d Werte.",
+                     n_archived)
+        except Exception as exc:  # Archivierung darf die Steuerung nie stoppen
+            log.warning("Optimierer-Prognosesnapshot nicht speicherbar (%s).", exc)
+
         inputs = OptimizerInputs(
             index=opt_index,
             house_load_w=np.asarray(house_load, dtype=float),
@@ -425,7 +487,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                     ld.name, float(_tc))
                 except Exception as exc:  # pragma: no cover
                     log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", ld.name, exc)
-        result = Optimizer(config).solve(inputs)
+        result = Optimizer(config, stabilize_plan=True).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
 
@@ -509,29 +571,61 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                    ld.name, permit)
             except Exception as exc:
                 log.debug("load_cmd-Log fehlgeschlagen (%s).", exc)
-            if one_shot:
-                publisher.close()
         except Exception as exc:
             log.warning("MQTT-Ausgabe fehlgeschlagen (%s) – InfluxDB-Writeback "
                         "und Dashboard werden trotzdem erstellt.", exc)
 
         # --- 4b) Steuerung optional direkt per RSCP an den E3DC ---------- #
-        if e3dc and config.e3dc_rscp.control_enabled and not result.infeasible:
-            try:
-                pos = result.table.index.get_indexer([now], method="ffill")[0]
-                row = result.table.iloc[max(pos, 0)]
-                e3dc.apply_control(row)
-                # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
-                # sofort re-applybar (schließt die Steuer-Lücke bis zum 1. Solve).
+        if config.e3dc_rscp.control_enabled:
+            if e3dc is None:
+                control_status = {
+                    "ok": False, "state": "unavailable", "mode": "control",
+                    "message": "Keine RSCP-Verbindung zum E3DC verfügbar.",
+                    "expected": {}, "actual": {},
+                    "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                }
+            elif result.infeasible:
+                control_status = {
+                    "ok": False, "state": "plan_infeasible", "mode": "control",
+                    "message": "Steuerung wegen unzulässigem Optimierungsplan ausgesetzt.",
+                    "expected": {}, "actual": {},
+                    "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                }
+            else:
+                # Einen zwischen den Zyklen erkannten Watchdog-Ausfall zuerst
+                # melden, bevor der neue erfolgreiche Befehl ihn überschreibt.
+                previous = e3dc.last_control_status()
+                if previous and previous.get("state") == "watchdog_failed":
+                    _store_control_status(config, previous)
+                    _publish_control_alarm(publisher, config, previous)
                 try:
-                    from .local_history import write_last_control
-                    write_last_control(
-                        config.e3dc_rscp.history_db_path, now,
-                        {c: row.get(c) for c in CONTROL_COLS if c in row.index})
-                except Exception as exc:   # pragma: no cover
-                    log.debug("last_control-Sicherung fehlgeschlagen (%s).", exc)
-            except Exception as exc:
-                log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+                    pos = result.table.index.get_indexer([now], method="ffill")[0]
+                    row = result.table.iloc[max(pos, 0)]
+                    control_status = e3dc.apply_control(row)
+                    # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
+                    # sofort re-applybar (schließt die Steuer-Lücke bis zum 1. Solve).
+                    try:
+                        from .local_history import write_last_control
+                        write_last_control(
+                            config.e3dc_rscp.history_db_path, now,
+                            {c: row.get(c) for c in CONTROL_COLS if c in row.index})
+                    except Exception as exc:   # pragma: no cover
+                        log.debug("last_control-Sicherung fehlgeschlagen (%s).", exc)
+                except Exception as exc:
+                    log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+                    control_status = {
+                        "ok": False, "state": "write_failed", "mode": "control",
+                        "message": f"E3DC-Steuerbefehl fehlgeschlagen: {exc}",
+                        "expected": {}, "actual": {},
+                        "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                    }
+            _store_control_status(config, control_status)
+            _publish_control_alarm(publisher, config, control_status)
+        if one_shot and publisher is not None:
+            try:
+                publisher.close()
+            except Exception:
+                pass
 
         # --- 5) InfluxDB-Writeback -------------------------------------- #
         ctrl = result.table[[c for c in CONTROL_COLS if c in result.table.columns]]
@@ -595,7 +689,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             load_temp_actual=load_temp_actual,
                             ambient_temp_c=ambient_temp_display,
                             source_status=_source_status(config, now),
-                            pv_compare=pv_compare)
+                            pv_compare=pv_compare,
+                            control_status=control_status)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -1017,7 +1112,9 @@ def _build_display_frame(repo, config, now, history, result,
               "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
               "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
               "grid_import_w", "grid_export_w", "export_line_w", "mode",
-              "feedin_ct_kwh", "pv_curtail_w"]:
+              "feedin_ct_kwh", "pv_curtail_w", "decision_reason",
+              "decision_energy_kwh", "decision_value_ct",
+              "decision_reference_time"]:
         if c in ot.columns:
             df[c] = ot[c].reindex(full)
     for c in ot.columns:                    # steuerbare Lasten (load_*_w / _temp_c)
@@ -1570,7 +1667,9 @@ def main() -> None:
             if ts is not None and cmd:
                 age = pd.Timestamp.now(tz=config.general.timezone) - ts
                 if age <= pd.Timedelta(minutes=2 * config.general.run_interval_minutes):
-                    e3dc.apply_control(cmd)
+                    startup_status = e3dc.apply_control(cmd)
+                    _store_control_status(config, startup_status)
+                    _publish_control_alarm(publisher, config, startup_status)
                     log.info("Sofort-Reapply: letzter Steuerbefehl (%s, Laden<=%.0f "
                              "Entladen<=%.0f W, Netzladen %.0f W) beim Start "
                              "angewandt.", ts.strftime("%H:%M"),

@@ -3,13 +3,16 @@ prüft jeden Plan gegen den Invarianten-Katalog (ems.validate).
 
 Idee: Modellfehler finden, ohne monatelang zuzuschauen - die Monate liegen
 schon in der DB. Für jeden Tag im Zeitraum wird ein 48-h-Plan gerechnet und
-validiert. Als Eingang dienen die TATSÄCHLICHEN Verläufe (perfekte Voraussicht)
-- so werden Modell-/Optimiererfehler von Prognosefehlern getrennt.
+validiert. Standardmäßig dienen die TATSÄCHLICHEN Verläufe (perfekte
+Voraussicht) als Eingang. Mit ``--historical-forecasts`` werden stattdessen
+ausschließlich die zum jeweiligen Tagesstart produktiv archivierten
+Optimierer-Eingänge verwendet. Unvollständige Tage werden übersprungen.
 
 Aufruf:
     python backtest.py --config config.yaml --days 120
     python backtest.py --config config.yaml --start 2026-01-01 --end 2026-03-01
     python backtest.py --config config.yaml --days 60 --errors-only
+    python backtest.py --config config.yaml --days 30 --historical-forecasts
 
 Es wird NICHTS in die Datenbank geschrieben und der Dienst nicht berührt.
 """
@@ -25,22 +28,42 @@ import pandas as pd
 
 from ems.config import load_config
 from ems.influx import InfluxRepository
+from ems.local_history import read_optimizer_forecast_asof
 from ems.optimizer import Optimizer, OptimizerInputs
 from ems.validate import economic_comparison, validate_plan
 
 log = logging.getLogger("ems.backtest")
 
-REQUIRED = ("house_consumption", "pv_generation", "electricity_price", "battery_soc")
+REQUIRED_PERFECT = ("house_consumption", "pv_generation", "electricity_price",
+                    "battery_soc")
+
+
+class HistoricalForecastUnavailable(RuntimeError):
+    """Kein zeitlich zulässiger, vollständiger Prognosesnapshot vorhanden."""
+
+
+def _plan_index(config, day_start):
+    tz = config.general.timezone
+    freq = f"{config.general.slot_minutes}min"
+    opt_end = (day_start + timedelta(
+        hours=config.general.optimization_horizon_hours)).normalize()
+    if opt_end <= day_start:
+        opt_end += timedelta(days=1)
+    idx = pd.date_range(day_start, opt_end, freq=freq, tz=tz, inclusive="left")
+    return opt_end, idx
+
+
+def _initial_soc_wh(repo, config, day_start):
+    soc0 = repo.read_scalar_latest(
+        "battery_soc", day_start - timedelta(hours=6), day_start)
+    if soc0 is None:
+        soc0 = config.house_battery.min_soc_percent
+    return soc0 / 100.0 * config.house_battery.capacity_wh
 
 
 def _day_plan(repo, config, day_start):
     """Ein 48-h-Plan ab day_start aus Ist-Daten (perfekte Voraussicht)."""
-    tz = config.general.timezone
-    freq = f"{config.general.slot_minutes}min"
-    opt_end = (day_start + timedelta(hours=config.general.optimization_horizon_hours)).normalize()
-    if opt_end <= day_start:
-        opt_end += timedelta(days=1)
-    idx = pd.date_range(day_start, opt_end, freq=freq, tz=tz, inclusive="left")
+    opt_end, idx = _plan_index(config, day_start)
 
     load = repo.read_slots("house_consumption", day_start, opt_end).reindex(idx).ffill().bfill()
     pv = repo.read_slots("pv_generation", day_start, opt_end).reindex(idx).ffill().bfill()
@@ -53,9 +76,6 @@ def _day_plan(repo, config, day_start):
     if config.feed_in.zero_at_negative_price:
         feedin = feedin.where(price >= 0.0, 0.0)
 
-    soc0 = repo.read_scalar_latest("battery_soc", day_start - timedelta(hours=6), day_start)
-    if soc0 is None:
-        soc0 = config.house_battery.min_soc_percent
     # Genug echte Daten vorhanden?
     if load.isna().all() or pv.isna().all() or price.isna().all():
         return None
@@ -63,9 +83,81 @@ def _day_plan(repo, config, day_start):
         index=idx, house_load_w=load.values.astype(float),
         pv_w=pv.values.astype(float), price_ct_kwh=price.values.astype(float),
         feedin_ct_kwh=feedin.values.astype(float),
-        initial_house_soc_wh=soc0 / 100.0 * config.house_battery.capacity_wh,
+        initial_house_soc_wh=_initial_soc_wh(repo, config, day_start),
     )
     return inp, Optimizer(config).solve(inp)
+
+
+def _historical_day_plan(repo, config, day_start):
+    """Plan aus genau einem am ``day_start`` publizierten Eingangssnapshot."""
+    opt_end, idx = _plan_index(config, day_start)
+    # Der Dauerbetrieb startet planmäßig wenige Sekunden nach dem Slotwechsel.
+    # Bis +5 min darf daher der echte 00:00-Lauf gewählt werden; ein strikt auf
+    # 00:00 begrenztes as-of würde fälschlich den 23:45-Vorgängerlauf testen.
+    decision_cutoff = day_start + pd.Timedelta(minutes=5)
+    issue, frame = read_optimizer_forecast_asof(
+        config.e3dc_rscp.history_db_path, decision_cutoff, day_start, opt_end,
+        config.general.timezone)
+    if issue is None or frame.empty:
+        raise HistoricalForecastUnavailable("kein Prognosesnapshot vor Start")
+
+    max_age = pd.Timedelta(minutes=max(
+        30, 2 * config.general.run_interval_minutes + 5))
+    if issue < day_start - max_age or issue > decision_cutoff:
+        raise HistoricalForecastUnavailable(
+            f"letzter Snapshot zu alt ({issue.strftime('%d.%m. %H:%M')})")
+
+    frame = frame.reindex(idx)
+    required = ("house_load_w", "pv_w", "price_ct_kwh", "feedin_ct_kwh")
+    missing = {name: int(frame[name].isna().sum()) if name in frame else len(idx)
+               for name in required}
+    missing = {name: count for name, count in missing.items() if count}
+    if missing:
+        detail = ", ".join(f"{name}: {count}" for name, count in missing.items())
+        raise HistoricalForecastUnavailable(f"Snapshot unvollständig ({detail})")
+
+    def optional(name):
+        if name not in frame or frame[name].isna().all():
+            return None
+        values = frame[name].to_numpy(dtype=float)
+        return values if np.isfinite(values).all() else None
+
+    inp = OptimizerInputs(
+        index=idx,
+        house_load_w=frame["house_load_w"].to_numpy(dtype=float),
+        pv_w=frame["pv_w"].to_numpy(dtype=float),
+        price_ct_kwh=frame["price_ct_kwh"].to_numpy(dtype=float),
+        feedin_ct_kwh=frame["feedin_ct_kwh"].to_numpy(dtype=float),
+        initial_house_soc_wh=_initial_soc_wh(repo, config, day_start),
+        pv10_w=optional("pv10_w"),
+        ambient_temp_c=optional("ambient_temp_c"),
+        solar_w_m2=optional("solar_w_m2"),
+    )
+    return inp, Optimizer(config).solve(inp), issue, frame
+
+
+def _forecast_errors(repo, inp, day_start, config):
+    """Fehler der am Origin bekannten Prognose für die ersten 24 Stunden."""
+    end = day_start + timedelta(days=1)
+    idx = inp.index[(inp.index >= day_start) & (inp.index < end)]
+    out = {}
+    for signal, predicted in (("house_consumption", inp.house_load_w),
+                              ("pv_generation", inp.pv_w)):
+        if not repo.signal_available(signal):
+            continue
+        actual = repo.read_slots(signal, day_start, end, fill=False).reindex(idx)
+        pred = pd.Series(predicted, index=inp.index).reindex(idx)
+        pair = pd.DataFrame({"actual": actual, "pred": pred}).dropna()
+        if pair.empty:
+            continue
+        error = pair["pred"] - pair["actual"]
+        dt_h = config.general.slot_minutes / 60.0
+        out[signal] = {
+            "mae_w": float(error.abs().mean()),
+            "bias_kwh": float(error.sum() * dt_h / 1000.0),
+            "slots": int(len(pair)),
+        }
+    return out
 
 
 def main() -> int:
@@ -75,6 +167,9 @@ def main() -> int:
     ap.add_argument("--start", help="Startdatum YYYY-MM-DD (überschreibt --days)")
     ap.add_argument("--end", help="Enddatum YYYY-MM-DD")
     ap.add_argument("--errors-only", action="store_true", help="nur Fehler zeigen")
+    ap.add_argument(
+        "--historical-forecasts", action="store_true",
+        help="damals archivierte produktive Prognosen statt perfekter Voraussicht")
     ap.add_argument("--log-level", default="WARNING")
     args = ap.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.WARNING),
@@ -100,20 +195,37 @@ def main() -> int:
     days = pd.date_range(start, end, freq="D", tz=tz)
 
     repo = InfluxRepository(config)
-    missing = [s for s in REQUIRED if not repo.signal_available(s)]
+    required = ("battery_soc",) if args.historical_forecasts else REQUIRED_PERFECT
+    missing = [s for s in required if not repo.signal_available(s)]
     if missing:
         print(f"FEHLER: Signale fehlen in der Config: {missing}")
         return 2
 
+    mode_label = ("echte historische Prognosesnapshots"
+                  if args.historical_forecasts else "perfekte Voraussicht")
     print(f"Backtest {start.date()} .. {end.date()}  ({len(days)} Tage), "
-          f"perfekte Voraussicht, 48-h-Horizont\n")
+          f"{mode_label}, {config.general.optimization_horizon_hours}-h-Horizont\n")
     rule_counter: Counter = Counter()
     flagged_days, n_ok, n_skip = [], 0, 0
     savings = []
+    forecast_errors = {"house_consumption": [], "pv_generation": []}
+    snapshot_issues = []
 
     for day in days:
         try:
-            res = _day_plan(repo, config, day)
+            if args.historical_forecasts:
+                inp, result, issue, _ = _historical_day_plan(repo, config, day)
+                snapshot_issues.append(issue)
+                for signal, values in _forecast_errors(
+                        repo, inp, day, config).items():
+                    forecast_errors[signal].append(values)
+                res = (inp, result)
+            else:
+                res = _day_plan(repo, config, day)
+        except HistoricalForecastUnavailable as exc:
+            print(f"  {day.date()}  ÜBERSPRUNGEN ({exc})")
+            n_skip += 1
+            continue
         except Exception as exc:
             print(f"  {day.date()}  ÜBERSPRUNGEN ({exc})")
             n_skip += 1
@@ -155,13 +267,31 @@ def main() -> int:
             print(f"  {tag} {rule:34s} {n:4d}")
     if savings:
         arr = np.array(savings)
+        savings_label = ("laut damaliger Prognose" if args.historical_forecasts
+                         else "perfekte Voraussicht")
         print(f"\nErsparnis/Tag vs. Ohne-EMS-Baseline (terminalwert-bereinigt, "
-              f"perfekte Voraussicht):")
+              f"{savings_label}):")
         print(f"  Median {np.median(arr):+.2f} €  min {arr.min():+.2f}  "
               f"max {arr.max():+.2f}  | negative Tage: {(arr < -0.01).sum()}")
         if (arr < -0.01).any():
-            print("  ⚠ negative Tage = Plan schlechter als naives Verhalten "
-                  "trotz perfekter Voraussicht -> Modell prüfen!")
+            suffix = ("im damaligen Prognosemodell" if args.historical_forecasts
+                      else "trotz perfekter Voraussicht")
+            print(f"  ⚠ negative Tage = Plan schlechter als naives Verhalten "
+                  f"{suffix} -> Modell prüfen!")
+    if args.historical_forecasts:
+        print("\nPrognosegüte erste 24 h (Prognose minus Ist):")
+        labels = {"house_consumption": "Hauslast", "pv_generation": "PV"}
+        for signal, rows in forecast_errors.items():
+            if not rows:
+                print(f"  {labels[signal]:9s}: keine Ist-Vergleichsdaten")
+                continue
+            maes = np.array([x["mae_w"] for x in rows])
+            biases = np.array([x["bias_kwh"] for x in rows])
+            print(f"  {labels[signal]:9s}: MAE Median {np.median(maes):.0f} W  | "
+                  f"Energie-Bias Median {np.median(biases):+.2f} kWh/Tag "
+                  f"({len(rows)} Tage)")
+        print(f"  Archivabdeckung: {len(snapshot_issues)} vollständige "
+              f"Tages-Snapshots")
     repo.close()
     return 1 if any(s == "error" for s, _ in rule_counter) else 0
 

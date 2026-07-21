@@ -90,6 +90,12 @@ nichts):
     verifiziert, −3042 W; Mode 4 = Netzladen mit 8 kW verifiziert.)
   - *reine Lade-/Entlade-Begrenzung* (Peak-Shaving, Sperren) → persistente
     Limits (`set_power_limits`), **kein** Mode-Eingriff/Watchdog.
+  - Mit `verify_control: true` liest das EMS nach jedem Schreibvorgang
+    `powerLimitsUsed`, `maxChargePower` und `maxDischargePower` direkt vom E3DC
+    zurück. Schreibfehler, fehlende Rückmeldung oder Abweichungen außerhalb von
+    `control_verify_tolerance_w` erscheinen rot im Dashboard und werden über
+    `ems/alert` gemeldet. Ein anhaltender Fehler wird gemäß
+    `control_alarm_repeat_minutes` wiederholt; die Erholung wird einmal gemeldet.
   - Für aktive Modi (2/3/4) sendet ein Watchdog-Thread den Befehl alle **5 s**
     neu, da der E3DC sonst nach ~10 s selbst auf auto zurückfällt.
   - Beim Beenden schaltet der Dienst aktiv auf auto (Mode 0) zurück; stirbt der
@@ -469,7 +475,15 @@ Zwei Werkzeuge machen die Suche systematisch:
   ```bash
   python backtest.py --config config.yaml --days 120
   python backtest.py --config config.yaml --start 2026-01-01 --end 2026-03-01
+  python backtest.py --config config.yaml --days 30 --historical-forecasts
   ```
+
+  Mit `--historical-forecasts` wird kein nachträglich bekannter Ist-Verlauf als
+  Prognose verwendet. Jeder Tag wird aus genau einem vollständigen Snapshot
+  gerechnet, der zum jeweiligen Tagesstart produktiv erstellt wurde. Der Bericht zeigt
+  zusätzlich MAE und Energie-Bias von Hauslast und PV für die ersten 24 Stunden.
+  Tage vor Beginn des neuen Archivs oder mit Datenlücken werden übersprungen,
+  statt unbemerkt durch perfekte Voraussicht oder spätere Werte ersetzt zu werden.
 
   Schreibt nichts in die DB. Nach jeder Modelländerung als Regressions-Sweep
   laufen lassen: erwartet werden 0 Fehler und 0 (terminalwert-bereinigt)

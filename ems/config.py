@@ -344,6 +344,14 @@ class OptimizationConfig:
     # Weicher Glaettungsmalus (ct je kW Leistungssprung) fuer PV-Akkuladung an
     # Peak-Tagen. Verhindert einzelne Voll-Ladeslots zwischen Linien-Slots.
     peak_charge_ramp_penalty_ct_kw: float = 2.0
+    # Harte Obergrenze fuer den ANSTIEG der Peak-Ladeleistung je Slot. Ein
+    # Abfall bei vollem Akku bleibt frei. 0 = keine harte Grenze.
+    peak_charge_max_ramp_w: float = 1500.0
+    # Kleiner Malus (ct je kW Abweichung) gegen Aenderungen am zuletzt
+    # publizierten Fahrplan. Wirkt nur innerhalb plan_stability_hours und wird
+    # von materiellen wirtschaftlichen Aenderungen ueberstimmt. 0 = aus.
+    plan_change_penalty_ct_kw: float = 0.25
+    plan_stability_hours: float = 4.0
     # WR-Sockellast: fixer Verlust (W), der bei JEDEM Entlade-Slot dem Akku
     # entnommen wird (Wechselrichter-Eigenverbrauch). Macht Kleinstleistungs-
     # Entladen unwirtschaftlich. 0 = aus.
@@ -596,6 +604,11 @@ class E3DCRscpConfig:
     # auch nach Firmware-/Hardwareänderung). Kapazität/SoC bleiben aus der Config.
     autoread_limits: bool = False
     control_enabled: bool = False        # Steuerung per RSCP (greift real ein!)
+    # Gesendete Lade-/Entladelimits unmittelbar über get_power_settings vom
+    # Gerät zurücklesen. Abweichung/Lesefehler löst einen Steueralarm aus.
+    verify_control: bool = True
+    control_verify_tolerance_w: float = 100.0
+    control_alarm_repeat_minutes: float = 60.0
     grid_sign: float = 1.0               # Vorzeichen Netz (+ = Bezug)
     batt_sign: float = 1.0               # Vorzeichen Akku (+ = Laden)
     # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.
@@ -946,6 +959,11 @@ def load_config(path: str) -> Config:
         peak_charge_weight=float(o.get("peak_charge_weight", 30.0)),
         peak_charge_ramp_penalty_ct_kw=float(o.get(
             "peak_charge_ramp_penalty_ct_kw", 2.0)),
+        peak_charge_max_ramp_w=float(o.get(
+            "peak_charge_max_ramp_w", 1500.0)),
+        plan_change_penalty_ct_kw=float(o.get(
+            "plan_change_penalty_ct_kw", 0.25)),
+        plan_stability_hours=float(o.get("plan_stability_hours", 4.0)),
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),
         power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),
@@ -1132,6 +1150,11 @@ def load_config(path: str) -> Config:
         read_live=bool(e.get("read_live", True)),
         autoread_limits=bool(e.get("autoread_limits", False)),
         control_enabled=bool(e.get("control_enabled", False)),
+        verify_control=bool(e.get("verify_control", True)),
+        control_verify_tolerance_w=float(e.get(
+            "control_verify_tolerance_w", 100.0)),
+        control_alarm_repeat_minutes=float(e.get(
+            "control_alarm_repeat_minutes", 60.0)),
         grid_sign=float(e.get("grid_sign", 1.0)),
         batt_sign=float(e.get("batt_sign", 1.0)),
         history_source=bool(e.get("history_source", False)),

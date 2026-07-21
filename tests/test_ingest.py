@@ -109,3 +109,20 @@ def test_read_last_control_empty(tmp_path):
     from ems.local_history import read_last_control
     ts, cmd = read_last_control(str(tmp_path / "empty.sqlite"), "Europe/Berlin")
     assert ts is None and cmd is None
+
+
+def test_control_verification_roundtrip(tmp_path):
+    from ems.local_history import (read_latest_control_verification,
+                                   write_control_verification)
+    db = str(tmp_path / "history.sqlite")
+    status = {
+        "checked_at": "2026-07-20T12:30:00+00:00",
+        "ok": False, "state": "mismatch", "mode": "limits",
+        "message": "Ladelimit abweichend",
+        "expected": {"max_charge_w": 1200},
+        "actual": {"max_charge_w": 2500},
+    }
+    write_control_verification(db, status)
+    read = read_latest_control_verification(db, "Europe/Berlin")
+    assert read["ok"] is False and read["state"] == "mismatch"
+    assert read["expected"]["max_charge_w"] == 1200

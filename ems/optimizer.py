@@ -93,6 +93,33 @@ _warm_cache: dict = {}
 _TRAIL_IDX = re.compile(r"^(.+)_(\d+)$")
 
 
+def _complete_pv10(pv10_w, expected_pv_w):
+    """Fehlende p10-Slots konservativ aus dem vorhandenen Band ergaenzen.
+
+    Ein einzelnes NaN am Horizontende darf nicht die belastbaren Solcast-
+    Quantile aller anderen Tage deaktivieren. Fuer Luecken wird das robuste
+    Medianverhaeltnis p10/Erwartungswert der vorhandenen Tageslicht-Slots
+    verwendet; ohne verwertbares Band gilt konservativ 65 %.
+    Rueckgabe: (vollstaendige Reihe, Anzahl Ersetzungen, verwendeter Faktor).
+    """
+    expected = np.maximum(np.asarray(expected_pv_w, dtype=float), 0.0)
+    if pv10_w is None:
+        return None, 0, None
+    raw = np.asarray(pv10_w, dtype=float).reshape(-1)
+    if raw.size != expected.size:
+        return 0.65 * expected, int(expected.size), 0.65
+    finite = np.isfinite(raw)
+    missing = int((~finite).sum())
+    if not missing:
+        return np.maximum(raw, 0.0), 0, None
+    usable = finite & (expected >= 100.0) & (raw >= 0.0)
+    ratios = raw[usable] / expected[usable]
+    factor = (float(np.median(ratios)) if ratios.size else 0.65)
+    factor = float(np.clip(factor, 0.05, 1.0))
+    completed = np.where(finite, raw, factor * expected)
+    return np.maximum(completed, 0.0), missing, factor
+
+
 def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
     """Warm-Werte des letzten Laufs auf den neuen Horizont verschieben:
     alter Slot-Index -> neuer = alt - Versatz. Nicht-Slot-Variablen (z.B.
@@ -303,8 +330,12 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
 
 
 class Optimizer:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, stabilize_plan: bool = False):
         self.cfg = config
+        # Nur der fortlaufende Produktivdienst darf gegen den vorherigen Lauf
+        # stabilisieren. Backtests, Debug-Replays und voneinander unabhaengige
+        # Tests duerfen trotz prozessweitem Warmstart nicht gekoppelt werden.
+        self.stabilize_plan = bool(stabilize_plan)
 
     def _departure_slot_indices(self, index: pd.DatetimeIndex) -> List[int]:
         """Slot-Indizes der Abfahrtzeiten im Horizont (je Wochentag; Tage ohne
@@ -386,15 +417,22 @@ class Optimizer:
                       "Fallback 'auto' ohne Eingriffe.", bad or ["initial_house_soc_wh"])
             return self._neutral_result(inp, "InvalidInput")
 
-        # p10 (optional): nur nutzen, wenn vollständig; sonst Erwartungswert.
-        pv10 = None
-        if inp.pv10_w is not None:
-            a = np.asarray(inp.pv10_w, dtype=float)
-            if np.all(np.isfinite(a)):
-                pv10 = np.maximum(a, 0.0)
-            else:
-                log.warning("PV-p10 enthält NaN – Einspeise-Linie nutzt den "
-                            "Erwartungswert.")
+        # p10 (optional): einzelne Luecken slotweise auffuellen. Zuvor hat ein
+        # einziges NaN (real: letzter Nacht-Slot) das konservative Band fuer
+        # den kompletten 48-h-Horizont deaktiviert.
+        pv10, p10_missing, p10_factor = _complete_pv10(
+            inp.pv10_w, inp.pv_w)
+        if p10_missing:
+            log.warning("PV-p10: %d fehlende Slots konservativ mit %.0f %% "
+                        "des Erwartungswerts ersetzt.",
+                        p10_missing, 100.0 * float(p10_factor))
+
+        # Derselbe verschobene Vorplan dient sowohl als Solver-Warmstart als
+        # auch (nur bei wirklich fortgeschrittener Zeit) als Stabilitaetsanker.
+        warm = _shifted_warm_values(inp.index[0], int(round(dt * 60)))
+        previous_plan = (warm if self.stabilize_plan and warm and _warm_cache
+                         and pd.Timestamp(inp.index[0]) > _warm_cache["start"]
+                         else None)
 
         use_car = bool(veh.enabled and inp.car_present and inp.initial_car_soc_wh is not None)
 
@@ -731,6 +769,12 @@ class Optimizer:
                 # semikontinuierlich: 0 oder [min,max]
                 prob += car[t] <= veh.max_charge_w * is_car[t]
                 prob += car[t] >= veh.min_charge_w * is_car[t]
+                # Ohne irgendeine konfigurierte Abfahrt gibt es im Horizont
+                # kein Ladeziel. Dann ist Laden nicht nur wirtschaftlich
+                # dominiert, sondern wird hart ausgeschlossen, damit die
+                # MIP-Gap-Toleranz keinen nutzlosen Einzelslot publiziert.
+                if not dep_slots and not veh.has_any_departure:
+                    prob += car[t] == 0
                 # Ladekurve (Taper): oberhalb taper_start sinkt die maximale
                 # Leistung linear bis min_charge_w bei 100 %. Unterhalb ist die
                 # Schranke lockerer als max_charge_w -> nicht bindend.
@@ -815,11 +859,11 @@ class Optimizer:
                 # Malus erhalten, weil dort später keine Entladung mehr folgt.
                 prob += hold_block >= is_di[t] - is_di[t - 1]
                 hold_blocks.append(hold_block)
-            # Erst ab derselben 100-W-Schwelle bewerten, ab der der Slot
-            # später als limit_discharge publiziert würde. Bei realer Last
-            # oberhalb der Akku-Maximalleistung bleibt Teildeckung möglich;
-            # ihr Energievorteil ist deutlich größer als dieser kleine Malus.
-            material_w = 100.0
+            # Bis 40 W als Rundungs-/WR-Sockelrest tolerieren. Groessere
+            # Teildeckung mit gleichzeitigem Netzbezug bekommt den kleinen
+            # Eingriffsmalus; bei realer Last oberhalb der Akku-Maximalleistung
+            # bleibt sie weiterhin erlaubt und ueberstimmt den Malus problemlos.
+            material_w = 40.0
             for t in range(N):
                 has_import = pulp.LpVariable(
                     f"matimp_{t}", 0, 1, cat="Binary")
@@ -845,7 +889,12 @@ class Optimizer:
         hold_energy_flags = [None] * N
         if hold_pen:
             avoidable_import = []
-            soc_buffer_wh = 100.0
+            # Nur echten numerischen/WR-Sockel-Puffer am Mindest-SoC als
+            # "keine nutzbare Energie mehr" behandeln. Der fruehere pauschale
+            # 100-Wh-Puffer erlaubte bis zu rund 0,4 kWh/Tag vorgezogenen
+            # Netzbezug und machte im p10-Fall eine kleine Vor-PV-Reserve
+            # attraktiv, obwohl der Akku noch liefern konnte.
+            soc_buffer_wh = max(1.0, standby_w * dt)
             usable_wh = max(1.0, hb.max_soc_wh - hb.min_soc_wh)
             base_deficits = np.maximum(
                 np.asarray(inp.house_load_w, dtype=float)
@@ -953,15 +1002,22 @@ class Optimizer:
         # veraendern. Einheit: ct je kW Aenderung zwischen zwei 15-min-Slots.
         ramp_pen = float(getattr(
             cfg.optimization, "peak_charge_ramp_penalty_ct_kw", 0.0) or 0.0)
-        if ramp_pen:
+        ramp_limit = float(getattr(
+            cfg.optimization, "peak_charge_max_ramp_w", 0.0) or 0.0)
+        if ramp_pen or ramp_limit > 0.0:
             for t in range(1, N):
                 if (slot_day[t] != slot_day[t - 1]
                         or day_mode[slot_day[t]] != "peak"):
                     continue
-                ramp = pulp.LpVariable(f"peakram_d{t}", 0)
-                prob += ramp >= dc[t] - dc[t - 1]
-                prob += ramp >= dc[t - 1] - dc[t]
-                cost_terms.append(ramp_pen * ramp / 1000.0)
+                if ramp_limit > 0.0:
+                    # Nur den Anstieg begrenzen: beim Erreichen von 100 % SoC
+                    # muss die Ladeleistung physikalisch sofort abfallen duerfen.
+                    prob += dc[t] - dc[t - 1] <= ramp_limit
+                if ramp_pen:
+                    ramp = pulp.LpVariable(f"peakram_d{t}", 0)
+                    prob += ramp >= dc[t] - dc[t - 1]
+                    prob += ramp >= dc[t - 1] - dc[t]
+                    cost_terms.append(ramp_pen * ramp / 1000.0)
 
         # Peak-Tage: Einspeise-Linie L minimieren -> so tief wie möglich, dass der
         # Akku gerade voll wird (Spitze über L lädt den Akku). asap-Tage: über die
@@ -1005,31 +1061,69 @@ class Optimizer:
             for d in _peak_line_days:
                 idxs = np.where(sd_arr == d)[0]
                 s10 = surplus10[idxs]
-                surplus_started = np.maximum.accumulate(
-                    s10 >= P10_START_SURPLUS_W)
-                natural_dawn = float(
-                    dawn_soc[d] if dawn_soc[d] is not None
-                    else day_first_soc[d])
-                p10_target = min(
-                    hb.max_soc_wh,
-                    natural_dawn + hb.charge_efficiency * float(s10.sum()) * dt)
-                # künftiger Tages-Überschuss NACH Slot j (exklusiv)
-                suffix = np.concatenate([np.cumsum(s10[::-1])[::-1][1:], [0.0]])
-                for j, t in enumerate(idxs):
-                    if not surplus_started[j]:
-                        continue
+                active = np.flatnonzero(s10 >= P10_START_SURPLUS_W)
+                if not active.size:
+                    continue
+                first = int(active[0])
+                active_s10 = s10[first:]
+                total_charge_wh = (hb.charge_efficiency
+                                   * float(active_s10.sum()) * dt)
+                anchor_t = int(idxs[first])
+                # Ziel = min(max_soc, SoC BEIM BEGINN des belastbaren
+                # p10-Ueberschusses + danach noch erwartbare p10-Ladung).
+                # Damit hebt vorab gehortete Energie Ziel UND Startpunkt gleich
+                # stark an und kann den Mindestpfad nicht mehr kuenstlich
+                # leichter machen. Die Min-Verknuepfung wird exakt binaer
+                # modelliert, damit das Ziel bei ausreichender PV bei 100 %
+                # gedeckelt bleibt.
+                target = pulp.LpVariable(
+                    f"p10target_d{d}", hb.min_soc_wh, hb.max_soc_wh)
+                capped = pulp.LpVariable(
+                    f"p10cap_d{d}", 0, 1, cat="Binary")
+                anchor_target = soc[anchor_t] + total_charge_wh
+                target_big_m = usable_wh + total_charge_wh + 1.0
+                prob += target <= anchor_target
+                prob += target >= anchor_target - target_big_m * capped
+                prob += target >= hb.max_soc_wh - target_big_m * (1 - capped)
+                # künftiger aktiver p10-Überschuss NACH Slot j (exklusiv)
+                suffix = np.concatenate([
+                    np.cumsum(active_s10[::-1])[::-1][1:], [0.0]])
+                for aj, t in enumerate(idxs[first:]):
                     # Nur solange noch p10-Überschuss aussteht: die Grenze soll
                     # das AUFSCHIEBEN des Ladens begrenzen. Nach PV-Ende wäre
                     # floor = p10_target und würde das normale (teure!) Abend-
                     # entladen blockieren - genau dann muss sie entfallen.
-                    if suffix[j] <= 0.0:
-                        continue
-                    floor = p10_target - hb.charge_efficiency * suffix[j] * dt
-                    if floor <= hb.min_soc_wh:
+                    if suffix[aj] <= 0.0:
                         continue
                     slack = pulp.LpVariable(f"p10s_{t}", 0)
-                    prob += soc[t + 1] + slack >= min(floor, hb.max_soc_wh)
+                    prob += (soc[t + 1] + slack
+                             >= target - hb.charge_efficiency * suffix[aj] * dt)
                     cost_terms.append(P10_PEN_CT_KWH * slack / 1000.0)
+
+        # Kurzfristige Planstabilitaet: Bei wirtschaftlich nahezu identischen
+        # Loesungen den bereits publizierten Fahrplan beibehalten. Das ist kein
+        # harter Lock: echte Preis-/Prognoseaenderungen duerfen den kleinen
+        # Malus jederzeit ueberstimmen. Nur fortgeschrittene Live-Horizonte
+        # werden verglichen; Wiederholungsloesungen desselben Ursprungs (Tests,
+        # Diagnose) bleiben unbeeinflusst.
+        stability_pen = float(getattr(
+            cfg.optimization, "plan_change_penalty_ct_kw", 0.0) or 0.0)
+        stability_h = float(getattr(
+            cfg.optimization, "plan_stability_hours", 0.0) or 0.0)
+        if previous_plan and stability_pen and stability_h > 0.0:
+            stable_slots = min(N, int(np.ceil(stability_h / dt)))
+            decisions = [("dc", dc), ("ac", ac), ("dis", dis)]
+            if use_car:
+                decisions.append(("car", car))
+            deltas = []
+            for prefix, variables in decisions:
+                for t in range(stable_slots):
+                    old = float(previous_plan.get(f"{prefix}_{t}", 0.0))
+                    delta = pulp.LpVariable(f"plan_delta_{prefix}_{t}", 0)
+                    prob += delta >= variables[t] - old
+                    prob += delta >= old - variables[t]
+                    deltas.append(delta)
+            cost_terms.append(stability_pen * pulp.lpSum(deltas) / 1000.0)
 
         # Terminalwert des gespeicherten Akku-Inhalts (Nutzen -> negativ),
         # mit Entlade-Wirkungsgrad diskontiert. Bei "auto" als FALLENDE
@@ -1068,7 +1162,6 @@ class Optimizer:
 
         # ---- Lösen ------------------------------------------------------- #
         _t0 = time.monotonic()
-        warm = _shifted_warm_values(inp.index[0], int(round(dt * 60)))
         prob.solve(make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0
         hit_limit = solve_s >= cfg.optimization.solver_time_limit_s - 2.0
@@ -1330,6 +1423,8 @@ class Optimizer:
             rows.append(row)
 
         table = pd.DataFrame(rows, index=inp.index)
+        from .explain import add_plan_explanations
+        table = add_plan_explanations(table, cfg)
         total = float(table["slot_cost_ct"].sum())
         line_w = (float(line_vals[slot_day[0]])
                   if (line_day[slot_day[0]] and day_mode[slot_day[0]] == "peak") else None)

@@ -59,16 +59,15 @@ def test_metamorph_price_offset_invariant():
     """Alle Preise um denselben Betrag anheben -> physisch identischer Plan
     (nur die Kosten verschieben sich). Fängt Absolut-vs-Differenz-Fehler.
 
-    AUSGENOMMEN: der Akku-Hold-Malus (battery_hold_penalty_ct_kwh) ist ein
-    bewusst FIXER ct/kWh-Malus auf vermeidbaren Netzbezug. Er konkurriert mit
-    der ebenfalls festen Einspeisevergütung und verschiebt dadurch den PV-
-    Routing-Punkt (speichern vs. einspeisen) je nach absolutem Preisniveau -
-    die strikte Offset-Invarianz gilt für ihn per Design nicht (er SOLL kleine
-    Preisvorteile überstimmen). Hier auf 0 gesetzt, um die Invarianz des
-    preisgetriebenen Kern-Optimierers zu prüfen; das Malus-Verhalten selbst
-    deckt test_optimizer_limits ab."""
+    AUSGENOMMEN: Hold- und Schalt-Malus sind bewusst FIXE Cent-Beträge auf
+    vermeidbaren Netzbezug bzw. reale Eingriffe. Sie konkurrieren mit den
+    Energiekosten; die strikte Offset-Invarianz gilt für sie per Design nicht
+    (sie SOLLEN Mikro-Preisvorteile überstimmen). Hier auf 0 gesetzt, um die
+    Invarianz des preisgetriebenen Kern-Optimierers zu prüfen; ihr Verhalten
+    selbst deckt test_optimizer_limits ab."""
     cfg = make_config()
     cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
+    cfg.optimization.battery_switch_penalty_ct = 0.0
     rng = np.random.default_rng(1)
     inp = _scenario(rng)
     a = Optimizer(cfg).solve(inp)

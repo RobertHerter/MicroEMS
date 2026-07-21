@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
-from ems.optimizer import Optimizer
+from ems.optimizer import Optimizer, _warm_cache
 from tests.test_optimizer import _day_index, _inputs
 from tests.test_synthetic import make_config
 
@@ -25,6 +26,39 @@ def test_power_headroom_caps_battery_power():
     d20, _ = max_dis(20.0)
     assert d0 > d20 + 100.0, "Reserve sollte die Spitzen-Entladung senken"
     assert d20 <= cap * 0.8 + 1.0, "Entladung überschreitet die deratete Grenze"
+
+
+def test_short_term_plan_stability_prefers_published_slot():
+    """Bei gleichen Preisen bleibt eine bereits publizierte Netzladung im
+    selben Folgeslot, statt bei jedem Lauf beliebig zu springen."""
+    idx = _day_index("2026-01-15")[:4]
+
+    def solve(penalty):
+        cfg = make_config()
+        cfg.optimization.charge_strategy = "asap"
+        cfg.optimization.terminal_soc_value = 100.0
+        cfg.optimization.plan_change_penalty_ct_kw = penalty
+        cfg.optimization.plan_stability_hours = 1.0
+        cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
+        cfg.optimization.battery_switch_penalty_ct = 0.0
+        _warm_cache.clear()
+        _warm_cache.update({
+            "start": idx[0] - pd.Timedelta(minutes=15),
+            "slot_min": 15,
+            # Alter Slot 1 wird nach dem 15-min-Horizontversatz neuer Slot 0.
+            "values": {"ac_1": 3000.0},
+        })
+        return Optimizer(cfg, stabilize_plan=True).solve(_inputs(
+            idx, pv=0.0, load=0.0, price=20.0, soc=9250.0)).table
+
+    try:
+        floating = solve(0.0)
+        stable = solve(0.25)
+    finally:
+        _warm_cache.clear()
+
+    assert floating.iloc[0]["batt_ac_charge_w"] < 500.0
+    assert stable.iloc[0]["batt_ac_charge_w"] > 2900.0
 
 
 def test_min_discharge_is_semicontinuous():

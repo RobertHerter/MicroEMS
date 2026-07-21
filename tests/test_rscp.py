@@ -55,8 +55,14 @@ class FakeE3DC:
         return {"model": "S10X", "maxAcPower": 12000,
                 "maxBatChargePower": 12480, "maxBatDischargePower": 12120}
 
-    def get_power_settings(self):
-        return {"dischargeStartPower": 100, "powerSaveEnabled": True}
+    def get_power_settings(self, keepAlive=False):
+        limits = self.limits or {}
+        return {
+            "dischargeStartPower": 100, "powerSaveEnabled": True,
+            "powerLimitsUsed": bool(limits.get("enable", False)),
+            "maxChargePower": limits.get("max_charge", 12480),
+            "maxDischargePower": limits.get("max_discharge", 12120),
+        }
 
     def set_power_limits(self, enable=None, max_charge=None, max_discharge=None,
                          keepAlive=False):
@@ -144,12 +150,70 @@ def test_control_limit_uses_power_limits_not_mode3():
     hb = cfg.house_battery
     # Ladelimit < Hardware-Max, kein Netzladen -> auto + persistentes Limit,
     # KEIN Mode-3-Befehl.
-    link.apply_control({"batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
-                        "batt_discharge_limit_w": hb.max_discharge_w,
-                        "batt_grid_discharge_w": 0})
+    status = link.apply_control({
+        "batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+        "batt_discharge_limit_w": hb.max_discharge_w,
+        "batt_grid_discharge_w": 0})
     assert link._e3dc.limits["enable"] is True
     assert link._e3dc.limits["max_charge"] == 1200
     assert not link._e3dc.power_calls        # kein SET_POWER/Mode 3
+    assert status["ok"] is True
+    assert status["actual"]["max_charge_w"] == 1200
+
+
+def test_control_limit_readback_mismatch_is_failure():
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    link._e3dc.get_power_settings = lambda keepAlive=False: {
+        "powerLimitsUsed": True, "maxChargePower": 2500,
+        "maxDischargePower": hb.max_discharge_w,
+    }
+    status = link.apply_control({
+        "batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+        "batt_discharge_limit_w": hb.max_discharge_w,
+        "batt_grid_discharge_w": 0})
+    assert status["ok"] is False and status["state"] == "mismatch"
+    assert "Laden Soll 1200 W, Ist 2500 W" in status["message"]
+
+
+def test_control_limit_readback_failure_is_alarm_state():
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+
+    def fail(keepAlive=False):
+        raise RuntimeError("RSCP nicht erreichbar")
+
+    link._e3dc.get_power_settings = fail
+    status = link.apply_control({
+        "batt_charge_limit_w": 1200, "batt_grid_charge_w": 0,
+        "batt_discharge_limit_w": hb.max_discharge_w,
+        "batt_grid_discharge_w": 0})
+    assert status["ok"] is False and status["state"] == "readback_failed"
+    assert "nicht zurückgelesen" in status["message"]
+
+
+def test_control_alarm_is_throttled_and_recovery_is_reported():
+    import ems.main as main
+    cfg = make_config()
+    cfg.e3dc_rscp.control_alarm_repeat_minutes = 60
+
+    class Publisher:
+        def __init__(self):
+            self.alerts = []
+
+        def publish_alert(self, level, message):
+            self.alerts.append((level, message))
+
+    pub = Publisher()
+    main._control_alarm.update(failed=False, key=None, last=0.0)
+    failed = {"ok": False, "state": "mismatch", "message": "Limit falsch"}
+    main._publish_control_alarm(pub, cfg, failed)
+    main._publish_control_alarm(pub, cfg, failed)
+    assert len(pub.alerts) == 1 and pub.alerts[0][0] == "error"
+    main._publish_control_alarm(
+        pub, cfg, {"ok": True, "state": "confirmed", "message": "bestätigt"})
+    assert pub.alerts[-1][0] == "info"
+    assert "wieder bestätigt" in pub.alerts[-1][1]
 
 
 def test_control_grid_discharge_uses_mode2():

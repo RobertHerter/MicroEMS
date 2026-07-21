@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zlib
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -52,6 +53,11 @@ def _con(path: str) -> sqlite3.Connection:
                 " PRIMARY KEY(issue_ts, target_ts))")
     con.execute("CREATE INDEX IF NOT EXISTS idx_weather_fc_archive_target_issue "
                 "ON weather_forecast_archive(target_ts, issue_ts)")
+    # Exakter, bereits aufbereiteter Eingang des Optimierers. Anders als die
+    # Provider-Archive enthält dieser Snapshot auch Kalibrierung, Intraday-
+    # Korrektur und Preisersatzwerte so, wie sie im produktiven Lauf galten.
+    con.execute("CREATE TABLE IF NOT EXISTS optimizer_forecast_snapshots ("
+                " issue_ts TEXT PRIMARY KEY, payload BLOB NOT NULL)")
     # Diagnosebasis der Intraday-Korrektur. summary enthält Roh-/angewandten
     # Faktor je Lauf, window die dazu verglichenen Ist-/Basisprognose-Slots.
     con.execute("CREATE TABLE IF NOT EXISTS intraday_correction ("
@@ -90,6 +96,11 @@ def _con(path: str) -> sqlite3.Connection:
     # Solve zu schließen. Immer nur EINE Zeile (id=1).
     con.execute("CREATE TABLE IF NOT EXISTS last_control ("
                 " id INTEGER PRIMARY KEY CHECK(id=1), ts TEXT, cmd_json TEXT)")
+    # Rücklesebestätigung der tatsächlich wirksamen E3DC-Limits. Dient als
+    # Audit-Verlauf und überlebt Dienst-/Dashboard-Neustarts.
+    con.execute("CREATE TABLE IF NOT EXISTS control_verification ("
+                " ts TEXT PRIMARY KEY, ok INTEGER, state TEXT, mode TEXT,"
+                " message TEXT, expected_json TEXT, actual_json TEXT)")
     con.commit()
     return con
 
@@ -125,6 +136,45 @@ def read_last_control(path: str, tz: str):
         return None, None
 
 
+def write_control_verification(path: str, status: dict) -> None:
+    """Ergebnis einer E3DC-Rücklesekontrolle protokollieren."""
+    ts = pd.Timestamp(status.get("checked_at", pd.Timestamp.now(tz="UTC")))
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    ok = status.get("ok")
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO control_verification("
+        "ts, ok, state, mode, message, expected_json, actual_json) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (ts.tz_convert("UTC").isoformat(), None if ok is None else int(bool(ok)),
+         str(status.get("state", "unknown")), str(status.get("mode", "")),
+         str(status.get("message", "")),
+         json.dumps(status.get("expected") or {}, separators=(",", ":")),
+         json.dumps(status.get("actual") or {}, separators=(",", ":"))))
+    con.commit()
+    con.close()
+
+
+def read_latest_control_verification(path: str, tz: str):
+    """Letzte E3DC-Rücklesebestätigung oder ``None`` lesen."""
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT ts, ok, state, mode, message, expected_json, actual_json "
+            "FROM control_verification ORDER BY ts DESC LIMIT 1").fetchone()
+        con.close()
+    except Exception:
+        row = None
+    if not row:
+        return None
+    return {
+        "checked_at": pd.Timestamp(row[0]).tz_convert(tz).isoformat(),
+        "ok": None if row[1] is None else bool(row[1]),
+        "state": row[2], "mode": row[3], "message": row[4],
+        "expected": json.loads(row[5] or "{}"),
+        "actual": json.loads(row[6] or "{}"),
+    }
 # Signalname (InfluxDB-Konvention) -> Spalte in der actuals-Tabelle
 _ACTUAL_FIELD = {"pv_generation": "pv_w", "house_consumption": "house_w",
                  "grid_power": "grid_w", "battery_power": "battery_w",
@@ -567,6 +617,101 @@ def read_weather_forecast_asof(path: str, issue_time, start, end, tz: str,
     out = src.reindex(src.index.union(grid)).interpolate(
         method="time", limit=limit, limit_area="inside").reindex(grid)
     return out.clip(lower=0.0) if field == "radiation" else out
+
+
+def write_optimizer_forecast_archive(
+        path: str, issue_time, series: Dict[str, pd.Series],
+        estimated: Optional[Dict[str, pd.Series]] = None) -> int:
+    """Einen unveränderlichen Snapshot der Optimierer-Eingänge speichern.
+
+    Alle Signale erhalten dieselbe hochauflösende ``issue_ts``. Dadurch kann
+    ein Backtest später genau einen konsistenten, vor dem Origin bekannten
+    Satz laden, statt Werte aus verschiedenen Prognoseläufen zu mischen.
+    """
+    issue = pd.Timestamp(issue_time)
+    if issue.tzinfo is None:
+        issue = issue.tz_localize("UTC")
+    issue_iso = issue.tz_convert("UTC").isoformat()
+    clean = {str(name): pd.Series(values, dtype="float64")
+             for name, values in series.items()}
+    if not clean:
+        return 0
+    index = pd.DatetimeIndex([])
+    for values in clean.values():
+        index = index.union(pd.DatetimeIndex(values.index))
+    if index.empty:
+        return 0
+    index = index.sort_values()
+    timestamps = []
+    for target in index:
+        ts = pd.Timestamp(target)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        timestamps.append(ts.tz_convert("UTC").isoformat())
+    values_payload = {}
+    count = 0
+    for name, values in clean.items():
+        aligned = values.reindex(index)
+        encoded = [None if pd.isna(value) else float(value)
+                   for value in aligned]
+        values_payload[name] = encoded
+        count += sum(value is not None for value in encoded)
+    estimated_payload = {}
+    for name, values in (estimated or {}).items():
+        estimated_payload[str(name)] = [
+            bool(value) if not pd.isna(value) else False
+            for value in pd.Series(values).reindex(index)]
+    payload = zlib.compress(json.dumps({
+        "timestamps": timestamps,
+        "series": values_payload,
+        "estimated": estimated_payload,
+    }, separators=(",", ":"), allow_nan=False).encode("utf-8"), level=6)
+    con = _con(path)
+    con.execute(
+        "INSERT OR IGNORE INTO optimizer_forecast_snapshots(issue_ts, payload) "
+        "VALUES(?, ?)", (issue_iso, sqlite3.Binary(payload)))
+    con.commit()
+    con.close()
+    return count
+
+
+def read_optimizer_forecast_asof(path: str, issue_time, start, end, tz: str):
+    """Jüngsten vollständigen Optimierer-Snapshot vor ``issue_time`` lesen.
+
+    Rückgabe ``(snapshot_issue, frame)``. Der DataFrame enthält je Signal eine
+    Spalte sowie ``<signal>_estimated``. Es wird bewusst nur EINE issue_ts
+    ausgewählt; fehlende Slots bleiben damit sichtbar und werden nicht aus
+    neueren oder älteren Läufen ergänzt.
+    """
+    origin = pd.Timestamp(issue_time)
+    if origin.tzinfo is None:
+        origin = origin.tz_localize("UTC")
+    origin_iso = origin.tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT issue_ts, payload FROM optimizer_forecast_snapshots "
+            "WHERE issue_ts <= ? ORDER BY issue_ts DESC LIMIT 1",
+            (origin_iso,)).fetchone()
+        con.close()
+    except Exception:
+        row = None
+    if not row:
+        return None, pd.DataFrame()
+    selected, blob = row
+    try:
+        payload = json.loads(zlib.decompress(blob).decode("utf-8"))
+        idx = pd.to_datetime(payload["timestamps"], utc=True,
+                             format="ISO8601").tz_convert(tz)
+        values = pd.DataFrame(payload["series"], index=idx, dtype="float64")
+        for name, flags in payload.get("estimated", {}).items():
+            values[f"{name}_estimated"] = pd.Series(
+                flags, index=idx, dtype="bool")
+        begin, finish = pd.Timestamp(start).tz_convert(tz), pd.Timestamp(end).tz_convert(tz)
+        values = values[(values.index >= begin) & (values.index < finish)]
+    except Exception:
+        return None, pd.DataFrame()
+    return pd.Timestamp(selected).tz_convert(tz), values.sort_index()
 
 
 def write_intraday_diagnostic(path: str, issue_time, signal: str,

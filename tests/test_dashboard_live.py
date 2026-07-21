@@ -3,7 +3,8 @@ from types import SimpleNamespace
 from ems.config import ControllableLoad
 import pandas as pd
 
-from ems.dashboard import _controls_block, _live_block, _mobile_plot_block
+from ems.dashboard import (_control_banner, _controls_block, _decision_block, _live_block,
+                           _mobile_plot_block)
 
 
 def _config(seconds=5.0):
@@ -47,6 +48,27 @@ def test_mobile_plot_omits_optional_tabs_without_matching_panels():
 
     assert 'data-panel="loads"' not in html
     assert 'data-panel="temperature"' not in html
+
+
+def test_decision_block_shows_empty_plan_state():
+    idx = pd.date_range("2026-07-17 12:00", periods=2, freq="15min",
+                        tz="Europe/Berlin")
+    table = pd.DataFrame({
+        "mode": ["auto", "auto"],
+        "decision_reason": ["", ""],
+    }, index=idx)
+    html = _decision_block(table, idx[0])
+    assert "Planentscheidungen erklärt" in html
+    assert "Keine besonderen Akku-Eingriffe" in html
+    assert "<details class='decisions'>" in html
+    assert "<details class='decisions' open" not in html
+
+
+def test_control_failure_has_prominent_dashboard_alarm():
+    html = _control_banner({"ok": False, "message": "Limit nicht übernommen"})
+    assert "E3DC-Steuer-Ausfall" in html
+    assert "Limit nicht übernommen" in html
+    assert _control_banner({"ok": True, "message": "bestätigt"}) == ""
 
 
 def test_controls_are_collapsible_and_render_editable_power_profile():

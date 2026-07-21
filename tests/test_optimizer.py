@@ -10,12 +10,25 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ems.optimizer import Optimizer, OptimizerInputs
+from ems.optimizer import Optimizer, OptimizerInputs, _complete_pv10
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
 FREQ = "15min"
 TOL = 1.0  # W
+
+
+def test_partial_p10_gap_uses_conservative_slot_fallback():
+    """Ein einzelner fehlender Quantil-Slot darf den restlichen p10-Pfad
+    nicht mehr fuer den gesamten Horizont deaktivieren."""
+    expected = np.array([0.0, 1000.0, 2000.0, 1500.0, 0.0])
+    raw = np.array([0.0, 600.0, 1200.0, np.nan, 0.0])
+    completed, missing, factor = _complete_pv10(raw, expected)
+
+    assert missing == 1
+    assert factor == pytest.approx(0.6)
+    assert completed[1] == 600.0 and completed[2] == 1200.0
+    assert completed[3] == pytest.approx(900.0)
 
 
 def _day_index(day: str, days: int = 1) -> pd.DatetimeIndex:

@@ -168,6 +168,76 @@ def _tile(label: str, value: str, sub: str = "", color: str = "") -> str:
             f'<div class="l">{label}</div><div class="s">{sub}</div></div>')
 
 
+def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> str:
+    """Naechste zusammenhaengende Planentscheidungen als lesbare Karten."""
+    needed = {"mode", "decision_reason"}
+    if table.empty or not needed <= set(table.columns):
+        return ""
+    future = table.loc[table.index >= now].copy()
+    future = future[(future["mode"].fillna("auto") != "auto")
+                    & future["decision_reason"].fillna("").ne("")]
+    if future.empty:
+        return ("<details class='decisions'><summary><span class='decision-head'>"
+                "<b>Planentscheidungen erklärt</b><small>keine besonderen "
+                "Eingriffe</small></span></summary><div class='decision-body'>"
+                "<div class='decision-empty'>Keine besonderen Akku-Eingriffe "
+                "geplant.</div></div></details>")
+
+    slot = (table.index[1] - table.index[0]
+            if len(table.index) > 1 else pd.Timedelta(minutes=15))
+    blocks = []
+    current = []
+    previous = None
+    previous_mode = None
+    for ts, row in future.iterrows():
+        mode = str(row["mode"])
+        contiguous = (previous is not None and mode == previous_mode
+                      and ts - previous <= slot * 1.5)
+        if current and not contiguous:
+            blocks.append(current)
+            current = []
+        current.append((ts, row))
+        previous, previous_mode = ts, mode
+    if current:
+        blocks.append(current)
+
+    cards = []
+    for block in blocks[:limit]:
+        start, first = block[0]
+        end = block[-1][0] + slot
+        mode = str(first["mode"])
+        label = _MODE_LABEL.get(mode, mode)
+        time_text = (f"{_WD[start.weekday()]} {start.strftime('%d.%m. %H:%M')}"
+                     f" bis {end.strftime('%H:%M')}")
+        reason = _esc(first.get("decision_reason", ""))
+        energies = pd.to_numeric(
+            pd.Series([r.get("decision_energy_kwh") for _, r in block]),
+            errors="coerce")
+        values = pd.to_numeric(
+            pd.Series([r.get("decision_value_ct") for _, r in block]),
+            errors="coerce")
+        facts = []
+        if energies.notna().any() and float(energies.fillna(0).sum()) >= 0.001:
+            facts.append(f"{float(energies.fillna(0).sum()):.2f} kWh")
+        if values.notna().any():
+            facts.append(
+                f"Modellschätzung {float(values.fillna(0).sum()):+.2f} ct")
+        facts_html = "".join(f"<span>{_esc(v)}</span>" for v in facts)
+        color = _MODE_COLOR.get(mode, "#7f8c99")
+        cards.append(
+            f"<article class='decision-item' style='--decision-color:{color}'>"
+            f"<div class='decision-time'>{_esc(time_text)}</div>"
+            f"<div class='decision-name'>{_esc(label)}</div>"
+            f"<div class='decision-reason'>{reason}</div>"
+            f"<div class='decision-facts'>{facts_html}</div></article>")
+    count = len(blocks[:limit])
+    return ("<details class='decisions'><summary><span class='decision-head'>"
+            "<b>Planentscheidungen erklärt</b>"
+            f"<small>{count} Entscheidungsblöcke</small></span></summary>"
+            "<div class='decision-body'><div class='decision-list'>"
+            f"{''.join(cards)}</div></div></details>")
+
+
 def _esc(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
@@ -188,6 +258,15 @@ def _alert_banner(violations) -> str:
         else f"⚠ Planprüfung: {len(warns)} Warnungen"
     items = "".join(f"<li>{_esc(v)}</li>" for v in (errs + warns))
     return (f'<div class="banner {cls}"><b>{head}</b><ul>{items}</ul></div>')
+
+
+def _control_banner(status) -> str:
+    """Prominenter Alarm, wenn der E3DC den Steuerbefehl nicht bestätigt."""
+    if not status or status.get("ok") is not False:
+        return ""
+    return ("<div class='banner err'><b>✗ E3DC-Steuer-Ausfall</b><ul><li>"
+            f"{_esc(status.get('message', 'Keine Bestätigung vom E3DC.'))}"
+            "</li></ul></div>")
 
 
 def _ensure_plotlyjs(out_path: str) -> None:
@@ -502,7 +581,8 @@ def _sources_block(source_status) -> str:
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
                     load_temp_actual=None, ambient_temp_c=None,
-                    source_status=None, pv_compare=None) -> str:
+                    source_status=None, pv_compare=None,
+                    control_status=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -666,11 +746,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         for i, m in enumerate(_MODES):
             colorscale += [[i / len(_MODES), _MODE_COLOR[m]],
                            [(i + 1) / len(_MODES), _MODE_COLOR[m]]]
+        mode_hover = []
+        for i, m in enumerate(modes):
+            text = _MODE_LABEL.get(m, m)
+            reason = (str(t.iloc[i].get("decision_reason", "") or "")
+                      if "decision_reason" in t.columns else "")
+            e = t.iloc[i].get("decision_energy_kwh", float("nan"))
+            v = t.iloc[i].get("decision_value_ct", float("nan"))
+            if reason:
+                text += f"<br>{reason}"
+            if pd.notna(e) and float(e) >= 0.001:
+                text += f"<br>Energie: {float(e):.3f} kWh"
+            if pd.notna(v):
+                text += f"<br>Modellschätzung: {float(v):+.2f} ct"
+            mode_hover.append(text)
         fig.add_trace(go.Heatmap(
             x=x, y=[""], z=z, zmin=-0.5, zmax=len(_MODES) - 0.5,
             colorscale=colorscale, showscale=False, meta="mode_timeline",
-            customdata=[[_MODE_LABEL.get(m, m) for m in modes]],
-            hovertemplate="%{x|%H:%M} – %{customdata}<extra>Modus</extra>"),
+            customdata=[mode_hover],
+            hovertemplate="%{x|%H:%M}<br>%{customdata}<extra>Entscheidung</extra>"),
             row=5, col=1)
 
     # ---------- Panel 6: Steuerbare Lasten (on/off je Slot) ----------
@@ -837,6 +931,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         else:
             tiles.append(_tile("Planprüfung", "✓ OK", "alle Invarianten erfüllt",
                               color="#2ca02c"))
+    if control_status:
+        ok = control_status.get("ok")
+        state = control_status.get("state", "unknown")
+        if ok is True:
+            value, color = "✓ bestätigt", "#2ca02c"
+        elif ok is False:
+            value, color = "✗ ausgefallen", "#d62728"
+        elif state == "manual":
+            value, color = "Handbetrieb", "#e6a700"
+        else:
+            value, color = "nicht geprüft", "#777"
+        tiles.append(_tile("E3DC-Steuerung", value,
+                           _esc(control_status.get("message", "")), color=color))
 
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
@@ -849,6 +956,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     report_html = _report_block(config, now, violations)
     controls_html = _controls_block(config)
     live_html = _live_block(config)
+    decision_html = _decision_block(t, now)
     mobile_plot_html = _mobile_plot_block(now, has_loads, temp_row)
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
@@ -920,6 +1028,34 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
  .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
  .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
+ .decisions {{ margin: 8px 0 12px; background: #fff;
+        border: 1px solid #dfe5eb; border-radius: 12px;
+        box-shadow: 0 2px 9px rgba(20,35,55,.06); }}
+ .decisions > summary {{ display: flex; align-items: center; gap: 10px;
+        padding: 13px 14px; cursor: pointer; list-style: none; user-select: none; }}
+ .decisions > summary::-webkit-details-marker {{ display: none; }}
+ .decisions > summary:after {{ content: '⌄'; margin-left: auto; color: #69717b;
+        font-size: 19px; transition: transform .2s; }}
+ .decisions[open] > summary:after {{ transform: rotate(180deg); }}
+ .decisions[open] > summary {{ border-bottom: 1px solid #e2e7ec; }}
+ .decision-head {{ display: flex; justify-content: space-between; align-items: baseline;
+        gap: 10px; flex: 1; }}
+ .decision-head b {{ font-size: 15px; }}
+ .decision-head small {{ color: #737c86; }}
+ .decision-body {{ padding: 11px 14px 14px; }}
+ .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
+        gap: 8px; }}
+ .decision-item {{ position: relative; min-width: 0; padding: 10px 11px 10px 15px;
+        border: 1px solid #e2e7ec; border-radius: 9px; background: #fafcfe; }}
+ .decision-item:before {{ content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+        width: 5px; border-radius: 9px 0 0 9px; background: var(--decision-color); }}
+ .decision-time {{ color: #66717c; font-size: 11px; }}
+ .decision-name {{ font-weight: 750; margin: 2px 0 4px; }}
+ .decision-reason {{ color: #4d5863; font-size: 12px; line-height: 1.35; }}
+ .decision-facts {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }}
+ .decision-facts span {{ padding: 3px 6px; border-radius: 10px; background: #eef3f7;
+        color: #52606d; font-size: 10px; }}
+ .decision-empty {{ color: #68737d; font-size: 12px; }}
  .report {{ margin: 4px 0 12px; }}
  .report button {{ font-size: 13px; padding: 7px 14px; border-radius: 7px;
         border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
@@ -1062,8 +1198,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark {{ background: #111820; color-scheme: dark; }}
  html.dark body {{ color: #e7edf4; background: linear-gradient(145deg,#111820,#17212b); }}
  html.dark .app-header, html.dark .tile, html.dark .controls,
- html.dark .schedule-chart-wrap, html.dark .schedule-item,
+ html.dark .schedule-chart-wrap, html.dark .schedule-item, html.dark .decisions,
  html.dark .curve-box span {{ background: #18212b; border-color: #354352; color: #e7edf4; }}
+ html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
+ html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
+ html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
+ html.dark .decision-facts span {{ background: #2a3947; color: #d9e3ed; }}
  html.dark .controls > summary, html.dark .load-card, html.dark .ctl-section,
  html.dark .curve-box, html.dark .planner-badge {{ background: #202b36; border-color: #354352; }}
  html.dark .battery-planner {{ background: linear-gradient(150deg,#18232d,#202b36); border-color: #354352; }}
@@ -1157,10 +1297,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
 {_sources_block(source_status)}
+{_control_banner(control_status)}
 {_alert_banner(violations)}
 {controls_html}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
+{decision_html}
 {report_html}
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;

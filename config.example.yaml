@@ -317,6 +317,13 @@ optimization:
   # Glättungsmalus (ct je kW Leistungssprung) für die PV-Akkuladung an
   # Peak-Tagen. Verhindert ein spätes Aufholen in einem einzelnen Slot.
   peak_charge_ramp_penalty_ct_kw: 2.0
+  # Maximaler Anstieg der Peak-Ladeleistung zwischen zwei 15-min-Slots.
+  # Der Abfall bei vollem Akku bleibt unbeschränkt. 0 = aus.
+  peak_charge_max_ramp_w: 1500
+  # Kurzfristige Stabilisierung gegen den zuletzt publizierten Fahrplan.
+  # Reale wirtschaftliche Änderungen dürfen den kleinen Malus überstimmen.
+  plan_change_penalty_ct_kw: 0.25
+  plan_stability_hours: 4.0
   # Strafe (ct/kWh) je fehlender kWh zum Auto-Ziel-SoC bei Abfahrt (weiche
   # Nebenbedingung: unerreichbares Ziel -> so viel wie möglich laden + Alarm).
   car_target_penalty_ct_kwh: 200.0
@@ -462,6 +469,9 @@ e3dc_rscp:
   # get_power_settings). Kapazität und SoC-Grenzen bleiben aus der Config.
   autoread_limits: false
   control_enabled: false
+  verify_control: true             # gesetzte Limits direkt vom E3DC zurücklesen
+  control_verify_tolerance_w: 100  # zulässige Rundungsabweichung
+  control_alarm_repeat_minutes: 60 # anhaltenden Ausfall höchstens stündlich melden
   grid_sign: 1.0
   batt_sign: 1.0
   # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.
