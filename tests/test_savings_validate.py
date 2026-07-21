@@ -66,3 +66,22 @@ def test_reconcile_handles_empty_after_dropping_gaps():
     price = price * np.nan            # keine Preise -> alle Slots verworfen
     r = reconcile(meter, price, feedin, cfg)
     assert r["n_slots"] == 0 and r.get("insufficient")
+
+
+def test_savings_validated_roundtrip_and_idempotent(tmp_path):
+    from ems import local_history as lh
+    cfg = make_config()
+    meter, price, feedin, grid_w = _scenario()
+    r = reconcile(meter, price, feedin, cfg, actual_grid_w=grid_w,
+                  soc0_wh=cfg.house_battery.min_soc_wh)
+    r["computed_ts"] = pd.Timestamp("2026-01-21 02:45", tz=TZ)
+    db = str(tmp_path / "h.sqlite")
+    lh.write_savings_validated(db, "2026-01-20", r)
+    lh.write_savings_validated(db, "2026-01-20", r)     # REPLACE -> nur 1 Zeile
+    df = lh.read_savings_validated(db)
+    assert len(df) == 1 and df.iloc[0]["day"] == "2026-01-20"
+    assert df.iloc[0]["saved_eur"] == pytest.approx(r["saved_eur"])
+    assert df.iloc[0]["meter_cost_eur"] == pytest.approx(r["meter"]["net_cost_eur"])
+    assert int(df.iloc[0]["balance_ok"]) == 1
+    # start_day-Filter
+    assert lh.read_savings_validated(db, "2026-02-01").empty

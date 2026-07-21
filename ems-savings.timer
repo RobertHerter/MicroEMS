@@ -1,0 +1,12 @@
+[Unit]
+Description=Taegliche EMS-Ersparnis-Validierung gegen die E3DC-Zaehler (02:45)
+
+[Timer]
+# Taeglich um 02:45; der Vortag ist dann abgeschlossen und die E3DC-Aggregate
+# gereift. Verpasste Laeufe (Pi war aus) nachholen.
+OnCalendar=*-*-* 02:45:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

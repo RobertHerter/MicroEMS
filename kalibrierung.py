@@ -559,6 +559,10 @@ def main():
                          "(0 = überspringen)")
     ap.add_argument("--val-horizon-h", type=int, default=48,
                     help="Prognosehorizont je Fold in Stunden (wie live)")
+    ap.add_argument("--band-lookback-days", type=int, default=60,
+                    help="Fenster für die pvlib-p10/p90-Bandkalibrierung")
+    ap.add_argument("--no-band", action="store_true",
+                    help="pvlib-p10/p90-Band NICHT automatisch anpassen")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -604,6 +608,34 @@ def main():
     if validation:
         _print_validation(validation)
 
+    # --- pvlib-Unsicherheitsband (p10/p90) aus echten Residuen --------------
+    # Ersetzt den heuristischen Festwert. Die empfohlenen Werte werden GEDÄMPFT
+    # (50 %) ins Overlay (config_overrides.yaml) geschrieben, damit ein einzelner
+    # Wochenausschlag das Band nicht überschießt; config.yaml bleibt unberührt.
+    band = None
+    if cfg.pv_model.arrays and not args.no_band:
+        try:
+            from ems import pv_eval
+            from ems.config import save_override
+            band = pv_eval.calibrate_band(cfg, lookback_days=args.band_lookback_days)
+        except Exception as exc:
+            print(f"\nPV-Bandkalibrierung fehlgeschlagen: {exc}")
+    band_applied = {}
+    if band and not band.get("insufficient"):
+        print(f"\nPV-Band (pvlib) aus {band['n']} Residuen ({band['method']}):")
+        print(f"     Abdeckung aktuell: {band['current_below_p10_pct']} % unter p10 "
+              f"(Ziel {band['target_low_pct']:.0f} %), "
+              f"{band['current_above_p90_pct']} % über p90.")
+        for key, rkey in (("p10_uncertainty", "recommended_p10_uncertainty"),
+                          ("p90_uncertainty", "recommended_p90_uncertainty")):
+            old = float(getattr(cfg.pv_model, key))
+            new = round(old + 0.5 * (band[rkey] - old), 3)      # 50 % gedämpft
+            save_override(args.config, f"pv_model.{key}", new)
+            band_applied[key] = new
+            print(f"  -> pv_model.{key}: {old} -> {new} (Ziel {band[rkey]}, gedämpft)")
+    elif band:
+        print(f"\nPV-Band: zu wenig Residuen (n={band['n']}) – Festwert bleibt.")
+
     out = {
         "generated": now.isoformat(),
         "lookback_days": args.lookback_days,
@@ -611,12 +643,14 @@ def main():
         "pv_forecast": pv,
         "load_forecast": load,
         "forecast_validation": validation,
+        "pv_band": band,
         "empfohlene_config": {
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
             "forecast.correction_factor": (
                 validation.get("global_correction")
                 if validation
                 else load["suggested_correction_factor"] if load else None),
+            **{f"pv_model.{k}": v for k, v in band_applied.items()},
         },
     }
     with open(args.output, "w", encoding="utf-8") as fh:

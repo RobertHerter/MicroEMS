@@ -119,6 +119,21 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS pv_source_selection ("
                 " ts TEXT PRIMARY KEY, selected TEXT, selected_since TEXT,"
                 " reason TEXT, metrics_json TEXT)")
+    # Nächtlich gegen die echten E3DC-Zähler validierte Tagesersparnis
+    # (savings_check.py --persist). Grundlage der kumulierten, bestätigten
+    # Ersparnis im Dashboard. Ein Datensatz je Kalendertag (lokal).
+    con.execute("CREATE TABLE IF NOT EXISTS savings_validated ("
+                " day TEXT PRIMARY KEY, computed_ts TEXT, n_slots INTEGER,"
+                " import_kwh REAL, export_kwh REAL, meter_cost_eur REAL,"
+                " baseline_cost_eur REAL, saved_eur REAL,"
+                " tracker_delta_eur REAL, balance_ok INTEGER,"
+                " baseline_end_soc_wh REAL)")
+    # Migration: Spalte in bereits bestehenden Tabellen ergänzen (idempotent).
+    try:
+        con.execute("ALTER TABLE savings_validated "
+                    "ADD COLUMN baseline_end_soc_wh REAL")
+    except sqlite3.OperationalError:
+        pass
     con.commit()
     return con
 
@@ -191,6 +206,60 @@ def write_pv_source_selection(path: str, ts, selected: str, reason: str,
     con.close()
     return {"ts": now_iso, "selected": selected, "selected_since": since,
             "reason": reason, "metrics": metrics}
+
+
+def write_savings_validated(path: str, day: str, r: dict) -> None:
+    """Eine gegen die Zähler validierte Tagesersparnis ablegen (idempotent je
+    Kalendertag). r = reconcile()-Ergebnis (savings_validate)."""
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO savings_validated VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (str(day), pd.Timestamp(r.get("computed_ts")).isoformat()
+         if r.get("computed_ts") else None,
+         int(r.get("n_slots", 0)),
+         r["meter"]["import_kwh"], r["meter"]["export_kwh"],
+         r["meter"]["net_cost_eur"], r["baseline"]["net_cost_eur"],
+         r["saved_eur"], (r.get("tracker") or {}).get("cost_delta_eur"),
+         1 if r["balance"]["ok"] else 0,
+         r["baseline"].get("end_soc_wh")))
+    con.commit()
+    con.close()
+
+
+def read_savings_baseline_soc(path: str, day: str) -> Optional[float]:
+    """Baseline-End-SoC (Wh) eines gespeicherten Tages - zum Verketten der
+    durchgehenden Ohne-EMS-Bilanz über Tagesgrenzen. None, wenn nicht vorhanden."""
+    try:
+        con = _con(path)
+        row = con.execute("SELECT baseline_end_soc_wh FROM savings_validated "
+                          "WHERE day = ?", (str(day),)).fetchone()
+        con.close()
+    except Exception:
+        return None
+    return float(row[0]) if row and row[0] is not None else None
+
+
+def read_savings_validated(path: str, start_day: Optional[str] = None) -> pd.DataFrame:
+    """Validierte Tagesersparnisse (optional ab start_day, YYYY-MM-DD) lesen."""
+    try:
+        con = _con(path)
+        if start_day:
+            rows = con.execute(
+                "SELECT day, n_slots, import_kwh, export_kwh, meter_cost_eur,"
+                " baseline_cost_eur, saved_eur, tracker_delta_eur, balance_ok"
+                " FROM savings_validated WHERE day >= ? ORDER BY day",
+                (str(start_day),)).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT day, n_slots, import_kwh, export_kwh, meter_cost_eur,"
+                " baseline_cost_eur, saved_eur, tracker_delta_eur, balance_ok"
+                " FROM savings_validated ORDER BY day").fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    cols = ["day", "n_slots", "import_kwh", "export_kwh", "meter_cost_eur",
+            "baseline_cost_eur", "saved_eur", "tracker_delta_eur", "balance_ok"]
+    return pd.DataFrame(rows, columns=cols)
 
 
 def write_solver_run(path: str, ts, result) -> None:

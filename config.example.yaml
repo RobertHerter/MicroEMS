@@ -178,6 +178,21 @@ pv_source_selection:
   min_improvement_percent: 2.0
 
 # -----------------------------------------------------------------------------
+# Plausibilitäts-Grenzen für externe Eingaben (Defense-in-Depth)
+# -----------------------------------------------------------------------------
+# Ein einzelner Ausreißer einer Quelle (Solcast/pvlib, Energy-Charts-Preis) darf
+# im Echtbetrieb keinen ganzen Steuerzyklus verzerren. Vor dem Solve werden klar
+# unmögliche Werte robust ersetzt (Preis-Spike -> Median, negativ -> 0, PV über
+# installierter Leistung -> gekappt). Bei sauberen Daten passiert nichts.
+sanity:
+  enabled: true
+  price_min_ct: -100.0            # Preise darunter/darüber -> Median
+  price_max_ct: 200.0
+  price_spike_median_factor: 10.0 # |Preis| > 10x robuster Median -> Median (0=aus)
+  pv_max_w: 0.0                   # 0 = automatisch aus pv_model-kWp (*1.15), sonst W
+  load_max_w: 0.0                 # 0 = keine obere Last-Grenze (negativ immer -> 0)
+
+# -----------------------------------------------------------------------------
 # Steuerbare / verschiebbare Lasten (optional)
 # -----------------------------------------------------------------------------
 # Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die

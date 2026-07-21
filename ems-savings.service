@@ -1,0 +1,20 @@
+[Unit]
+Description=EMS Ersparnis-Gegenpruefung gegen die E3DC-Zaehler (taeglich)
+After=network-online.target ems.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ems
+Group=ems
+WorkingDirectory=/opt/ems
+# Validiert jeden abgeschlossenen Tag gegen die gemessenen Zaehlerwerte und
+# legt das Ergebnis in savings_validated ab (Grundlage der kumulierten,
+# bestaetigten Ersparnis im Dashboard). Nur lesende RSCP-Aufrufe.
+ExecStart=/opt/ems/.venv/bin/python savings_check.py --config /opt/ems/config.yaml --persist --days 2
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ems
+PrivateTmp=true

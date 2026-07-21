@@ -680,6 +680,25 @@ class ReportConfig:
 
 
 @dataclass
+class SanityConfig:
+    """Plausibilitäts-Grenzen für externe Eingaben (ems/sanity.py). Greift nur
+    bei klar unmöglichen Werten und schützt so den Echtbetrieb vor einem
+    einzelnen API-Ausreißer."""
+    enabled: bool = True
+    # Preis-Absolutgrenzen (ct/kWh); außerhalb -> durch Median ersetzt.
+    price_min_ct: float = -100.0
+    price_max_ct: float = 200.0
+    # Spike-Erkennung: |Preis| über diesem Vielfachen des robusten Medians ->
+    # ebenfalls ersetzt. 0 = aus.
+    price_spike_median_factor: float = 10.0
+    # PV-Obergrenze (W). 0 = automatisch aus installierter kWp (pv_model), sonst
+    # keine Grenze. Negative PV wird immer auf 0 gesetzt.
+    pv_max_w: float = 0.0
+    # Hauslast-Obergrenze (W). 0 = keine Grenze. Negative Last -> immer 0.
+    load_max_w: float = 0.0
+
+
+@dataclass
 class Config:
     general: GeneralConfig
     influxdb: InfluxConfig
@@ -702,6 +721,7 @@ class Config:
     pv_model: PvModelConfig = field(default_factory=PvModelConfig)
     pv_source_selection: PvSourceSelectionConfig = field(
         default_factory=PvSourceSelectionConfig)
+    sanity: SanityConfig = field(default_factory=SanityConfig)
     controllable_loads: list = field(default_factory=list)   # [ControllableLoad]
 
 
@@ -1229,6 +1249,15 @@ def load_config(path: str) -> Config:
         min_improvement_percent=float(
             ps.get("min_improvement_percent", 2.0)),
     )
+    sn = raw.get("sanity", {})
+    sanity = SanityConfig(
+        enabled=bool(sn.get("enabled", True)),
+        price_min_ct=float(sn.get("price_min_ct", -100.0)),
+        price_max_ct=float(sn.get("price_max_ct", 200.0)),
+        price_spike_median_factor=float(sn.get("price_spike_median_factor", 10.0)),
+        pv_max_w=float(sn.get("pv_max_w", 0.0)),
+        load_max_w=float(sn.get("load_max_w", 0.0)),
+    )
     if pv_model.enabled and solcast.enabled:
         raise ValueError("solcast und pv_model nicht gleichzeitig aktivieren "
                          "(beide schreiben die PV-Prognose).")
@@ -1286,5 +1315,6 @@ def load_config(path: str) -> Config:
         solcast=solcast,
         pv_model=pv_model,
         pv_source_selection=pv_source_selection,
+        sanity=sanity,
         controllable_loads=controllable_loads,
     )

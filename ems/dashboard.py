@@ -984,12 +984,24 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     mode_now = str(row_now.get("mode", "auto"))
     ch_lim = row_now.get("batt_charge_limit_w", float("nan"))
     dis_lim = row_now.get("batt_discharge_limit_w", float("nan"))
+    # Gegen die echten E3DC-Zähler validierte, kumulierte Ersparnis (nächtlich
+    # via savings_check.py --persist). Bestätigt das Live-Tracking unabhängig.
+    validated_note = "vs. ohne EMS"
+    try:
+        from .local_history import read_savings_validated
+        _vdf = read_savings_validated(config.e3dc_rscp.history_db_path)
+        if not _vdf.empty:
+            _vtot = float(_vdf["saved_eur"].sum())
+            validated_note = (f"vs. ohne EMS · {_vtot:+.2f} € an Zählern "
+                              f"bestätigt ({len(_vdf)} T)")
+    except Exception:
+        pass
     tiles = [
         _tile("Netto-Kosten Horizont", f"{total_cost_ct / 100:.2f} €",
               f"bis {_WD[x[-1].weekday()]} {x[-1].strftime('%d.%m.')}"),
         _tile("Ersparnis gesamt",
               "–" if savings_eur is None else f"{savings_eur:.2f} €",
-              "vs. ohne EMS"),
+              validated_note),
         _tile("Akku-SoC",
               "–" if pd.isna(soc_now) else f"{soc_now:.0f} %",
               f"{config.house_battery.capacity_wh / 1000:.0f} kWh Speicher"),

@@ -101,7 +101,11 @@ def reconcile(meter: pd.DataFrame, price: pd.Series, feedin: pd.Series, cfg,
         "baseline": {
             "import_kwh": round(b_imp_kwh, 2),
             "export_kwh": round(b_exp_kwh, 2),
-            "net_cost_eur": round(b_cost, 2)},
+            "net_cost_eur": round(b_cost, 2),
+            # End-SoC der Baseline-Simulation: erlaubt, die durchgehende
+            # "Ohne-EMS"-Bilanz über Tagesgrenzen hinweg zu verketten, damit
+            # Tageswerte zum Zeitraum-Total summieren (statt Grenzenfehler).
+            "end_soc_wh": round(float(soc), 1)},
         "saved_eur": round(saved, 2),
         # Bezug auf den BETRAG der Baseline-Netzkosten: bei einem Netto-
         # Exporteur (Baseline < 0, also Einnahmen) behält die Ersparnis so ihr

@@ -451,6 +451,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if config.feed_in.zero_at_negative_price:
             feedin = feedin.where(price >= 0.0, 0.0)
 
+        # Plausibilitäts-Grenzen auf die externen Eingaben (Preis/PV) UND die
+        # Hauslast, bevor irgendetwas davon in Archiv/Optimierer fließt: ein
+        # einzelner API-Ausreißer (Solcast-Sprung, Preis-Spike, negativer Wert)
+        # darf keinen ganzen Steuerzyklus verzerren.
+        if getattr(config, "sanity", None) and config.sanity.enabled:
+            from .sanity import sanitize_inputs
+            price, pv, pv10, house_series = sanitize_inputs(
+                config, price=price, pv=pv, pv10=pv10, load=house_series)
+            house_load = house_series.values
+
         # Live-Werte optional direkt vom E3DC (RSCP) statt aus der InfluxDB.
         # force=True: im Loop-Betrieb frisch pollen (kein Zyklus-übergreifender Cache).
         live = e3dc.read_live(force=True) if (e3dc and config.e3dc_rscp.read_live) else None
