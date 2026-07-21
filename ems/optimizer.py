@@ -80,7 +80,7 @@ class OptimizerResult:
     # Zwischenstand und PuLP meldet trotzdem "Optimal" - der Plan kann
     # deutlich suboptimal sein (z.B. sinnlose Dumps/Sperren) -> Alarm.
     solver_hit_limit: bool = False
-    # Steuerbare Lasten: [(mqtt_topic, Ergebnis-Spaltenname)] für die Sollwert-Ausgabe.
+    # Steuerbare Lasten: [(control_topic, Ergebnis-Spaltenname)] für die Sollwert-Ausgabe.
     load_mqtt_map: Optional[list] = None
     # Laufzeit-Telemetrie des Hauptsolves inkl. Modellgroesse und MIP-Luecke.
     solver_seconds: float = 0.0

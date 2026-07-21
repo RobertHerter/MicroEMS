@@ -210,7 +210,7 @@ recalc:
 # -----------------------------------------------------------------------------
 # Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die
 # günstigsten/PV-reichsten Slots. Sollwerte (on/off je Slot) gehen an das
-# jeweilige mqtt_topic UND unter ems/loads/<name> + als JSON-Liste ems/loads.
+# jeweilige control_topic UND unter ems/loads/<name> + als JSON-Liste ems/loads.
 #   type: "deferrable" – muss `runtime_minutes` im Fenster laufen; Leistung
 #         konstant (power_w) ODER als 15-min-Kurve (power_profile_w, Startzyklus).
 #   type: "thermal"    – thermischer Speicher (Pool/Puffer): Pooltemperatur ist
@@ -248,10 +248,10 @@ controllable_loads: []
   #   switch_penalty_ct: 5
   #   stages:
   #     - {name: "WP klein", power_w: 400, heat_w: 3000,
-  #        mqtt_topic: "pool/wp_klein/set", feedback_topic: "pool/wp_klein/on",
+  #        control_topic: "pool/wp_klein/set", feedback_topic: "pool/wp_klein/on",
   #        power_topic: "pool/wp_klein/power", feedback_on_threshold_w: 50}
   #     - {name: "WP groß", power_w: 650, heat_w: 4000, requires: "WP klein",
-  #        mqtt_topic: "pool/wp_gross/set", feedback_topic: "pool/wp_gross/on",
+  #        control_topic: "pool/wp_gross/set", feedback_topic: "pool/wp_gross/on",
   #        power_topic: "pool/wp_gross/power", feedback_on_threshold_w: 50}
   # Beispiel verschiebbare Waschmaschine (15-min-Lastkurve als Startzyklus):
   # - name: "Waschmaschine"
@@ -262,7 +262,7 @@ controllable_loads: []
   #   # Spätestens nach X Stunden ab "jetzt" einplanen (verhindert, dass die
   #   # Maschine für Minimal-Ersparnis auf übermorgen rutscht). Default 24.
   #   deadline_hours: 24
-  #   mqtt_topic: "waschmaschine/start"
+  #   control_topic: "waschmaschine/start"
 
 # -----------------------------------------------------------------------------
 # Haus-Batteriespeicher

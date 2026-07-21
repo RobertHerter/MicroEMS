@@ -211,14 +211,14 @@ class HomeyMqttPublisher:
                 for st in ld.stages:
                     lanes.append({"label": f"{ld.name}/{st.name}",
                                   "column": f"load_{sg}_{_col(st.name)}_w",
-                                  "enabled": ld.enabled, "topic": st.mqtt_topic,
+                                  "enabled": ld.enabled, "topic": st.control_topic,
                                   "thermostat": bool(ld.thermostat),
                                   "temp_signal": ld.temp_signal,
                                   "target_c": float(ld.target_c)})
             else:
                 lanes.append({"label": ld.name,
                               "column": f"load_{_col(ld.name)}_w",
-                              "enabled": ld.enabled, "topic": ld.mqtt_topic})
+                              "enabled": ld.enabled, "topic": ld.control_topic})
         return lanes
 
     def _lane_command(self, lane: dict, planned_on: bool) -> int:

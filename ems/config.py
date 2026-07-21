@@ -201,7 +201,7 @@ class LoadStage:
     power_w: float                       # elektrische Leistung (W)
     heat_w: float = 0.0                  # thermische Leistung (W), nur type=thermal
     requires: Optional[str] = None       # Name einer anderen Stufe (Kopplung: nur an, wenn jene an)
-    mqtt_topic: Optional[str] = None     # Schaltbefehl (0/1) je Slot
+    control_topic: Optional[str] = None  # ausgehender Schaltbefehl (0/1) je Slot
     # Optionale echte Rückmeldung vom Gerät/Homey. feedback_topic liefert
     # on/off; power_topic eine gemessene elektrische Leistung in W. Liegen
     # beide vor, entscheidet die Leistung oberhalb feedback_on_threshold_w.
@@ -221,7 +221,7 @@ class ControllableLoad:
     type: str = "deferrable"
     enabled: bool = True
     switch_penalty_ct: float = 5.0       # Malus je Einschaltvorgang (Anti-Takten)
-    mqtt_topic: Optional[str] = None
+    control_topic: Optional[str] = None  # ausgehender Schaltbefehl/Start-Topic
     # -- deferrable --
     power_w: float = 0.0
     power_profile_w: Optional[list] = None   # 15-min-Kurve (überschreibt power_w)
@@ -852,7 +852,10 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             name=str(s["name"]), power_w=float(s["power_w"]),
             heat_w=float(s.get("heat_w", 0.0)),
             requires=(str(s["requires"]) if s.get("requires") else None),
-            mqtt_topic=(str(s["mqtt_topic"]) if s.get("mqtt_topic") else None),
+            # control_topic (neu), mqtt_topic als Lese-Fallback für Altbestände.
+            control_topic=(str(s.get("control_topic") or s.get("mqtt_topic"))
+                           if (s.get("control_topic") or s.get("mqtt_topic"))
+                           else None),
             feedback_topic=(str(s["feedback_topic"])
                             if s.get("feedback_topic") else None),
             power_topic=(str(s["power_topic"])
@@ -868,7 +871,9 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             type=str(w.get("type", "deferrable")),
             enabled=bool(w.get("enabled", True)),
             switch_penalty_ct=float(w.get("switch_penalty_ct", 5.0)),
-            mqtt_topic=(str(w["mqtt_topic"]) if w.get("mqtt_topic") else None),
+            control_topic=(str(w.get("control_topic") or w.get("mqtt_topic"))
+                           if (w.get("control_topic") or w.get("mqtt_topic"))
+                           else None),
             power_w=float(w.get("power_w", 0.0)),
             power_profile_w=([float(x) for x in prof] if prof else None),
             runtime_minutes=float(w.get("runtime_minutes", 0.0)),
