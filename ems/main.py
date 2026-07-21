@@ -1746,6 +1746,28 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     for k in fields}
             data["updated"] = pd.Timestamp.now(
                 tz=config.general.timezone).isoformat()
+            # Zusatz-Kacheln: Pool-Ist-Temperatur (wenn thermische Last aktiv)
+            # und aktuelle Außentemperatur (Open-Meteo-Cache).
+            try:
+                from .local_history import read_load_temp, read_temperature
+                db = config.e3dc_rscp.history_db_path
+                tz = config.general.timezone
+                now_ts = pd.Timestamp.now(tz=tz)
+                start = now_ts - pd.Timedelta(hours=6)
+                pool = next((ld for ld in getattr(config, "controllable_loads", [])
+                             if ld.type == "thermal" and ld.enabled and ld.temp_signal),
+                            None)
+                if pool is not None:
+                    s = read_load_temp(db, pool.name, start, now_ts, tz).dropna()
+                    data["pool_temp_c"] = float(s.iloc[-1]) if not s.empty else None
+                if config.weather.enabled:
+                    freq = f"{config.general.slot_minutes}min"
+                    st = read_temperature(db, start,
+                                          now_ts + pd.Timedelta(minutes=15), tz, freq)
+                    st = st[st.index <= now_ts].dropna()
+                    data["outdoor_temp_c"] = float(st.iloc[-1]) if not st.empty else None
+            except Exception as exc:  # darf die Live-Kacheln nie stören
+                log.debug("Live-Zusatztemperaturen nicht lesbar (%s).", exc)
             live_cache["at"], live_cache["data"] = mono, data
             return dict(data)
 

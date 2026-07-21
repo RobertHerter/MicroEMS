@@ -69,6 +69,18 @@ def _live_block(config: Config) -> str:
     if seconds <= 0.0:
         return ""
     interval_ms = max(1000, round(seconds * 1000))
+    # Pool-Kachel nur, wenn eine thermische Last mit Ist-Temperatur aktiv ist.
+    pool = next((ld for ld in getattr(config, "controllable_loads", [])
+                 if getattr(ld, "type", None) == "thermal" and ld.enabled
+                 and ld.temp_signal), None)
+    pool_tile = (
+        f'<div class="tile live-temp"><div class="v" id="live-pool-temp">–</div>'
+        f'<div class="l">{_esc(pool.name)}</div><div class="s">Ist-Temperatur</div></div>'
+        if pool is not None else "")
+    outdoor_tile = (
+        '<div class="tile live-temp"><div class="v" id="live-outdoor-temp">–</div>'
+        '<div class="l">Außentemperatur</div><div class="s">Open-Meteo</div></div>'
+        if getattr(getattr(config, "weather", None), "enabled", False) else "")
     return f"""
 <section class="live-panel" id="e3dc-live">
  <div class="live-head"><b>E3/DC live</b>
@@ -81,12 +93,14 @@ def _live_block(config: Config) -> str:
   <div class="tile live-flow" id="live-battery-tile"><div class="v" id="live-battery">–</div><div class="l">Batterie</div><div class="s" id="live-battery-dir">–</div></div>
   <div class="tile live-soc"><div class="v" id="live-soc">–</div><div class="l">Akku-SoC</div><div class="s">E3/DC Messwert</div></div>
   <div class="tile live-wallbox"><div class="v" id="live-wallbox">–</div><div class="l">Wallbox</div><div class="s">Ladeleistung aktuell</div></div>
+  {pool_tile}{outdoor_tile}
  </div>
 </section>
 <script>(function(){{
  var root=document.getElementById('e3dc-live'), status=document.getElementById('live-status');
  function num(v,d){{return (typeof v==='number'&&isFinite(v))?v.toLocaleString('de-DE',{{maximumFractionDigits:d||0}}):'–';}}
  function power(id,v,absolute){{var e=document.getElementById(id);e.textContent=(typeof v==='number'&&isFinite(v)?num(absolute?Math.abs(v):v,0)+' W':'–');}}
+ function temp(id,v){{var e=document.getElementById(id);if(e)e.textContent=(typeof v==='number'&&isFinite(v)?num(v,1)+' °C':'–');}}
  function direction(id,v,pos,neg,idle){{var e=document.getElementById(id);e.textContent=!(typeof v==='number'&&isFinite(v))?'–':(v>25?pos:(v < -25?neg:idle));}}
  function flow(id,cls){{var e=document.getElementById(id);e.classList.remove('flow-import','flow-export','flow-charge','flow-discharge','flow-idle');e.classList.add(cls);}}
  function render(d){{
@@ -96,6 +110,7 @@ def _live_block(config: Config) -> str:
   power('live-battery',d.battery_w,true); direction('live-battery-dir',d.battery_w,'Akku lädt','Akku entlädt','Akku ruht');
   flow('live-battery-tile',!(typeof d.battery_w==='number')?'flow-idle':(d.battery_w>25?'flow-charge':(d.battery_w < -25?'flow-discharge':'flow-idle')));
   power('live-wallbox',d.wallbox_w,false);
+  temp('live-pool-temp',d.pool_temp_c); temp('live-outdoor-temp',d.outdoor_temp_c);
   document.getElementById('live-soc').textContent=(typeof d.soc_percent==='number'?num(d.soc_percent,1)+' %':'–');
   var ts=d.updated?new Date(d.updated):null;
   status.innerHTML='<span class="live-dot ok"></span> '+(ts&&!isNaN(ts)?'Stand '+ts.toLocaleTimeString('de-DE',{{hour:'2-digit',minute:'2-digit',second:'2-digit'}}):'aktuell');
@@ -1178,6 +1193,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .live-soc .v {{ color: #147a74; }}
  .live-tiles .live-wallbox {{ background: #eef5ff; border-color: #c5d9f5; }}
  .live-tiles .live-wallbox .v {{ color: #285f9e; }}
+ .live-tiles .live-temp {{ background: #fff4ec; border-color: #f0cdb0; }}
+ .live-tiles .live-temp .v {{ color: #b5642a; }}
  .live-tiles .flow-import {{ background: #fdecec; border-color: #efb6b6; }}
  .live-tiles .flow-import .v {{ color: #b3261e; }}
  .live-tiles .flow-export {{ background: #eaf8ee; border-color: #b8dfc3; }}
@@ -1440,6 +1457,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .live-house {{ background: #292238; border-color: #50436b; }}
  html.dark .live-tiles .live-soc {{ background: #173634; border-color: #2d615d; }}
  html.dark .live-tiles .live-wallbox, html.dark .live-tiles .flow-charge {{ background: #192d43; border-color: #31577e; }}
+ html.dark .live-tiles .live-temp {{ background: #3a2a1c; border-color: #6e4d2f; }}
  html.dark .live-tiles .flow-import {{ background: #421f22; border-color: #74373a; }}
  html.dark .live-tiles .flow-export {{ background: #183522; border-color: #326541; }}
  html.dark .live-tiles .flow-discharge {{ background: #422b18; border-color: #75502e; }}
