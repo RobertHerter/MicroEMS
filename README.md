@@ -1,300 +1,290 @@
 # EMS – Energy Management System
 
-Kostenoptimale Steuerung von Haus-Akku, PV und Fahrzeug. Läuft als
-Python-Dienst auf einem Raspberry Pi (Raspberry Pi OS **Trixie** / Debian 13),
-berechnet per **MILP** die optimale Steuertabelle für 48 h und gibt die
-Steuerbefehle per **MQTT** an Homey aus – und/oder steuert den E3DC **direkt per
-RSCP**.
+Kostenoptimale Steuerung von Haus-Akku, PV, Fahrzeug und steuerbaren Lasten
+(z. B. Pool-Wärmepumpen). Läuft als Python-Dienst auf einem Raspberry Pi
+(Raspberry Pi OS **Trixie** / Debian 13), berechnet per **MILP** die optimale
+Steuertabelle für 48 h und
 
-Die Eingangsdaten können aus **InfluxDB** (1.x/2.x) kommen **oder** direkt aus
-den Originalquellen (E3DC per RSCP, Open-Meteo, Energy-Charts, Solcast). **Eine
-InfluxDB ist damit nicht mehr zwingend erforderlich** – das EMS läuft komplett
-standalone (siehe „Standalone ohne InfluxDB"). Wo eine InfluxDB vorhanden ist,
-bleibt sie optionaler Fallback je Signal, und alle Zukunftswerte (Steuerbefehle,
-prognostizierte SoCs, Zustände) werden auf Wunsch dorthin zurückgeschrieben.
+- steuert den E3DC-Speicher **direkt per RSCP** (optional, greift real ein) und/oder
+- gibt die Sollwerte per **MQTT** an ein beliebiges Smart-Home-System aus
+  (z. B. Homey, Home Assistant, ioBroker, Node-RED).
+
+Die Eingangsdaten kommen aus **InfluxDB** (1.x/2.x) **oder** direkt aus den
+Originalquellen (E3DC per RSCP, Wetter/Preis/PV aus kostenlosen APIs). **Eine
+InfluxDB ist nicht zwingend** – das EMS läuft komplett **standalone** (siehe
+„Datenquellen & Standalone"). Wo eine InfluxDB vorhanden ist, bleibt sie
+optionaler Fallback je Signal und Ziel für den Writeback der Zukunftswerte.
+
+> Eigennamen wie *Homey*, *Solcast*, *Open-Meteo*, *Energy-Charts* sind nur die
+> im Standardfall verwendeten Beispiele. Die MQTT-Ausgabe funktioniert mit jedem
+> MQTT-fähigen System; die Datenquellen sind je Signal austauschbar bzw. per
+> InfluxDB/REST-Ingest ersetzbar. Fest ist nur der E3DC (RSCP) als Speicher-
+> hardware – für andere Geräte müssten Feldnamen/Vorzeichen angepasst werden.
+
+## Funktionsumfang
+
+- **MILP-Optimierung** (PuLP + CBC/HiGHS) über 48 h in 15-min-Slots: Haus-Akku
+  (DC/AC-Laden, Entladen), Fahrzeug, steuerbare Lasten – Ziel: minimale
+  Netto-Stromkosten inkl. Terminalwert des Akku-Inhalts.
+- **Eigene Prognosen** ohne Pflicht-Cloud: Hausverbrauch (Ähnliche-Tage oder ML),
+  Strompreis (Spot + Tarifmodell), PV (Solcast **oder** freies pvlib-Modell).
+- **PV-Quellen-Autowahl**: pvlib vs. Solcast werden rollierend gegen die realen
+  Ertragsdaten bewertet; die produktive Quelle wird automatisch gewählt, das
+  Unsicherheitsband aus echten Residuen kalibriert.
+- **Direkte E3DC-Steuerung** per RSCP (an echter Hardware verifiziert) mit
+  Watchdog, Rücklese-Verifikation und Fail-safe.
+- **Steuerbare Lasten**: verschiebbar (Waschmaschine) und thermischer Speicher
+  (Pool mit ein/aus-Wärmepumpen), inkl. Temperatur als MILP-Zustand.
+- **Robustheit im Echtbetrieb**: Plausibilitäts-Grenzen für externe Eingaben,
+  optionale Abend-Reserve, Sofort-Neuberechnung bei großer Live-Abweichung,
+  Steuer-Ausfall-Alarm.
+- **Beobachtbarkeit**: interaktives HTML-Dashboard, Ersparnis-Tracking gegen eine
+  „Ohne-EMS"-Baseline **und** Validierung gegen die echten E3DC-Zähler,
+  Invarianten-Prüfung, Drift-Monitor, Erklär-Tooltips.
+- **Kalibrierung**: wöchentliche Nachführung von Verbrauchs-, PV- und
+  Pool-Thermomodell aus den gesammelten Messdaten.
 
 ## Architektur
 
 ```
-Datenquellen  ──►  EMS (Pi, Python)                       ──►  MQTT  ──►  Homey (Sollwerte)
- InfluxDB          1. Verbrauchsprognose (72h, Ähnliche-Tage)
-  ODER direkt:     2. Eingangsdaten lesen (Preis/PV/SoC/…)  ──►  E3DC (RSCP-Steuerung, optional)
-  E3DC (RSCP)      3. MILP-Optimierung (48h) → Steuertabelle
-  Open-Meteo       4. Ausgabe: MQTT an Homey + optional RSCP ──►  InfluxDB (Writeback, optional)
-  Energy-Charts    5. optionaler Writeback in InfluxDB
-  Solcast          6. Dashboard (HTML)
+Datenquellen  ──►  EMS (Pi, Python)                        ──►  MQTT  ──►  Smart-Home
+ InfluxDB          1. Verbrauchsprognose (72 h, Ähnliche-Tage/ML)      (Sollwerte, z. B.
+  ODER direkt:     2. Eingangsdaten lesen (Preis/PV/SoC/…)  ──►  E3DC   Homey/HA/ioBroker)
+  E3DC (RSCP)      3. MILP-Optimierung (48 h) → Steuertabelle  (RSCP-Steuerung, optional)
+  Wetter-API       4. Ausgabe: MQTT + optional RSCP          ──►  InfluxDB (Writeback, opt.)
+  Preis-API        5. optionaler Writeback in InfluxDB
+  PV-Forecast      6. Dashboard (HTML) + JSON-API
 ```
 
-Warum Pi-Dienst und nicht Homey-App: Die MILP-Optimierung (192 Slots) und die
-Historien-Prognose brauchen Python-Bibliotheken und Rechenleistung, die in der
-Homey-App-Sandbox nicht sinnvoll verfügbar sind. Homey erhält nur die fertigen
-Steuerbefehle per MQTT.
+Warum ein Pi-Dienst und keine App im Smart-Home-System: Die MILP-Optimierung
+(192 Slots) und die Historien-Prognose brauchen Python-Bibliotheken und
+Rechenleistung, die in einer App-Sandbox nicht sinnvoll verfügbar sind. Das
+Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 
 ## Module
 
 | Datei | Aufgabe |
 |-------|---------|
-| `ems/config.py` | YAML-Konfiguration laden/validieren (typisierte Dataclasses) |
-| `ems/influx.py` | InfluxDB-Abstraktion 1.x (InfluxQL) / 2.x (Flux), Lesen/Schreiben, 15-min-Resampling |
-| `ems/forecast.py` | Hausverbrauchs-Prognose: Ähnliche-Tage-Mittelung (Standard) oder Machine Learning (Lag/PV/Temp, via scikit-learn HistGradientBoosting) |
-| `ems/optimizer.py` | MILP-Optimierer (PuLP/CBC): Steuertabelle 48 h |
-| `ems/homey_mqtt.py` | MQTT: Steuerbefehle an Homey, Status/Last-Will, Alerts, Kommandos |
-| `ems/savings.py` | Ersparnis-Tracking: Ist-Kosten vs. simulierte "Ohne-EMS"-Baseline |
-| `ems/dashboard.py` | Interaktives HTML-Dashboard (heute + Vorhersage + Steuerbefehle) |
-| `ems/rscp.py` | Optionale direkte E3DC-Anbindung (RSCP/pye3dc): Live-Werte, 15-min-Historie, Steuerung (Modi 0–4, Watchdog) |
-| `ems/local_history.py` | Lokaler SQLite-Speicher (Hauslast, Ist-Werte, Temperatur, Spotpreis, PV-Prognose) + Quellen-Weichen |
-| `ems/weather.py` | Temperatur direkt von Open-Meteo (kein Key) |
-| `ems/energycharts.py` + `ems/tariff.py` | Spotpreis von Energy-Charts + Tarifmodell → Endkunden-Bezugspreis (§14a EnWG) |
-| `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen, Abruf-Budget/-Verteilung) + Dispatcher fürs freie PV-Modell |
-| `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + Open-Meteo (kein Key): Paneldaten (kWp/Neigung/Azimut) je Ausrichtung, gegen reale Ertragsdaten kalibrierbar |
-| `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher, z.B. Pool) |
-| `ems/ingest.py` | Externe Einspeisung (REST-Ingest) von Live-/Historienwerten -> Betrieb ohne RSCP/InfluxDB |
-| `ems/main.py` | Orchestrierung + CLI (`--loop` für Dauerbetrieb), systemd-Watchdog |
-| `tests/` | pytest-Suite (E2E synthetisch, Optimierer-Randfälle, Prognose, Ersparnis) |
+| `ems/config.py` | YAML-Konfiguration laden/validieren (typisierte Dataclasses) + Overlay |
+| `ems/main.py` | Orchestrierung + CLI (`--loop`), HTTP-Server, systemd-Watchdog |
+| `ems/optimizer.py` | MILP-Optimierer (PuLP, CBC/HiGHS): Steuertabelle 48 h |
+| `ems/forecast.py` | Verbrauchsprognose: Ähnliche-Tage-Mittelung oder ML (HistGradientBoosting) |
+| `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher) |
+| `ems/rscp.py` | Direkte E3DC-Anbindung (RSCP/pye3dc): Live-Werte, 15-min-Historie, Steuerung |
+| `ems/homey_mqtt.py` | MQTT-Client: Sollwerte, Status/Last-Will, Alerts, eingehende Kommandos, Last-Rückmeldungen |
+| `ems/influx.py` | InfluxDB 1.x (InfluxQL) / 2.x (Flux): Lesen/Schreiben, 15-min-Resampling |
+| `ems/local_history.py` | Lokale SQLite (Hauslast, Ist-Werte, Temperatur, Preis, PV-Prognose, Archive) + Quellen-Weichen |
+| `ems/weather.py` | Temperatur + Einstrahlung von Open-Meteo (kein Key) |
+| `ems/energycharts.py` + `ems/tariff.py` | Spotpreis (Energy-Charts) + Tarifmodell → Endkunden-Bezugspreis |
+| `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen) + Dispatcher der aktiven PV-Quelle |
+| `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + Open-Meteo (kein Key) |
+| `ems/pv_eval.py` | pvlib vs. Solcast gegen reale Erträge bewerten, Quelle wählen, p10/p90-Band kalibrieren |
+| `ems/sanity.py` | Plausibilitäts-Grenzen für externe Eingaben (Preis/PV/Last) |
+| `ems/savings.py` + `ems/savings_validate.py` | Ersparnis-Tracking + Gegenprüfung gegen die echten E3DC-Zähler |
+| `ems/validate.py` + `ems/drift.py` | Invarianten-Prüfung eines Plans + Predicted-vs-Actual-Drift |
+| `ems/explain.py` | Klartext-Begründung der Steuerentscheidungen (Dashboard-Tooltips) |
+| `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
+| `ems/ingest.py` | Externe Einspeisung (REST) von Live-/Historienwerten → Betrieb ohne RSCP/InfluxDB |
+| `ems/dashboard.py` | Interaktives HTML-Dashboard + JSON-API |
+| `tests/` | pytest-Suite (E2E, Optimierer-Randfälle, Prognose, Ersparnis, Diagnose …) |
 
 ## Eingangssignale
 
-Hausverbrauch, Strompreis, Haus-Akku-SoC, PV-Erzeugung, PV-Vorhersage,
-optional Fahrzeug-SoC, optional Einspeisevergütung. Strompreis und PV-Vorhersage
-werden auch für die Zukunft gelesen. Alle Leistungen in **W**, Preise in
-**ct/kWh**, Energien in **Wh**. Berechnung auf **15-min-Slots**.
+Hausverbrauch, Strompreis, Haus-Akku-SoC, PV-Erzeugung, PV-Vorhersage, optional
+Fahrzeug-SoC und Einspeisevergütung. Strompreis und PV-Vorhersage werden auch für
+die Zukunft gelesen. Alle Leistungen in **W**, Preise in **ct/kWh**, Energien in
+**Wh**, Rechenraster **15 min**.
 
 Jedes Signal kommt entweder **aus der InfluxDB** (Zuordnung Signal →
-Measurement/Field in `config.yaml` unter `influxdb.signals`) **oder direkt aus
-der Originalquelle** – gesteuert über die jeweiligen Flags (`e3dc_rscp`,
-`weather`, `tariff`, `solcast`). Ist eine Direktquelle aktiv, wird das
-entsprechende InfluxDB-Signal nicht mehr benötigt; siehe „Standalone ohne
-InfluxDB".
+Measurement/Field unter `influxdb.signals`) **oder direkt aus der Originalquelle**
+(Flags `e3dc_rscp` / `weather` / `tariff` / `solcast` / `pv_model`) **oder per
+REST-Ingest**. Ist eine Direktquelle aktiv, wird das entsprechende InfluxDB-Signal
+nicht mehr benötigt.
 
-## Direkte Quellen / Standalone ohne InfluxDB
+## Datenquellen & Standalone (ohne InfluxDB)
 
-Statt (oder zusätzlich zu) InfluxDB/MQTT kann das EMS den E3DC direkt per RSCP
-ansprechen (Bibliothek `pye3dc`, `pip install pye3dc`) und alle übrigen
-Eingangsdaten direkt aus den Originalquellen ziehen. Sind alle Direktquellen
-aktiv, läuft das EMS **komplett ohne InfluxDB**. Aktivierung unter `config.yaml`
-→ `e3dc_rscp` / `weather` / `tariff` / `solcast` (Default aus, ändert sonst
-nichts):
+Alle Direktquellen sind unter `config.yaml` einzeln aktivierbar (Default aus,
+ändert sonst nichts). Sind alle aktiv, läuft das EMS **komplett ohne InfluxDB**.
 
-- **`read_live`**: aktueller SoC/PV/Last direkt vom Gerät (frischer als der
-  DB-Umweg) für Anfangs-SoC und Slot-0-Anker – mit Fallback auf InfluxDB.
-- **`control_enabled`**: steuert den Speicher direkt per RSCP (zusätzlich zur
-  MQTT-Ausgabe an Homey, die parallel **immer** weiterläuft). **Greift real ein.**
-  Die `EMS_REQ_SET_POWER`-Modi sind **an echter Hardware verifiziert** (pye3dc
-  0.10): **0**=auto, **1**=idle, **2**=Entladen, **3**=Laden (aus PV),
-  **4**=Netzladen. Der Wert ist die Gesamtleistung (PV zuerst, Netz für den Rest).
-  `apply_control` setzt daraus je Slot:
-  - *Netzladen* (`batt_grid_charge_w>0`) → **Mode 4**, Wert = geplante
-    Gesamt-Ladeleistung (DC+Netz).
-  - *Netz-Entladen* (`batt_grid_discharge_w>0`, nur bei `allow_grid_discharge`)
-    → **Mode 2**, Wert = geplante Entladeleistung. (Mode 2 = Entladen live
-    verifiziert, −3042 W; Mode 4 = Netzladen mit 8 kW verifiziert.)
-  - *reine Lade-/Entlade-Begrenzung* (Peak-Shaving, Sperren) → persistente
-    Limits (`set_power_limits`), **kein** Mode-Eingriff/Watchdog.
-  - Mit `verify_control: true` liest das EMS nach jedem Schreibvorgang
-    `powerLimitsUsed`, `maxChargePower` und `maxDischargePower` direkt vom E3DC
-    zurück. Schreibfehler, fehlende Rückmeldung oder Abweichungen außerhalb von
-    `control_verify_tolerance_w` erscheinen rot im Dashboard und werden über
-    `ems/alert` gemeldet. Ein anhaltender Fehler wird gemäß
-    `control_alarm_repeat_minutes` wiederholt; die Erholung wird einmal gemeldet.
-  - Für aktive Modi (2/3/4) sendet ein Watchdog-Thread den Befehl alle **5 s**
-    neu, da der E3DC sonst nach ~10 s selbst auf auto zurückfällt.
-  - Beim Beenden schaltet der Dienst aktiv auf auto (Mode 0) zurück; stirbt der
-    Prozess, tut es der 10-s-Watchdog des E3DC selbst (Fail-safe).
-- **`history_source`**: die Verbrauchsprognose liest die 15-min-Hauslast aus
-  einer lokalen SQLite (`ems/local_history.py`) statt aus der InfluxDB. Die
-  Hauslast je Fenster wird aus der E3DC-Energiebilanz berechnet
-  (`PV + Akku-Entladung + Netzbezug − Akku-Ladung − Einspeisung`; gegen
-  InfluxDB verifiziert: Bias ~−44 W, Fenster-Rauschen mittelt sich in der
-  Ähnliche-Tage-Prognose heraus). Ablauf:
-  1. **Einmaliger Backfill** (Hintergrund): `python rscp_import.py --config
-     config.yaml --days 730` – 1 RSCP-Aufruf je 15-min-Fenster (2 Jahre
-     ≈ 70 000, mehrere Stunden). Danach `history_source: true` setzen.
-  2. **Zyklisch**: der Dienst führt vor jeder Prognose (alle 15 min) die neuen
-     Fenster nach – mit Reifeverzug (`history_settle_minutes`), weil die
-     jüngsten E3DC-Aggregate noch unvollständig sein können, und überlappend
-     (`history_overlap_hours`), damit Zwischenstände automatisch ersetzt werden.
-     Nichtpositive Zwischenbilanzen werden verworfen. Der Abruf ist idempotent
-     und auf 3 Tage gekappt, sodass ein Lauf nie den ganzen Backfill zieht. Nach einem
-     längeren Ausfall (> 3 Tage) den Backfill einmal manuell erneut laufen
-     lassen.
+**E3DC per RSCP** (`e3dc_rscp`, Bibliothek `pye3dc`):
+- `read_live`: aktueller SoC/PV/Last direkt vom Gerät (frischer als der DB-Umweg),
+  Fallback auf InfluxDB.
+- `control_enabled`: steuert den Speicher direkt (zusätzlich zur MQTT-Ausgabe, die
+  parallel weiterläuft). **Greift real ein.** Die `EMS_REQ_SET_POWER`-Modi sind an
+  echter Hardware verifiziert (pye3dc 0.10): **0**=auto, **1**=idle, **2**=Entladen,
+  **3**=Laden (aus PV), **4**=Netzladen; der Wert ist die Gesamtleistung. `apply_control`
+  setzt je Slot Netzladen (Mode 4), Netz-Entladen (Mode 2, nur bei
+  `allow_grid_discharge`) oder reine Lade-/Entlade-Grenzen (persistente Limits, kein
+  Mode-Eingriff). Mit `verify_control: true` werden die Limits nach dem Schreiben
+  zurückgelesen; Abweichungen außerhalb `control_verify_tolerance_w` melden einen
+  Steuer-Alarm (`ems/alert`, Dashboard). Aktive Modi werden alle 5 s per Watchdog
+  erneuert (der E3DC fällt sonst nach ~10 s auf auto zurück); beim Beenden schaltet
+  der Dienst aktiv auf auto zurück (Fail-safe).
+- `history_source`: die 15-min-Hauslast kommt aus der lokalen SQLite statt aus der
+  InfluxDB. Einmaliger Backfill: `python rscp_import.py --config config.yaml --days
+  730` (1 RSCP-Aufruf je Fenster, mehrere Stunden); danach `history_source: true`.
+  Zyklisch werden neue Fenster mit Reifeverzug (`history_settle_minutes`) und
+  Überlappung (`history_overlap_hours`) nachgeführt.
+- **Ist-Werte lokal** (Tabelle `actuals`): jeder Zyklus protokolliert den
+  E3DC-Live-Snapshot; Intraday-Korrektur, Ersparnis, Drift und Dashboard-Ist-Kurven
+  lesen dann daraus (zentrale Weiche `read_actual_signal`).
 
-  Damit kann die Verbrauchs-Historie ohne InfluxDB/openHAB laufen.
-- **Ist-Werte lokal** (`ems/local_history.py`, Tabelle `actuals`): bei aktivem
-  `history_source` protokolliert der Dienst jeden Zyklus den E3DC-Live-Snapshot
-  (SoC/PV/Last/Netz/Akku). Alle Funktionen, die bisher die jüngsten Ist-Werte
-  aus der InfluxDB lasen – Intraday-Korrektur, Ersparnis-Tracking, Drift-Monitor
-  und die Ist-Kurven im Dashboard – lesen dann aus dieser lokalen Tabelle
-  (zentrale Weiche `read_actual_signal`).
-- **Temperatur direkt von Open-Meteo** (`ems/weather.py`, `weather.enabled`,
-  kostenlos, kein API-Key): je Zyklus werden die letzten `past_days` (max 92) +
-  `forecast_days` stündlich abgerufen und in die lokale SQLite (Tabelle
-  `temperature`) gecacht; `_read_temp` liefert daraus (auf Slot-Raster
-  interpoliert) statt aus InfluxDB. Tiefe Historie einmalig via
-  `weather_backfill.py` (ERA5-Archiv, ein Call/Jahr). Fällt der Abruf aus, wird
-  der Cache genutzt. Jeder erfolgreiche Abruf archiviert zusätzlich nur seine
-  Zukunftswerte unveränderlich mit Erstellungs- und Zielzeitpunkt
-  (`weather_forecast_archive`). Damit kann die Rolling-Origin-Validierung ab
-  diesem Zeitpunkt exakt den damals bekannten Wetterstand verwenden.
-- **Bezugspreis direkt von Energy-Charts + Tarifmodell** (`ems/energycharts.py`,
-  `ems/tariff.py`, `tariff.enabled`, kostenlos, kein API-Key): je Zyklus wird der
-  Day-Ahead-Spot der Gebotszone (EUR/MWh → ct/kWh) geholt und in die lokale SQLite
-  (Tabelle `spot_price`) gecacht. Beim Auslesen rechnet das Tarifmodell daraus den
-  **Endkunden-Bezugspreis** (ct/kWh brutto):
+**Temperatur & Einstrahlung** (`weather`, Open-Meteo, kein Key): stündlicher Abruf
+(`past_days`/`forecast_days`) in Tabelle `temperature`/`radiation`, aufs Slot-Raster
+interpoliert. Tiefe Historie einmalig via `weather_backfill.py`. Zukunftswerte werden
+unveränderlich archiviert (`weather_forecast_archive`) für ehrliche Backtests.
 
-  ```
-  netto  = spot·(1+markup_percent/100) + markup_ct_kwh + levies_ct_kwh + netzentgelt
-  brutto = netto·(1+vat_percent/100)          # MwSt auf alles
-  ```
+**Bezugspreis** (`tariff`, Energy-Charts, kein Key): Day-Ahead-Spot je Zyklus in
+Tabelle `spot_price`; das Tarifmodell rechnet daraus den Endkunden-Bezugspreis:
 
-  Tarifart `dynamic`/`fixed`; Netzentgelt `static` (konstant), `included` (=0) oder
-  `14a` (§14a EnWG zeitvariabel: Fensterliste nach Uhrzeit/Monat/Datum/Wochentag,
-  erstes passendes Fenster gewinnt, sonst Default). Zentrale Weiche
-  `tariff.read_price_signal` (nutzen `_price_series` und das Ersparnis-Tracking).
-  Tiefe Preishistorie einmalig via `energycharts_backfill.py` (90-Tage-Blöcke).
-  Fällt der Abruf aus, wird der Cache genutzt; fehlende Folgetag-Preise ergänzt
-  weiterhin die Ähnliche-Tage-Schätzung.
-- **PV-Vorhersage direkt von Solcast** (`ems/solcast.py`, `solcast.enabled`):
-  rooftop-site-Forecast (inkl. P10/P90) je Zyklus geholt und in die lokale SQLite
-  (Tabelle `pv_forecast`, je Quelle) gecacht; `read_pv_signal`/`available` ersetzen
-  die `pv_forecast`-Reads in `_pv_series`, Intraday-PV-Korrektur und Dashboard.
-  **Mehrere Keys und Resourcen**: `combine: "sum"` addiert verschiedene Arrays
-  (Ost/West), `"mean"` mittelt redundante Quellen (dieselbe Anlage über mehrere
-  Keys). **Abruf-Budget** `calls_per_key_per_day` (Free-Tier 10/Key) wird je Quelle
-  gleichmäßig verteilt (key_budget / Quellen-je-Key Abrufe/Tag). `distribution`
-  steuert wie: `"daytime"` konzentriert aufs lokale Fenster `[window_start_hour,
-  window_end_hour)` (PV-Nowcasting im Fokus), `"24h"` verteilt rund um die Uhr
-  (hält auch den Folgetag-Forecast frisch); zwischen Abrufen wird der letzte
-  Forecast gehalten. Fehler (z.B. 429) → Cooldown + Cache. Solcast 30-min-Perioden werden
-  beim Auslesen aufs Slot-Raster gehalten. Tiefe PV-Historie einmalig via
-  `solcast_import.py` (aus der InfluxDB, Quelle `influx_hist`, nur für Zeitstempel
-  VOR dem Live-Beginn → keine Überlappung mit Ost/West beim `sum`). Erfolgreiche
-  Live-Abrufe werden außerdem als unveränderliche Snapshots mit `issue_time` und
-  `target_time` archiviert (`pv_forecast_archive`). Alte Snapshots werden nicht
-  überschrieben; rückwirkend lassen sie sich nicht aus dem aktuellen Cache
-  rekonstruieren.
-- **Standalone erreicht:** Verbrauch, Temperatur, Bezugspreis und PV-Vorhersage
-  laufen ohne InfluxDB. Auch die Kalibrierung (`kalibrierung.py`) folgt derselben
-  Weiche und rechnet dann gegen die lokalen Daten. Die InfluxDB bleibt optional
-  (Fallback je Signal + Writeback).
+```
+netto  = spot·(1+markup_percent/100) + markup_ct_kwh + levies_ct_kwh + netzentgelt
+brutto = netto·(1+vat_percent/100)          # MwSt auf alles
+```
 
-Hinweis: Live-Werte, 15-min-Historie und die Steuerung (Modi 2/3/4) sind gegen
-echte Hardware (pye3dc 0.10) verifiziert. Feldnamen-Mapping (`_map_live`) und
-Vorzeichen (`grid_sign`/`batt_sign`) sind gerätespezifisch – bei abweichender
-Hardware prüfen; die Logik ist zusätzlich mit gemocktem Client getestet
-(`tests/test_rscp.py`).
+Netzentgelt `static`/`included`/`14a` (§14a EnWG zeitvariabel). Tiefe Historie via
+`energycharts_backfill.py`. Fehlende Folgetag-Preise ergänzt die Ähnliche-Tage-Schätzung.
 
-## Konfigurierbare Anlagenwerte
+**PV-Vorhersage** – zwei austauschbare Quellen (nicht gleichzeitig aktiv):
+- `solcast`: rooftop-site-Forecast inkl. P10/P90, mehrere Keys/Resourcen,
+  `combine: sum|mean`, Abruf-Budget `calls_per_key_per_day` über das Tageslicht
+  verteilt. Tiefe Historie via `solcast_import.py`.
+- `pv_model`: **freies pvlib-Modell** (kein Key/Kontingent) aus Paneldaten
+  (kWp/Neigung/Azimut je Ausrichtung) + Open-Meteo-Einstrahlung. `shadow: true`
+  rechnet es nur zum Vergleich mit, ohne den Optimierer zu beeinflussen.
+- **Autowahl** (`pv_source_selection`): sobald beide Quellen genügend gemeinsame
+  Archiv-Erfahrung haben, wählt `pv_eval.select_source` die im WAPE bessere Quelle
+  (nur aus echten Rolling-Origin-Archiven, nie aus dem optimistischen Cache); die
+  Wahl wird mit Begründung persistiert. `python pv_source_report.py` zeigt den
+  Vergleich manuell und empfiehlt das kalibrierte p10/p90-Band.
 
-Haus-Akku-Kapazität, Auto-Akku-Kapazität, Haus-Akku max. DC-Ladeleistung,
-Haus-Akku max. AC-Ladeleistung, Haus-Akku max. Entladeleistung, Wechselrichter
-max. AC-Leistung, Auto max./min. Ladeleistung, min./max. Haus-SoC, min. Auto-SoC,
-Ziel-Auto-SoC + Abfahrtzeit, Einspeisevergütung (fest oder aus DB). Siehe
-`config.example.yaml`.
+Beide PV- und alle übrigen Signale sind auch per **REST-Ingest** einspielbar
+(`ingest`): so kann ein Fremdsystem die Daten liefern, RSCP/InfluxDB entfallen.
+Payloads siehe `config.example.yaml`.
 
-## Steuergrößen (Optimierung)
-
-Pro 15-min-Slot über 48 h:
-- Haus-Akku **DC-Ladeleistung** (nur aus PV)
-- Haus-Akku **AC-Ladeleistung** (aus dem Netz)
-- Haus-Akku **DC-Entladeleistung**
-- **Auto-Ladeleistung** (semikontinuierlich: 0 oder zwischen Min und Max)
-
-Nebenbedingungen: SoC-Grenzen Haus/Auto, Leistungsgrenzen, Wechselrichter-
-Durchsatz, **kein gleichzeitiges Laden/Entladen** (per Binärvariablen erzwungen),
-**Auto-Ziel-SoC zur Abfahrtzeit**. Ziel: Minimierung der Netto-Stromkosten
-(Import·Preis − Export·Einspeisevergütung) inkl. Terminalwert des Akku-Inhalts.
-
-## Steuerbare / verschiebbare Lasten (`controllable_loads`)
-
-Optionale Liste zusätzlicher Lasten, die der Optimierer mitplant und in die
-günstigsten/PV-reichsten Slots legt (Sollwert on/off je Slot optional per MQTT).
-Zwei Typen (`ems/loads.py`):
-- **`deferrable`** – muss `runtime_minutes` im Zeitfenster laufen; Leistung
-  konstant (`power_w`) oder als 15-min-Kurve (`power_profile_w`, Startzyklus).
-- **`thermal`** – thermischer Speicher (z.B. Pool): die Temperatur ist ein
-  **MILP-Zustand**, gehalten im Band `[min_c, max_c]`, geheizt über `stages`
-  (on/off-Wärmepumpen, per `requires` koppelbar – z.B. „große WP nur mit
-  kleiner"); Wärmeverlust `~ loss_w_per_k·(T−T_außen)` (Außentemp aus dem
-  Wetter-Feed), Ist-Temperatur aus `temp_signal`. So wird vorausschauend in
-  PV-Überschuss/günstige Slots vorgeheizt statt grob „PV>X → an".
-
-Leere Liste (Default) = keine zusätzlichen Variablen, Optimierer unverändert.
-
-## Betrieb ohne InfluxDB / externe Einspeisung (Ingest-API)
-
-Das EMS läuft auch **ganz ohne InfluxDB und ohne RSCP** — die sonst von dort
-kommenden Werte werden per REST eingespielt (`ems/ingest.py`):
-- **`influxdb.enabled: false`** → No-op-Repository (kein Lesen/Writeback aus/in
-  InfluxDB); alle Eingangsdaten kommen lokal/extern.
-- **`dashboard.ingest_enabled: true`** → POST-Endpunkte am Dashboard-HTTP-Server
-  (Basic-Auth wie das Dashboard, `dashboard.username`/`password`):
-  - `POST /api/ingest/live` – aktueller Snapshot (SoC/PV/Last/Netz/Akku), im
-    Speicher gecacht; `run_once` nutzt ihn als Ersatz für `e3dc.read_live`.
-  - `POST /api/ingest/house_load` – 15-min-Hauslast-Historie (für die Prognose).
-  - `POST /api/ingest/actuals` – Ist-Werte (Dashboard/Ersparnis/Drift).
-  - `POST /api/ingest/temperature` / `/spot` / `/pv_forecast` – für den voll
-    externen Betrieb auch Temperatur, Spotpreis und PV-Prognose. Bei
-    `/pv_forecast` kann `issue_time` mitgegeben werden (sonst Eingangszeit);
-    Zukunftswerte werden zugleich im Prognosearchiv abgelegt.
-  Zeitstempel werden auf UTC-ISO normalisiert; Historien landen direkt in der
-  lokalen SQLite, Live-Werte im Cache. Payload-Formate: siehe `config.example.yaml`.
-
-So kann ein beliebiges Fremdsystem (Homey, node-red, eigenes Skript) die Daten
-liefern; RSCP/InfluxDB sind dann nur noch optionale Quellen.
-
-## Installation auf dem Pi (Trixie)
+## Installation
 
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip coinor-cbc mosquitto mosquitto-clients
 
-sudo mkdir -p /opt/ems && sudo chown $USER /opt/ems
-# Projektdateien nach /opt/ems kopieren (ems/, requirements.txt, config.example.yaml ...)
+sudo mkdir -p /opt/ems && sudo chown "$USER" /opt/ems
+# Projektdateien nach /opt/ems kopieren (ems/, requirements.txt, config.example.yaml, *.service ...)
 cd /opt/ems
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -r requirements.txt        # oder: requirements.lock (exakt getestete Versionen)
+pip install -r requirements.txt        # bzw. requirements.lock (exakt getestete Versionen)
+# optional (Solcast-Alternative / Tests): pip install pye3dc pvlib
+#                                          pip install -r requirements-dev.txt
 
-cp config.example.yaml config.yaml
-# config.yaml anpassen: InfluxDB-Version/Zugang, Signal-Mapping, Anlagenwerte, MQTT
+cp config.example.yaml config.yaml     # anpassen – siehe „Konfiguration"
 
 # Einmaliger Testlauf:
 python -m ems.main --config config.yaml --log-level INFO
 ```
 
-> Hinweis: PuLP bringt einen CBC-Solver mit; das System-Paket `coinor-cbc` ist
-> optional als robuste Alternative.
+> PuLP bringt einen CBC-Solver mit; das System-Paket `coinor-cbc` ist optional als
+> robuste Alternative. Für `optimization.solver: highs` zusätzlich `highspy`.
 
 ### Als Dienst (systemd)
 
 ```bash
 sudo useradd -r -s /usr/sbin/nologin ems 2>/dev/null || true
 sudo chown -R ems:ems /opt/ems
-sudo cp ems.service ems-kalibrierung.service ems-kalibrierung.timer \
+sudo cp ems.service \
+        ems-kalibrierung.service ems-kalibrierung.timer \
+        ems-savings.service ems-savings.timer \
         ems-backup.service ems-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now ems.service ems-kalibrierung.timer ems-backup.timer
+sudo systemctl enable --now ems.service \
+        ems-kalibrierung.timer ems-savings.timer ems-backup.timer
 journalctl -u ems -f
 ```
 
 Der Dienst rechnet im Intervall `general.run_interval_minutes` (Standard 15 min)
-neu. Er läuft gehärtet als Benutzer `ems` (Port 80 über
-`CAP_NET_BIND_SERVICE`, Schreibzugriff nur auf `/opt/ems`) und mit
-**systemd-Watchdog**: bleibt das Lebenszeichen 35 min aus (Prozess hängt),
-startet systemd den Dienst neu.
+neu, läuft gehärtet als Benutzer `ems` (Port 80 über `CAP_NET_BIND_SERVICE`,
+Schreibzugriff nur auf `/opt/ems`) und mit **systemd-Watchdog** (Neustart, wenn das
+Lebenszeichen ausbleibt). Die Timer:
 
-### Backup
+- **`ems-kalibrierung.timer`** (So 03:00): Verbrauchs-/PV-Kalibrierung
+  (`kalibrierung.py`) inkl. pvlib-p10/p90-Bandkalibrierung + Pool-Thermomodell
+  (`ems.pool_calibration --apply`).
+- **`ems-savings.timer`** (täglich 02:45): validiert die Vortags-Ersparnis gegen
+  die echten E3DC-Zähler (`savings_check.py --persist`).
+- **`ems-backup.timer`** (wöchentlich): sichert die unversionierten Dateien
+  (`config.yaml` mit Zugangsdaten, Kalibrierprofile, Ersparnis-Status) via
+  [backup.sh](backup.sh). **Für echte Sicherheit ein externes Ziel setzen**
+  (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
 
-`ems-backup.timer` sichert wöchentlich die unversionierten Dateien
-(`config.yaml` mit Zugangsdaten, Kalibrierprofile, Ersparnis-Status) per
-[backup.sh](backup.sh) nach `/opt/ems/backup` (letzte 8 Stände). **Wichtig:**
-Das lokale Ziel schützt nicht vor einem Ausfall des Datenträgers – für echte
-Sicherheit in `ems-backup.service` ein externes Ziel setzen
-(`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup`).
+## Konfiguration
 
-## Homey-Anbindung (MQTT)
+Zentrale Datei `config.yaml` (aus `config.example.yaml` kopieren – dort ist jeder
+Block kommentiert). `config.yaml` enthält **Zugangsdaten** (InfluxDB, MQTT, E3DC,
+API-Keys) und ist deshalb **nicht** im Git; sie wird vom Backup-Timer gesichert.
 
-Das EMS publiziert bei jedem Zyklus die Sollwerte des laufenden Slots:
+Interaktive Änderungen (Dashboard-Steuerpanel) und die Kalibrierung schreiben in
+eine **Overlay-Datei `config_overrides.yaml`**, die beim Laden über `config.yaml`
+gelegt wird – so überdauern sie einen Neustart, ohne die kommentierte Basisdatei
+anzutasten.
+
+Wichtige Blöcke:
+
+| Block | Inhalt |
+|-------|--------|
+| `general` | Zeitzone, Horizont (48 h), Slot-Länge, Rechenintervall |
+| `house_battery` / `inverter` | Kapazität, Lade-/Entladeleistungen, Wirkungsgrade, SoC-Grenzen, WR-/Netzanschlussgrenzen |
+| `vehicle` | Auto-Akku, Lade-Min/-Max, Ziel-SoC, Abfahrtzeit(en), Ladekurve |
+| `optimization` | Solver, MIP-Gap, Strafterme, Ladestrategie (`auto/peak/asap`), **Abend-Reserve** |
+| `feed_in` / `tariff` | Einspeisevergütung; Bezugspreis-Tarifmodell (Spot + Aufschläge + Netzentgelt) |
+| `weather` / `solcast` / `pv_model` / `pv_source_selection` | Wetter- und PV-Quellen + Autowahl |
+| `e3dc_rscp` | RSCP-Zugang, `read_live`/`control_enabled`/`history_source`, Verifikation |
+| `controllable_loads` | verschiebbare + thermische Lasten (Pool-WP) |
+| `sanity` | Plausibilitäts-Grenzen (Preis-Spike, PV-Cap, negative Werte) |
+| `recalc` | Sofort-Neuberechnung bei großer Live-Abweichung vom Plan |
+| `monitoring` | Drift-, Solver- und Ausführungs-Audit, Alarm-Schwellen |
+| `mqtt` / `dashboard` / `influxdb` | Ausgabe/Anbindung: Broker, Web/API, DB |
+| `savings` / `calibration` / `report` | Ersparnis-Status, Kalibrierprofile, Debug-Report |
+
+### Anlagenwerte & Steuergrößen
+
+Konfigurierbar sind u. a. Kapazitäten, Leistungsgrenzen, Wirkungsgrade und SoC-
+Grenzen von Haus- und Auto-Akku sowie Einspeisevergütung (fest oder aus DB).
+Der Optimierer bestimmt je 15-min-Slot: Haus-Akku **DC-Laden** (nur PV), **AC-Laden**
+(Netz), **Entladen** und **Auto-Ladeleistung** (0 oder Min…Max). Nebenbedingungen:
+SoC-/Leistungsgrenzen, WR-Durchsatz, kein gleichzeitiges Laden/Entladen, Auto-Ziel-SoC
+zur Abfahrt. Ziel: minimale Netto-Stromkosten inkl. Terminalwert des Akku-Inhalts.
+
+### Abend-Reserve (optional)
+
+`optimization.evening_reserve_*` hält den Akku (weiche Nebenbedingung, nie
+infeasible) über einem Mindest-SoC, damit er nicht vor der teuren Abendspitze
+leerläuft. Fest (`evening_reserve_soc_percent` + Fenster) oder **adaptiv**
+(`evening_reserve_auto`): Höhe = Energie für die Restlast während der abendlichen
+Preisspitze, Fenster von `hold_from_hour` bis zum Peak-Beginn.
+
+### Steuerbare / verschiebbare Lasten (`controllable_loads`)
+
+Optionale Liste zusätzlicher Lasten, die der Optimierer mitplant und in die
+günstigsten/PV-reichsten Slots legt. Zwei Typen (`ems/loads.py`):
+
+- **`deferrable`** – muss `runtime_minutes` im Fenster laufen; Leistung konstant
+  (`power_w`) oder als 15-min-Kurve (`power_profile_w`).
+- **`thermal`** – thermischer Speicher (Pool): Temperatur ist ein **MILP-Zustand**
+  im Band `[min_c, max_c]`, geheizt über `stages` (ein/aus-Wärmepumpen, per
+  `requires` koppelbar); Verlust `~ loss_w_per_k·(T−T_außen)`, optionaler solarer
+  Eintrag, Ist-Temperatur aus `temp_signal`. Je Stufe geht der Schaltbefehl an
+  `control_topic`; optionale Rückmeldung über `feedback_topic` (an/aus) bzw.
+  `power_topic` (gemessene Leistung). Bei eigenem WP-Thermostat (`thermostat: true`)
+  ist das Signal eine Heiz-**Freigabe**. Das Pool-Thermomodell wird wöchentlich aus
+  den Messdaten kalibriert (`pool_calibration.py`).
+
+Leere Liste (Default) = keine zusätzlichen Variablen.
+
+## Anbindung an ein Smart-Home-System (MQTT)
+
+Das EMS publiziert bei jedem Zyklus die Sollwerte des laufenden Slots. Ein
+beliebiger MQTT-Client (Homey, Home Assistant, ioBroker, Node-RED …) abonniert die
+Topics und schreibt die Werte auf die Geräte-Capabilities.
 
 ```
 ems/setpoint/batt_charge_limit_w      Ladelimit (Hardware-Max = frei laufen)
@@ -303,115 +293,66 @@ ems/setpoint/batt_grid_charge_w       Netzladen erzwingen (Akku <- Netz)
 ems/setpoint/batt_grid_discharge_w    Netz-Entladen (Akku -> Netz)
 ems/setpoint/charge_limited           true/false
 ems/setpoint/discharge_limited        true/false
-ems/setpoint/car_charge_w             z.B. 4000
+ems/setpoint/car_charge_w             z. B. 4000
 ems/setpoint/mode                     "auto" | "grid_charge" | "hold" | ...
 ems/setpoint/updated                  ISO-Zeitstempel des Slots
-ems/schedule                          komplette 48h-Tabelle als JSON (retained)
+ems/loads/<name>                      Sollzustand steuerbarer Lasten (0/1, retained)
+ems/schedule                          komplette 48-h-Tabelle als JSON (retained)
 ems/status                            "online" | "offline" (retained, Last Will)
 ems/alert                             Störungen als JSON {level, message, time}
 ```
 
-Eingehende Kommandos (von Homey an das EMS):
+Eingehende Kommandos (an das EMS):
 
 ```
-ems/cmd/recalc          sofortige Neuberechnung anstoßen (Payload egal)
-ems/cmd/car_boost       "1"/"0": Auto sofort mit Max-Leistung laden, bis der
-                        Ziel-SoC erreicht ist (überschreibt car_charge_w)
-ems/cmd/car_departure_time  "HH:MM": Abfahrtzeit setzen; ""/"default" =
-                        Konfigwert; "off"/"urlaub" = Urlaubsmodus: keine
-                        Abfahrten, der Ziel-SoC wird nicht mehr erzwungen
-ems/cmd/car_target_soc  Ziel-SoC in % (1..100); ""/"default" = Konfigwert
-ems/cmd/min_soc         Haus-Akku Minimum-SoC in % (z.B. Reserve vor Sturm/
-                        Stromausfall hochsetzen); ""/"default" = Konfigwert
-ems/cmd/max_soc         Haus-Akku Maximum-SoC in % (Akku schonen);
-                        ""/"default" = Konfigwert
+ems/cmd/recalc              sofortige Neuberechnung (Payload egal)
+ems/cmd/car_boost           "1"/"0": Auto sofort mit Max-Leistung laden bis Ziel-SoC
+ems/cmd/car_departure_time  "HH:MM" | "default" | "off"/"urlaub" (kein Ziel-SoC erzwingen)
+ems/cmd/car_target_soc      Ziel-SoC in % (1..100) | "default"
+ems/cmd/min_soc             Haus-Akku Minimum-SoC in % | "default"
+ems/cmd/max_soc             Haus-Akku Maximum-SoC in % | "default"
+ems/cmd/load/<name>         steuerbare Last aktivieren/deaktivieren | "default"
 ```
 
-Die Parameter-Kommandos in Homey **mit Retain** publizieren, dann überstehen
-sie einen EMS-Neustart (der Broker liefert sie beim Reconnect erneut aus).
-Inkonsistente Grenzen (min ≥ max) werden verworfen. Die aktuell wirksamen
-Werte meldet das EMS unter `ems/vehicle/departure_time`,
-`ems/vehicle/target_soc_percent`, `ems/battery/min_soc_percent` und
-`ems/battery/max_soc_percent` zurück.
+Parameter-Kommandos **mit Retain** publizieren, dann überstehen sie einen
+EMS-Neustart. Die wirksamen Werte meldet das EMS unter `ems/vehicle/*` und
+`ems/battery/*` zurück.
 
-`ems/alert` meldet z.B. eine nicht-optimale Optimierung (Fallback aktiv) oder
-einen fehlgeschlagenen Zyklus – ideal für einen Homey-Push-Benachrichtigungs-Flow.
-
-In Homey die **MQTT Client**-App auf diese Topics abonnieren und die Werte per
-Flow auf die Geräte-Capabilities (Ladeleistung etc.) schreiben.
-
-**Fail-safe:** Die Sollwerte werden ohne Retain-Flag publiziert – fällt das EMS
-aus, hält der Broker keine veralteten Steuerbefehle vor. Zusätzlich hält das
-EMS im Loop-Betrieb eine stehende MQTT-Verbindung mit **Last Will**: stirbt der
-Prozess (Absturz, Stromausfall, Netzverlust), setzt der Broker selbst
-`ems/status = offline`. Empfohlener Watchdog-Flow in Homey: Wenn `ems/status`
-auf `offline` wechselt (oder `ems/setpoint/updated` länger als ~35 min kein
-Update bekommt), alle Limits auf Hardware-Maximum setzen (Eigenverbrauchs-
-Automatik des E3DC).
-
-## Writeback in InfluxDB
-
-Zusätzlich werden geschrieben (Measurements konfigurierbar unter
-`influxdb.outputs`):
-- `ems_load_forecast` – prognostizierter Hausverbrauch (72 h)
-- `ems_control` – Steuerbefehle je Slot (48 h)
-- `ems_prediction` – prognostizierte Haus-/Auto-SoCs, Netz, Slot-Kosten (48 h)
-- `ems_savings` – Ersparnis-Tracking je abgeschlossenem Slot (s.u.)
-
-## Ersparnis-Tracking
-
-Für jeden abgeschlossenen Slot vergleicht das EMS die **tatsächlichen**
-Netzkosten (gemessener Netzbezug/-einspeisung × Preis) mit einer Simulation,
-was der E3DC **ohne EMS** im reinen Eigenverbrauchsmodus getan hätte (eigener
-hypothetischer Akku-SoC wird fortgeführt, Zustand in `savings_state.json`).
-Die kumulierte Differenz erscheint im Dashboard-Titel („Ersparnis gesamt")
-und je Slot in `ems_savings` – wird sie dauerhaft negativ, stimmt etwas am
-Modell. Benötigt die Signale `pv_generation`, `house_consumption`,
-`grid_power` (positiv = Bezug) und `electricity_price`.
+**Fail-safe:** Sollwerte werden **ohne** Retain publiziert – fällt das EMS aus, hält
+der Broker keine veralteten Steuerbefehle vor. Zusätzlich hält der Loop eine
+stehende Verbindung mit **Last Will**: stirbt der Prozess, setzt der Broker selbst
+`ems/status = offline`. Empfohlener Watchdog: wenn `ems/status` auf `offline`
+wechselt (oder `ems/setpoint/updated` ~35 min ausbleibt), alle Limits auf
+Hardware-Maximum setzen (Eigenverbrauchs-Automatik des E3DC).
 
 ## Dashboard
 
 ![EMS Dashboard (Beispielausgabe mit synthetischen Daten)](dashboard_beispiel.png)
 
-Nach jedem Lauf entsteht `dashboard.html` (Pfad konfigurierbar, im Loop-Betrieb
-per HTTP auf Port 80 erreichbar, Auto-Reload nach jeder Neuberechnung):
+Nach jedem Lauf entsteht `dashboard.html` (im Loop-Betrieb per HTTP auf Port 80,
+Auto-Reload nach jeder Neuberechnung):
 
 - **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt (inkl. an den Zählern
-  bestätigter Ersparnis), Modus jetzt (mit Limits), Eingriffe im Plan. Die
+  bestätigter Ersparnis), Modus jetzt (mit Limits), Eingriffe im Plan; die
   Planprüfung erscheint als eigenes Banner darüber.
-- **E3/DC-Livekacheln**: Solarerzeugung, Hauslast, Netzfluss, Batterieleistung,
-  Akku-SoC und Wallbox im konfigurierbaren Raster (Default 5 s), dazu – wenn
-  vorhanden – die Pool-Ist-Temperatur (bei aktiver thermischer Last) und die
-  Außentemperatur (Open-Meteo). Der Server cached die RSCP-Abfrage, sodass
-  mehrere Browser die Geräteabfrage nicht vervielfachen. (Der Akku-SoC steht nur
-  hier, nicht doppelt als KPI-Kachel.)
-- **Leistung** (PV mit Solcast-p10–p90-Band, Verbrauch, Netz, Einspeise-Linie;
-  Ist durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
-  Einspeisevergütung, **Steuerung** (Ladebefehle, Abregelung, Ist-Akkuleistung)
-- **Modus-Zeitleiste**: Eingriffe als Farbstreifen (auto/Peak-Laden/gedrosselt/
-  gesperrt/Netzladen/Netz-Entladen) mit Legende und Hover-Klartext
-- **Steuerbare Lasten** (nur bei konfigurierten `controllable_loads`): An/Aus je
-  Slot als Farbstreifen, deaktivierte Lasten grau
-- **Temperaturen** (nur bei thermischen Lasten): erwartete vs. echte
-  Pooltemperatur je Last (Komfortband hinterlegt) + Außentemperatur
-- Vergangenheit grau hinterlegt, Tagesgrenzen mit Wochentag, Jetzt-Linie
-- **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten
-  an/aus + Kernparameter, Optimierungsmodus (auto/asap/peak), manuelles
-  Akku-Laden/-Entladen – direkt aus dem Dashboard, ohne MQTT. Das Panel ist
-  einklappbar; bei verschiebbaren Lasten kann `power_profile_w` als Folge von
-  15-Minuten-Wattwerten bearbeitet und unmittelbar als Balkenkurve geprüft werden.
-- **Manuelle Akku-Zeitplanung**: Netzladen und Entladen mit Start, Leistung und
-  Dauer auf einem grafischen 48-h-Zeitstrahl planen. Einträge liegen persistent
-  in der lokalen SQLite, werden auch ohne geöffneten Browser ausgeführt und
-  können vor oder während der Ausführung abgebrochen werden. Während eines
-  Handplans ist der normale Optimierer-Sollwert ausgesetzt; danach wird E3/DC
-  automatisch freigegeben. SoC-Minimum/-Maximum und Hardware-Leistungsgrenzen
-  werden vor und während der Ausführung geprüft.
+- **E3/DC-Livekacheln** (Default 5 s): Solarerzeugung, Hauslast, Netzfluss,
+  Batterieleistung, Akku-SoC, Wallbox – dazu, wenn vorhanden, die Pool-Ist-
+  Temperatur und die Außentemperatur. Der Server cached die RSCP-Abfrage.
+- **Leistung** (PV mit p10–p90-Band, Verbrauch, Netz, Einspeise-Linie; Ist
+  durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
+  Einspeisevergütung, **Steuerung**, **Modus-Zeitleiste** (Farbstreifen + Hover-
+  Klartext), **Steuerbare Lasten** und **Temperaturen** (erwartet vs. echt).
+- Farbcodierte, einklappbare Diagnose-Panels (Prognosequalität, Betriebsdiagnose,
+  Pool-Rückkopplung) – Status auch eingeklappt sichtbar.
+- **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten an/aus +
+  Kernparameter, Optimierungsmodus, manuelles Akku-Laden/-Entladen – ohne MQTT.
+- **Manuelle Akku-Zeitplanung**: Netzladen/Entladen auf einem 48-h-Zeitstrahl planen
+  (persistent, auch ohne offenen Browser ausgeführt, abbrechbar; SoC-/Leistungs-
+  grenzen geprüft).
 
-Die interaktive Beispielausgabe (Bild oben, **synthetische Daten**) liegt als
+Die Beispielausgabe (**synthetische Daten**) liegt als
 [dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
-`python beispiel_dashboard.py` (nutzt Plotly vom CDN, das produktive Dashboard
-läuft dagegen offline mit lokalem `plotly.min.js`). Screenshot erneuern:
+`python beispiel_dashboard.py`. Screenshot erneuern:
 
 ```bash
 chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
@@ -420,61 +361,45 @@ chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
 
 ### Webserver & API (Basic Auth)
 
-Der eingebaute HTTP-Server liefert das Dashboard aus und bietet zusätzlich einen
-**JSON-API-Endpunkte**. Unter `http://<host>:<port>/api/data.json` kann der
-vollständige Optimierungs-Zustand (Ist-Werte und Zukunftspläne für alle Slots) als
-maschinenlesbares JSON abgerufen werden – ideal zur Anbindung an Drittsysteme
-(Grafana, Node-RED, etc.). `/api/live.json` liefert bei aktiver RSCP-Anbindung
-den aktuellen E3/DC-Snapshot; das Abfrageintervall wird mit
-`dashboard.live_refresh_seconds` eingestellt (`0` deaktiviert die Liveanzeige).
+Der HTTP-Server liefert das Dashboard und JSON-Endpunkte: `/api/data.json`
+(vollständiger Optimierungs-Zustand, ideal für Grafana/Node-RED), `/api/live.json`
+(aktueller E3/DC-Snapshot, Intervall `dashboard.live_refresh_seconds`, `0` = aus).
+Die gesamte Weboberfläche lässt sich mit **Basic Auth** absichern
+(`dashboard.username`/`password`; leer = ungeschützt).
 
-**Sicherheit:** Die gesamte Weboberfläche (Dashboard, Report-Download und API) kann 
-mit Basic Authentication abgesichert werden. Dazu in der `config.yaml` unter `dashboard`
-die Felder `username` und `password` setzen. (Bleiben sie leer, ist der Zugriff ungeschützt).
+## Ersparnis-Tracking & Validierung
 
-## Test
+Für jeden abgeschlossenen Slot vergleicht das EMS die **tatsächlichen** Netzkosten
+(gemessener Netzbezug/-einspeisung × Preis) mit einer Simulation, was der E3DC
+**ohne EMS** getan hätte (`savings.py`, Zustand in `savings_state.json`,
+Measurement `ems_savings`). Zusätzlich prüft `savings_check.py` (täglich per Timer)
+die Vortags-Ersparnis **unabhängig gegen die echten E3DC-Energiezähler**: es liest
+die gemessenen 15-min-Energieaggregate, rechnet Ist vs. „Ohne-EMS"-Baseline und
+deckt über die Energiebilanz Vorzeichen-/Integrationsfehler auf. Die kumulierte,
+zähler-bestätigte Ersparnis erscheint im Dashboard.
 
 ```bash
-pytest                            # komplette Suite
-python -m tests.test_synthetic    # nur der End-to-End-Lauf
+python savings_check.py --config config.yaml --days 7    # Fenster-Report
+python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
 ```
 
-Ohne InfluxDB/MQTT lauffähig. Abgedeckt:
-- `tests/test_synthetic.py` – End-to-End: Prognose, Optimierung (Lösbarkeit +
-  Nebenbedingungen), Fallback bei ungültigen Eingaben, Dashboard-Erzeugung.
-- `tests/test_optimizer.py` – Randfälle: peak/asap-Strategie, negative Preise,
-  Netz-Entlade-Arbitrage, unerreichbarer Auto-Ziel-SoC (Fallback),
-  DST-Umstellungstage (92/100 Slots).
-- `tests/test_forecast.py` – Rezenz-Gewichtung, Datenlücken, leere Historie.
-- `tests/test_validate.py` – Invarianten-Validator (`ems/validate.py`).
-- `tests/test_fuzz.py` – Fuzz (zufällige Szenarien × Invarianten) + metamorphe
-  Relationen (Preis-Offset, höhere Vergütung, mehr PV).
+## Diagnose & Modell-Prüfung
 
-## Modell-Prüfung: Invarianten & Backtest
-
-Modellfehler zeigen sich oft nur als „das sieht komisch aus" im Dashboard.
-Zwei Werkzeuge machen die Suche systematisch:
-
-- **`ems/validate.py`** – prüft einen fertigen Plan gegen Invarianten, die
-  immer gelten müssen (SoC-/Leistungsgrenzen, Energiebilanz, kein
-  gleichzeitiges Laden/Entladen, DC-Laden nur aus PV-Überschuss, kein Entladen
-  bei PV-Überschuss, Einspeisebegrenzung, **Ausführbarkeit**: die an Homey
-  gesendeten Befehle passen zu den geplanten Flüssen) plus ökonomische
-  Plausibilität (Plan nie teurer als die Ohne-EMS-Baseline). Läuft in Tests,
-  im Backtest UND live: nach jeder Optimierung, mit Anzeige im Dashboard
-  (Banner + Kachel) und Alarm auf `ems/alert`.
-- **`ems/drift.py`** – Predicted-vs-Actual: vergleicht je Lauf den
-  prognostizierten mit dem gemessenen Haus-SoC (MAE in Prozentpunkten ->
-  Measurement `ems_drift`), Warnung über der Schwelle. Deckt Modellfehler auf,
-  die kein einzelner Plan zeigt (Wirkungsgrade, Standby, Alterung).
-- **Debug-Report-Button** (Dashboard, nur bei `report.enabled: true`): lädt bei
-  einer Implausibilität den Schnappschuss des letzten Laufs (Eingaben + Plan,
-  ohne Zugangsdaten) herunter und öffnet das Mailprogramm vorausgefüllt an
-  `report.mail_to` – die JSON hängt man manuell an. Damit lässt sich der Fehler
-  offline im Backtest/Optimizer exakt nachstellen. Kein SMTP-Server nötig.
-- **`backtest.py`** – spielt vergangene Tage aus der InfluxDB durch den
-  Optimierer (perfekte Voraussicht) und prüft jeden Plan. Findet Modellfehler
-  über Monate echter Daten in Minuten, statt monatelang zuzuschauen:
+- **`ems/validate.py`** – prüft jeden Plan gegen Invarianten (SoC-/Leistungsgrenzen,
+  Energiebilanz, kein gleichzeitiges Laden/Entladen, DC-Laden nur aus PV,
+  Einspeisebegrenzung, Ausführbarkeit) plus ökonomische Plausibilität (nie teurer
+  als die Baseline). Läuft in Tests, im Backtest und live (Banner + `ems/alert`).
+- **`ems/drift.py`** – Predicted-vs-Actual-SoC-Drift (MAE, Measurement `ems_drift`),
+  Warnung über der Schwelle. Deckt Modellfehler auf (Wirkungsgrade, Standby, Alterung).
+- **Sanity-Grenzen** (`sanity`) – begrenzen Preis-Spikes, negative/überhöhte PV und
+  negative Last vor dem Solve; ein einzelner API-Ausreißer verzerrt keinen Zyklus.
+- **Ausführungs-Audit + Auto-Recalc** – vergleicht Soll/Ist des laufenden Slots
+  (Akku/SoC; Netz nur informativ, da Bilanz-Residuum) und rechnet bei großer
+  Live-Abweichung (`recalc`) sofort neu.
+- **Debug-Report-Button** (`report.enabled: true`) – lädt den Schnappschuss des
+  letzten Laufs (ohne Zugangsdaten) für die Offline-Analyse.
+- **`backtest.py`** – spielt vergangene Tage durch den Optimierer und prüft jeden
+  Plan; findet Modellfehler über Monate echter Daten in Minuten:
 
   ```bash
   python backtest.py --config config.yaml --days 120
@@ -482,62 +407,45 @@ Zwei Werkzeuge machen die Suche systematisch:
   python backtest.py --config config.yaml --days 30 --historical-forecasts
   ```
 
-  Mit `--historical-forecasts` wird kein nachträglich bekannter Ist-Verlauf als
-  Prognose verwendet. Jeder Tag wird aus genau einem vollständigen Snapshot
-  gerechnet, der zum jeweiligen Tagesstart produktiv erstellt wurde. Der Bericht zeigt
-  zusätzlich MAE und Energie-Bias von Hauslast und PV für die ersten 24 Stunden.
-  Tage vor Beginn des neuen Archivs oder mit Datenlücken werden übersprungen,
-  statt unbemerkt durch perfekte Voraussicht oder spätere Werte ersetzt zu werden.
+  Mit `--historical-forecasts` wird ausschließlich der jeweils produktiv
+  archivierte Prognosestand verwendet (kein nachträglich bekannter Ist-Verlauf).
+  Schreibt nichts in die DB; als Regressions-Sweep nach jeder Modelländerung
+  laufen lassen (erwartet: 0 Fehler, 0 negative Ersparnis-Tage).
 
-  Schreibt nichts in die DB. Nach jeder Modelländerung als Regressions-Sweep
-  laufen lassen: erwartet werden 0 Fehler und 0 (terminalwert-bereinigt)
-  negative Ersparnis-Tage.
+## Test
+
+```bash
+pytest                            # komplette Suite (parallel via pytest-xdist)
+pytest -m "not slow"              # schneller Smoke-Lauf ohne die schweren MILP-/ML-Tests
+python -m tests.test_synthetic    # nur der End-to-End-Lauf
+```
+
+Ohne InfluxDB/MQTT lauffähig. Abgedeckt: End-to-End (Prognose, Optimierung,
+Fallback, Dashboard), Optimierer-Randfälle (Strategien, negative Preise, Arbitrage,
+DST-Tage), Prognose, Invarianten + Fuzz/metamorph, PV-Auswertung, Sanity, Ersparnis-
+Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
 
 ## Modellannahmen
 
-- PV ist am DC-Bus verfügbar; DC-Laden reduziert die an den Wechselrichter
-  geführte PV-Leistung (`pv_to_ac = pv − dc_charge ≥ 0`).
-- AC-Laden (Netz) hat einen eigenen, schlechteren Wirkungsgrad als DC-Laden
-  aus PV (`ac_charge_efficiency`, Standard = `charge_efficiency`).
-- Intraday-Korrektur: Last und PV besitzen getrennte Fenster, Faktorgrenzen und
-  Abklingzeiten. Die Last nutzt den Median der Slot-Verhältnisse gegen einzelne
-  Verbrauchsspitzen; PV berücksichtigt nur Slots oberhalb
-  `intraday_pv_min_power_w`. Totzone und maximale Änderung je Lauf verhindern
-  hektische Sprünge. Ist-/Basisprognose-Slots sowie Roh- und angewandte Faktoren
-  werden lokal in `intraday_window`/`intraday_correction` archiviert.
-- Datenlücken werden nicht unbegrenzt interpoliert: Verbrauchstraining lässt
-  fehlende Slots aus; eine komplett fehlende Last-Historie nutzt
-  `forecast.fallback_load_w`. Für die Optimierung gilt konservativ: fehlende PV
-  = 0 W, fehlende Solarstrahlung = 0 W/m², fehlende Preise = Historienmedian
-  beziehungsweise Fixpreis. Wetter wird nur über kurze Lücken interpoliert.
-  Bei Solcast müssen für Zukunftsslots alle konfigurierten Teilanlagen vorhanden
-  sein; unvollständige P10-Reihen werden nicht zur Peak-Planung verwendet.
-- Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung
-  wird in Negativpreis-Stunden mit 0 ct bewertet.
-- Geschätzte Folgetag-Preise werden zur Mitte gestaucht
-  (`forecast.price_damping`) – keine Spekulation auf Phantom-Preistäler.
-- Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten (oberes
-  Preisquartil / Mittel / max(unteres Quartil, Einspeisung)) statt
-  Einheitspreis – die letzte gespeicherte kWh ist weniger wert als die erste.
-- Slot 0 wird mit Live-Messwerten (Last, PV der letzten Slot-Länge) verankert.
-- Wallbox: Schalt-Malus je Einschaltvorgang (`car_switch_penalty_ct`) und
-  optionale Ladekurve (`vehicle.taper_start_soc_percent`: Leistung sinkt
-  linear bis `min_charge_w` bei 100 %).
-- Der Auto-Ziel-SoC ist eine **weiche** Nebenbedingung
-  (`car_target_penalty_ct_kwh`): Ist er nicht erreichbar, lädt der Plan so
-  viel wie möglich und meldet die Fehlmenge per `ems/alert`, statt komplett
-  auf "auto" zurückzufallen.
-- Optional `inverter.max_export_w`: Einspeisebegrenzung am Netzanschluss –
-  der Plan rechnet nicht mit Erlösen, die real abgeregelt würden (gilt auch
-  für die Ohne-EMS-Baseline des Ersparnis-Trackings).
-- Wechselrichter-Durchsatz begrenzt: `pv_to_ac + Entladung + AC-Laden ≤ WR_max`.
-- Auto lädt AC-seitig und zählt nicht in den Batterieport-Durchsatz.
+- PV ist am DC-Bus verfügbar; DC-Laden reduziert die an den WR geführte PV-Leistung
+  (`pv_to_ac = pv − dc_charge ≥ 0`). AC-Laden (Netz) hat einen eigenen, schlechteren
+  Wirkungsgrad (`ac_charge_efficiency`).
+- Intraday-Korrektur: Last und PV mit getrennten Fenstern, Faktorgrenzen und
+  Abklingzeiten; Totzone und maximale Änderung je Lauf verhindern hektische Sprünge.
+- Datenlücken werden nicht unbegrenzt interpoliert: fehlende PV/Solarstrahlung = 0,
+  fehlende Preise = Historienmedian/Fixpreis, komplett fehlende Last-Historie =
+  `forecast.fallback_load_w`. Bei Solcast müssen für Zukunftsslots alle Teilanlagen
+  vorhanden sein; unvollständige P10-Reihen werden nicht zur Peak-Planung genutzt.
+- Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung in
+  Negativpreis-Stunden mit 0 ct bewertet.
+- Geschätzte Folgetag-Preise werden zur Mitte gestaucht (`forecast.price_damping`).
+- Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten – die letzte
+  gespeicherte kWh ist weniger wert als die erste.
+- Slot 0 wird mit Live-Messwerten verankert.
+- Auto: Schalt-Malus je Einschaltvorgang, optionale Ladekurve; der Ziel-SoC ist eine
+  **weiche** Nebenbedingung (`car_target_penalty_ct_kwh`) und meldet Fehlmengen per
+  `ems/alert`. Ohne Fahrzeug-SoC wird das Auto nicht mitoptimiert; Abfahrtzeiten je
+  Wochentag über `vehicle.departure_times`.
+- WR-Durchsatz begrenzt (`pv_to_ac + Entladung + AC-Laden ≤ WR_max`); optionale
+  Einspeisebegrenzung `inverter.max_export_w` (gilt auch für die Baseline).
 - Lade-/Entladewirkungsgrade wirken auf die SoC-Bilanz.
-- Liegt kein Fahrzeug-SoC vor, wird das Auto nicht mitoptimiert.
-- Ohne Rückkehrzeit-Info wird angenommen, dass das Auto im Horizont angesteckt
-  bleibt; der Ziel-SoC wird zu jeder Abfahrtzeit angestrebt (weich, s.o.).
-- Abfahrtzeiten je Wochentag über `vehicle.departure_times` (mo..so, `null` =
-  keine Abfahrt, z.B. am Wochenende). Liegt keine Abfahrt im Horizont, wird
-  der Ziel-SoC zum Horizontende angestrebt – außer es gibt gar keine
-  Abfahrtstage. Ein MQTT-Override (`ems/cmd/car_departure_time`) gilt für alle
-  Wochentage.
