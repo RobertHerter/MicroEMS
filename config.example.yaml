@@ -168,6 +168,15 @@ pv_model:
   # Aus echten Residuen kalibrierbar (statt Heuristik): python pv_source_report.py
   # vergleicht pvlib vs. Solcast gegen die Ist-PV und empfiehlt p10/p90_uncertainty.
 
+# Automatische produktive Wahl zwischen Solcast und dem pvlib-Schattenmodell.
+# Es zählen ausschließlich Prognosen aus dem Erstellungszeit-Archiv; rückwirkend
+# mit echtem Wetter berechnete Cachewerte können keine Umschaltung auslösen.
+pv_source_selection:
+  enabled: false
+  lookback_days: 30
+  min_samples: 96
+  min_improvement_percent: 2.0
+
 # -----------------------------------------------------------------------------
 # Steuerbare / verschiebbare Lasten (optional)
 # -----------------------------------------------------------------------------
@@ -398,6 +407,12 @@ forecast:
   # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) 
   # oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
   method: "similar_days"
+  # Empirisches Unsicherheitsband der Hauslast aus vergleichbaren historischen
+  # Slots; wird archiviert und im Dashboard als p10–p90-Fläche dargestellt.
+  load_uncertainty_enabled: true
+  load_uncertainty_low_quantile: 0.10
+  load_uncertainty_high_quantile: 0.90
+  load_uncertainty_min_samples: 12
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)
@@ -443,6 +458,18 @@ monitoring:
   drift_enabled: true
   drift_window_hours: 12
   drift_alert_percent: 8
+  # Solver-Laufzeit warnen, wenn absolut oder relativ zur Historie auffaellig
+  # (Median der letzten Laeufe); eine Erholungsmeldung beendet den Alarmzustand.
+  solver_runtime_alert_seconds: 60
+  solver_runtime_factor: 3
+  solver_runtime_baseline_runs: 12
+  # Soll/Ist-Audit des zuvor publizierten Slots. Momentanwerte duerfen wegen
+  # kurzfristiger Lastschwankungen innerhalb dieser Toleranzen abweichen.
+  execution_audit_enabled: true
+  execution_grid_tolerance_w: 1500
+  execution_battery_tolerance_w: 1500
+  execution_soc_tolerance_percent: 5
+  execution_alert_consecutive: 2
 
 # -----------------------------------------------------------------------------
 # Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer

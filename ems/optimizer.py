@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -78,6 +79,15 @@ class OptimizerResult:
     solver_hit_limit: bool = False
     # Steuerbare Lasten: [(mqtt_topic, Ergebnis-Spaltenname)] für die Sollwert-Ausgabe.
     load_mqtt_map: Optional[list] = None
+    # Laufzeit-Telemetrie des Hauptsolves inkl. Modellgroesse und MIP-Luecke.
+    solver_seconds: float = 0.0
+    solver_polish_seconds: float = 0.0
+    solver_slots: int = 0
+    solver_variables: int = 0
+    solver_binaries: int = 0
+    solver_constraints: int = 0
+    solver_warm_start: bool = False
+    solver_mip_gap: Optional[float] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -89,6 +99,28 @@ class OptimizerResult:
 # Lösung gar nicht mehr (Eingaben stark geändert), verwirft HiGHS sie einfach.
 # --------------------------------------------------------------------------- #
 _warm_cache: dict = {}
+
+# HiGHS kann einen laufenden Solve aus einem zweiten Thread sauber abbrechen.
+# Das ist wichtig fuer systemctl stop/restart: ohne cancelSolve blieb der Dienst
+# bis zum Solver-Zeitlimit im nativen C++-Aufruf haengen.
+_solver_cancel = threading.Event()
+_solver_active = threading.Event()
+
+
+class SolverCancelled(RuntimeError):
+    """Geordneter Abbruch eines laufenden Optimierungslaufs."""
+
+
+def request_solver_cancel() -> None:
+    _solver_cancel.set()
+
+
+def clear_solver_cancel() -> None:
+    _solver_cancel.clear()
+
+
+def solver_is_running() -> bool:
+    return _solver_active.is_set()
 
 _TRAIL_IDX = re.compile(r"^(.+)_(\d+)$")
 
@@ -225,7 +257,29 @@ class _WarmHiGHS(pulp.HiGHS):
                              hits)
             except Exception as exc:   # pragma: no cover - nur defensive Hülle
                 log.debug("Warmstart übersprungen (%s).", exc)
-        super().callSolver(lp)
+        watcher_done = threading.Event()
+
+        def _cancel_watcher():
+            while not watcher_done.wait(0.1):
+                if _solver_cancel.is_set():
+                    try:
+                        lp.solverModel.cancelSolve()
+                    except Exception as exc:  # pragma: no cover - defensiv
+                        log.debug("Solver-Abbruch fehlgeschlagen (%s).", exc)
+                    return
+
+        watcher = threading.Thread(target=_cancel_watcher,
+                                   name="ems-solver-cancel", daemon=True)
+        _solver_active.set()
+        watcher.start()
+        try:
+            super().callSolver(lp)
+        finally:
+            _solver_active.clear()
+            watcher_done.set()
+            watcher.join(timeout=0.5)
+        if _solver_cancel.is_set():
+            raise SolverCancelled("Optimierung wegen Dienstende abgebrochen")
 
 
 def _polish_continuous(prob, cfg, free_names=None) -> bool:
@@ -267,6 +321,8 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
             return True
         log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
                   pulp.LpStatus[prob.status])
+    except SolverCancelled:
+        raise
     except Exception as exc:   # pragma: no cover - reine Absicherung
         log.debug("Politur übersprungen (%s).", exc)
     finally:
@@ -437,6 +493,7 @@ class Optimizer:
         )
 
     def solve(self, inp: OptimizerInputs) -> OptimizerResult:
+        clear_solver_cancel()
         cfg = self.cfg
         hb = cfg.house_battery
         veh = cfg.vehicle
@@ -1247,6 +1304,12 @@ class Optimizer:
         _t0 = time.monotonic()
         prob.solve(make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0
+        try:
+            mip_gap = float(prob.solverModel.getInfo().mip_gap)
+            if not np.isfinite(mip_gap):
+                mip_gap = None
+        except Exception:
+            mip_gap = None
         hit_limit = solve_s >= cfg.optimization.solver_time_limit_s - 2.0
         if hit_limit:
             log.warning("Solver-Zeitlimit erreicht (%.0fs von %ds) – Lösung "
@@ -1262,7 +1325,16 @@ class Optimizer:
             # zurück) und Dashboard/InfluxDB konsistent bleiben.
             log.error("Optimierung nicht optimal gelöst (%s) – "
                       "Fallback 'auto' ohne Eingriffe.", status)
-            return self._neutral_result(inp, status)
+            neutral = self._neutral_result(inp, status)
+            neutral.solver_seconds = solve_s
+            neutral.solver_slots = N
+            neutral.solver_variables = len(variables)
+            neutral.solver_binaries = binary_count
+            neutral.solver_constraints = len(prob.constraints)
+            neutral.solver_warm_start = bool(warm)
+            neutral.solver_mip_gap = mip_gap
+            neutral.solver_hit_limit = hit_limit
+            return neutral
         infeasible = False
         # Politur: Gap-Toleranz-Reste exakt wegoptimieren (Binäre fixiert ->
         # LP), DANN erst die Lösung fürs Warmstarten merken - so startet der
@@ -1351,6 +1423,7 @@ class Optimizer:
         if _rounds:
             log.info("Politur in %.1f s (%d Runden, %d freie Binäre).",
                      time.monotonic() - _t1, _rounds, len(_free))
+        polish_s = time.monotonic() - _t1
         # Lösung für den Warmstart des nächsten Zyklus merken.
         _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
@@ -1515,4 +1588,8 @@ class Optimizer:
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w, car_target_shortfall_wh=round(shortfall, 1),
             solver_hit_limit=hit_limit, load_mqtt_map=cl_mqtt,
+            solver_seconds=solve_s, solver_polish_seconds=polish_s,
+            solver_slots=N, solver_variables=len(variables),
+            solver_binaries=binary_count, solver_constraints=len(prob.constraints),
+            solver_warm_start=bool(warm), solver_mip_gap=mip_gap,
         )

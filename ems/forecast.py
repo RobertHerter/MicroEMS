@@ -316,6 +316,53 @@ class LoadForecaster:
             result = result.clip(lower=clip_min)
         return result.tz_convert(self.cfg.general.timezone)
 
+    def uncertainty_band(self, history: pd.Series, point: pd.Series
+                         ) -> tuple[pd.Series, pd.Series]:
+        """Empirisches P10/P90-Band um eine fertige Lastprognose.
+
+        Verwendet die relative Streuung desselben Tagesslots aus vergleichbaren
+        historischen Tagen. Damit bleiben Kalibrierung und Intraday-Korrektur
+        des Punktwerts erhalten, während die reale Lastvariabilität sichtbar
+        wird. Bei ausreichender Datenbasis werden gleicher Tagtyp und Saison
+        bevorzugt; die Punktprognose liegt definitionsgemäß im Band.
+        """
+        p = pd.Series(point, dtype="float64")
+        if p.empty or not self.fc.load_uncertainty_enabled:
+            return p.copy(), p.copy()
+        hist = pd.Series(history, dtype="float64").dropna()
+        hist = hist[hist > 0.0]
+        if hist.empty:
+            return p.copy(), p.copy()
+        hf = self._features(hist.index)
+        hf["value"] = hist.values
+        ff = self._features(p.index)
+        low_q = self.fc.load_uncertainty_low_quantile
+        high_q = self.fc.load_uncertainty_high_quantile
+        min_n = max(3, self.fc.load_uncertainty_min_samples)
+        lows, highs = [], []
+        groups = {int(k): g for k, g in hf.groupby("slot_of_day")}
+        for i, (_, future) in enumerate(ff.iterrows()):
+            grp = groups.get(int(future["slot_of_day"]), hf)
+            preferred = grp[(grp["daytype"] == future["daytype"])
+                            & (grp["season"] == future["season"])]
+            if len(preferred) < min_n:
+                preferred = grp[grp["daytype"] == future["daytype"]]
+            if len(preferred) < min_n:
+                preferred = grp
+            vals = preferred["value"].to_numpy(dtype=float)
+            center = float(np.median(vals)) if len(vals) else float("nan")
+            if not np.isfinite(center) or center <= 1e-9:
+                lo_ratio = hi_ratio = 1.0
+            else:
+                ratios = vals / center
+                lo_ratio = float(np.clip(np.quantile(ratios, low_q), 0.1, 1.0))
+                hi_ratio = float(np.clip(np.quantile(ratios, high_q), 1.0, 5.0))
+            value = max(0.0, float(p.iloc[i]))
+            lows.append(min(value, value * lo_ratio))
+            highs.append(max(value, value * hi_ratio))
+        return (pd.Series(lows, index=p.index, name="house_load_p10_w"),
+                pd.Series(highs, index=p.index, name="house_load_p90_w"))
+
 
 def intraday_ratio(actual: pd.Series, predicted: pd.Series,
                    min_mean: float = 0.0, min_samples: int = 4,

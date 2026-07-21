@@ -74,6 +74,40 @@ def test_compare_recommends_more_accurate_source(tmp_path):
     assert rec is not None and rec["better"] == "pvlib" and rec["meaningful"]
 
 
+def test_auto_selection_switches_only_from_real_archives(tmp_path):
+    db = str(tmp_path / "hist.sqlite")
+    _seed(db)
+    cfg = _cfg(db)
+    cfg.pv_source_selection.enabled = True
+    cfg.pv_source_selection.lookback_days = 6
+    cfg.pv_source_selection.min_samples = 50
+    cfg.pv_source_selection.min_improvement_percent = 2.0
+    selected = pv_eval.select_source(cfg, NOW)
+    assert selected["selected"] == "pvlib"
+    assert "WAPE-Punkte besser" in selected["reason"]
+
+
+def test_auto_selection_ignores_optimistic_cache(tmp_path):
+    db = str(tmp_path / "hist.sqlite")
+    grid, actual = _seed(db)
+    # pvlib-Archiv entfernen; ein perfekter Live-Cache darf nicht umschalten.
+    con = local_history._con(db)
+    con.execute("DELETE FROM pv_forecast_archive WHERE source='pvmodel:Ost'")
+    for ts, value in zip(grid, actual):
+        u = ts.tz_convert("UTC").isoformat()
+        con.execute("INSERT OR REPLACE INTO pv_forecast VALUES(?,?,?,?,?)",
+                    ("pvmodel:Ost", u, float(value), float(value), float(value)))
+    con.commit()
+    con.close()
+    cfg = _cfg(db)
+    cfg.pv_source_selection.enabled = True
+    cfg.pv_source_selection.lookback_days = 6
+    cfg.pv_source_selection.min_samples = 50
+    selected = pv_eval.select_source(cfg, NOW)
+    assert selected["selected"] == "solcast"
+    assert "warte auf Prognosearchive" in selected["reason"]
+
+
 def test_compare_falls_back_to_cache_without_archive(tmp_path):
     db = str(tmp_path / "hist.sqlite")
     grid = _daytime_grid(6)

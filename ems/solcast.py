@@ -145,12 +145,29 @@ def _local_pv(config):
     """Ist eine lokale PV-Prognose aktiv? Rückgabe (combine, source_ids) oder
     None. Solcast und pvlib-Modell schreiben beide in die pv_forecast-Tabelle;
     hier wird die aktive Quelle gewählt (nie beide, s. config-Validierung)."""
+    selected = getattr(config, "_pv_selected_source", None)
+    if selected == "pvlib":
+        from . import pvforecast
+        if pvforecast.active(config):
+            return "sum", pvforecast.source_ids(config)
+    if selected == "solcast" and config.solcast.enabled:
+        return config.solcast.combine, [s.resource_id for s in config.solcast.sources]
     if config.solcast.enabled:
         return config.solcast.combine, [s.resource_id for s in config.solcast.sources]
     from . import pvforecast
     if pvforecast.enabled(config):
         return "sum", pvforecast.source_ids(config)
     return None
+
+
+def selected_source(config) -> str:
+    return getattr(config, "_pv_selected_source", None) or (
+        "solcast" if config.solcast.enabled else "pvlib")
+
+
+def selected_source_ids(config) -> list:
+    local = _local_pv(config)
+    return list(local[1]) if local else []
 
 
 def available(config, repo, signal: str) -> bool:

@@ -445,6 +445,11 @@ class ForecastConfig:
     price_damping: float = 0.3
     # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
     method: str = "similar_days"
+    # Empirisches Lastband aus der Streuung vergleichbarer historischer Slots.
+    load_uncertainty_enabled: bool = True
+    load_uncertainty_low_quantile: float = 0.10
+    load_uncertainty_high_quantile: float = 0.90
+    load_uncertainty_min_samples: int = 12
 
 
 @dataclass
@@ -515,6 +520,14 @@ class MonitoringConfig:
     drift_enabled: bool = True
     drift_window_hours: float = 12.0
     drift_alert_percent: float = 8.0     # Warnung ab dieser MAE (Prozentpunkte)
+    solver_runtime_alert_seconds: float = 60.0
+    solver_runtime_factor: float = 3.0
+    solver_runtime_baseline_runs: int = 12
+    execution_audit_enabled: bool = True
+    execution_grid_tolerance_w: float = 1500.0
+    execution_battery_tolerance_w: float = 1500.0
+    execution_soc_tolerance_percent: float = 5.0
+    execution_alert_consecutive: int = 2
 
 
 @dataclass
@@ -584,6 +597,15 @@ class PvModelConfig:
     # p10 dimensioniert die Einspeise-Linie an Peak-Tagen -> konservativ tief.
     p10_uncertainty: float = 0.35
     p90_uncertainty: float = 0.15
+
+
+@dataclass
+class PvSourceSelectionConfig:
+    """Automatische Wahl zwischen Solcast und pvlib-Schattenmodell."""
+    enabled: bool = False
+    lookback_days: int = 30
+    min_samples: int = 96
+    min_improvement_percent: float = 2.0
 
 
 @dataclass
@@ -678,6 +700,8 @@ class Config:
     tariff: TariffConfig = field(default_factory=TariffConfig)
     solcast: SolcastConfig = field(default_factory=SolcastConfig)
     pv_model: PvModelConfig = field(default_factory=PvModelConfig)
+    pv_source_selection: PvSourceSelectionConfig = field(
+        default_factory=PvSourceSelectionConfig)
     controllable_loads: list = field(default_factory=list)   # [ControllableLoad]
 
 
@@ -1051,9 +1075,20 @@ def load_config(path: str) -> Config:
         intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
         price_damping=float(f.get("price_damping", 0.3)),
         method=str(f.get("method", "similar_days")),
+        load_uncertainty_enabled=bool(
+            f.get("load_uncertainty_enabled", True)),
+        load_uncertainty_low_quantile=float(
+            f.get("load_uncertainty_low_quantile", 0.10)),
+        load_uncertainty_high_quantile=float(
+            f.get("load_uncertainty_high_quantile", 0.90)),
+        load_uncertainty_min_samples=int(
+            f.get("load_uncertainty_min_samples", 12)),
     )
     if forecast.method not in ("similar_days", "ml"):
         raise ValueError("forecast.method muss 'similar_days' oder 'ml' sein.")
+    if not (0 <= forecast.load_uncertainty_low_quantile <
+            forecast.load_uncertainty_high_quantile <= 1):
+        raise ValueError("Lastprognose-Quantile müssen 0 <= low < high <= 1 sein.")
 
     m = raw.get("mqtt", {})
     mqtt = MqttConfig(
@@ -1105,6 +1140,20 @@ def load_config(path: str) -> Config:
         drift_enabled=bool(mon.get("drift_enabled", True)),
         drift_window_hours=float(mon.get("drift_window_hours", 12.0)),
         drift_alert_percent=float(mon.get("drift_alert_percent", 8.0)),
+        solver_runtime_alert_seconds=float(
+            mon.get("solver_runtime_alert_seconds", 60.0)),
+        solver_runtime_factor=float(mon.get("solver_runtime_factor", 3.0)),
+        solver_runtime_baseline_runs=int(
+            mon.get("solver_runtime_baseline_runs", 12)),
+        execution_audit_enabled=bool(mon.get("execution_audit_enabled", True)),
+        execution_grid_tolerance_w=float(
+            mon.get("execution_grid_tolerance_w", 1500.0)),
+        execution_battery_tolerance_w=float(
+            mon.get("execution_battery_tolerance_w", 1500.0)),
+        execution_soc_tolerance_percent=float(
+            mon.get("execution_soc_tolerance_percent", 5.0)),
+        execution_alert_consecutive=int(
+            mon.get("execution_alert_consecutive", 2)),
     )
 
     rep = raw.get("report", {})
@@ -1172,6 +1221,14 @@ def load_config(path: str) -> Config:
         p10_uncertainty=float(pm.get("p10_uncertainty", 0.35)),
         p90_uncertainty=float(pm.get("p90_uncertainty", 0.15)),
     )
+    ps = raw.get("pv_source_selection", {})
+    pv_source_selection = PvSourceSelectionConfig(
+        enabled=bool(ps.get("enabled", False)),
+        lookback_days=int(ps.get("lookback_days", 30)),
+        min_samples=int(ps.get("min_samples", 96)),
+        min_improvement_percent=float(
+            ps.get("min_improvement_percent", 2.0)),
+    )
     if pv_model.enabled and solcast.enabled:
         raise ValueError("solcast und pv_model nicht gleichzeitig aktivieren "
                          "(beide schreiben die PV-Prognose).")
@@ -1228,5 +1285,6 @@ def load_config(path: str) -> Config:
         tariff=tariff,
         solcast=solcast,
         pv_model=pv_model,
+        pv_source_selection=pv_source_selection,
         controllable_loads=controllable_loads,
     )

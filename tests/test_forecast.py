@@ -80,6 +80,21 @@ def test_recency_weighting_follows_recent_level():
         f"Rezenz-Gewichtung wirkt nicht (Mittel {fc.mean():.0f} W)"
 
 
+def test_load_uncertainty_band_contains_point_and_reflects_variability():
+    cfg = make_config()
+    cfg.forecast.load_uncertainty_enabled = True
+    cfg.forecast.load_uncertainty_min_samples = 4
+    idx = pd.date_range(START - pd.Timedelta(days=30), START,
+                        freq=FREQ, inclusive="left")
+    # Reproduzierbare Tagesstreuung bei gleichem Slot.
+    day_factor = 0.65 + 0.7 * ((idx.dayofyear % 7) / 6.0)
+    hist = pd.Series(800.0 * day_factor, index=idx)
+    point = LoadForecaster(cfg).forecast(hist, START, 16)
+    low, high = LoadForecaster(cfg).uncertainty_band(hist, point)
+    assert (low <= point).all() and (point <= high).all()
+    assert (high - low).mean() > 100.0
+
+
 def test_recency_disabled_averages_all_history():
     """half_life_days=0: alte und neue Tage zählen (fast) gleich."""
     cfg = make_config()

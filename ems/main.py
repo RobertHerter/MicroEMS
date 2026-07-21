@@ -33,7 +33,8 @@ from .forecast import (LoadForecaster, dampen_estimated,
 from .local_history import read_actual_signal, write_actuals
 from .homey_mqtt import HomeyMqttPublisher
 from .influx import make_repository
-from .optimizer import Optimizer, OptimizerInputs
+from .optimizer import (Optimizer, OptimizerInputs, SolverCancelled,
+                        request_solver_cancel, solver_is_running)
 from .tariff import read_price_signal
 from . import solcast
 from .validate import summarize, validate_plan
@@ -46,6 +47,77 @@ _intraday_state = {
 }
 _intraday_raw = {"load": None, "pv": None}
 _control_alarm = {"failed": False, "key": None, "last": 0.0}
+_execution_alarm = {"failed": False}
+_solver_alarm = {"failed": False}
+
+
+def _audit_execution(config, now, live):
+    """Vorherigen Sollslot mit aktuellem E3DC-Snapshot vergleichen."""
+    if not config.monitoring.execution_audit_enabled or not live:
+        return None
+    from .local_history import (read_execution_plan_slot,
+                                write_execution_audit)
+    planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, now)
+    if not planned:
+        return None
+    actual = {"grid_w": live.get("grid_w"), "battery_w": live.get("battery_w"),
+              "soc": live.get("soc_percent")}
+    tolerances = {
+        "grid_w": config.monitoring.execution_grid_tolerance_w,
+        "battery_w": config.monitoring.execution_battery_tolerance_w,
+        "soc": config.monitoring.execution_soc_tolerance_percent,
+    }
+    deviations, failed = {}, []
+    for key, tolerance in tolerances.items():
+        if actual[key] is None or planned.get(key) is None:
+            continue
+        delta = float(actual[key]) - float(planned[key])
+        deviations[key] = round(delta, 2)
+        if abs(delta) > tolerance:
+            failed.append(key)
+    labels = {"grid_w": "Netz", "battery_w": "Akku", "soc": "SoC"}
+    ok = not failed
+    message = ("Soll/Ist innerhalb der Toleranzen." if ok else
+               "Abweichung bei " + ", ".join(labels[k] for k in failed) + ".")
+    audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(), "ok": ok,
+             "state": "ok" if ok else "deviation", "message": message,
+             "planned": planned, "actual": actual, "deviations": deviations}
+    write_execution_audit(config.e3dc_rscp.history_db_path, now, audit)
+    return audit
+
+
+def _publish_execution_alarm(publisher, config, audit) -> None:
+    if publisher is None or not audit:
+        return
+    from .local_history import read_execution_audits
+    recent = read_execution_audits(
+        config.e3dc_rscp.history_db_path,
+        max(1, config.monitoring.execution_alert_consecutive))
+    consecutive = (len(recent) >= config.monitoring.execution_alert_consecutive
+                   and all(not item["ok"] for item in recent))
+    if consecutive and not _execution_alarm["failed"]:
+        publisher.publish_alert(
+            "warning", "EMS-Ausführung weicht wiederholt vom Plan ab: "
+            + audit["message"])
+        _execution_alarm["failed"] = True
+    elif audit.get("ok") and _execution_alarm["failed"]:
+        publisher.publish_alert("info", "EMS-Ausführung folgt wieder dem Sollplan.")
+        _execution_alarm["failed"] = False
+
+
+def _publish_solver_alarm(publisher, status) -> None:
+    if publisher is None or not status:
+        return
+    if status.get("slow") and not _solver_alarm["failed"]:
+        typical = status.get("median_seconds")
+        suffix = (f" statt typisch {typical:.1f} s" if typical is not None else "")
+        publisher.publish_alert(
+            "warning", f"Solver ungewöhnlich langsam: "
+            f"{status['seconds']:.1f} s{suffix}.")
+        _solver_alarm["failed"] = True
+    elif not status.get("slow") and _solver_alarm["failed"]:
+        publisher.publish_alert("info", "Solver-Laufzeit wieder normal.")
+        _solver_alarm["failed"] = False
 
 
 def _publish_control_alarm(publisher, config, status) -> None:
@@ -165,6 +237,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     erzeugt und wieder geschlossen."""
     repo = make_repository(config)
     control_status = None
+    execution_status = None
+    solver_status = None
+    pv_selection = None
+    plan_published = False
     one_shot = publisher is None
     # Optionale direkte E3DC-Anbindung (RSCP); im Loop von main() übergeben,
     # sonst pro Lauf erzeugen (own_e3dc -> am Ende schließen).
@@ -227,6 +303,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             pvforecast.refresh(config)
         except Exception as exc:  # pragma: no cover
             log.warning("PV-Modell-Nachführung fehlgeschlagen (%s).", exc)
+        try:
+            from .pv_eval import select_source
+            pv_selection = select_source(config, now)
+            config._pv_selected_source = pv_selection["selected"]
+            log.info("PV-Quellenwahl: %s (%s).", pv_selection["selected"],
+                     pv_selection["reason"])
+        except Exception as exc:
+            config._pv_selected_source = (
+                "solcast" if config.solcast.enabled else "pvlib")
+            log.warning("Automatische PV-Quellenwahl fehlgeschlagen (%s) – "
+                        "nutze %s.", exc, config._pv_selected_source)
 
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
@@ -271,9 +358,15 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                      _intraday_raw["load"],
                      config.forecast.intraday_load_decay_hours)
 
+        load_p10, load_p90 = forecaster.uncertainty_band(history, load_fc)
+        forecast_issue = pd.Timestamp.now(tz="UTC")
+
         repo.write_frame(
             "load_forecast",
-            pd.DataFrame({"house_load_w": load_fc.values}, index=load_fc.index),
+            pd.DataFrame({"house_load_w": load_fc.values,
+                          "house_load_p10_w": load_p10.values,
+                          "house_load_p90_w": load_p90.values},
+                         index=load_fc.index),
         )
         log.info("Verbrauchsprognose (%d Slots) in InfluxDB geschrieben.", len(load_fc))
 
@@ -285,12 +378,18 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             log.warning("Lastprognose: %d fehlende Slots durch %.0f W ersetzt.",
                         n_load_fallback, config.forecast.fallback_load_w)
         house_load = house_series.values
+        load_p10_opt = load_p10.reindex(opt_index)
+        load_p90_opt = load_p90.reindex(opt_index)
 
         # --- 2) Eingangsdaten lesen ------------------------------------- #
         cal_profile = None
         if config.calibration.enabled:
             from .calibration import load_profile
             cal_profile = load_profile(config.calibration.pv_profile)
+        calibration_source = "solcast" if config.solcast.enabled else "pvlib"
+        cal_profile_active = (cal_profile if
+                              solcast.selected_source(config) == calibration_source
+                              else None)
 
         pv_missing_slots = {}
 
@@ -306,9 +405,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 s = s.fillna(0.0)
                 log.warning("%s: %d fehlende Slots konservativ als 0 W.",
                             signal, missing)
-            if cal_profile:
+            if cal_profile_active:
                 from .calibration import apply_pv_correction
-                s = apply_pv_correction(s, cal_profile, config.general.timezone)
+                s = apply_pv_correction(
+                    s, cal_profile_active, config.general.timezone)
             if pv_ratio is not None:
                 s = s * intraday_factor_series(
                     pv_ratio, s.index, now,
@@ -316,8 +416,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             return s
 
         pv = _pv_series("pv_forecast")
-        if cal_profile:
-            log.info("PV-Kalibrierprofil angewandt (%s).", config.calibration.pv_profile)
+        if cal_profile_active:
+            log.info("PV-Kalibrierprofil für %s angewandt (%s).",
+                     calibration_source, config.calibration.pv_profile)
+        elif cal_profile:
+            log.info("PV-Kalibrierprofil gehört zu %s und wird auf %s nicht "
+                     "angewandt.", calibration_source,
+                     solcast.selected_source(config))
         if pv_ratio is not None:
             log.info("Intraday-Korrektur PV: x%.2f (roh x%.2f; klingt über "
                      "%.1f h ab).", pv_ratio, _intraday_raw["pv"],
@@ -364,6 +469,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     write_actuals(config.e3dc_rscp.history_db_path, now, live)
                 except Exception as exc:
                     log.warning("Ist-Wert-Protokollierung fehlgeschlagen (%s).", exc)
+            try:
+                execution_status = _audit_execution(config, now, live)
+            except Exception as exc:
+                log.warning("Soll/Ist-Ausführungsprüfung fehlgeschlagen (%s).", exc)
 
         # Slot-0-Anker: für den unmittelbar laufenden Slot schlägt die
         # Live-Messung (RSCP direkt, sonst Mittel der letzten Slot-Länge aus
@@ -453,43 +562,59 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Die Einstufung bezieht sich auf den aktuellen Horizont und trennt
         # echte Quelldaten klar von Slot-Fallbacks bzw. Modellergänzungen.
         total_slots = len(opt_index)
+        try:
+            from .local_history import (latest_pv_forecast_issue,
+                                        latest_weather_forecast_issue)
+            pv_issue = latest_pv_forecast_issue(
+                config.e3dc_rscp.history_db_path,
+                solcast.selected_source_ids(config))
+            weather_issue = latest_weather_forecast_issue(
+                config.e3dc_rscp.history_db_path)
+        except Exception:
+            pv_issue = weather_issue = None
+        pv_name = solcast.selected_source(config)
+        pv_note = f"Quelle: {'Solcast' if pv_name == 'solcast' else 'pvlib'}"
+        if pv_selection and pv_selection.get("reason"):
+            pv_note += f" ({pv_selection['reason']})"
         forecast_quality = [
             _forecast_quality_entry(
                 "Hauslast", total_slots,
                 total_slots if load_source_missing else n_load_fallback,
-                "konservativer Lastwert"),
+                "konservativer Lastwert", forecast_issue,
+                "empirisches p10–p90-Band"),
             _forecast_quality_entry(
                 "PV", total_slots, pv_missing_slots.get("pv_forecast", total_slots),
-                "0 W"),
+                "0 W", pv_issue, pv_note),
         ]
         if pv10 is None:
             forecast_quality.append(_forecast_quality_entry(
-                "PV-p10", total_slots, total_slots, "PV-Erwartungswert"))
+                "PV-p10", total_slots, total_slots, "PV-Erwartungswert",
+                pv_issue, pv_note))
         else:
             forecast_quality.append(_forecast_quality_entry(
                 "PV-p10", total_slots,
                 pv_missing_slots.get("pv_forecast_p10", total_slots),
-                "konservative PV-Ableitung"))
+                "konservative PV-Ableitung", pv_issue, pv_note))
         forecast_quality.append(_forecast_quality_entry(
             "Strompreis", total_slots, int(price_estimated.sum()),
-            "Ähnliche-Tage-Preisprognose"))
+            "Ähnliche-Tage-Preisprognose", forecast_issue))
         if config.weather.enabled:
             forecast_quality.extend([
                 _forecast_quality_entry(
                     "Außentemperatur", total_slots,
                     total_slots if temp is None else n_temp_fallback,
-                    "Temperatur-Ersatzwert"),
+                    "Temperatur-Ersatzwert", weather_issue),
                 _forecast_quality_entry(
                     "Solarstrahlung", total_slots,
                     total_slots if solar is None else n_solar_fallback,
-                    "0 W/m²"),
+                    "0 W/m²", weather_issue),
             ])
         if config.feed_in.mode == "db":
             forecast_quality.append(_forecast_quality_entry(
                 "Einspeisetarif", total_slots,
                 total_slots if not repo.signal_available("feed_in_tariff")
                 else missing_feed,
-                "fester Einspeisetarif"))
+                "fester Einspeisetarif", forecast_issue))
 
         # Den tatsächlich verwendeten, vollständig aufbereiteten Prognosesatz
         # unveränderlich archivieren. Damit kann ein späterer Backtest genau
@@ -499,6 +624,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .local_history import write_optimizer_forecast_archive
             archive_series = {
                 "house_load_w": house_series,
+                "house_load_p10_w": load_p10_opt,
+                "house_load_p90_w": load_p90_opt,
                 "pv_w": pv,
                 "price_ct_kwh": price,
                 "feedin_ct_kwh": feedin,
@@ -553,6 +680,35 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         result = Optimizer(config, stabilize_plan=True).solve(inputs)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
+        # Solver-Telemetrie vor dem Speichern gegen die bisherige Historie
+        # bewerten, damit der aktuelle Lauf nicht seine eigene Basis verzerrt.
+        try:
+            from .local_history import read_solver_runs, write_solver_run
+            old_runs = read_solver_runs(
+                config.e3dc_rscp.history_db_path,
+                config.monitoring.solver_runtime_baseline_runs)
+            old_seconds = [float(r["seconds"]) for r in old_runs
+                           if r.get("seconds") is not None]
+            median_s = float(np.median(old_seconds)) if old_seconds else None
+            absolute_slow = (result.solver_seconds >=
+                             config.monitoring.solver_runtime_alert_seconds)
+            relative_slow = (median_s is not None and len(old_seconds) >= 4 and
+                             result.solver_seconds >= median_s *
+                             config.monitoring.solver_runtime_factor)
+            solver_status = {
+                "seconds": result.solver_seconds,
+                "polish_seconds": result.solver_polish_seconds,
+                "median_seconds": median_s,
+                "slow": bool(absolute_slow or relative_slow),
+                "slots": result.solver_slots, "variables": result.solver_variables,
+                "binaries": result.solver_binaries,
+                "constraints": result.solver_constraints,
+                "warm_start": result.solver_warm_start,
+                "mip_gap": result.solver_mip_gap, "status": result.status,
+            }
+            write_solver_run(config.e3dc_rscp.history_db_path, now, result)
+        except Exception as exc:
+            log.warning("Solver-Telemetrie nicht speicherbar (%s).", exc)
 
         # --- 3b) Planprüfung (Invarianten) ------------------------------ #
         # Fängt Modellfehler ("das darf nie passieren") automatisch ab, statt
@@ -611,7 +767,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
+            _publish_solver_alarm(publisher, solver_status)
+            _publish_execution_alarm(publisher, config, execution_status)
             load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
+            plan_published = True
             # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
             # aus): Grundlage der Thermomodell-Kalibrierung
             # (python -m ems.pool_calibration). NUR bei aktiver Steuerung UND
@@ -684,11 +843,22 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     }
             _store_control_status(config, control_status)
             _publish_control_alarm(publisher, config, control_status)
+            if control_status and control_status.get("ok") is True:
+                plan_published = True
         if one_shot and publisher is not None:
             try:
                 publisher.close()
             except Exception:
                 pass
+
+        if plan_published:
+            try:
+                from .local_history import write_execution_plan
+                write_execution_plan(
+                    config.e3dc_rscp.history_db_path, now, result.table,
+                    initial_soc_percent=float(soc_pct))
+            except Exception as exc:
+                log.warning("Sollfahrplan-Audit nicht speicherbar (%s).", exc)
 
         # --- 5) InfluxDB-Writeback -------------------------------------- #
         ctrl = result.table[[c for c in CONTROL_COLS if c in result.table.columns]]
@@ -754,7 +924,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             source_status=_source_status(config, now),
                             pv_compare=pv_compare,
                             control_status=control_status,
-                            forecast_quality=forecast_quality)
+                            forecast_quality=forecast_quality,
+                            solver_status=solver_status,
+                            execution_status=execution_status)
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -957,7 +1129,8 @@ def _refresh_spot(config):
 
 
 def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,
-                            replacement: str) -> dict:
+                            replacement: str, issued_at=None,
+                            note: str | None = None) -> dict:
     """Einheitliche Qualitätsstufe für eine operative Prognosereihe."""
     total = max(0, int(total_slots))
     replaced = min(total, max(0, int(replaced_slots)))
@@ -971,9 +1144,18 @@ def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,
     else:
         state, level = "aktuell", "current"
         detail = f"{available} von {total} Slots aus der Prognosequelle"
+    if note:
+        detail += f" · {note}"
+    issue = None
+    if issued_at is not None:
+        try:
+            issue = pd.Timestamp(issued_at).isoformat()
+        except Exception:
+            issue = str(issued_at)
     return {"name": name, "state": state, "level": level,
             "detail": detail, "available_slots": available,
-            "replaced_slots": replaced, "total_slots": total}
+            "replaced_slots": replaced, "total_slots": total,
+            "issued_at": issue}
 
 
 def _source_status(config, now):
@@ -1151,12 +1333,18 @@ def _build_display_frame(repo, config, now, history, result,
                                         hist_temp=temp, fut_temp=temp,
                                         hist_pv=hist_pv, fut_pv=fut_pv)
         df["house_load_w"] = pred_load.reindex(full)
+        load_p10, load_p90 = forecaster.uncertainty_band(history, pred_load)
+        df["house_load_p10_w"] = load_p10.reindex(full)
+        df["house_load_p90_w"] = load_p90.reindex(full)
     except Exception as exc:  # pragma: no cover
         log.warning("Verbrauchsprognose fürs Dashboard fehlgeschlagen: %s", exc)
     try:
         from .calibration import apply_pv_correction, load_profile
         prof = (load_profile(config.calibration.pv_profile)
                 if config.calibration.enabled else None)
+        calibration_source = "solcast" if config.solcast.enabled else "pvlib"
+        if solcast.selected_source(config) != calibration_source:
+            prof = None
         for col, signal in (("pv_w", "pv_forecast"),
                             ("pv10_w", "pv_forecast_p10"),
                             ("pv90_w", "pv_forecast_p90")):
@@ -1179,11 +1367,13 @@ def _build_display_frame(repo, config, now, history, result,
     # der Optimierung); im Vergangenheits-Teil bleibt die rohe Modellprognose
     # sichtbar (Vergleich Ist vs. Modell).
     load_ratio, pv_ratio = intraday
-    for col, ratio in (("house_load_w", load_ratio), ("pv_w", pv_ratio),
+    for col, ratio in (("house_load_w", load_ratio),
+                       ("house_load_p10_w", load_ratio),
+                       ("house_load_p90_w", load_ratio), ("pv_w", pv_ratio),
                        ("pv10_w", pv_ratio), ("pv90_w", pv_ratio)):
         if ratio is not None and col in df.columns:
             decay = (config.forecast.intraday_load_decay_hours
-                     if col == "house_load_w"
+                     if col.startswith("house_load_") or col == "house_load_w"
                      else config.forecast.intraday_pv_decay_hours)
             fac = intraday_factor_series(ratio, full, now, decay)
             fac[full <= now] = 1.0
@@ -1788,8 +1978,15 @@ def main() -> None:
     # RSCP-Lade-/Entlade-Limits freigegeben werden (EMS_POWER_LIMITS_USED=false) –
     # sie haben keinen Watchdog. (Bei SIGKILL/Stromausfall unmöglich; dann heilt
     # der nächste Zyklus nach dem systemd-Neustart die Grenze selbst.)
+    shutdown = {"requested": False}
+
     def _handle_signal(signum, _frame):
-        raise SystemExit(0)
+        shutdown["requested"] = True
+        if solver_is_running():
+            log.info("Dienstende angefordert – laufender Solver wird abgebrochen.")
+            request_solver_cancel()
+        else:
+            raise SystemExit(0)
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
@@ -1798,9 +1995,14 @@ def main() -> None:
         while True:
             try:
                 run_once(config, publisher, e3dc)
+            except SolverCancelled:
+                log.info("Optimierung fuer Dienstende sauber abgebrochen.")
+                break
             except Exception as exc:  # pragma: no cover
                 log.exception("Fehler im EMS-Zyklus – fahre fort.")
                 publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
+            if shutdown["requested"]:
+                break
             # Lebenszeichen an systemd (WatchdogSec): bleibt es aus (Prozess hängt),
             # startet systemd den Dienst neu.
             _sd_notify("WATCHDOG=1")

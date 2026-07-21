@@ -101,8 +101,210 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS control_verification ("
                 " ts TEXT PRIMARY KEY, ok INTEGER, state TEXT, mode TEXT,"
                 " message TEXT, expected_json TEXT, actual_json TEXT)")
+    # Dauerhafte Laufzeit- und Modellgroessen-Diagnose je Optimierungslauf.
+    con.execute("CREATE TABLE IF NOT EXISTS solver_runs ("
+                " ts TEXT PRIMARY KEY, seconds REAL, polish_seconds REAL,"
+                " slots INTEGER, variables INTEGER, binaries INTEGER,"
+                " constraints_count INTEGER, status TEXT, hit_limit INTEGER,"
+                " warm_start INTEGER, mip_gap REAL)")
+    # Zuletzt publizierter Sollfahrplan und dessen spaetere Ist-Pruefung.
+    con.execute("CREATE TABLE IF NOT EXISTS execution_plan ("
+                " ts TEXT PRIMARY KEY, issued_at TEXT, grid_w REAL, battery_w REAL,"
+                " soc REAL, mode TEXT, charge_limit_w REAL,"
+                " discharge_limit_w REAL, grid_charge_w REAL)")
+    con.execute("CREATE TABLE IF NOT EXISTS execution_audit ("
+                " ts TEXT PRIMARY KEY, checked_at TEXT, ok INTEGER, state TEXT,"
+                " message TEXT, planned_json TEXT, actual_json TEXT,"
+                " deviations_json TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS pv_source_selection ("
+                " ts TEXT PRIMARY KEY, selected TEXT, selected_since TEXT,"
+                " reason TEXT, metrics_json TEXT)")
     con.commit()
     return con
+
+
+def latest_pv_forecast_issue(path: str, sources=None) -> Optional[pd.Timestamp]:
+    """Erstellungszeit der ältesten Komponente des jüngsten PV-Quellsatzes."""
+    try:
+        con = _con(path)
+        srcs = list(dict.fromkeys(sources or []))
+        if srcs:
+            marks = ",".join("?" for _ in srcs)
+            rows = con.execute(
+                f"SELECT source, MAX(issue_ts) FROM pv_forecast_archive "
+                f"WHERE source IN ({marks}) GROUP BY source", srcs).fetchall()
+            if len(rows) != len(srcs):
+                value = None
+            else:
+                value = min(row[1] for row in rows if row[1])
+        else:
+            row = con.execute(
+                "SELECT MAX(issue_ts) FROM pv_forecast_archive").fetchone()
+            value = row[0] if row else None
+        con.close()
+    except Exception:
+        value = None
+    return pd.Timestamp(value) if value else None
+
+
+def latest_weather_forecast_issue(path: str) -> Optional[pd.Timestamp]:
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT MAX(issue_ts) FROM weather_forecast_archive").fetchone()
+        con.close()
+        return pd.Timestamp(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+def read_pv_source_selection(path: str) -> Optional[dict]:
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT ts, selected, selected_since, reason, metrics_json "
+            "FROM pv_source_selection ORDER BY ts DESC LIMIT 1").fetchone()
+        con.close()
+    except Exception:
+        row = None
+    if not row:
+        return None
+    return {"ts": row[0], "selected": row[1], "selected_since": row[2],
+            "reason": row[3], "metrics": json.loads(row[4] or "{}")}
+
+
+def write_pv_source_selection(path: str, ts, selected: str, reason: str,
+                              metrics: dict) -> dict:
+    now = pd.Timestamp(ts)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    now_iso = now.tz_convert("UTC").isoformat()
+    previous = read_pv_source_selection(path)
+    since = (previous.get("selected_since") if previous and
+             previous.get("selected") == selected else now_iso)
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO pv_source_selection VALUES(?,?,?,?,?)",
+        (now_iso, str(selected), since, str(reason),
+         json.dumps(metrics or {}, separators=(",", ":"))))
+    con.commit()
+    con.close()
+    return {"ts": now_iso, "selected": selected, "selected_since": since,
+            "reason": reason, "metrics": metrics}
+
+
+def write_solver_run(path: str, ts, result) -> None:
+    """Solver-Lauf persistent sichern (auch ueber Dienstneustarts hinweg)."""
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO solver_runs VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (key, float(result.solver_seconds), float(result.solver_polish_seconds),
+         int(result.solver_slots), int(result.solver_variables),
+         int(result.solver_binaries), int(result.solver_constraints),
+         str(result.status), int(bool(result.solver_hit_limit)),
+         int(bool(result.solver_warm_start)), result.solver_mip_gap))
+    con.commit()
+    con.close()
+
+
+def read_solver_runs(path: str, limit: int = 24) -> list[dict]:
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, seconds, polish_seconds, slots, variables, binaries, "
+            "constraints_count, status, hit_limit, warm_start, mip_gap "
+            "FROM solver_runs ORDER BY ts DESC LIMIT ?", (int(limit),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    names = ("ts", "seconds", "polish_seconds", "slots", "variables",
+             "binaries", "constraints", "status", "hit_limit", "warm_start",
+             "mip_gap")
+    return [dict(zip(names, row)) for row in rows]
+
+
+def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
+                         initial_soc_percent: float | None = None) -> int:
+    """Publizierten Sollfahrplan fuer den spaeteren Ist-Vergleich sichern."""
+    if table is None or table.empty:
+        return 0
+    issue = pd.Timestamp(issued_at).tz_convert("UTC").isoformat()
+    previous_soc = initial_soc_percent
+    rows = []
+    for ts, row in table.iterrows():
+        key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+        grid = float(row.get("grid_import_w", 0.0) or 0.0) - float(
+            row.get("grid_export_w", 0.0) or 0.0)
+        battery = (float(row.get("batt_dc_charge_w", 0.0) or 0.0)
+                   + float(row.get("batt_ac_charge_w", 0.0) or 0.0)
+                   - float(row.get("batt_discharge_w", 0.0) or 0.0))
+        rows.append((key, issue, grid, battery, previous_soc,
+                     str(row.get("mode", "auto")),
+                     row.get("batt_charge_limit_w"),
+                     row.get("batt_discharge_limit_w"),
+                     row.get("batt_grid_charge_w")))
+        value = row.get("house_soc_percent")
+        if value is not None and pd.notna(value):
+            previous_soc = float(value)
+    con = _con(path)
+    con.executemany(
+        "INSERT OR REPLACE INTO execution_plan VALUES(?,?,?,?,?,?,?,?,?)", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT issued_at, grid_w, battery_w, soc, mode, charge_limit_w, "
+            "discharge_limit_w, grid_charge_w FROM execution_plan WHERE ts=?",
+            (key,)).fetchone()
+        con.close()
+    except Exception:
+        row = None
+    if not row:
+        return None
+    names = ("issued_at", "grid_w", "battery_w", "soc", "mode",
+             "charge_limit_w", "discharge_limit_w", "grid_charge_w")
+    return dict(zip(names, row))
+
+
+def write_execution_audit(path: str, ts, audit: dict) -> None:
+    key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
+    checked = pd.Timestamp(audit.get("checked_at", pd.Timestamp.now(tz="UTC")))
+    if checked.tzinfo is None:
+        checked = checked.tz_localize("UTC")
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO execution_audit VALUES(?,?,?,?,?,?,?,?)",
+        (key, checked.tz_convert("UTC").isoformat(), int(bool(audit.get("ok"))),
+         str(audit.get("state", "unknown")), str(audit.get("message", "")),
+         json.dumps(audit.get("planned") or {}, separators=(",", ":")),
+         json.dumps(audit.get("actual") or {}, separators=(",", ":")),
+         json.dumps(audit.get("deviations") or {}, separators=(",", ":"))))
+    con.commit()
+    con.close()
+
+
+def read_execution_audits(path: str, limit: int = 8) -> list[dict]:
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, checked_at, ok, state, message, planned_json, actual_json, "
+            "deviations_json FROM execution_audit ORDER BY ts DESC LIMIT ?",
+            (int(limit),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    return [{"ts": r[0], "checked_at": r[1], "ok": bool(r[2]),
+             "state": r[3], "message": r[4],
+             "planned": json.loads(r[5] or "{}"),
+             "actual": json.loads(r[6] or "{}"),
+             "deviations": json.loads(r[7] or "{}")} for r in rows]
 
 
 def write_last_control(path: str, ts, mapping: Dict[str, float]) -> None:

@@ -31,6 +31,14 @@ def test_live_block_can_be_disabled():
     assert _live_block(_config(0.0)) == ""
 
 
+def test_forecast_quality_shows_issue_time():
+    html = _forecast_quality_block([{
+        "name": "PV", "state": "aktuell", "level": "current",
+        "detail": "Solcast", "issued_at": "2026-07-21T08:05:00+00:00",
+    }], "Europe/Berlin")
+    assert "erstellt 21.07. 10:05" in html
+
+
 def test_mobile_plot_has_panel_tabs_and_24_48_hour_switch():
     html = _mobile_plot_block(pd.Timestamp("2026-07-17T12:00:00+02:00"),
                               has_loads=True, temp_row=7)

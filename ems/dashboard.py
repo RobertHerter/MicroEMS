@@ -578,18 +578,29 @@ def _sources_block(source_status) -> str:
     return f'<div class="chips">Datenquellen: {chips}</div>'
 
 
-def _forecast_quality_block(quality) -> str:
+def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
     """Operative Prognosequalität je Quelle und aktuellem Horizont."""
     if not quality:
         return ""
     items = []
     for source in quality:
         level = source.get("level", "replaced")
+        issue = source.get("issued_at")
+        issue_text = ""
+        if issue:
+            try:
+                stamp = pd.Timestamp(issue)
+                if stamp.tzinfo is not None:
+                    stamp = stamp.tz_convert(timezone)
+                issue_text = f" · erstellt {stamp.strftime('%d.%m. %H:%M')}"
+            except Exception:
+                issue_text = f" · erstellt {_esc(issue)}"
         items.append(
             f"<article class='quality-item {level}'>"
             f"<div class='quality-source'>{_esc(source.get('name', 'Quelle'))}</div>"
             f"<div class='quality-state'>{_esc(source.get('state', 'unbekannt'))}</div>"
-            f"<div class='quality-detail'>{_esc(source.get('detail', ''))}</div>"
+            f"<div class='quality-detail'>{_esc(source.get('detail', ''))}"
+            f"{issue_text}</div>"
             "</article>")
     return ("<details class='forecast-quality'><summary>"
             "<span>Prognosequalität</span><small>verwendete Daten im aktuellen "
@@ -597,11 +608,51 @@ def _forecast_quality_block(quality) -> str:
             f"{''.join(items)}</div></details>")
 
 
+def _operations_block(solver, execution) -> str:
+    """Kompakte, standardmaessig eingeklappte Betriebsdiagnose."""
+    if not solver and not execution:
+        return ""
+    cards = []
+    if solver:
+        typical = solver.get("median_seconds")
+        detail = (f"typisch {typical:.1f} s" if typical is not None
+                  else "Historie wird aufgebaut")
+        gap = solver.get("mip_gap")
+        cards.append(
+            "<article class='quality-item %s'><div class='quality-source'>Solver</div>"
+            "<div class='quality-state'>%.1f s + %.1f s Politur</div>"
+            "<div class='quality-detail'>%s · %s · %s Variablen, %s binär, %s Regeln%s"
+            "</div></article>" % (
+                "replaced" if solver.get("slow") else "current",
+                solver.get("seconds", 0.0), solver.get("polish_seconds", 0.0),
+                _esc(detail), "Warmstart" if solver.get("warm_start") else "Kaltstart",
+                f"{solver.get('variables', 0):,}".replace(",", "."),
+                f"{solver.get('binaries', 0):,}".replace(",", "."),
+                f"{solver.get('constraints', 0):,}".replace(",", "."),
+                " · Gap %.3g" % gap if gap is not None else ""))
+    if execution:
+        planned, actual = execution.get("planned", {}), execution.get("actual", {})
+        def _w(value):
+            return "–" if value is None else f"{value:,.0f} W".replace(",", ".")
+        detail = (f"Netz {_w(planned.get('grid_w'))} → {_w(actual.get('grid_w'))} · "
+                  f"Akku {_w(planned.get('battery_w'))} → {_w(actual.get('battery_w'))} · "
+                  f"SoC {planned.get('soc', '–')} → {actual.get('soc', '–')} %")
+        cards.append(
+            f"<article class='quality-item {'current' if execution.get('ok') else 'partial'}'>"
+            "<div class='quality-source'>Plan-Ausführung</div>"
+            f"<div class='quality-state'>{_esc(execution.get('message', ''))}</div>"
+            f"<div class='quality-detail'>{_esc(detail)}</div></article>")
+    return ("<details class='forecast-quality'><summary><span>Betriebsdiagnose</span>"
+            "<small>Solver und geplanter Soll/Ist-Vergleich</small></summary>"
+            f"<div class='quality-grid'>{''.join(cards)}</div></details>")
+
+
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     export_line_w=None, savings_eur=None, violations=None,
                     load_temp_actual=None, ambient_temp_c=None,
                     source_status=None, pv_compare=None,
-                    control_status=None, forecast_quality=None) -> str:
+                    control_status=None, forecast_quality=None,
+                    solver_status=None, execution_status=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -674,6 +725,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 hovertemplate=HOVER_W, legendgroup="prog",
                 legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
     line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist")
+    if ({"house_load_p10_w", "house_load_p90_w"} <= set(t.columns)
+            and t["house_load_p10_w"].notna().any()):
+        fig.add_trace(go.Scatter(
+            x=x, y=t["house_load_p90_w"], mode="lines",
+            line=dict(width=0), legendgroup="prog", showlegend=False,
+            hoverinfo="skip"), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=x, y=t["house_load_p10_w"], mode="lines",
+            line=dict(width=0), fill="tonexty",
+            fillcolor="rgba(214,39,40,0.10)", name="Verbrauch p10–p90",
+            legendgroup="prog", hoverinfo="skip"), row=1, col=1)
     line("house_load_w", "Verbrauch (Prognose)", "#d62728", 1, "prog", dash="dash")
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
     if has_loads:
@@ -1358,7 +1420,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {decision_html}
-{_forecast_quality_block(forecast_quality)}
+{_operations_block(solver_status, execution_status)}
+{_forecast_quality_block(forecast_quality, config.general.timezone)}
 {report_html}
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;

@@ -159,7 +159,8 @@ def _pairs(forecast: pd.Series, actual: pd.Series, min_pv_w: float) -> pd.DataFr
 
 
 def evaluate_group(db, sources, start, end, tz, slot_minutes,
-                   min_pv_w=50.0, lead_hours=0.0, use_archive=True) -> Optional[dict]:
+                   min_pv_w=50.0, lead_hours=0.0, use_archive=True,
+                   allow_cache=True, correction_profile=None) -> Optional[dict]:
     """WAPE/MAE/Bias einer Quellgruppe gegen die Ist-PV. Bevorzugt das Archiv;
     fällt bei fehlender Archivhistorie auf den Live-Cache zurück."""
     if not sources:
@@ -168,9 +169,15 @@ def evaluate_group(db, sources, start, end, tz, slot_minutes,
     method = "archive"
     fc = read_group_asof(db, sources, start, end, tz, slot_minutes, "pv",
                          lead_hours) if use_archive else pd.Series(dtype="float64")
+    if correction_profile is not None and not fc.empty:
+        from .calibration import apply_pv_correction
+        fc = apply_pv_correction(fc, correction_profile, tz)
     pairs = _pairs(fc, actual, min_pv_w)
-    if len(pairs) < 8:
+    if len(pairs) < 8 and allow_cache:
         fc_cache = read_group_cache(db, sources, start, end, tz, slot_minutes, "pv")
+        if correction_profile is not None and not fc_cache.empty:
+            from .calibration import apply_pv_correction
+            fc_cache = apply_pv_correction(fc_cache, correction_profile, tz)
         cache_pairs = _pairs(fc_cache, actual, min_pv_w)
         if len(cache_pairs) > len(pairs):
             method, fc, pairs = "cache", fc_cache, cache_pairs
@@ -187,7 +194,7 @@ def evaluate_group(db, sources, start, end, tz, slot_minutes,
 
 
 def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
-                    lead_hours=0.0) -> dict:
+                    lead_hours=0.0, allow_cache=True) -> dict:
     """pvlib- und Solcast-Gruppe gegen die Ist-PV auswerten + Empfehlung."""
     tz = config.general.timezone
     slot = config.general.slot_minutes
@@ -198,14 +205,26 @@ def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
     start = end - pd.Timedelta(days=lookback_days)
 
     groups = {}
+    correction = None
+    if config.calibration.enabled:
+        try:
+            from .calibration import load_profile
+            correction = load_profile(config.calibration.pv_profile)
+        except Exception:
+            correction = None
     sc = solcast_source_ids(config)
     if sc:
         groups["solcast"] = evaluate_group(db, sc, start, end, tz, slot,
-                                            min_pv_w, lead_hours)
+                                            min_pv_w, lead_hours,
+                                            allow_cache=allow_cache,
+                                            correction_profile=correction)
     pv = pvforecast.source_ids(config) if config.pv_model.arrays else []
     if pv:
         groups["pvlib"] = evaluate_group(db, pv, start, end, tz, slot,
-                                         min_pv_w, lead_hours)
+                                         min_pv_w, lead_hours,
+                                         allow_cache=allow_cache,
+                                         correction_profile=(
+                                             correction if not sc else None))
     groups = {k: v for k, v in groups.items() if v is not None}
 
     valid = {k: v for k, v in groups.items()
@@ -220,6 +239,100 @@ def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
     return {"start": start, "end": end, "lookback_days": lookback_days,
             "lead_hours": lead_hours, "groups": groups,
             "recommendation": recommendation}
+
+
+def _common_archive_metrics(config, lookback_days: int, now,
+                            min_pv_w: float = 50.0) -> dict:
+    """Beide Quellen auf exakt denselben Archiv-/Ist-Slots bewerten."""
+    tz, slot = config.general.timezone, config.general.slot_minutes
+    db = config.e3dc_rscp.history_db_path
+    end = pd.Timestamp(now).tz_convert(tz).floor(f"{slot}min")
+    start = end - pd.Timedelta(days=lookback_days)
+    sc_ids = solcast_source_ids(config)
+    pv_ids = pvforecast.source_ids(config) if config.pv_model.arrays else []
+    if not sc_ids or not pv_ids:
+        return {}
+    actual = read_actual_pv(db, start, end, tz, slot)
+    sc = read_group_asof(db, sc_ids, start, end, tz, slot)
+    pv = read_group_asof(db, pv_ids, start, end, tz, slot)
+    if config.calibration.enabled and not sc.empty:
+        try:
+            from .calibration import apply_pv_correction, load_profile
+            profile = load_profile(config.calibration.pv_profile)
+            if profile:
+                sc = apply_pv_correction(sc, profile, tz)
+        except Exception:
+            pass
+    frame = pd.DataFrame({"actual": actual, "solcast": sc,
+                          "pvlib": pv}).dropna()
+    if not frame.empty:
+        frame = frame[frame[["actual", "solcast", "pvlib"]].max(axis=1)
+                      >= min_pv_w]
+    if frame.empty:
+        return {}
+    a = frame["actual"].to_numpy(dtype=float)
+    out = {}
+    for name in ("solcast", "pvlib"):
+        pred = frame[name].to_numpy(dtype=float)
+        out[name] = {"sources": sc_ids if name == "solcast" else pv_ids,
+                     "method": "archive", "n": int(len(frame)),
+                     "wape_pct": round(_wape(a, pred), 2),
+                     "mae_w": round(_mae(a, pred), 1),
+                     "bias_w": round(float(np.mean(pred - a)), 1)}
+    return out
+
+
+def select_source(config, now=None) -> dict:
+    """Produktive PV-Quelle anhand echter Rolling-Origin-Fehler auswählen.
+
+    Cache-Auswertungen sind ausdrücklich ausgeschlossen, weil pvlib historische
+    Wetterdaten nachträglich kennt und dadurch künstlich gut aussähe. Ein
+    Wechsel erfolgt erst, wenn BEIDE Archive genügend gemeinsame Erfahrung
+    besitzen und die Alternative den konfigurierten Mindestvorsprung erreicht.
+    """
+    cfg = config.pv_source_selection
+    db = config.e3dc_rscp.history_db_path
+    from .local_history import (read_pv_source_selection,
+                                write_pv_source_selection)
+    previous = read_pv_source_selection(db)
+    default = "solcast" if config.solcast.enabled else "pvlib"
+    selected = (previous.get("selected") if previous else default)
+    available = {"solcast": bool(solcast_source_ids(config)),
+                 "pvlib": bool(config.pv_model.arrays and
+                               (config.pv_model.enabled or config.pv_model.shadow))}
+    if not available.get(selected):
+        selected = next((name for name, ok in available.items() if ok), default)
+    groups = _common_archive_metrics(
+        config, cfg.lookback_days,
+        now or pd.Timestamp.now(tz=config.general.timezone))
+    valid = {name: value for name, value in groups.items()
+             if value and value.get("method") == "archive"
+             and value.get("n", 0) >= cfg.min_samples
+             and np.isfinite(value.get("wape_pct", np.nan))}
+    reason = "feste Konfiguration"
+    if not cfg.enabled:
+        selected = default
+    elif len(valid) < 2:
+        samples = ", ".join(
+            f"{name}: {value.get('n', 0)}" for name, value in groups.items())
+        reason = (f"warte auf vergleichbare Archive ({samples})"
+                  if groups else "warte auf Prognosearchive")
+    else:
+        challenger = "pvlib" if selected == "solcast" else "solcast"
+        improvement = (valid[selected]["wape_pct"] -
+                       valid[challenger]["wape_pct"])
+        if improvement >= cfg.min_improvement_percent:
+            selected = challenger
+            reason = (f"{challenger} um {improvement:.2f} WAPE-Punkte besser")
+        else:
+            reason = (f"{selected} bleibt aktiv; Alternative nur "
+                      f"{improvement:.2f} WAPE-Punkte besser")
+    record = write_pv_source_selection(
+        db, now or pd.Timestamp.now(tz="UTC"), selected, reason,
+        {"groups": groups, "lookback_days": cfg.lookback_days,
+         "min_samples": cfg.min_samples})
+    record["groups"] = groups
+    return record
 
 
 def calibrate_band(config, lookback_days=60, now=None, min_pv_w=100.0,
