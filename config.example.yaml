@@ -193,6 +193,19 @@ sanity:
   load_max_w: 0.0                 # 0 = keine obere Last-Grenze (negativ immer -> 0)
 
 # -----------------------------------------------------------------------------
+# Sofort-Neuberechnung bei großer Live-Abweichung
+# -----------------------------------------------------------------------------
+# Zwischen den 15-Min-Marken vergleicht der Dienst periodisch die gemessene
+# Netzleistung mit dem Sollwert des laufenden Slots. Weicht sie stark ab (Wolke
+# bricht die PV ein, großer Verbraucher springt an), wird sofort neu gerechnet
+# statt bis zur nächsten Marke zu warten. Netz = Last - PV + Akku bündelt PV- und
+# Last-Prognosefehler. Ergänzt die Intraday-Korrektur.
+recalc:
+  enabled: true
+  deviation_w: 3000.0            # Schwelle |Ist-Netz - Soll-Netz|
+  check_seconds: 90.0           # Prüf-Intervall im Wartefenster
+
+# -----------------------------------------------------------------------------
 # Steuerbare / verschiebbare Lasten (optional)
 # -----------------------------------------------------------------------------
 # Der Optimierer plant jede Last mit ein und legt ihre Laufzeit in die
@@ -390,6 +403,13 @@ optimization:
   evening_reserve_start: "16:00"
   evening_reserve_end: "20:00"
   evening_reserve_penalty_ct_kwh: 3.0   # ct je kWh Unterschreitung der Reserve
+  # Adaptiv: Höhe/Fenster je Tag automatisch aus den Daten statt fest. Höhe =
+  # Energie, um die Restlast (Last - PV) während der Abend-Preisspitze zu decken;
+  # Fenster = ab hold_from_hour bis zum Beginn der Spitze. Übersteuert
+  # soc_percent/start/end. Peak nur, wenn Abend-Max >= price_factor x Tages-Median.
+  evening_reserve_auto: false
+  evening_reserve_hold_from_hour: 11
+  evening_reserve_price_factor: 1.15
 
 # -----------------------------------------------------------------------------
 # Verbrauchsprognose (Ähnliche-Tage-Mittelung)

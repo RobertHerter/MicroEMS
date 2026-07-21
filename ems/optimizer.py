@@ -1084,27 +1084,66 @@ class Optimizer:
             cfg.optimization, "evening_reserve_soc_percent", 0.0) or 0.0)
         ev_pen = float(getattr(
             cfg.optimization, "evening_reserve_penalty_ct_kwh", 0.0) or 0.0)
-        if ev_pct > 0.0 and ev_pen > 0.0:
-            ev_start = cfg.optimization.evening_reserve_start
-            ev_end = cfg.optimization.evening_reserve_end
-            reserve_wh = min(hb.max_soc_wh,
-                             max(hb.min_soc_wh, ev_pct / 100.0 * hb.capacity_wh))
+        ev_auto = bool(getattr(cfg.optimization, "evening_reserve_auto", False))
+        if ev_pen > 0.0 and (ev_auto or ev_pct > 0.0):
+            # Jede Reserve = (Ziel-SoC Wh, [Fenster-Slots]). Ein Slack je Reserve =
+            # tiefste Unterschreitung im Fenster (Wh); nur der Drawdown-Betrag
+            # zählt (nicht die Dauer), damit ev_pen ein sauberer ct/kWh-Regler
+            # bleibt, direkt mit einem Preis-Spread vergleichbar.
+            reserves = []
+            if ev_auto:
+                # Datengetrieben je Tag: Höhe = Energie für die Restlast während
+                # der Abend-Preisspitze; Fenster = ab hold_from bis Peak-Beginn.
+                hold_from = int(getattr(
+                    cfg.optimization, "evening_reserve_hold_from_hour", 11))
+                pfac = float(getattr(
+                    cfg.optimization, "evening_reserve_price_factor", 1.15))
+                for d in range(len(_uniq)):
+                    day_slots = [t for t in range(N) if slot_day[t] == d]
+                    evening = [t for t in day_slots if _local[t].hour >= 15]
+                    if not evening:
+                        continue
+                    dmed = float(np.median([inp.price_ct_kwh[t] for t in day_slots]))
+                    evmax = max(inp.price_ct_kwh[t] for t in evening)
+                    if evmax < pfac * max(dmed, 0.1):
+                        continue                      # flacher Tag -> keine Reserve
+                    thr = max(0.9 * evmax, pfac * dmed)
+                    peak = [t for t in evening if inp.price_ct_kwh[t] >= thr]
+                    if not peak:
+                        continue
+                    block_start = min(peak)
+                    energy = sum(max(0.0, float(inp.house_load_w[t])
+                                     - float(inp.pv_w[t])) for t in peak) \
+                        * dt / hb.discharge_efficiency
+                    target = min(hb.max_soc_wh,
+                                 hb.min_soc_wh + min(usable_wh, energy))
+                    window = [t for t in day_slots
+                              if _local[t].hour >= hold_from and t < block_start]
+                    if window and target > hb.min_soc_wh + 1.0:
+                        reserves.append((target, window))
+                        log.info("Abend-Reserve %s: Ziel %.0f%% ab %02d:00 bis %s",
+                                 _uniq[d], 100.0 * target / hb.capacity_wh, hold_from,
+                                 _local[block_start].strftime("%H:%M"))
+            else:
+                ev_start = cfg.optimization.evening_reserve_start
+                ev_end = cfg.optimization.evening_reserve_end
+                reserve_wh = min(hb.max_soc_wh,
+                                 max(hb.min_soc_wh, ev_pct / 100.0 * hb.capacity_wh))
 
-            def _in_evening_window(ts):
-                tod = ts.time()
-                if ev_start <= ev_end:            # normales Fenster am selben Tag
-                    return ev_start <= tod < ev_end
-                return tod >= ev_start or tod < ev_end   # über Mitternacht
+                def _in_evening_window(ts):
+                    tod = ts.time()
+                    if ev_start <= ev_end:        # normales Fenster am selben Tag
+                        return ev_start <= tod < ev_end
+                    return tod >= ev_start or tod < ev_end   # über Mitternacht
 
-            window_slots = [t for t in range(N) if _in_evening_window(_local[t])]
-            if window_slots:
-                # EIN Slack = tiefste Unterschreitung der Reserve im Fenster (Wh).
-                # Nur der Drawdown-Betrag zählt (nicht seine Dauer), damit ev_pen
-                # ein sauberer ct/kWh-Regler bleibt, direkt mit einem Preis-Spread
-                # vergleichbar: "unter die Reserve zu gehen kostet ev_pen je kWh".
-                deficit = pulp.LpVariable("evres_deficit", 0)
-                for t in window_slots:
-                    prob += deficit >= reserve_wh - soc[t + 1]
+                window_slots = [t for t in range(N) if _in_evening_window(_local[t])]
+                if window_slots:
+                    reserves.append((reserve_wh, window_slots))
+
+            for i, (target, slots) in enumerate(reserves):
+                deficit = pulp.LpVariable(f"evres_deficit_{i}", 0)
+                for t in slots:
+                    prob += deficit >= target - soc[t + 1]
                 # deficit in Wh -> /1000 auf kWh (wie die p10-/Stabilitäts-Slacks)
                 cost_terms.append(ev_pen * deficit / 1000.0)
 

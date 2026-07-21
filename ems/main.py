@@ -95,6 +95,32 @@ def _audit_execution(config, now, live):
     return audit
 
 
+def _live_recalc_needed(config, e3dc):
+    """Weicht die gemessene Netzleistung im laufenden Slot stark vom Sollwert ab?
+    Rückgabe: Abweichung (W) bei Überschreitung, sonst None. Netz ist hier das
+    richtige Signal: es bündelt PV- UND Last-Prognosefehler (Netz = Last - PV +
+    Akku) - genau die 'die Situation hat sich geändert'-Fälle, die eine sofortige
+    Neuplanung rechtfertigen."""
+    rc = getattr(config, "recalc", None)
+    if not rc or not rc.enabled or e3dc is None:
+        return None
+    try:
+        from .local_history import read_execution_plan_slot
+        slot = pd.Timestamp.now(tz=config.general.timezone).floor(
+            f"{config.general.slot_minutes}min")
+        planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, slot)
+        if not planned or planned.get("grid_w") is None:
+            return None
+        live = e3dc.read_live(force=True)
+        if not live or live.get("grid_w") is None:
+            return None
+        delta = float(live["grid_w"]) - float(planned["grid_w"])
+        return delta if abs(delta) > rc.deviation_w else None
+    except Exception as exc:  # darf den Wartezyklus nie stören
+        log.debug("Live-Recalc-Prüfung fehlgeschlagen (%s).", exc)
+        return None
+
+
 def _publish_execution_alarm(publisher, config, audit) -> None:
     if publisher is None or not audit:
         return
@@ -2147,8 +2173,23 @@ def main() -> None:
             next_mark = (now // interval + 1) * interval + offset
             if next_mark - now < 5.0:      # zu knapp -> erst zur übernächsten Marke
                 next_mark += interval
-            if publisher.wait_for_recalc(next_mark - _time.time()):
-                log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
+            # In Schritten warten: MQTT-Recalc bricht sofort ab; zusätzlich prüft
+            # jeder Schritt eine große Live-Abweichung vom Plan (Auto-Recalc).
+            check = (max(10.0, config.recalc.check_seconds)
+                     if config.recalc.enabled else None)
+            while True:
+                remaining = next_mark - _time.time()
+                if remaining <= 0:
+                    break
+                step = remaining if check is None else min(check, remaining)
+                if publisher.wait_for_recalc(step):
+                    log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
+                    break
+                delta = _live_recalc_needed(config, e3dc)
+                if delta is not None:
+                    log.info("Große Live-Abweichung (%.0f W Netz vs. Plan) – "
+                             "Neuberechnung sofort.", delta)
+                    break
     except (KeyboardInterrupt, SystemExit):
         log.info("EMS wird beendet – Verbindungen werden geschlossen.")
     finally:

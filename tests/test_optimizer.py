@@ -776,3 +776,70 @@ def test_evening_reserve_yields_to_large_price_advantage():
     soc = _in_window_min_soc(res.table, idx)
     assert soc < 40.0, \
         f"Kleiner Malus darf die Arbitrage nicht blockieren (min {soc:.0f} %)"
+
+
+def _two_peak_scenario(cfg):
+    """Voller Akku, keine PV, konstante Last; zwei Preisspitzen: Morgen 42 ct
+    (06-11) minimal teurer als Abend 40 ct (18-23). Der Akku reicht nur für EINE
+    Spitze. Ohne Reserve deckt er die (teurere) Morgenspitze -> abends leer."""
+    idx = _day_index("2026-01-20")
+    hour = np.asarray(idx.hour, dtype=float)
+    price = np.full(len(idx), 20.0)
+    price[(hour >= 6) & (hour < 11)] = 42.0
+    price[(hour >= 18) & (hour < 23)] = 40.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
+    cfg.optimization.terminal_soc_value = 0.0   # End-SoC nicht bewerten (isoliert)
+    # Kein Netzladen: sonst lädt der Optimierer mittags günstig nach und deckt
+    # BEIDE Spitzen -> es gäbe keinen Engpass, den die Reserve entscheiden muss.
+    cfg.house_battery.max_ac_charge_w = 0.0
+    return idx, _inputs(idx, pv=0.0, load=1500.0, price=price,
+                        soc=cfg.house_battery.max_soc_wh)
+
+
+def _soc_at(table, idx, hour):
+    return float(table.loc[idx.hour == hour, "house_soc_percent"].iloc[0])
+
+
+def test_adaptive_evening_reserve_holds_for_evening_peak():
+    """Adaptive Reserve dimensioniert Höhe/Fenster aus der Abend-Restlast: der
+    Akku wird bis zum Abend-Peak gehalten statt in der teureren Morgenspitze
+    verbraucht - obwohl das (deterministisch) minimal teurer ist."""
+    cfg_off = make_config()
+    idx, inp = _two_peak_scenario(cfg_off)
+    off = Optimizer(cfg_off).solve(inp)
+    assert not off.infeasible
+
+    cfg_on = make_config()
+    _, inp_on = _two_peak_scenario(cfg_on)
+    o = cfg_on.optimization
+    o.evening_reserve_auto = True
+    o.evening_reserve_penalty_ct_kwh = 100.0
+    o.evening_reserve_hold_from_hour = 11
+    on = Optimizer(cfg_on).solve(inp_on)
+    assert not on.infeasible
+
+    # Ohne Reserve: Akku in der Morgenspitze verbraucht -> um 18 Uhr fast leer.
+    assert _soc_at(off.table, idx, 18) < 40.0, \
+        f"Ohne Reserve sollte der Akku bis zum Abend leer sein ({_soc_at(off.table, idx, 18):.0f} %)"
+    # Mit Auto-Reserve: für die Abendspitze gehalten -> um 18 Uhr noch hoch.
+    assert _soc_at(on.table, idx, 18) >= 80.0, \
+        f"Auto-Reserve muss den Akku für den Abend halten ({_soc_at(on.table, idx, 18):.0f} %)"
+
+
+def test_adaptive_evening_reserve_skips_flat_price_days():
+    """An einem flachen Preistag (kein Abend-Peak) legt die adaptive Reserve
+    keinen Boden an -> der Akku wird normal (früh) genutzt."""
+    cfg = make_config()
+    idx = _day_index("2026-01-20")
+    o = cfg.optimization
+    o.evening_reserve_auto = True
+    o.evening_reserve_penalty_ct_kwh = 100.0
+    o.battery_hold_penalty_ct_kwh = 0.0
+    o.terminal_soc_value = 0.0
+    inp = _inputs(idx, pv=0.0, load=1500.0, price=25.0,   # konstant, kein Peak
+                  soc=cfg.house_battery.max_soc_wh)
+    res = Optimizer(cfg).solve(inp)
+    assert not res.infeasible
+    # Ohne erkannten Peak keine Reserve -> Akku deckt die frühesten Laststunden
+    # (keine künstliche Zurückhaltung bis zum Abend).
+    assert _soc_at(res.table, idx, 6) < 95.0

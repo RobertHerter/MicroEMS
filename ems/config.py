@@ -399,6 +399,16 @@ class OptimizationConfig:
     evening_reserve_start: time = time(16, 0)
     evening_reserve_end: time = time(20, 0)
     evening_reserve_penalty_ct_kwh: float = 3.0
+    # Adaptive Abend-Reserve: Höhe und Fenster NICHT fest, sondern je Tag aus den
+    # Daten. Höhe = Energie, um die Restlast (Last - PV) während der abendlichen
+    # Preisspitze aus dem Akku zu decken (gedeckelt auf die nutzbare Kapazität);
+    # Fenster = ab evening_reserve_hold_from_hour bis zum Beginn der Spitze (danach
+    # frei -> Entladung in die Spitze). Übersteuert soc_percent/start/end. Der Peak
+    # gilt nur, wenn das Abend-Preismaximum >= price_factor x Tages-Median liegt
+    # (an flachen Tagen keine Reserve). Braucht evening_reserve_penalty_ct_kwh > 0.
+    evening_reserve_auto: bool = False
+    evening_reserve_hold_from_hour: int = 11
+    evening_reserve_price_factor: float = 1.15
 
 
 @dataclass
@@ -694,6 +704,18 @@ class ReportConfig:
 
 
 @dataclass
+class RecalcConfig:
+    """Sofort-Neuberechnung bei großer Live-Abweichung vom Plan. Zwischen den
+    15-Min-Marken wird periodisch die gemessene Netzleistung mit dem Sollwert des
+    laufenden Slots verglichen; überschreitet die Abweichung die Schwelle (Wolke
+    bricht PV ein, großer Verbraucher springt an), rechnet der Dienst sofort neu,
+    statt auf die nächste Marke zu warten. Ergänzt die Intraday-Korrektur."""
+    enabled: bool = True
+    deviation_w: float = 3000.0
+    check_seconds: float = 90.0
+
+
+@dataclass
 class SanityConfig:
     """Plausibilitäts-Grenzen für externe Eingaben (ems/sanity.py). Greift nur
     bei klar unmöglichen Werten und schützt so den Echtbetrieb vor einem
@@ -736,6 +758,7 @@ class Config:
     pv_source_selection: PvSourceSelectionConfig = field(
         default_factory=PvSourceSelectionConfig)
     sanity: SanityConfig = field(default_factory=SanityConfig)
+    recalc: RecalcConfig = field(default_factory=RecalcConfig)
     controllable_loads: list = field(default_factory=list)   # [ControllableLoad]
 
 
@@ -1084,6 +1107,9 @@ def load_config(path: str) -> Config:
         evening_reserve_end=_parse_time(str(o.get("evening_reserve_end", "20:00"))),
         evening_reserve_penalty_ct_kwh=float(o.get(
             "evening_reserve_penalty_ct_kwh", 3.0)),
+        evening_reserve_auto=bool(o.get("evening_reserve_auto", False)),
+        evening_reserve_hold_from_hour=int(o.get("evening_reserve_hold_from_hour", 11)),
+        evening_reserve_price_factor=float(o.get("evening_reserve_price_factor", 1.15)),
     )
 
     f = raw.get("forecast", {})
@@ -1288,6 +1314,12 @@ def load_config(path: str) -> Config:
         pv_max_w=float(sn.get("pv_max_w", 0.0)),
         load_max_w=float(sn.get("load_max_w", 0.0)),
     )
+    rc = raw.get("recalc", {})
+    recalc = RecalcConfig(
+        enabled=bool(rc.get("enabled", True)),
+        deviation_w=float(rc.get("deviation_w", 3000.0)),
+        check_seconds=float(rc.get("check_seconds", 90.0)),
+    )
     if pv_model.enabled and solcast.enabled:
         raise ValueError("solcast und pv_model nicht gleichzeitig aktivieren "
                          "(beide schreiben die PV-Prognose).")
@@ -1346,6 +1378,7 @@ def load_config(path: str) -> Config:
         pv_model=pv_model,
         pv_source_selection=pv_source_selection,
         sanity=sanity,
+        recalc=recalc,
         controllable_loads=controllable_loads,
     )
     config._source_path = os.path.abspath(path)
