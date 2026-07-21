@@ -264,6 +264,48 @@ class E3DCLink:
             t += pd.Timedelta(minutes=15)
         return out
 
+    def read_energy_15min(self, start, end) -> Dict[str, dict]:
+        """Gemessene 15-min-Energieaggregate je Fenster in [start, end) als
+        {UTC-ISO -> {pv_wh, load_wh, bat_in_wh, bat_out_wh, grid_import_wh,
+        grid_export_wh}}. Grundlage der Ersparnis-Gegenprüfung gegen die echten
+        Zählerwerte (savings_check.py). Ein RSCP-Aufruf je Fenster -> Zeitraum
+        begrenzen. Vorzeichen wie in _house_load_w: grid_power_out=Netzbezug,
+        grid_power_in=Einspeisung, bat_power_in=Laden, bat_power_out=Entladen."""
+        out: Dict[str, dict] = {}
+        tz = self.cfg.general.timezone
+        t = pd.Timestamp(start).floor("15min")
+        end = pd.Timestamp(end).floor("15min")
+        t = (t.tz_localize(tz) if t.tz is None else t.tz_convert(tz))
+        end = (end.tz_localize(tz) if end.tz is None else end.tz_convert(tz))
+        while t < end:
+            local_epoch = int(t.timestamp() + t.utcoffset().total_seconds())
+            try:
+                with self._lock:
+                    e = self._connect()
+                    d = e.get_db_data_timestamp(
+                        startTimestamp=local_epoch, timespanSeconds=900,
+                        keepAlive=True)
+            except Exception as exc:  # pragma: no cover
+                log.debug("RSCP Energie %s nicht lesbar (%s).", t, exc)
+                t += pd.Timedelta(minutes=15)
+                continue
+            if d:
+                pv = float(d.get("solarProduction", 0.0))
+                bat_in = float(d.get("bat_power_in", 0.0))
+                bat_out = float(d.get("bat_power_out", 0.0))
+                grid_imp = float(d.get("grid_power_out", 0.0))
+                grid_exp = float(d.get("grid_power_in", 0.0))
+                load = pv + bat_out + grid_imp - bat_in - grid_exp
+                # Unfertige Aggregate liefern eine unplausible (negative) Bilanz;
+                # überspringen und beim überlappenden Folgelauf nachholen.
+                if load > 0.0:
+                    out[t.tz_convert("UTC").isoformat()] = {
+                        "pv_wh": pv, "load_wh": load, "bat_in_wh": bat_in,
+                        "bat_out_wh": bat_out, "grid_import_wh": grid_imp,
+                        "grid_export_wh": grid_exp}
+            t += pd.Timedelta(minutes=15)
+        return out
+
     # ---- Steuerung ---------------------------------------------------- #
     def _set_power(self, mode: int, value: int) -> None:
         """Roh-Befehl EMS_REQ_SET_POWER (verifiziert: 0=auto, 1=idle, 2=Entladen,
