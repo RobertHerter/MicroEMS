@@ -155,15 +155,24 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "Spät laden" in html
     assert "maximalen Ziel-SoC möglichst spät erreichen" in html
     assert "Automatischer Modusvergleich" in html
-    assert "Zusätzlichen Detailvergleich starten" in html
-    assert "api/control/compare" in html
-    assert "Modus übernehmen" in html
+    assert "Drei Ladestrategien mit Karten und Kurven" in html
+    assert "aktuelle Auto-Auswahl ist markiert" in html
+    assert "Aktuellen Mehrfachvergleich starten" not in html
+    assert "Alle Modi berechnen" not in html
+    assert "mode-compare-grid" in html
+    assert "Eingriffe</span>" in html and "intervention_slots" in html
+    assert "filter(([k])=>k!=='auto')" in html
+    assert "100 % sehr wahrscheinlich" not in html  # kommt dynamisch aus dem Laufstatus
+    assert "emsLateBadge" in html
+    assert "api/control/compare" not in html
+    assert "api/mode-comparison.json" in html
+    assert "Empfehlung übernehmen" in html
     assert "Direkte E3/DC-Steuerung (RSCP)" in html
     assert "MQTT-Sollwerte bleiben davon unabhängig" in html
     assert "MQTT-Sollwerte · deaktiviert" in html
     assert "api/control/e3dc_control" in html
-    assert "id='compare-chart'" in html
-    assert "candidate_battery_w" in html and "candidate_soc_percent" in html
+    assert "id='shadow-chart'" in html
+    assert "v.battery_w" in html and "v.soc_percent" in html
     assert "hoverlabel:{bgcolor:dark?'#202b36':'#ffffff'" in html
     assert 'onclick="emsMode(\\\'' in html
     assert (html.index("window.addEventListener('ems-status',e=>emsShadowRender")

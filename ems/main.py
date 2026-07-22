@@ -64,15 +64,12 @@ _runtime_status = {
     "duration_seconds": None, "message": "Initialisierung",
     "pending_recalc": False, "trigger": "startup", "sequence": 0,
 }
-_comparison_status = {
-    "state": "idle", "strategy": None, "requested_at": None,
-    "started_at": None, "finished_at": None, "message": "", "result": None,
-}
 _shadow_status = {
     "state": "idle", "started_at": None, "finished_at": None,
     "generated": None, "message": "Noch kein automatischer Vergleich",
     "result": None,
 }
+_shadow_curves = {"generated": None, "series": None}
 
 
 def _runtime_iso() -> str:
@@ -87,7 +84,6 @@ def _runtime_update(**changes) -> None:
 def _runtime_snapshot() -> dict:
     with _runtime_lock:
         out = dict(_runtime_status)
-        out["comparison"] = dict(_comparison_status)
         out["shadow_comparison"] = dict(_shadow_status)
         return out
 
@@ -156,6 +152,7 @@ def _comparison_metrics(table: pd.DataFrame, total_cost_ct: float,
               else pd.Series(0.0, index=table.index))
     modes = (table["mode"] if "mode" in table
              else pd.Series("auto", index=table.index)).astype(str)
+    interventions = int((~modes.isin(["auto", "peak", "late"])).sum())
     return {
         "cost_eur": round(float(total_cost_ct) / 100.0, 2),
         "grid_import_kwh": energy("grid_import_w"),
@@ -165,6 +162,7 @@ def _comparison_metrics(table: pd.DataFrame, total_cost_ct: float,
             export, errors="coerce").fillna(0).max()), 0),
         "restricted_slots": int(modes.isin(
             ["hold", "limit_discharge", "block_charge", "grid_charge"]).sum()),
+        "intervention_slots": interventions,
         "end_soc_percent": (round(float(table["house_soc_percent"].iloc[-1]), 1)
                             if "house_soc_percent" in table and len(table) else None),
         "max_soc_percent": None,
@@ -184,12 +182,123 @@ def _comparison_metrics_complete(table: pd.DataFrame, total_cost_ct: float,
     return metrics
 
 
+def _comparison_series(table: pd.DataFrame) -> dict:
+    """Kompakte Kurven fuer den gleichzeitigen Dashboard-Modusvergleich."""
+    def values(*terms):
+        total = sum((factor * pd.to_numeric(table.get(
+            column, pd.Series(0.0, index=table.index)),
+            errors="coerce").fillna(0.0) for column, factor in terms),
+            start=pd.Series(0.0, index=table.index))
+        return [round(float(value), 2) for value in total]
+
+    return {
+        "battery_w": values(("batt_dc_charge_w", 1),
+                            ("batt_ac_charge_w", 1),
+                            ("batt_discharge_w", -1)),
+        "grid_w": values(("grid_import_w", 1), ("grid_export_w", -1)),
+        "soc_percent": values(("house_soc_percent", 1)),
+    }
+
+
+def _late_target_soc(result, inputs: OptimizerInputs, timezone: str):
+    """SoC am Ende der nutzbaren PV-Fenster vollstaendiger Horizont-Tage."""
+    local = inputs.index.tz_convert(timezone)
+    days = list(local.date)
+    targets = []
+    for day in sorted(set(days)):
+        slots = [i for i, value in enumerate(days) if value == day]
+        if not slots or max(local[i].hour for i in slots) < 15:
+            continue
+        surplus = [i for i in slots
+                   if float(inputs.pv_w[i]) > float(inputs.house_load_w[i]) + 1.0]
+        if surplus:
+            slot = max(surplus)
+            soc = float(pd.to_numeric(
+                result.table["house_soc_percent"], errors="coerce").iloc[slot])
+            if np.isfinite(soc):
+                targets.append((slot, soc))
+    if not targets:
+        return None, None
+    slot, soc = min(targets, key=lambda item: item[1])
+    return round(soc, 1), pd.Timestamp(inputs.index[slot]).isoformat()
+
+
+def _late_confidence(config, inputs: OptimizerInputs, late_result) -> dict:
+    """Erreichbarkeit des Late-Ziels mit Erwartungswert und PV-P10 pruefen.
+
+    Netzladen wird fuer diese reine Prognoseaussage ausgeschlossen. So kann ein
+    guenstiger AC-Ladeslot eine zu schwache PV-Prognose nicht als sicher tarnen.
+    """
+    target = float(config.house_battery.max_soc_percent)
+    cfg = copy.deepcopy(config)
+    cfg.optimization.charge_strategy = "late"
+    cfg.house_battery.max_ac_charge_w = 0.0
+    expected = late_result
+    ac = pd.to_numeric(late_result.table.get(
+        "batt_ac_charge_w", pd.Series(0.0, index=late_result.table.index)),
+        errors="coerce").fillna(0.0)
+    if bool((ac > 1.0).any()):
+        expected = Optimizer(cfg, stabilize_plan=False, store_warm=False).solve(inputs)
+    expected_soc, expected_at = _late_target_soc(
+        expected, inputs, config.general.timezone)
+
+    p10 = inputs.pv10_w
+    if p10 is None or len(p10) != len(inputs.index):
+        return {"code": "unavailable", "label": "P10 nicht verfügbar",
+                "target_soc_percent": target,
+                "expected_soc_percent": expected_soc,
+                "expected_target_at": expected_at,
+                "p10_soc_percent": None, "p10_target_at": None}
+
+    p10_values = np.minimum(np.asarray(inputs.pv_w, dtype=float),
+                            np.nan_to_num(np.asarray(p10, dtype=float), nan=0.0))
+    p10_inputs = copy.deepcopy(inputs)
+    p10_inputs.pv_w = p10_values
+    p10_inputs.pv10_w = p10_values.copy()
+    conservative = Optimizer(
+        cfg, stabilize_plan=False, store_warm=False).solve(p10_inputs)
+    p10_soc, p10_at = _late_target_soc(
+        conservative, p10_inputs, config.general.timezone)
+    reaches_expected = expected_soc is not None and expected_soc >= target - 0.5
+    reaches_p10 = p10_soc is not None and p10_soc >= target - 0.5
+    if reaches_p10:
+        code, label = "very_likely", "100 % sehr wahrscheinlich"
+    elif reaches_expected:
+        code, label = "expected_only", "nur mit Erwartungsprognose erreichbar"
+    else:
+        code, label = "p10_unreachable", "unter P10 nicht erreichbar"
+    return {"code": code, "label": label, "target_soc_percent": target,
+            "expected_soc_percent": expected_soc,
+            "expected_target_at": expected_at, "p10_soc_percent": p10_soc,
+            "p10_target_at": p10_at,
+            "solver_seconds": round(float(conservative.solver_seconds), 2)}
+
+
+def _selected_comparison_mode(config, inputs: OptimizerInputs, primary) -> str:
+    """Im Auto-Betrieb die fuer den aktuellen Tag gewaehlte Strategie liefern."""
+    configured = str(config.optimization.charge_strategy)
+    if configured in ("asap", "peak", "late"):
+        return configured
+    table = getattr(primary, "table", pd.DataFrame())
+    if table.empty or "export_line_w" not in table or not len(inputs.index):
+        return "asap"
+    local_index = pd.DatetimeIndex(table.index).tz_convert(
+        config.general.timezone)
+    current_day = pd.Timestamp(inputs.index[0]).tz_convert(
+        config.general.timezone).date()
+    today = pd.to_numeric(
+        table.loc[local_index.date == current_day, "export_line_w"],
+        errors="coerce")
+    return "peak" if today.notna().any() else "asap"
+
+
 def _start_shadow_comparison(config, inputs: OptimizerInputs,
                              primary, primary_violations) -> None:
-    """Alle Modi nach dem Produktivlauf rein lesend im Hintergrund vergleichen."""
+    """Die drei realen Ladestrategien im Hintergrund vergleichen."""
     if not getattr(config.monitoring, "shadow_compare_enabled", True):
         return
-    active = str(config.optimization.charge_strategy)
+    configured = str(config.optimization.charge_strategy)
+    active = _selected_comparison_mode(config, inputs, primary)
     with _runtime_lock:
         if _shadow_status.get("state") in ("queued", "running"):
             log.info("Automatischer Modusvergleich läuft noch; dieser Zyklus wird gebündelt.")
@@ -197,7 +306,7 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
         _shadow_status.update(
             state="queued", started_at=None, finished_at=None,
             generated=pd.Timestamp(inputs.index[0]).isoformat(),
-            message="Vier Modi werden verglichen", result=None)
+            message="Drei Strategien werden verglichen", result=None)
 
     def worker():
         try:
@@ -205,8 +314,13 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                 _shadow_status.update(state="running", started_at=_runtime_iso(),
                                       message="Schattenvergleich läuft")
             rows = {}
-            for strategy in ("auto", "asap", "peak", "late"):
-                if strategy == active:
+            curves = {}
+            late_result = None
+            for strategy in ("asap", "peak", "late"):
+                # Nur ein explizit produktiv gewählter Modus ist exakt derselbe
+                # Plan. Im Auto-Betrieb werden alle drei Strategien separat
+                # gerechnet; Auto selbst ist keine vierte Strategie.
+                if configured == strategy:
                     result, violations = primary, primary_violations
                 else:
                     cfg = copy.deepcopy(config)
@@ -224,6 +338,9 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                     warnings=sum(v.severity == "warning" for v in violations),
                     active=strategy == active)
                 rows[strategy] = metrics
+                curves[strategy] = _comparison_series(result.table)
+                if strategy == "late":
+                    late_result = result
             valid = {name: value for name, value in rows.items()
                      if not value["errors"] and value["status"] == "Optimal"}
             best = min(valid, key=lambda name: (
@@ -234,11 +351,19 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                 config.monitoring, "shadow_recommend_min_savings_eur", 0.05)))
             recommended = best if saving >= threshold else active
             payload = {
-                "active": active, "recommended": recommended,
+                "active": active, "configured_mode": configured,
+                "recommended": recommended,
                 "best_raw": best, "saving_eur": max(0.0, saving),
                 "modes": rows,
+                "late_confidence": _late_confidence(
+                    config, inputs, late_result) if late_result is not None else None,
             }
             with _runtime_lock:
+                _shadow_curves.update(
+                    generated=pd.Timestamp(inputs.index[0]).isoformat(),
+                    series={"timestamp": [stamp.isoformat()
+                                          for stamp in inputs.index],
+                            "modes": curves})
                 _shadow_status.update(
                     state="done", finished_at=_runtime_iso(), result=payload,
                     message=(f"Empfehlung: {recommended}"
@@ -246,7 +371,8 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                                 " (aktuellen Modus beibehalten)")))
             _record_dashboard_event(
                 config, "shadow_comparison", "Automatischer Modusvergleich abgeschlossen",
-                details={"active": active, "recommended": recommended,
+                details={"active": active, "configured_mode": configured,
+                         "recommended": recommended,
                          "saving_eur": max(0.0, saving)})
         except Exception as exc:
             with _runtime_lock:
@@ -257,142 +383,36 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
     threading.Thread(target=worker, name="ems-shadow-comparison", daemon=True).start()
 
 
-def _comparison_inputs(snapshot: dict) -> OptimizerInputs:
-    raw = snapshot.get("inputs") or {}
-
-    def optional(name):
-        value = raw.get(name)
-        return None if value is None else np.asarray(value, dtype=float)
-
-    return OptimizerInputs(
-        index=pd.DatetimeIndex(pd.to_datetime(raw["index"])),
-        house_load_w=np.asarray(raw["house_load_w"], dtype=float),
-        pv_w=np.asarray(raw["pv_w"], dtype=float),
-        price_ct_kwh=np.asarray(raw["price_ct_kwh"], dtype=float),
-        feedin_ct_kwh=np.asarray(raw["feedin_ct_kwh"], dtype=float),
-        initial_house_soc_wh=float(raw["initial_house_soc_wh"]),
-        initial_car_soc_wh=raw.get("initial_car_soc_wh"),
-        car_present=bool(raw.get("car_present", False)),
-        pv10_w=optional("pv10_w"), ambient_temp_c=optional("ambient_temp_c"),
-        solar_w_m2=optional("solar_w_m2"), load_state=raw.get("load_state"),
-        load_feedback=raw.get("load_feedback"),
-        spot_price_ct_kwh=optional("spot_price_ct_kwh"))
-
-
-def _start_plan_comparison(config, strategy: str) -> dict:
-    """Startet einen reinen Vorschau-Solve aus dem letzten Debug-Snapshot."""
-    strategy = str(strategy).lower()
-    if strategy not in ("auto", "asap", "peak", "late"):
-        raise ValueError("strategy muss asap|peak|late|auto sein")
-    with _runtime_lock:
-        if _comparison_status.get("state") in ("queued", "running"):
-            raise ValueError("Eine Planvergleichsrechnung läuft bereits")
-        _comparison_status.update(
-            state="queued", strategy=strategy, requested_at=_runtime_iso(),
-            started_at=None, finished_at=None,
-            message="Vergleich wartet auf den Solver", result=None)
-
-    def worker():
-        try:
-            with _runtime_lock:
-                _comparison_status.update(
-                    state="running", started_at=_runtime_iso(),
-                    message="Vergleichsplan wird berechnet")
-            with open(config.report.snapshot_path, encoding="utf-8") as fh:
-                snap = json.load(fh)
-            inp = _comparison_inputs(snap)
-            cmp_cfg = copy.deepcopy(config)
-            cmp_cfg.optimization.charge_strategy = strategy
-            result = Optimizer(cmp_cfg, stabilize_plan=False,
-                               store_warm=False).solve(inp)
-            violations = validate_plan(cmp_cfg, result, inp)
-            current = pd.DataFrame(snap.get("plan") or {}, index=inp.index)
-            if snap.get("plan_mode") is not None:
-                current["mode"] = snap["plan_mode"]
-            base = _comparison_metrics(
-                current, float(snap.get("total_cost_eur", 0)) * 100.0,
-                cmp_cfg.general.slot_minutes)
-            candidate = _comparison_metrics(
-                result.table, result.total_cost_ct, cmp_cfg.general.slot_minutes)
-            delta = {key: (round(candidate[key] - base[key], 3)
-                           if isinstance(candidate.get(key), (int, float))
-                           and isinstance(base.get(key), (int, float)) else None)
-                     for key in candidate}
-
-            def _series(table, *terms):
-                values = sum((factor * pd.to_numeric(table.get(
-                    column, pd.Series(0.0, index=table.index)),
-                    errors="coerce").fillna(0.0) for column, factor in terms),
-                    start=pd.Series(0.0, index=table.index))
-                return [round(float(value), 2) for value in values]
-
-            series = {
-                "timestamp": [stamp.isoformat() for stamp in inp.index],
-                "base_battery_w": _series(
-                    current, ("batt_dc_charge_w", 1), ("batt_ac_charge_w", 1),
-                    ("batt_discharge_w", -1)),
-                "candidate_battery_w": _series(
-                    result.table, ("batt_dc_charge_w", 1),
-                    ("batt_ac_charge_w", 1), ("batt_discharge_w", -1)),
-                "base_grid_w": _series(
-                    current, ("grid_import_w", 1), ("grid_export_w", -1)),
-                "candidate_grid_w": _series(
-                    result.table, ("grid_import_w", 1),
-                    ("grid_export_w", -1)),
-                "base_soc_percent": _series(
-                    current, ("house_soc_percent", 1)),
-                "candidate_soc_percent": _series(
-                    result.table, ("house_soc_percent", 1)),
-            }
-            payload = {"generated": snap.get("generated"), "base": base,
-                       "candidate": candidate, "delta": delta,
-                       "series": series,
-                       "solver_seconds": round(result.solver_seconds, 2),
-                       "status": result.status,
-                       "errors": sum(v.severity == "error" for v in violations),
-                       "warnings": sum(v.severity == "warning" for v in violations)}
-            with _runtime_lock:
-                _comparison_status.update(
-                    state="done", finished_at=_runtime_iso(),
-                    message="Vergleich fertig – noch nicht übernommen", result=payload)
-            _record_dashboard_event(
-                config, "comparison", f"Planvergleich für {strategy} abgeschlossen",
-                details={"cost_delta_eur": delta.get("cost_eur"),
-                         "solver_seconds": payload["solver_seconds"]})
-        except Exception as exc:
-            with _runtime_lock:
-                _comparison_status.update(
-                    state="error", finished_at=_runtime_iso(),
-                    message=f"Vergleich fehlgeschlagen: {exc}", result=None)
-            _record_dashboard_event(config, "comparison",
-                                    f"Planvergleich fehlgeschlagen: {exc}",
-                                    level="error")
-            log.exception("Planvergleich fehlgeschlagen")
-
-    threading.Thread(target=worker, name="ems-plan-comparison", daemon=True).start()
-    return _runtime_snapshot()["comparison"]
-
-
 def _audit_execution(config, now, live, e3dc=None):
-    """Vorherigen Sollslot mit aktuellem E3DC-Snapshot vergleichen."""
+    """Sollslot mit Livewerten oder gereifter E3/DC-Zaehlerenergie pruefen."""
     if not config.monitoring.execution_audit_enabled or not live:
         return None
     # Startup-Karenz: nach einem (Neu-)Start ist die Steuerung noch nicht wieder
     # gesetzt/eingependelt (die Limits waren zwischenzeitlich freigegeben, der
     # E3DC lief auf auto) -> die erste(n) Vergleiche würden fälschlich eine
     # Akku-Abweichung melden. Erst nach der Karenz prüfen.
-    from .local_history import (read_execution_plan_slot,
+    from .local_history import (read_actual, read_execution_plan_slot,
                                 write_execution_audit)
     grace_min = float(getattr(
         config.monitoring, "execution_audit_startup_grace_minutes", 5.0) or 0.0)
-    in_grace = grace_min > 0.0 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0
+    # Die Karenz betrifft nur aktuelle Livewerte nach dem Reapply. Ein um
+    # 75 Minuten gereifter Zaehler-Slot liegt vor dem Neustart und darf nicht
+    # uebersprungen werden (er wuerde im naechsten Lauf sonst nie nachgeholt).
+    in_grace = (e3dc is None and grace_min > 0.0
+                and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0)
     audit_ts = now
+    audit_end = now
     meter = None
     if e3dc is not None:
         slot = pd.Timedelta(minutes=config.general.slot_minutes)
-        audit_ts = pd.Timestamp(now) - slot
+        delay_minutes = max(float(config.general.slot_minutes), float(getattr(
+            config.monitoring, "execution_meter_delay_minutes", 75.0) or 75.0))
+        audit_ts = (pd.Timestamp(now) - pd.Timedelta(
+            minutes=delay_minutes)).floor(
+                f"{config.general.slot_minutes}min")
+        audit_end = audit_ts + slot
         try:
-            values = e3dc.read_energy_15min(audit_ts, now)
+            values = e3dc.read_energy_15min(audit_ts, audit_end)
             meter = values.get(pd.Timestamp(audit_ts).tz_convert("UTC").isoformat())
         except Exception as exc:
             log.debug("E3DC-Slotenergie noch nicht lesbar (%s).", exc)
@@ -409,9 +429,10 @@ def _audit_execution(config, now, live, e3dc=None):
                  "message": "Nach Neustart – Steuerung wird gesetzt/eingependelt "
                             "(Abweichungsprüfung pausiert).",
                  "planned": planned or {},
-                 "actual": {"grid_w": live.get("grid_w"),
-                            "battery_w": live.get("battery_w"),
-                            "soc": live.get("soc_percent")},
+                 "actual": ({} if e3dc is not None else {
+                     "grid_w": live.get("grid_w"),
+                     "battery_w": live.get("battery_w"),
+                     "soc": live.get("soc_percent")}),
                  "deviations": {}}
         write_execution_audit(config.e3dc_rscp.history_db_path, audit_ts, audit)
         return audit
@@ -427,13 +448,28 @@ def _audit_execution(config, now, live, e3dc=None):
     if meter is not None:
         dt = config.general.slot_minutes / 60.0
         end_plan = read_execution_plan_slot(
-            config.e3dc_rscp.history_db_path, now) or {}
+            config.e3dc_rscp.history_db_path, audit_end) or {}
+        # Der aktuelle Live-SoC gehoert nicht zu einem 75 Minuten alten Slot.
+        # Nur einen passend archivierten Ist-Wert am Slotende verwenden.
+        actual_soc = None
+        try:
+            soc_history = read_actual(
+                config.e3dc_rscp.history_db_path, "soc",
+                audit_end - slot / 2, audit_end + slot / 2,
+                config.general.timezone)
+            if not soc_history.empty:
+                nearest = min(soc_history.index,
+                              key=lambda stamp: abs(stamp - audit_end))
+                if abs(nearest - audit_end) <= slot / 2:
+                    actual_soc = float(soc_history.loc[nearest])
+        except Exception as exc:
+            log.debug("Historischer SoC für Ausführungs-Audit fehlt (%s).", exc)
         actual = {
             "grid_w": (float(meter["grid_import_wh"])
                        - float(meter["grid_export_wh"])) / dt,
             "battery_w": (float(meter["bat_in_wh"])
                           - float(meter["bat_out_wh"])) / dt,
-            "soc": live.get("soc_percent"),
+            "soc": actual_soc,
             "pv_w": float(meter["pv_wh"]) / dt,
             "load_w": float(meter["load_wh"]) / dt,
             "grid_export_w": float(meter["grid_export_wh"]) / dt,
@@ -531,7 +567,174 @@ def _audit_execution(config, now, live, e3dc=None):
     return audit
 
 
-def _live_recalc_needed(config, e3dc):
+class _LiveExecutionMonitor:
+    """Schnelle, vorlaeufige Planpruefung aus geglaetteten E3/DC-Livewerten."""
+
+    def __init__(self, config, publisher, e3dc):
+        self.config, self.publisher, self.e3dc = config, publisher, e3dc
+        self.samples = []
+        self.slot = None
+        self.bad_count = self.good_count = 0
+        self.alarm = False
+        self.last_state = None
+        self.last_write = None
+
+    @staticmethod
+    def _interpolated_median(samples, field: str, window_s: float,
+                             step_s: float, max_gap_s: float):
+        points = []
+        for ts, values in samples:
+            try:
+                value = float(values[field])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(value):
+                points.append((pd.Timestamp(ts), value))
+        if len(points) < 2:
+            return None
+        points.sort(key=lambda item: item[0])
+        end = points[-1][0]
+        points = [(ts, value) for ts, value in points
+                  if (end - ts).total_seconds() <= max(window_s, step_s)]
+        if len(points) < 2:
+            return None
+        origin = points[0][0]
+        xp = np.asarray([(ts - origin).total_seconds() for ts, _ in points])
+        fp = np.asarray([value for _, value in points], dtype=float)
+        grid_start = max(0.0, xp[-1] - max(window_s, step_s))
+        grid = np.arange(grid_start, xp[-1] + step_s * 0.25,
+                         max(1.0, step_s))
+        values = []
+        for target in grid:
+            pos = int(np.searchsorted(xp, target))
+            if pos < len(xp) and abs(xp[pos] - target) < 1e-6:
+                values.append(fp[pos])
+            elif 0 < pos < len(xp) and xp[pos] - xp[pos - 1] <= max_gap_s:
+                ratio = (target - xp[pos - 1]) / (xp[pos] - xp[pos - 1])
+                values.append(fp[pos - 1] + ratio * (fp[pos] - fp[pos - 1]))
+        return float(np.median(values)) if values else None
+
+    @staticmethod
+    def _window_energy_wh(samples, field: str, max_gap_s: float) -> float:
+        points = []
+        for ts, values in samples:
+            try:
+                value = float(values[field])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if np.isfinite(value):
+                points.append((pd.Timestamp(ts), value))
+        points.sort(key=lambda item: item[0])
+        energy = 0.0
+        for (t0, v0), (t1, v1) in zip(points, points[1:]):
+            seconds = (t1 - t0).total_seconds()
+            if 0.0 < seconds <= max_gap_s:
+                energy += 0.5 * (v0 + v1) * seconds / 3600.0
+        return energy
+
+    def sample(self, now=None):
+        mon = self.config.monitoring
+        if (not mon.execution_audit_enabled or not mon.execution_live_enabled
+                or self.e3dc is None):
+            return None
+        now = pd.Timestamp(now if now is not None else
+                           pd.Timestamp.now(tz=self.config.general.timezone))
+        if now.tzinfo is None:
+            now = now.tz_localize(self.config.general.timezone)
+        else:
+            now = now.tz_convert(self.config.general.timezone)
+        try:
+            live = self.e3dc.read_live(force=True)
+        except Exception as exc:
+            # Fehlende Livewerte duerfen den EMS-Zyklus nie beenden. Die
+            # bestaetigte Zählerprüfung läuft unabhängig davon später weiter.
+            log.debug("Vorläufige Live-Ausführungsprüfung ohne Daten (%s).", exc)
+            return None
+        if not live:
+            return None
+        from .local_history import (read_execution_plan_slot,
+                                    write_execution_audit)
+        slot = now.floor(f"{self.config.general.slot_minutes}min")
+        planned = read_execution_plan_slot(
+            self.config.e3dc_rscp.history_db_path, slot)
+        if not planned or planned.get("battery_w") is None:
+            return live
+        if self.slot != slot:
+            self.slot, self.samples = slot, []
+            self.bad_count = self.good_count = 0
+            self.last_state = self.last_write = None
+        self.samples.append((now, dict(live)))
+        keep_s = max(mon.execution_live_window_seconds,
+                     mon.execution_live_max_gap_seconds) + 10.0
+        self.samples = [(ts, value) for ts, value in self.samples
+                        if (now - ts).total_seconds() <= keep_s]
+        actual_w = self._interpolated_median(
+            self.samples, "battery_w", mon.execution_live_window_seconds,
+            mon.execution_live_sample_seconds,
+            mon.execution_live_max_gap_seconds)
+        span_s = ((self.samples[-1][0] - self.samples[0][0]).total_seconds()
+                  if len(self.samples) > 1 else 0.0)
+        settled = ((now - slot).total_seconds() >= mon.execution_live_settle_seconds
+                   and span_s >= min(mon.execution_live_settle_seconds,
+                                     mon.execution_live_window_seconds))
+        if actual_w is None or not settled:
+            return live
+        planned_w = float(planned["battery_w"])
+        if not np.isfinite(planned_w):
+            return live
+        delta = actual_w - planned_w
+        bad = abs(delta) > float(mon.execution_battery_tolerance_w)
+        if bad:
+            self.bad_count += 1
+            self.good_count = 0
+        else:
+            self.good_count += 1
+            self.bad_count = 0
+        consecutive = max(1, int(mon.execution_live_consecutive))
+        if bad and self.bad_count >= consecutive and not self.alarm:
+            self.alarm = True
+            if self.publisher is not None:
+                self.publisher.publish_alert(
+                    "warning", "Vorläufige EMS-Live-Abweichung: Akku Soll "
+                    f"{planned_w:.0f} W, Ist-Median {actual_w:.0f} W. "
+                    "Bestätigung folgt mit E3/DC-Zählerenergie.")
+        elif not bad and self.good_count >= consecutive and self.alarm:
+            self.alarm = False
+            if self.publisher is not None:
+                self.publisher.publish_alert(
+                    "info", "EMS-Live-Ausführung folgt wieder dem Sollplan.")
+        state = ("live_deviation" if self.alarm else
+                 "live_suspect" if bad else "live_ok")
+        ok = not self.alarm
+        message = (f"Vorläufige Live-Abweichung Akku: Soll {planned_w:.0f} W, "
+                   f"Ist-Median {actual_w:.0f} W."
+                   if bad else "Vorläufige Live-Prüfung innerhalb der Toleranz.")
+        energy_wh = self._window_energy_wh(
+            self.samples, "battery_w", mon.execution_live_max_gap_seconds)
+        audit = {
+            "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            "ok": ok, "state": state, "cause": "live",
+            "message": message, "planned": planned,
+            "actual": {"battery_w": round(actual_w, 1),
+                       "window_battery_wh": round(energy_wh, 2),
+                       "samples": len(self.samples),
+                       "window_seconds": round(span_s, 1)},
+            "deviations": {"battery_w": round(delta, 1)},
+        }
+        changed = state != self.last_state
+        due = (self.last_write is None
+               or (now - self.last_write).total_seconds() >= 30.0)
+        if changed or due:
+            try:
+                write_execution_audit(
+                    self.config.e3dc_rscp.history_db_path, slot, audit)
+                self.last_state, self.last_write = state, now
+            except Exception as exc:
+                log.debug("Vorläufiges Live-Audit nicht speicherbar (%s).", exc)
+        return live
+
+
+def _live_recalc_needed(config, e3dc, live=None):
     """Weicht die gemessene Netzleistung im laufenden Slot stark vom Sollwert ab?
     Rückgabe: Abweichung (W) bei Überschreitung, sonst None. Netz ist hier das
     richtige Signal: es bündelt PV- UND Last-Prognosefehler (Netz = Last - PV +
@@ -547,7 +750,7 @@ def _live_recalc_needed(config, e3dc):
         planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, slot)
         if not planned or planned.get("grid_w") is None:
             return None
-        live = e3dc.read_live(force=True)
+        live = live or e3dc.read_live(force=True)
         if not live or live.get("grid_w") is None:
             return None
         delta = float(live["grid_w"]) - float(planned["grid_w"])
@@ -561,11 +764,16 @@ def _publish_execution_alarm(publisher, config, audit) -> None:
     if publisher is None or not audit:
         return
     from .local_history import read_execution_audits
+    required = max(1, config.monitoring.execution_alert_consecutive)
     recent = read_execution_audits(
-        config.e3dc_rscp.history_db_path,
-        max(1, config.monitoring.execution_alert_consecutive))
-    consecutive = (len(recent) >= config.monitoring.execution_alert_consecutive
-                   and all(not item["ok"] for item in recent))
+        config.e3dc_rscp.history_db_path, max(20, required * 5))
+    # Vorläufige Live-Prüfungen besitzen einen eigenen Alarm mit Hysterese.
+    # Hier dürfen ausschließlich die später bestätigten Zählerprüfungen zählen.
+    confirmed = [item for item in recent
+                 if not str(item.get("state", "")).startswith("live_")
+                 and item.get("state") not in ("startup", "data_waiting")]
+    consecutive = (len(confirmed) >= required
+                   and all(not item["ok"] for item in confirmed[:required]))
     if consecutive and not _execution_alarm["failed"]:
         publisher.publish_alert(
             "warning", "EMS-Ausführung weicht wiederholt vom Plan ab: "
@@ -2389,8 +2597,6 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             if publisher is not None:
                 publisher.recalc_event.set()
             return {"queued": fresh, "runtime": status}
-        if action == "compare":
-            return _start_plan_comparison(config, payload.get("strategy", ""))
         if action == "e3dc_control":
             if e3dc is None:
                 raise ValueError("Keine RSCP-Verbindung – E3/DC-Steuerung nicht schaltbar")
@@ -2529,7 +2735,6 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     return
                 labels = {
                     "recalc": "Manuelle Planneuberechnung angefordert",
-                    "compare": f"Planvergleich für {payload.get('strategy', '')} angefordert",
                     "e3dc_control": ("E3/DC-Steuerung aktiviert" if payload.get("enabled")
                                       else "E3/DC-Steuerung deaktiviert"),
                     "mode": f"Optimierungsmodus auf {payload.get('strategy', '')} geändert",
@@ -2600,6 +2805,18 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 status = _runtime_snapshot()
                 status["solver_running"] = solver_is_running()
                 self._reply(status)
+                return
+
+            # Kurven des bereits automatisch gerechneten Modusvergleichs.
+            # Bewusst nicht Teil des häufig gepollten Status-Payloads.
+            if path == "/api/mode-comparison.json":
+                with _runtime_lock:
+                    curves = {"generated": _shadow_curves.get("generated"),
+                              "series": _shadow_curves.get("series")}
+                if curves["series"] is None:
+                    self._reply({"status": "unavailable"}, 503)
+                else:
+                    self._reply(curves)
                 return
 
             if path == "/api/events.json":
@@ -2819,6 +3036,8 @@ def main() -> None:
                                config_path=args.config,
                                schedule_runner=schedule_runner)
 
+    live_execution = _LiveExecutionMonitor(config, publisher, e3dc)
+
     # Geordnetes Beenden: SIGTERM (systemctl stop/restart) und SIGINT lösen ein
     # SystemExit aus, damit der finally-Block läuft und u. a. die persistenten
     # RSCP-Lade-/Entlade-Limits freigegeben werden (EMS_POWER_LIMITS_USED=false) –
@@ -2862,16 +3081,28 @@ def main() -> None:
             # jeder Schritt eine große Live-Abweichung vom Plan (Auto-Recalc).
             check = (max(10.0, config.recalc.check_seconds)
                      if config.recalc.enabled else None)
+            live_check = None
+            if (e3dc is not None
+                    and config.monitoring.execution_audit_enabled
+                    and config.monitoring.execution_live_enabled):
+                live_check = max(
+                    1.0, config.monitoring.execution_live_sample_seconds)
             while True:
                 remaining = next_mark - _time.time()
                 if remaining <= 0:
                     break
-                step = remaining if check is None else min(check, remaining)
+                waits = [remaining]
+                if check is not None:
+                    waits.append(check)
+                if live_check is not None:
+                    waits.append(live_check)
+                step = min(waits)
                 if publisher.wait_for_recalc(step):
                     log.info("Neuberechnung per Dashboard/MQTT angefordert – "
                              "Zyklus startet sofort.")
                     break
-                delta = _live_recalc_needed(config, e3dc)
+                live = live_execution.sample()
+                delta = _live_recalc_needed(config, e3dc, live=live)
                 if delta is not None:
                     log.info("Große Live-Abweichung (%.0f W Netz vs. Plan) – "
                              "Neuberechnung sofort.", delta)

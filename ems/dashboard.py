@@ -552,17 +552,10 @@ def _controls_block(config) -> str:
         "<div class='schedule-list' id='schedule-list'></div></section>")
     compare = (
         "<section class='plan-compare'><div><b>Automatischer Modusvergleich</b>"
-        "<small>Alle vier Modi nach jedem Lauf – Empfehlung ohne automatische Umschaltung</small></div>"
+        "<small>Drei Ladestrategien mit Karten und Kurven; die aktuelle Auto-Auswahl ist markiert</small></div>"
         "<div id='shadow-result' class='compare-result'>Vergleich wird nach dem nächsten Lauf erstellt.</div>"
-        "<div><b>Zusätzlichen Detailvergleich starten</b>"
-        "<small>Reine Vorschau mit Kurven – sendet keine Steuerwerte</small></div>"
-        "<div class='compare-actions'><select id='compare-strategy'>"
-        + "".join(f"<option value='{m}'{' selected' if m == strat else ''}>"
-                  f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak", "late"))
-        + "</select><button onclick='emsCompare()'>Vergleich berechnen</button>"
-        "<button class='primary' id='compare-apply' onclick='emsCompareApply()' disabled>Modus übernehmen</button></div>"
-        "<div id='compare-result' class='compare-result'>Noch kein Vergleich berechnet.</div>"
-        "<div id='compare-chart' class='compare-chart'></div></section>")
+        "<div id='shadow-chart-status' class='compare-chart-status'></div>"
+        "<div id='shadow-chart' class='compare-chart'></div></section>")
 
     js = """
 const EMS_LOADS=%s;
@@ -618,44 +611,39 @@ async function emsE3dcControl(el){
   try{const r=await fetch('api/control/e3dc_control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));const d=await r.json(),verified=d.result.verified!==false;label.textContent=enabled?'aktiv':(verified?'ausgeschaltet':'aus · unbestätigt');m.textContent=(verified?'✓ ':'⚠ ')+(d.result.message||'E3/DC-Steuerung geändert');if(window.emsRuntimePoll)window.emsRuntimePoll();}
   catch(e){el.checked=!enabled;label.textContent=el.checked?'aktiv':'ausgeschaltet';m.textContent='✗ '+e.message;}finally{el.disabled=false;}
 }
-async function emsCompare(){
-  const s=document.getElementById('compare-strategy').value,m=document.getElementById('compare-result'),chart=document.getElementById('compare-chart');
-  if(chart){chart.innerHTML='';chart.style.display='none';}
-  m.textContent='… Vergleich wird vorbereitet';document.getElementById('compare-apply').disabled=true;
-  try{const r=await fetch('api/control/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:s})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));m.textContent='… Vergleich läuft';if(window.emsRuntimePoll)window.emsRuntimePoll();}catch(e){m.textContent='✗ '+e.message;}
+function emsModeName(k){return({auto:'Automatisch',asap:'Früh laden',peak:'Spitzen glätten',late:'Spät laden'})[k]||k;}
+function emsLateBadge(c,f){if(!c)return '';const tip='Ziel '+f(c.target_soc_percent,1)+' %% · Erwartung '+f(c.expected_soc_percent,1)+' %% · P10 '+f(c.p10_soc_percent,1)+' %%';return '<div class="late-confidence '+emsEsc(c.code)+'" title="'+emsEsc(tip)+'"><span>Late-Ziel</span><b>'+emsEsc(c.label)+'</b><small>'+emsEsc(tip)+'</small></div>';}
+function emsModeCards(r,buttons){
+  const f=(v,d=2)=>v==null?'–':Number(v).toLocaleString('de-DE',{maximumFractionDigits:d});
+  return '<div class="mode-compare-grid">'+Object.entries(r.modes).filter(([k])=>k!==\'auto\').map(([k,m])=>'<article class="mode-compare-card '+(k===r.recommended?'recommended ':'')+(m.active?'active ':'')+'"><header><div><b>'+emsModeName(k)+'</b><small>'+(m.active?(r.configured_mode===\'auto\'?\'aktuell automatisch gewählt\':\'aktiver Modus\'):k===r.recommended?'Empfehlung':'Vorschau')+'</small></div>'+(k===r.recommended?'<span class="recommend-badge">empfohlen</span>':'')+'</header><div class="mode-metrics"><div><span>Kosten</span><b>'+f(m.cost_eur)+' €</b></div><div><span>Netzbezug</span><b>'+f(m.grid_import_kwh)+' kWh</b></div><div><span>Einspeisung</span><b>'+f(m.grid_export_kwh)+' kWh</b></div><div><span>Spitze</span><b>'+f(m.peak_export_w,0)+' W</b></div><div><span>Abregelung</span><b>'+f(m.curtailment_kwh)+' kWh</b></div><div><span>Eingriffe</span><b>'+f(m.intervention_slots,0)+' Slots</b></div><div><span>End-SoC</span><b>'+f(m.end_soc_percent,1)+' %%</b></div><div class="wide"><span>Max-SoC</span><b>'+f(m.max_soc_percent,1)+' %% · '+(m.max_soc_at?new Date(m.max_soc_at).toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'}):'–')+'</b></div></div><small class="mode-validation">'+f(m.errors,0)+' Fehler · '+f(m.warnings,0)+' Warnungen</small>'+(k==='late'?emsLateBadge(r.late_confidence,f):'')+(buttons&&!m.active?'<button onclick="emsMode(\\\''+k+'\\\')">Diesen Modus übernehmen</button>':'')+'</article>').join('')+'</div>';
 }
-function emsCompareApply(){const s=document.getElementById('compare-strategy').value;if(confirm('Optimierungsmodus „'+document.getElementById('compare-strategy').selectedOptions[0].text+'“ übernehmen und produktiv neu berechnen?'))emsMode(s);}
 function emsShadowRender(c){
   const box=document.getElementById('shadow-result');if(!box||!c)return;
-  if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Schattenvergleich läuft');return;}
+  if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Schattenvergleich läuft');const chart=document.getElementById('shadow-chart');if(chart)chart.style.display='none';return;}
   if(c.state==='error'){box.textContent='✗ '+c.message;return;}
   if(c.state!=='done'||!c.result)return;
-  const r=c.result,names={auto:'Automatisch',asap:'Früh laden',peak:'Spitzen glätten',late:'Spät laden'},f=(v,d=2)=>v==null?'–':Number(v).toLocaleString('de-DE',{maximumFractionDigits:d});
-  let rows=Object.entries(r.modes).map(([k,m])=>'<tr class="'+(k===r.recommended?'recommended ':'')+(m.active?'active':'')+'"><th>'+names[k]+(m.active?' <small>aktiv</small>':'')+'</th><td>'+f(m.cost_eur)+' €</td><td>'+f(m.grid_import_kwh)+' kWh</td><td>'+f(m.grid_export_kwh)+' kWh</td><td>'+f(m.peak_export_w,0)+' W</td><td>'+f(m.curtailment_kwh)+' kWh</td><td>'+(m.max_soc_at?new Date(m.max_soc_at).toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'}):'–')+' ('+f(m.max_soc_percent,1)+' %%)</td><td>'+f(m.end_soc_percent,1)+' %%</td></tr>').join('');
-  box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+'</div><div class="shadow-table-wrap"><table class="shadow-table"><thead><tr><th>Modus</th><th>Kosten</th><th>Netzbezug</th><th>Einspeisung</th><th>Spitze</th><th>Abregelung</th><th>Max-SoC</th><th>End-SoC</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(r.recommended!==r.active?'<button class="primary shadow-apply" onclick="emsMode(\\''+r.recommended+'\\')">Empfehlung übernehmen</button>':'');
+  const r=c.result;
+  box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+'</div>'+emsModeCards(r,false)+(r.recommended!==r.active?'<button class="primary shadow-apply" onclick="emsMode(\\''+r.recommended+'\\')">Empfehlung übernehmen</button>':'');
+  window.EMS_SHADOW_LAST=r;
+  if(window.EMS_SHADOW_CURVE_GEN!==c.generated)emsShadowCurves(c.generated);
 }
-function emsCompareRender(c){
-  if(!c)return;const box=document.getElementById('compare-result'),apply=document.getElementById('compare-apply'),chart=document.getElementById('compare-chart');if(!box)return;
-  if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Vergleich läuft');apply.disabled=true;return;}
-  if(c.state==='error'){box.textContent='✗ '+c.message;apply.disabled=true;return;}
-  if(c.state!=='done'||!c.result)return;
-  const r=c.result,b=r.base,n=r.candidate,d=r.delta,fmt=(v,u)=>Number(v).toLocaleString('de-DE',{maximumFractionDigits:3})+(u||''),sign=(v,u)=>(v>0?'+':'')+fmt(v,u);
-  box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+' · Solver '+fmt(r.solver_seconds,' s')+'</div><div class="compare-grid">'+
-    [['Kosten',b.cost_eur,n.cost_eur,d.cost_eur,' €'],['Netzbezug',b.grid_import_kwh,n.grid_import_kwh,d.grid_import_kwh,' kWh'],['Einspeisung',b.grid_export_kwh,n.grid_export_kwh,d.grid_export_kwh,' kWh'],['Einspeisespitze',b.peak_export_w,n.peak_export_w,d.peak_export_w,' W'],['Eingriffs-Slots',b.restricted_slots,n.restricted_slots,d.restricted_slots,''],['End-SoC',b.end_soc_percent,n.end_soc_percent,d.end_soc_percent,' %%']].map(x=>'<div><span>'+x[0]+'</span><b>'+fmt(x[2],x[4])+'</b><small>bisher '+fmt(x[1],x[4])+' · Δ '+sign(x[3],x[4])+'</small></div>').join('')+'</div><small>'+r.errors+' Fehler · '+r.warnings+' Warnungen · Datenstand '+new Date(r.generated).toLocaleString('de-DE')+'</small>';
-  apply.disabled=r.errors>0;document.getElementById('compare-strategy').value=c.strategy;
-  window.EMS_COMPARE_LAST=r;if(chart&&r.series&&window.Plotly){const s=r.series,dark=document.documentElement.classList.contains('dark'),grid=dark?'#354352':'#e3e8ed',font=dark?'#e7edf4':'#27313a';chart.style.display='block';Plotly.react(chart,[
-   {x:s.timestamp,y:s.base_battery_w,name:'Akku bisher',line:{color:'#8c98a4',dash:'dash'}},
-   {x:s.timestamp,y:s.candidate_battery_w,name:'Akku Vergleich',line:{color:'#28a261'}},
-   {x:s.timestamp,y:s.base_grid_w,name:'Netz bisher',line:{color:'#a6afb8',dash:'dot'}},
-   {x:s.timestamp,y:s.candidate_grid_w,name:'Netz Vergleich',line:{color:'#357fc4'}},
-   {x:s.timestamp,y:s.base_soc_percent,name:'SoC bisher',yaxis:'y2',line:{color:'#bb9154',dash:'dash'}},
-   {x:s.timestamp,y:s.candidate_soc_percent,name:'SoC Vergleich',yaxis:'y2',line:{color:'#e6a12a'}}
-  ],{height:340,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:66},legend:{orientation:'h',x:0,y:-.18,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
+async function emsShadowCurves(generated){
+  const status=document.getElementById('shadow-chart-status');
+  if(window.EMS_SHADOW_CURVE_LOADING===generated)return;
+  window.EMS_SHADOW_CURVE_LOADING=generated;if(status)status.textContent='… Vergleichskurven werden geladen';
+  try{const q=await fetch('api/mode-comparison.json?_='+Date.now(),{cache:'no-store'});if(!q.ok)throw Error(q.status);const d=await q.json();if(d.generated!==generated)throw Error('Kurven gehören noch zum vorherigen Plan');window.EMS_SHADOW_CURVES=d.series;window.EMS_SHADOW_CURVE_GEN=generated;emsShadowChart(d.series);if(status)status.textContent='';}
+  catch(e){if(status)status.textContent='Kurven noch nicht verfügbar – werden beim nächsten Statusabruf erneut geladen';}
+  finally{window.EMS_SHADOW_CURVE_LOADING=null;}
 }
-window.addEventListener('ems-status',e=>emsCompareRender(e.detail.comparison));
+function emsShadowChart(s){
+  const chart=document.getElementById('shadow-chart');if(!chart||!s||!window.Plotly)return;
+  const controls=document.getElementById('ems-controls');if(controls&&!controls.open)return;
+  const dark=document.documentElement.classList.contains('dark'),grid=dark?'#354352':'#e3e8ed',font=dark?'#e7edf4':'#27313a',colors={asap:'#28a261',peak:'#e29a2d',late:'#9b6bd3'},tr=[];Object.entries(s.modes).filter(([k])=>k!=='auto').forEach(([k,v])=>{tr.push({x:s.timestamp,y:v.battery_w,name:emsModeName(k)+' · Akku',line:{color:colors[k]}});tr.push({x:s.timestamp,y:v.soc_percent,name:emsModeName(k)+' · SoC',yaxis:'y2',line:{color:colors[k],dash:'dot'}});tr.push({x:s.timestamp,y:v.grid_w,name:emsModeName(k)+' · Netz',visible:'legendonly',line:{color:colors[k],dash:'dash'}});});chart.style.display='block';Plotly.react(chart,tr,
+  {height:380,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:76},legend:{orientation:'h',x:0,y:-.2,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Akkuleistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
 window.addEventListener('ems-status',e=>emsShadowRender(e.detail.shadow_comparison));
 if(window.emsRuntimePoll)window.emsRuntimePoll();
-window.addEventListener('ems-theme-change',()=>{if(window.EMS_COMPARE_LAST)emsCompareRender({state:'done',message:'Vergleich fertig – noch nicht übernommen',strategy:document.getElementById('compare-strategy').value,result:window.EMS_COMPARE_LAST});});
+window.addEventListener('ems-theme-change',()=>{if(window.EMS_SHADOW_CURVES)emsShadowChart(window.EMS_SHADOW_CURVES);});
+document.getElementById('ems-controls')?.addEventListener('toggle',e=>{if(e.target.open&&window.EMS_SHADOW_CURVES)emsShadowChart(window.EMS_SHADOW_CURVES);});
 async function emsBat(a){
   const action=a==='selected'?document.getElementById('schedule-action').value:a,
     watts=parseFloat(document.getElementById('schedule-watts').value),
@@ -1583,25 +1571,35 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .ctl-section input {{ width: 75px !important; margin: 0 3px; }}
  .button-group {{ display: flex; flex-wrap: wrap; gap: 6px; }}
  .controls .ctl-msg {{ margin-top: 9px; font-size: 12px; color: #555; min-height: 1em; }}
- .plan-compare {{ display: grid; grid-template-columns: minmax(190px,1fr) minmax(320px,2fr);
-        gap: 10px 18px; margin-top: 12px; padding: 13px; border: 1px solid #dbe3eb;
+ .plan-compare {{ display: block; margin-top: 12px; padding: 13px; border: 1px solid #dbe3eb;
         border-radius: 9px; background: #f5f9fd; }}
  .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: 3px; }}
- .compare-actions {{ display: flex; flex-wrap: wrap; gap: 7px; align-items: center; justify-content: flex-end; }}
- .compare-actions select {{ width: auto; min-width: 155px; }}
- .compare-result {{ grid-column: 1/-1; color: #5e6872; }}
- .compare-chart {{ display: none; grid-column: 1/-1; width: 100%; min-height: 340px; }}
+ .compare-result {{ color: #5e6872; }}
+ .compare-chart-status {{ min-height: 16px; margin-top: 6px; color: #74808b; font-size: 10px; }}
+ .compare-chart {{ display: none; width: 100%; min-height: 340px; }}
  .compare-note {{ margin-bottom: 7px; }}
- .compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(135px,1fr)); gap: 7px; margin-bottom: 7px; }}
- .compare-grid > div {{ padding: 8px; background: #fff; border: 1px solid #dfe6ed; border-radius: 7px; }}
- .compare-grid span, .compare-grid small {{ display: block; font-size: 10px; color: #74808b; }}
- .compare-grid b {{ display: block; margin: 2px 0; font-size: 14px; }}
- .shadow-table-wrap {{ overflow-x: auto; margin: 7px 0; }}
- .shadow-table {{ width: 100%; border-collapse: collapse; min-width: 850px; font-size: 11px; }}
- .shadow-table th, .shadow-table td {{ padding: 7px 8px; text-align: right; border-bottom: 1px solid #dfe6ed; white-space: nowrap; }}
- .shadow-table th:first-child {{ text-align: left; }}
- .shadow-table tr.recommended {{ background: #e8f6ed; }}
- .shadow-table tr.active th {{ color: #1769c2; }}
+ .mode-compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(205px,1fr)); gap: 8px; margin: 8px 0; }}
+ .mode-compare-card {{ min-width: 0; padding: 10px; border: 1px solid #dfe6ed; border-radius: 9px; background: #fff; }}
+ .mode-compare-card.recommended {{ border-color: #62ad78; box-shadow: inset 0 3px #45a164; }}
+ .mode-compare-card.active {{ border-color: #6ca6dc; }}
+ .mode-compare-card header {{ display: flex; justify-content: space-between; gap: 5px; align-items: flex-start; margin-bottom: 8px; }}
+ .mode-compare-card header b, .mode-compare-card header small {{ display: block; }}
+ .mode-compare-card header small, .mode-metrics span {{ color: #74808b; font-size: 9px; }}
+ .recommend-badge {{ padding: 2px 5px; border-radius: 999px; background: #e1f2e6; color: #27703e; font-size: 9px; }}
+ .mode-metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }}
+ .mode-metrics > div {{ min-width: 0; }}
+ .mode-metrics > div.wide {{ grid-column: 1/-1; }}
+ .mode-metrics span, .mode-metrics b {{ display: block; }}
+ .mode-metrics b {{ font-size: 11px; white-space: nowrap; }}
+ .mode-validation {{ display: block; margin-top: 7px; color: #74808b; font-size: 9px; }}
+ .late-confidence {{ margin-top: 9px; padding: 7px; border-radius: 7px; background: #f1f4f7; }}
+ .late-confidence span, .late-confidence b, .late-confidence small {{ display: block; }}
+ .late-confidence span, .late-confidence small {{ color: #6f7983; font-size: 9px; }}
+ .late-confidence b {{ font-size: 11px; margin: 2px 0; }}
+ .late-confidence.very_likely {{ background: #e6f4ea; color: #246b39; }}
+ .late-confidence.expected_only {{ background: #fff3d8; color: #805a12; }}
+ .late-confidence.p10_unreachable {{ background: #fbe7e5; color: #96342d; }}
+ .mode-compare-card > button {{ width: 100%; margin-top: 8px; font-size: 10px; }}
  .shadow-apply {{ margin-top: 7px; }}
  .control-channels {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }}
  .control-channels span {{ padding: 3px 7px; border-radius: 999px; background: #e7f0f8;
@@ -1702,13 +1700,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .runtime-progress {{ background: #354352; }}
  html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
  html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
- html.dark .detail-grid > div, html.dark .compare-grid > div {{ background: #202b36; border-color: #354352; }}
- html.dark .detail-grid span, html.dark .event time, html.dark .compare-grid span,
- html.dark .compare-grid small {{ color: #aebbc8; }}
+ html.dark .detail-grid > div {{ background: #202b36; border-color: #354352; }}
+ html.dark .detail-grid span, html.dark .event time {{ color: #aebbc8; }}
+ html.dark .compare-chart-status {{ color: #aebbc8; }}
  html.dark .event {{ border-color: #303e4b; }}
  html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
- html.dark .shadow-table th, html.dark .shadow-table td {{ border-color: #354352; }}
- html.dark .shadow-table tr.recommended {{ background: #214332; }}
+ html.dark .mode-compare-card {{ background: #202b36; border-color: #425364; }}
+ html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}
+ html.dark .mode-compare-card.active {{ border-color: #4e86b9; }}
+ html.dark .mode-compare-card header small, html.dark .mode-metrics span {{ color: #aebbc8; }}
+ html.dark .mode-validation {{ color: #aebbc8; }}
+ html.dark .recommend-badge {{ background: #254a32; color: #9bd5ad; }}
+ html.dark .late-confidence {{ background: #2b3743; }}
+ html.dark .late-confidence.very_likely {{ background: #244332; color: #a7d9b7; }}
+ html.dark .late-confidence.expected_only {{ background: #4b4026; color: #f1d18a; }}
+ html.dark .late-confidence.p10_unreachable {{ background: #4b2d2c; color: #efaaa5; }}
  html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
@@ -1827,9 +1833,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .runtime-progress {{ grid-column: 1/-1; grid-row: 2; }}
    #runtime-meta {{ display: none; }}
    #recalc-plan {{ min-height: 42px; grid-column: 1/-1; }}
-   .plan-compare {{ grid-template-columns: 1fr; }}
-   .compare-actions {{ justify-content: stretch; }}
-   .compare-actions > * {{ flex: 1 1 100%; min-height: 44px; }}
+   .mode-compare-grid {{ grid-template-columns: 1fr; }}
    .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
    .event {{ grid-template-columns: 90px 1fr; }}
  }}

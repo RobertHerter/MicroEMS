@@ -12,7 +12,8 @@ import pandas as pd
 import pytest
 
 import ems.main as _m
-from ems.local_history import write_execution_plan
+from ems.local_history import (read_execution_audits, write_actuals,
+                               write_execution_audit, write_execution_plan)
 from ems.main import _audit_execution
 from tests.test_synthetic import make_config
 
@@ -50,8 +51,10 @@ def _plan(cfg):
 class _EnergyLink:
     def __init__(self, meter):
         self.meter = meter
+        self.calls = []
 
     def read_energy_15min(self, start, end):
+        self.calls.append((pd.Timestamp(start), pd.Timestamp(end)))
         return {pd.Timestamp(start).tz_convert("UTC").isoformat(): self.meter}
 
 
@@ -117,13 +120,17 @@ def test_completed_slot_uses_meter_energy_and_classifies_device_error(tmp_path):
                         "bat_in_wh": 0.0, "bat_out_wh": 500.0,
                         "grid_import_wh": 0.0, "grid_export_wh": 0.0})
     audit = _audit_execution(
-        cfg, TS + pd.Timedelta(minutes=15),
+        cfg, TS + pd.Timedelta(minutes=75),
         {"soc_percent": 48.0}, e3dc=link)
     assert audit["ok"] is False
     assert audit["cause"] == "device"
     assert audit["deviations"]["battery_energy_kwh"] == -1.0
     assert audit["battery_action"] == {
         "planned": "laden", "actual": "entladen", "ok": False}
+    assert link.calls == [(TS, TS + pd.Timedelta(minutes=15))]
+    # Der aktuelle Live-SoC (75 min spaeter) darf nicht dem alten Slot
+    # zugeschrieben werden, wenn kein historischer SoC archiviert ist.
+    assert "soc" not in audit["deviations"]
 
 
 def test_completed_slot_separates_forecast_deviation(tmp_path):
@@ -134,11 +141,44 @@ def test_completed_slot_separates_forecast_deviation(tmp_path):
                         "bat_in_wh": 500.0, "bat_out_wh": 0.0,
                         "grid_import_wh": 0.0, "grid_export_wh": 0.0})
     audit = _audit_execution(
-        cfg, TS + pd.Timedelta(minutes=15),
+        cfg, TS + pd.Timedelta(minutes=75),
         {"soc_percent": 52.0}, e3dc=link)
     assert audit["ok"] is True
     assert audit["cause"] == "forecast"
     assert audit["deviations"]["battery_energy_kwh"] == 0.0
+
+
+def test_delayed_meter_audit_uses_historical_end_soc(tmp_path):
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    write_actuals(cfg.e3dc_rscp.history_db_path,
+                  TS + pd.Timedelta(minutes=15), {"soc_percent": 52.0})
+    link = _EnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75),
+        {"soc_percent": 99.0}, e3dc=link)
+
+    assert audit["actual"]["soc"] == 52.0
+    assert audit["deviations"]["soc"] == 0.0
+
+
+def test_delayed_meter_audit_is_not_suppressed_after_restart(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    link = _EnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+    monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic())
+
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75),
+        {"soc_percent": 99.0}, e3dc=link)
+
+    assert audit["state"] != "startup"
+    assert link.calls == [(TS, TS + pd.Timedelta(minutes=15))]
 
 
 def test_startup_grace_suppresses_audit(tmp_path, monkeypatch):
@@ -159,3 +199,111 @@ def test_startup_grace_suppresses_audit(tmp_path, monkeypatch):
     monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic() - 3600.0)
     audit = _audit_execution(cfg, TS, live)
     assert audit is not None and audit["ok"] is False and "Akku" in audit["message"]
+
+
+def test_live_interpolation_bridges_only_short_gaps():
+    short = [
+        (TS, {"battery_w": 0.0}),
+        (TS + pd.Timedelta(seconds=10), {"battery_w": 100.0}),
+    ]
+    assert _m._LiveExecutionMonitor._interpolated_median(
+        short, "battery_w", 60.0, 5.0, 10.0) == pytest.approx(50.0)
+
+    # Die 20-s-Lücke darf nicht mit erfundenen Zwischenwerten aufgefüllt
+    # werden. Es zählen nur die tatsächlich vorhandenen Randpunkte.
+    long = [
+        (TS, {"battery_w": 0.0}),
+        (TS + pd.Timedelta(seconds=20), {"battery_w": 1000.0}),
+        (TS + pd.Timedelta(seconds=25), {"battery_w": 1000.0}),
+    ]
+    assert _m._LiveExecutionMonitor._interpolated_median(
+        long, "battery_w", 60.0, 5.0, 10.0) == pytest.approx(1000.0)
+
+
+def test_live_energy_does_not_integrate_across_missing_data():
+    samples = [
+        (TS, {"battery_w": 1000.0}),
+        (TS + pd.Timedelta(seconds=5), {"battery_w": 1000.0}),
+        (TS + pd.Timedelta(seconds=25), {"battery_w": 1000.0}),
+    ]
+    energy = _m._LiveExecutionMonitor._window_energy_wh(
+        samples, "battery_w", 10.0)
+    assert energy == pytest.approx(1000.0 * 5.0 / 3600.0)
+
+
+class _LiveLink:
+    def __init__(self, battery_w):
+        self.battery_w = battery_w
+
+    def read_live(self, force=False):
+        assert force is True
+        return {"battery_w": self.battery_w, "grid_w": 0.0,
+                "soc_percent": 50.0}
+
+
+class _BrokenLiveLink:
+    def read_live(self, force=False):
+        raise ConnectionError("temporär nicht erreichbar")
+
+
+class _Alerts:
+    def __init__(self):
+        self.items = []
+
+    def publish_alert(self, level, message):
+        self.items.append((level, message))
+
+
+def test_live_monitor_warns_early_after_repeated_deviation(tmp_path):
+    cfg = _cfg(tmp_path)
+    _plan(cfg)
+    cfg.monitoring.execution_live_settle_seconds = 5.0
+    cfg.monitoring.execution_live_window_seconds = 20.0
+    cfg.monitoring.execution_live_sample_seconds = 5.0
+    cfg.monitoring.execution_live_max_gap_seconds = 10.0
+    cfg.monitoring.execution_live_consecutive = 2
+    cfg.monitoring.execution_battery_tolerance_w = 500.0
+    alerts = _Alerts()
+    monitor = _m._LiveExecutionMonitor(cfg, alerts, _LiveLink(-2000.0))
+
+    monitor.sample(TS)
+    monitor.sample(TS + pd.Timedelta(seconds=5))
+    monitor.sample(TS + pd.Timedelta(seconds=10))
+
+    assert len(alerts.items) == 1
+    assert alerts.items[0][0] == "warning"
+    assert "Vorläufige EMS-Live-Abweichung" in alerts.items[0][1]
+    audit = read_execution_audits(cfg.e3dc_rscp.history_db_path, 1)[0]
+    assert audit["state"] == "live_deviation"
+    assert audit["ok"] is False
+    assert audit["actual"]["battery_w"] == -2000.0
+
+
+def test_missing_live_data_never_breaks_execution_loop(tmp_path):
+    cfg = _cfg(tmp_path)
+    _plan(cfg)
+    monitor = _m._LiveExecutionMonitor(cfg, _Alerts(), _BrokenLiveLink())
+    assert monitor.sample(TS) is None
+    assert read_execution_audits(cfg.e3dc_rscp.history_db_path, 1) == []
+
+
+def test_confirmed_alarm_ignores_provisional_live_rows(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.monitoring.execution_alert_consecutive = 2
+    for minutes in (0, 15):
+        write_execution_audit(cfg.e3dc_rscp.history_db_path,
+                              TS + pd.Timedelta(minutes=minutes), {
+            "ok": False, "state": "live_deviation",
+            "message": "nur vorläufig",
+        })
+    alerts = _Alerts()
+    monkey_audit = {"ok": False, "state": "deviation",
+                    "message": "noch nicht bestätigt"}
+    previous = _m._execution_alarm["failed"]
+    try:
+        _m._execution_alarm["failed"] = False
+        _m._publish_execution_alarm(alerts, cfg, monkey_audit)
+        assert alerts.items == []
+        assert _m._execution_alarm["failed"] is False
+    finally:
+        _m._execution_alarm["failed"] = previous

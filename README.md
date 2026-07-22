@@ -464,14 +464,28 @@ Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
 - Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten – die letzte
   gespeicherte kWh ist weniger wert als die erste.
 - Slot 0 wird mit Live-Messwerten verankert.
-- Nach jedem Lauf vergleicht ein rein diagnostischer Schattenlauf `auto`,
-  `asap`, `peak` und `late` nach Kosten, Netzbezug, Einspeisung/-spitze,
-  Abregelung sowie Max-/End-SoC und zeigt eine unverbindliche Empfehlung.
+- Nach jedem Lauf vergleicht ein rein diagnostischer Schattenlauf `asap`,
+  `peak` und `late` nach Kosten, Netzbezug, Einspeisung/-spitze,
+  Abregelung sowie Max-/End-SoC. Alle Modi erscheinen gleichzeitig als kompakte
+  Vergleichskarten und gemeinsame Akku-/SoC-Kurven aus exakt denselben
+  Solver-Ergebnissen. Es gibt keine zweite Vergleichsrechnung; die Empfehlung
+  bleibt unverbindlich. `auto` erscheint nicht als vierte Strategie; stattdessen
+  wird die für den aktuellen Tag automatisch gewählte Strategie `asap` oder
+  `peak` markiert. Jede Kachel zeigt außerdem die Anzahl der Eingriffs-Slots.
+- Für `late` wird die Ziel-Konfidenz ohne Netzladen separat mit Erwartungs-PV und
+  PV-P10 geprüft: `100 % sehr wahrscheinlich`, `nur mit Erwartungsprognose
+  erreichbar` oder `unter P10 nicht erreichbar`.
 - Jede besondere Planentscheidung weist ihren realen Ausführungspfad aus:
   direktes RSCP, MQTT-Sollwert, physische Wechselrichterfunktion oder nur Modell.
 - Abgeschlossene Slots werden gegen die E3DC-Zählerenergie geprüft. Das Audit
+  berücksichtigt dabei die typische 75-minütige Bereitstellungsverzögerung,
+  während parallel alle fünf Sekunden eine vorläufige Prüfung aus geglätteten
+  Livewerten läuft. Kurze Datenlücken werden interpoliert, längere Lücken nicht;
+  erst wiederholte Abweichungen lösen einen Live-Alarm aus. Die spätere
+  Zählerprüfung bestätigt oder verwirft diesen Verdacht mit exakter Energie,
   zeigt Energieabweichung und Einspeisegrenze und unterscheidet Geräte-,
-  Prognose- und Modellursachen.
+  Prognose- und Modellursachen. Ein SoC wird nur mit einem zeitlich passenden
+  historischen Ist-Wert verglichen, nie mit dem aktuellen Live-SoC.
 - Auto: Schalt-Malus je Einschaltvorgang, optionale Ladekurve; der Ziel-SoC ist eine
   **weiche** Nebenbedingung (`car_target_penalty_ct_kwh`) und meldet Fehlmengen per
   `ems/alert`. Ohne Fahrzeug-SoC wird das Auto nicht mitoptimiert; Abfahrtzeiten je

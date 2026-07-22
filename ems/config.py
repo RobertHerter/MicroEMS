@@ -564,6 +564,18 @@ class MonitoringConfig:
     execution_battery_tolerance_w: float = 1500.0
     execution_soc_tolerance_percent: float = 5.0
     execution_alert_consecutive: int = 2
+    # E3/DC stellt abgeschlossene 15-min-Zaehleraggregate erst zeitversetzt
+    # bereit. Das Audit prueft daher den Slot, dessen Start mindestens so lange
+    # zurueckliegt. 75 min entspricht der beobachteten E3/DC-Verzoegerung.
+    execution_meter_delay_minutes: float = 75.0
+    # Schnelle vorlaeufige Ausfuehrungspruefung aus E3/DC-Livewerten. Kurze
+    # Luecken werden interpoliert, die Bewertung nutzt einen robusten Median.
+    execution_live_enabled: bool = True
+    execution_live_sample_seconds: float = 5.0
+    execution_live_window_seconds: float = 60.0
+    execution_live_max_gap_seconds: float = 15.0
+    execution_live_settle_seconds: float = 30.0
+    execution_live_consecutive: int = 3
     # Karenz (min) nach dem (Neu-)Start: solange wird das Ausführungs-Audit
     # ausgesetzt, weil die RSCP-Steuerung erst wieder gesetzt/eingependelt werden
     # muss (sonst falsche "Planabweichung Akku" direkt nach dem Start). 0 = aus.
@@ -1272,6 +1284,19 @@ def load_config(path: str) -> Config:
             mon.get("execution_soc_tolerance_percent", 5.0)),
         execution_alert_consecutive=int(
             mon.get("execution_alert_consecutive", 2)),
+        execution_meter_delay_minutes=float(
+            mon.get("execution_meter_delay_minutes", 75.0)),
+        execution_live_enabled=bool(mon.get("execution_live_enabled", True)),
+        execution_live_sample_seconds=float(
+            mon.get("execution_live_sample_seconds", 5.0)),
+        execution_live_window_seconds=float(
+            mon.get("execution_live_window_seconds", 60.0)),
+        execution_live_max_gap_seconds=float(
+            mon.get("execution_live_max_gap_seconds", 15.0)),
+        execution_live_settle_seconds=float(
+            mon.get("execution_live_settle_seconds", 30.0)),
+        execution_live_consecutive=int(
+            mon.get("execution_live_consecutive", 3)),
         execution_audit_grid=bool(mon.get("execution_audit_grid", False)),
         execution_audit_startup_grace_minutes=float(
             mon.get("execution_audit_startup_grace_minutes", 5.0)),

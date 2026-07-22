@@ -519,6 +519,17 @@ monitoring:
   execution_battery_tolerance_w: 1500
   execution_soc_tolerance_percent: 5
   execution_alert_consecutive: 2
+  # E3/DC-15-min-Zaehlerwerte sind erst ca. 75 min nach Slotbeginn final.
+  # Das Energie-Audit prueft deshalb gezielt diesen gereiften historischen Slot.
+  execution_meter_delay_minutes: 75
+  # Vorlaeufige schnelle Pruefung aus 5-s-Livewerten. Kurze Luecken werden bis
+  # 15 s interpoliert; Alarm erst nach Einpendelzeit und mehreren Abweichungen.
+  execution_live_enabled: true
+  execution_live_sample_seconds: 5
+  execution_live_window_seconds: 60
+  execution_live_max_gap_seconds: 15
+  execution_live_settle_seconds: 30
+  execution_live_consecutive: 3
   # Netz als Ausfuehrungsfehler werten? Standard false: die Netzleistung ist ein
   # Bilanz-Residuum (Netz = Last - PV + Akku). Weicht PV/Last von der Prognose ab
   # (z.B. PV ueber Prognose im Peak -> Mehr-Einspeisung ueber den E3DC), ist das
