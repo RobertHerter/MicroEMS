@@ -1471,17 +1471,64 @@ class Optimizer:
         # nicht, also war die Kette nicht freigegeben). Daher nach jeder Runde
         # die Verdachts-Erkennung auf dem POLIERTEN Stand wiederholen, bis
         # keine neuen Verdachte mehr auftauchen (max. 3 Runden, je ~0,3 s).
-        _free = _suspect_free_names()
-        _rounds = 0
-        while _rounds < 3 and _polish_continuous(prob, cfg, free_names=_free):
-            _rounds += 1
-            _new = _suspect_free_names() - _free
-            if not _new:
-                break
-            _free |= _new
+        def _run_polish():
+            free = _suspect_free_names()
+            rounds = 0
+            while rounds < 3 and _polish_continuous(prob, cfg, free_names=free):
+                rounds += 1
+                new = _suspect_free_names() - free
+                if not new:
+                    break
+                free |= new
+            return rounds, free
+
+        _rounds, _free = _run_polish()
         if _rounds:
             log.info("Politur in %.1f s (%d Runden, %d freie Binäre).",
                      time.monotonic() - _t1, _rounds, len(_free))
+
+        # Kalt-Resolve-Fallback gegen Warmstart-Artefakte: bleibt trotz Politur ein
+        # VERMEIDBARER Import übrig (echter Netzbezug deutlich über WR-Standby,
+        # obwohl der Akku noch Energie hat UND nicht am Maximum entlädt), einmal
+        # OHNE Warmstart neu lösen. Ein Kalt-Solve trifft diese Slots nachweislich
+        # sauber; die Politur kommt aus dem warmgestarteten Incumbent nicht immer
+        # heraus. Übernommen nur, wenn nicht teurer; der saubere Stand wird als
+        # Warmstart gemerkt -> das Artefakt pflanzt sich nicht mehr fort.
+        _imp_floor = max(80.0, standby_w + 60.0)
+
+        def _avoidable_import_present():
+            for t in range(N):
+                # Akku lädt in diesem Slot nicht (sonst ist Import gewollt: Netzladen)
+                not_charging = ((dc[t].varValue or 0.0) + (ac[t].varValue or 0.0)) < 5.0
+                if (not_charging
+                        and (g_imp[t].varValue or 0.0) > _imp_floor
+                        and (dis[t].varValue or 0.0) < max_dis - 5.0
+                        and (soc[t + 1].varValue or 0.0) > hb.min_soc_wh + 100.0):
+                    return True
+            return False
+
+        if warm and not hit_limit and _avoidable_import_present():
+            warm_obj = pulp.value(prob.objective)
+            saved = {v.name: v.varValue for v in variables}
+            _tc = time.monotonic()
+            prob.solve(make_solver(cfg, warm_values=None))
+            cold_s = time.monotonic() - _tc
+            cold_ok = (prob.status == pulp.LpStatusOptimal
+                       and cold_s < cfg.optimization.solver_time_limit_s - 2.0)
+            cold_obj = pulp.value(prob.objective) if cold_ok else None
+            if cold_ok:
+                _run_polish()
+                cold_obj = pulp.value(prob.objective)
+            if (cold_ok and cold_obj is not None
+                    and cold_obj <= (warm_obj if warm_obj is not None else cold_obj) + 1.0):
+                log.info("Kalt-Resolve gegen vermeidbaren Import übernommen "
+                         "(warm %.1f -> kalt %.1f ct, +%.1f s).",
+                         warm_obj or 0.0, cold_obj, cold_s)
+            else:
+                for v in variables:
+                    v.varValue = saved.get(v.name)
+                log.info("Kalt-Resolve verworfen (kein Optimum/nicht besser) – "
+                         "Warmstart-Stand behalten.")
         polish_s = time.monotonic() - _t1
         # Lösung für den Warmstart des nächsten Zyklus merken.
         _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
