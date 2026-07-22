@@ -98,12 +98,12 @@ def _live_block(config: Config) -> str:
  <div class="live-day-head"><b>Heute</b><span>E3/DC-Zähler bis jetzt</span></div>
  <div class="tiles live-tiles live-daily">
   <div class="tile live-solar"><div class="v" id="live-pv-forecast-today">–</div><div class="l">PV-Vorhersage heute</div><div class="s">gesamter Prognosetag</div></div>
-  <div class="tile live-solar"><div class="v" id="live-pv-yield-today">–</div><div class="l">PV-Ertrag bis jetzt</div><div class="s">gemessene Energie</div></div>
-  <div class="tile daily-import"><div class="v" id="live-grid-import-today">–</div><div class="l">Netzbezug bis jetzt</div><div class="s">gemessene Energie</div></div>
-  <div class="tile daily-export"><div class="v" id="live-grid-export-today">–</div><div class="l">Netzeinspeisung bis jetzt</div><div class="s">gemessene Energie</div></div>
-  <div class="tile daily-charge"><div class="v" id="live-battery-charge-today">–</div><div class="l">Speicher geladen</div><div class="s">bis jetzt</div></div>
-  <div class="tile daily-discharge"><div class="v" id="live-battery-discharge-today">–</div><div class="l">Speicher entladen</div><div class="s">bis jetzt</div></div>
-  <div class="tile live-house"><div class="v" id="live-house-today">–</div><div class="l">Hausverbrauch bis jetzt</div><div class="s">gemessene Energie</div></div>
+  <div class="tile live-solar"><div class="v" id="live-pv-yield-today">–</div><div class="l">PV-Ertrag</div><div class="s">gemessene Energie · bis jetzt</div></div>
+  <div class="tile daily-import"><div class="v" id="live-grid-import-today">–</div><div class="l">Netzbezug</div><div class="s">gemessene Energie · bis jetzt</div></div>
+  <div class="tile daily-export"><div class="v" id="live-grid-export-today">–</div><div class="l">Netzeinspeisung</div><div class="s">gemessene Energie · bis jetzt</div></div>
+  <div class="tile daily-charge"><div class="v" id="live-battery-charge-today">–</div><div class="l">Speicher geladen</div><div class="s">gemessene Energie · bis jetzt</div></div>
+  <div class="tile daily-discharge"><div class="v" id="live-battery-discharge-today">–</div><div class="l">Speicher entladen</div><div class="s">gemessene Energie · bis jetzt</div></div>
+  <div class="tile live-house"><div class="v" id="live-house-today">–</div><div class="l">Hausverbrauch</div><div class="s">gemessene Energie · bis jetzt</div></div>
   <div class="tile daily-price"><div class="v" id="live-price-now">–</div><div class="l">Aktueller Strompreis</div><div class="s">Bezugspreis pro kWh</div></div>
  </div>
 </section>
