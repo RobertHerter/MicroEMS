@@ -30,7 +30,7 @@ from ems.local_history import (read_actual_signal, read_savings_baseline_soc,
                                read_savings_validated, write_savings_validated)
 from ems.rscp import E3DCLink
 from ems.savings_validate import METER_COLUMNS, reconcile
-from ems.tariff import read_price_signal
+from ems.tariff import read_price_signal, read_spot_signal
 
 
 def _meter_frame(raw: dict, tz: str) -> pd.DataFrame:
@@ -65,13 +65,14 @@ def _gather(config, start, end):
         return None
     repo = InfluxRepository(config)
     price = read_price_signal(config, repo, start, end)
+    spot = read_spot_signal(config, repo, start, end)
     if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
         feedin = repo.read_slots("feed_in_tariff", start, end, fill=False)
     else:
         feedin = pd.Series(config.feed_in.fixed_ct_kwh, index=meter.index)
     grid_w = read_actual_signal(config, repo, "grid_power", start, end)
     return {"repo": repo, "meter": meter, "price": price,
-            "feedin": feedin, "grid_w": grid_w}
+            "spot": spot, "feedin": feedin, "grid_w": grid_w}
 
 
 def _reconcile_slice(config, data, s, e, soc0=None):
@@ -82,7 +83,8 @@ def _reconcile_slice(config, data, s, e, soc0=None):
     if soc0 is None:
         soc0 = _soc0_wh(config, data["repo"], s, cap)
     r = reconcile(meter, data["price"], data["feedin"], config,
-                  actual_grid_w=data["grid_w"], soc0_wh=soc0)
+                  actual_grid_w=data["grid_w"], soc0_wh=soc0,
+                  spot=data["spot"])
     return None if r.get("insufficient") else r
 
 

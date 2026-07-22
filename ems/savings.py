@@ -24,7 +24,7 @@ import pandas as pd
 from .config import Config
 from .local_history import read_actual_signal
 from .optimizer import natural_battery_step
-from .tariff import read_price_signal
+from .tariff import read_price_signal, read_spot_signal
 
 log = logging.getLogger("ems.savings")
 
@@ -119,6 +119,7 @@ class SavingsTracker:
         load = read_actual_signal(self.cfg, repo, "house_consumption", last, now)
         grid = read_actual_signal(self.cfg, repo, "grid_power", last, now)
         price = read_price_signal(self.cfg, repo, last, now)
+        spot = read_spot_signal(self.cfg, repo, last, now)
         if self.cfg.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
             feedin = repo.read_slots("feed_in_tariff", last, now, fill=False)
         else:
@@ -133,7 +134,10 @@ class SavingsTracker:
                 continue  # Datenlücke: Slot überspringen, Baseline-SoC halten
             pv_t, load_t, grid_t, price_t, feedin_t = (float(v) for v in vals)
             # Solarspitzengesetz: keine Vergütung in Negativpreis-Stunden
-            if self.cfg.feed_in.zero_at_negative_price and price_t < 0.0:
+            spot_t = spot.get(ts) if not spot.empty else None
+            if (self.cfg.feed_in.zero_at_negative_price
+                    and spot_t is not None and np.isfinite(spot_t)
+                    and float(spot_t) < 0.0):
                 feedin_t = 0.0
 
             soc, _ch, _dis, b_imp, b_exp = natural_battery_step(

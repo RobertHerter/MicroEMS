@@ -30,6 +30,7 @@ from ems.config import load_config
 from ems.influx import InfluxRepository
 from ems.local_history import read_optimizer_forecast_asof
 from ems.optimizer import Optimizer, OptimizerInputs
+from ems.tariff import read_spot_signal
 from ems.validate import economic_comparison, validate_plan
 
 log = logging.getLogger("ems.backtest")
@@ -73,8 +74,10 @@ def _day_plan(repo, config, day_start):
         feedin = feedin.ffill().bfill().fillna(config.feed_in.fixed_ct_kwh)
     else:
         feedin = pd.Series(config.feed_in.fixed_ct_kwh, index=idx)
-    if config.feed_in.zero_at_negative_price:
-        feedin = feedin.where(price >= 0.0, 0.0)
+    spot_raw = read_spot_signal(config, repo, day_start, opt_end)
+    spot = spot_raw.reindex(idx) if not spot_raw.empty else None
+    if config.feed_in.zero_at_negative_price and spot is not None:
+        feedin = feedin.where(~(spot < 0.0), 0.0)
 
     # Genug echte Daten vorhanden?
     if load.isna().all() or pv.isna().all() or price.isna().all():
@@ -84,6 +87,7 @@ def _day_plan(repo, config, day_start):
         pv_w=pv.values.astype(float), price_ct_kwh=price.values.astype(float),
         feedin_ct_kwh=feedin.values.astype(float),
         initial_house_soc_wh=_initial_soc_wh(repo, config, day_start),
+        spot_price_ct_kwh=(spot.values.astype(float) if spot is not None else None),
     )
     return inp, Optimizer(config).solve(inp)
 
@@ -132,6 +136,7 @@ def _historical_day_plan(repo, config, day_start):
         pv10_w=optional("pv10_w"),
         ambient_temp_c=optional("ambient_temp_c"),
         solar_w_m2=optional("solar_w_m2"),
+        spot_price_ct_kwh=optional("spot_price_ct_kwh"),
     )
     return inp, Optimizer(config).solve(inp), issue, frame
 

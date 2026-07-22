@@ -48,6 +48,9 @@ influxdb:
   signals:
     house_consumption:      { measurement: "power", field: "house_load_w" }
     electricity_price:      { measurement: "price", field: "import_ct_kwh" }
+    # Nur nötig, wenn tariff.enabled=false UND zero_at_negative_price=true:
+    # unveränderter Börsenpreis vor Aufschlägen/Steuern.
+    # electricity_spot_price: { measurement: "price", field: "spot_ct_kwh", optional: true }
     battery_soc:            { measurement: "battery", field: "soc_percent" }   # 0..100
     pv_generation:          { measurement: "power", field: "pv_w" }
     pv_forecast:            { measurement: "forecast", field: "pv_w" }         # Zukunftswerte
@@ -576,6 +579,12 @@ e3dc_rscp:
   verify_control: true             # gesetzte Limits direkt vom E3DC zurücklesen
   control_verify_tolerance_w: 100  # zulässige Rundungsabweichung
   control_alarm_repeat_minutes: 60 # anhaltenden Ausfall höchstens stündlich melden
+  # Reale PV-Abregelung über EMS_REQ_SET_DERATE_PERCENT. Erst aktivieren,
+  # nachdem der E3DC-Benutzer den Schreibzugriff erlaubt; jeder Befehl wird
+  # zurückgelesen und beim Beenden auf den Normalwert zurückgesetzt.
+  curtailment_control_enabled: false
+  curtailment_normal_percent: 100
+  curtailment_verify_tolerance_percent: 1
   grid_sign: 1.0
   batt_sign: 1.0
   # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.

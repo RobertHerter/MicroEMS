@@ -65,6 +65,9 @@ class OptimizerInputs:
     # Tatsächlich rückgemeldeter Stufenzustand {"Pool/WP": bool}; dient als
     # Anfangszustand für Schaltkosten und verhindert unnötiges Takten.
     load_feedback: Optional[dict] = None
+    # Unveränderter Börsenpreis. Nur dieser entscheidet über
+    # zero_at_negative_price; None hält alte Debug-Snapshots kompatibel.
+    spot_price_ct_kwh: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -575,7 +578,18 @@ class Optimizer:
         dis = [pulp.LpVariable(f"dis_{t}", 0, max_dis) for t in range(N)]
         # PV-Abregelung: nötig, wenn Akku voll UND Export begrenzt/wertlos ist
         # (max_export_w, Negativpreis ohne Vergütung). Sonst via Mini-Malus 0.
-        curt = [pulp.LpVariable(f"curt_{t}", 0) for t in range(N)]
+        can_execute_curtailment = bool(
+            cfg.inverter.max_export_w is not None
+            or (cfg.e3dc_rscp.control_enabled
+                and getattr(cfg.e3dc_rscp, "curtailment_control_enabled", False)))
+        # Keine Phantom-Abregelung: ohne steuerbaren Aktor ist nur das ohnehin
+        # physische WR-Clipping oberhalb der AC-Nennleistung zulässig. Diese
+        # Reserve verhindert zugleich Infeasibility bei PV > WR-Leistung.
+        curt = [pulp.LpVariable(
+            f"curt_{t}", 0,
+            None if can_execute_curtailment
+            else max(0.0, float(inp.pv_w[t]) - max_inv))
+            for t in range(N)]
         g_imp = [pulp.LpVariable(f"gimp_{t}", 0) for t in range(N)]
         g_exp = [pulp.LpVariable(f"gexp_{t}", 0) for t in range(N)]
         is_ch = [pulp.LpVariable(f"isch_{t}", cat="Binary") for t in range(N)]
@@ -966,8 +980,10 @@ class Optimizer:
         cost_terms = []
         zero_negative = bool(getattr(
             cfg.feed_in, "zero_at_negative_price", False))
+        raw_spot = (inp.spot_price_ct_kwh
+                    if inp.spot_price_ct_kwh is not None else inp.price_ct_kwh)
         negative_export_slots = [
-            zero_negative and float(inp.price_ct_kwh[t]) < 0.0
+            zero_negative and float(raw_spot[t]) < 0.0
             and float(inp.feedin_ct_kwh[t]) <= 0.0
             for t in range(N)]
         negative_export_pen = max(0.0, float(getattr(
@@ -1739,6 +1755,8 @@ class Optimizer:
                 "house_load_w": float(inp.house_load_w[t]),
                 "pv_w": float(inp.pv_w[t]),
                 "price_ct_kwh": float(inp.price_ct_kwh[t]),
+                "spot_price_ct_kwh": (float(raw_spot[t])
+                                       if np.isfinite(float(raw_spot[t])) else np.nan),
                 "feedin_ct_kwh": float(inp.feedin_ct_kwh[t]),
                 "batt_dc_charge_w": round(dc_v, 1),
                 "batt_ac_charge_w": round(ac_v, 1),

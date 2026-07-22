@@ -76,6 +76,8 @@ class E3DCLink:
         self._alarm_callback = None
         self._last_watchdog_alarm = 0.0
         self._watchdog_failed = False
+        self._curtailment_active = False
+        self._curtailment_baseline_percent: Optional[float] = None
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -122,6 +124,16 @@ class E3DCLink:
                          "(EMS_POWER_LIMITS_USED=false).")
         except Exception:  # pragma: no cover
             pass
+        # PV-Derating ist persistent. Auch bei Fehlern in der restlichen
+        # Steuerung beim sauberen Beenden immer auf den gemerkten Normalwert.
+        try:
+            if (self._e3dc is not None and self._curtailment_active
+                    and self.rc.curtailment_control_enabled):
+                self._set_derate_percent(self._normal_derate_percent())
+                self._curtailment_active = False
+                log.info("RSCP: PV-Abregelung beim Beenden aufgehoben.")
+        except Exception as exc:  # pragma: no cover
+            log.warning("RSCP: PV-Abregelung beim Beenden nicht aufhebbar (%s).", exc)
         try:
             if self._e3dc is not None and hasattr(self._e3dc, "disconnect"):
                 self._e3dc.disconnect()
@@ -439,6 +451,91 @@ class E3DCLink:
             "max_discharge_w": (None if settings.get("maxDischargePower") is None
                                 else float(settings["maxDischargePower"])),
         }
+
+    def read_curtailment(self) -> dict:
+        """Aktuelle PV-Abregelgrenze direkt vom E3DC zurücklesen."""
+        from e3dc._rscpTags import RscpTag
+        with self._lock:
+            e = self._connect()
+            percent = float(e.sendRequestTag(
+                RscpTag.EMS_REQ_DERATE_AT_PERCENT_VALUE, keepAlive=True))
+            power = float(e.sendRequestTag(
+                RscpTag.EMS_REQ_DERATE_AT_POWER_VALUE, keepAlive=True))
+            peak = float(e.sendRequestTag(
+                RscpTag.EMS_REQ_INSTALLED_PEAK_POWER, keepAlive=True))
+            active = bool(e.sendRequestTag(
+                RscpTag.EMS_REQ_IS_PV_DERATING, keepAlive=True))
+        return {"percent": percent * 100.0, "power_w": power,
+                "installed_peak_w": peak, "active": active}
+
+    def _normal_derate_percent(self) -> float:
+        value = (self._curtailment_baseline_percent
+                 if self._curtailment_baseline_percent is not None
+                 else float(self.rc.curtailment_normal_percent))
+        return max(0.0, min(100.0, value))
+
+    def _set_derate_percent(self, percent: float) -> None:
+        """Persistente E3DC-PV-Grenze schreiben (Protokollwert 0..1)."""
+        from e3dc._rscpTags import RscpTag, RscpType
+        value = max(0.0, min(100.0, float(percent))) / 100.0
+        with self._lock:
+            e = self._connect()
+            e.sendRequest((RscpTag.EMS_REQ_SET_DERATE_PERCENT,
+                           RscpType.Float32, value), keepAlive=True)
+
+    def apply_pv_curtailment(self, row) -> dict:
+        """Plan-Abregelung real setzen, zurücklesen und außerhalb des Slots lösen."""
+        requested_w = max(0.0, float(row.get("pv_curtail_w", 0.0)))
+        if not self.rc.curtailment_control_enabled:
+            if requested_w > 5.0:
+                return self._control_status(
+                    False, "curtailment_unavailable", "pv_curtailment",
+                    "PV-Abregelung geplant, aber E3DC-Abregelsteuerung ist deaktiviert.",
+                    expected={"curtail_w": round(requested_w)})
+            return self._control_status(
+                None, "not_required", "pv_curtailment",
+                "Keine aktive PV-Abregelung erforderlich.")
+        if requested_w <= 5.0 and not self._curtailment_active:
+            return self._control_status(
+                None, "not_required", "pv_curtailment",
+                "Keine aktive PV-Abregelung erforderlich.")
+        try:
+            before = self.read_curtailment()
+            if self._curtailment_baseline_percent is None:
+                # Nur einen plausiblen ungedrosselten Zustand als Baseline
+                # merken; eine bereits extern gesetzte Grenze nicht überschreiben.
+                configured = float(self.rc.curtailment_normal_percent)
+                self._curtailment_baseline_percent = (
+                    before["percent"] if not before["active"] else configured)
+            normal = self._normal_derate_percent()
+            if requested_w <= 5.0:
+                target = normal
+            else:
+                peak_w = before.get("installed_peak_w") or 0.0
+                if peak_w <= 0.0:
+                    raise RuntimeError("installierte PV-Spitzenleistung nicht lesbar")
+                available_w = max(0.0, float(row.get("pv_w", 0.0)) - requested_w)
+                target = min(normal, 100.0 * available_w / peak_w)
+            self._set_derate_percent(target)
+            after = self.read_curtailment()
+            tolerance = max(
+                0.0, float(self.rc.curtailment_verify_tolerance_percent))
+            if abs(after["percent"] - target) > tolerance:
+                return self._control_status(
+                    False, "curtailment_mismatch", "pv_curtailment",
+                    f"PV-Grenze Soll {target:.1f} %, Ist {after['percent']:.1f} %.",
+                    expected={"percent": round(target, 2)}, actual=after)
+            self._curtailment_active = target < normal - tolerance
+            return self._control_status(
+                True, "curtailment_confirmed", "pv_curtailment",
+                f"E3DC bestätigt PV-Grenze {after['percent']:.1f} %.",
+                expected={"percent": round(target, 2)}, actual=after)
+        except Exception as exc:
+            self._curtailment_active = False
+            return self._control_status(
+                False, "curtailment_write_failed", "pv_curtailment",
+                f"E3DC-PV-Abregelung fehlgeschlagen: {exc}",
+                expected={"curtail_w": round(requested_w)})
 
     def _control_status(self, ok, state: str, mode: str, message: str,
                         expected=None, actual=None) -> dict:

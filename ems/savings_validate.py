@@ -35,7 +35,8 @@ def _eur(import_wh, export_wh, price_ct, feedin_ct):
 
 def reconcile(meter: pd.DataFrame, price: pd.Series, feedin: pd.Series, cfg,
               actual_grid_w: Optional[pd.Series] = None,
-              soc0_wh: Optional[float] = None) -> dict:
+              soc0_wh: Optional[float] = None,
+              spot: Optional[pd.Series] = None) -> dict:
     """Zähler-Wahrheit gegen Baseline und gegen das Tracking-Signal prüfen.
 
     meter: DataFrame (Index = Slot-Zeitstempel) mit METER_COLUMNS in Wh je Slot.
@@ -49,8 +50,9 @@ def reconcile(meter: pd.DataFrame, price: pd.Series, feedin: pd.Series, cfg,
     idx = df.index
     price = price.reindex(idx).astype(float)
     feedin = feedin.reindex(idx).astype(float)
-    if cfg.feed_in.zero_at_negative_price:
-        feedin = feedin.where(price >= 0.0, 0.0)
+    if cfg.feed_in.zero_at_negative_price and spot is not None:
+        raw_spot = spot.reindex(idx).astype(float)
+        feedin = feedin.where(~(raw_spot < 0.0), 0.0)
 
     valid = df.notna().all(axis=1) & price.notna() & feedin.notna()
     df, price, feedin = df[valid], price[valid], feedin[valid]

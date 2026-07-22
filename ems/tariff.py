@@ -106,3 +106,25 @@ def read_price_signal(config, repo, start, end) -> pd.Series:
     if spot.empty:
         return spot
     return apply_tariff(spot, config)
+
+
+def read_spot_signal(config, repo, start, end) -> pd.Series:
+    """Unveränderter Börsenpreis (ct/kWh) für rechtliche Preisregeln.
+
+    Er darf nicht aus dem Endkundenpreis zurückgerechnet werden, weil Aufschläge,
+    Netzentgelte und MwSt dessen Vorzeichen verändern können. Ohne Rohpreis
+    bleibt die Serie leer und die Negativpreisregel wird sicher ausgesetzt.
+    """
+    if config.tariff.enabled and config.tariff.type == "dynamic":
+        return local_history.read_spot(
+            config.e3dc_rscp.history_db_path, start, end,
+            config.general.timezone, config.general.slot_minutes)
+    if (not config.tariff.enabled
+            and repo.signal_available("electricity_spot_price")):
+        try:
+            return repo.read_slots(
+                "electricity_spot_price", start, end, fill=False)
+        except (KeyError, ValueError):
+            # Einige optionale Signalquellen melden das Fehlen erst beim Lesen.
+            pass
+    return pd.Series(dtype="float64")

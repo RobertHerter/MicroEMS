@@ -33,6 +33,8 @@ class FakeE3DC:
         self.limits_rc = 0             # Rückgabecode (0=ok, 1=angepasst, -1=Fehler)
         self.last_power = None
         self.power_calls = []
+        self.derate_percent = 1.0
+        self.derate_write_error = None
         self._poll = {
             "stateOfCharge": 63.0,
             "production": {"solar": 4200.0, "add": 0.0, "grid": -1500.0},
@@ -74,6 +76,12 @@ class FakeE3DC:
     def sendRequest(self, req, retries=3, keepAlive=False):
         # Erwartet SET_POWER-Container -> Mode/Value mitschreiben
         tag, typ, val = req
+        from e3dc._rscpTags import RscpTag, RscpType
+        if tag == RscpTag.EMS_REQ_SET_DERATE_PERCENT:
+            if self.derate_write_error:
+                raise self.derate_write_error
+            self.derate_percent = float(val)
+            return (tag, RscpType.Float32, self.derate_percent)
         rec = {}
         if isinstance(val, list):
             for c in val:
@@ -82,8 +90,16 @@ class FakeE3DC:
         self.last_power = (rec.get("EMS_REQ_SET_POWER_MODE"),
                            rec.get("EMS_REQ_SET_POWER_VALUE"))
         self.power_calls.append(self.last_power)
-        from e3dc._rscpTags import RscpTag, RscpType
         return (RscpTag.EMS_SET_POWER, RscpType.Uint32, rec.get("EMS_REQ_SET_POWER_VALUE", 0))
+
+    def sendRequestTag(self, tag, retries=3, keepAlive=False):
+        from e3dc._rscpTags import RscpTag
+        return {
+            RscpTag.EMS_REQ_DERATE_AT_PERCENT_VALUE: self.derate_percent,
+            RscpTag.EMS_REQ_DERATE_AT_POWER_VALUE: 16400.0 * self.derate_percent,
+            RscpTag.EMS_REQ_INSTALLED_PEAK_POWER: 16400,
+            RscpTag.EMS_REQ_IS_PV_DERATING: self.derate_percent < 0.999,
+        }[tag]
 
 
 def _link(**rscp):
@@ -103,6 +119,26 @@ def test_read_live_mapping():
     assert live["house_load_w"] == 1800.0
     assert live["grid_w"] == -1500.0     # grid_sign 1.0
     assert live["battery_w"] == 900.0
+
+
+def test_pv_curtailment_is_written_verified_and_restored():
+    cfg, link = _link(curtailment_control_enabled=True)
+    fake = link._e3dc
+    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 4100})
+    assert status["ok"] is True
+    assert status["actual"]["percent"] == 25.0
+    assert link._curtailment_active is True
+    link.close()
+    assert fake.derate_percent == 1.0
+    assert link._e3dc is None
+
+
+def test_pv_curtailment_write_failure_is_reported():
+    cfg, link = _link(curtailment_control_enabled=True)
+    link._e3dc.derate_write_error = RuntimeError("not authorized")
+    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 4100})
+    assert status["ok"] is False
+    assert status["state"] == "curtailment_write_failed"
 
 
 def test_read_live_sign_flip_and_cache():

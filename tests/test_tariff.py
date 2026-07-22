@@ -132,3 +132,15 @@ def test_read_spot_native_15min_does_not_extend_past_last_value(tmp_path):
         f"letzter echter Wert sollte 23:45 sein, ist {last_real}"
     assert pd.isna(s[s.index > last_real]).all(), \
         "Slots nach dem letzten echten 15-min-Wert dürfen nicht gehalten werden"
+
+
+def test_read_spot_signal_keeps_raw_sign_separate_from_retail(tmp_path):
+    cfg = _cfg(type="dynamic", markup_ct_kwh=20.0, vat_percent=19.0)
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "spot.sqlite")
+    start = pd.Timestamp("2026-01-01 00:00", tz="UTC")
+    write_spot(cfg.e3dc_rscp.history_db_path, {start.isoformat(): -2.0})
+    end = start + pd.Timedelta(hours=1)
+    raw = tariff.read_spot_signal(cfg, None, start, end)
+    retail = tariff.read_price_signal(cfg, None, start, end)
+    assert raw.iloc[0] == -2.0
+    assert retail.iloc[0] > 0.0

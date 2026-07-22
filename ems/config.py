@@ -704,6 +704,11 @@ class E3DCRscpConfig:
     verify_control: bool = True
     control_verify_tolerance_w: float = 100.0
     control_alarm_repeat_minutes: float = 60.0
+    # Optionale permanente PV-Leistungsbegrenzung. Separat aktivieren, da nicht
+    # jeder E3DC-Benutzer EMS_REQ_SET_DERATE_PERCENT schreiben darf.
+    curtailment_control_enabled: bool = False
+    curtailment_normal_percent: float = 100.0
+    curtailment_verify_tolerance_percent: float = 1.0
     grid_sign: float = 1.0               # Vorzeichen Netz (+ = Bezug)
     batt_sign: float = 1.0               # Vorzeichen Akku (+ = Laden)
     # Verbrauchsprognose aus lokaler SQLite (per RSCP gefüllt) statt InfluxDB.
@@ -1384,6 +1389,12 @@ def load_config(path: str) -> Config:
             "control_verify_tolerance_w", 100.0)),
         control_alarm_repeat_minutes=float(e.get(
             "control_alarm_repeat_minutes", 60.0)),
+        curtailment_control_enabled=bool(e.get(
+            "curtailment_control_enabled", False)),
+        curtailment_normal_percent=float(e.get(
+            "curtailment_normal_percent", 100.0)),
+        curtailment_verify_tolerance_percent=float(e.get(
+            "curtailment_verify_tolerance_percent", 1.0)),
         grid_sign=float(e.get("grid_sign", 1.0)),
         batt_sign=float(e.get("batt_sign", 1.0)),
         history_source=bool(e.get("history_source", False)),
@@ -1392,6 +1403,16 @@ def load_config(path: str) -> Config:
         history_settle_minutes=int(e.get("history_settle_minutes", 60)),
         history_overlap_hours=int(e.get("history_overlap_hours", 3)),
     )
+    if not 0.0 <= e3dc_rscp.curtailment_normal_percent <= 100.0:
+        raise ValueError(
+            "e3dc_rscp.curtailment_normal_percent muss zwischen 0 und 100 liegen.")
+    if e3dc_rscp.curtailment_verify_tolerance_percent < 0.0:
+        raise ValueError(
+            "e3dc_rscp.curtailment_verify_tolerance_percent muss >= 0 sein.")
+    if (e3dc_rscp.curtailment_control_enabled
+            and not e3dc_rscp.control_enabled):
+        raise ValueError(
+            "e3dc_rscp.curtailment_control_enabled benötigt control_enabled=true.")
 
     config = Config(
         general=general,

@@ -73,6 +73,8 @@ def save_snapshot(config: Config, now, inputs, result, violations,
             "pv_w": arr(inputs.pv_w),
             "pv10_w": arr(inputs.pv10_w) if inputs.pv10_w is not None else None,
             "price_ct_kwh": arr(inputs.price_ct_kwh),
+            "spot_price_ct_kwh": (arr(inputs.spot_price_ct_kwh)
+                                   if inputs.spot_price_ct_kwh is not None else None),
             "feedin_ct_kwh": arr(inputs.feedin_ct_kwh),
             "initial_house_soc_wh": round(float(inputs.initial_house_soc_wh), 1),
             "initial_car_soc_wh": (round(float(inputs.initial_car_soc_wh), 1)

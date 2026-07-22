@@ -181,7 +181,8 @@ def _comparison_inputs(snapshot: dict) -> OptimizerInputs:
         car_present=bool(raw.get("car_present", False)),
         pv10_w=optional("pv10_w"), ambient_temp_c=optional("ambient_temp_c"),
         solar_w_m2=optional("solar_w_m2"), load_state=raw.get("load_state"),
-        load_feedback=raw.get("load_feedback"))
+        load_feedback=raw.get("load_feedback"),
+        spot_price_ct_kwh=optional("spot_price_ct_kwh"))
 
 
 def _start_plan_comparison(config, strategy: str) -> dict:
@@ -459,7 +460,7 @@ CONTROL_COLS = [
     "charge_limited", "discharge_limited",
     # rohe Optimierer-Leistungen (Referenz/Analyse):
     "batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
-    "car_charge_w", "grid_import_w", "grid_export_w", "pv_curtail_w",
+    "car_charge_w", "grid_import_w", "grid_export_w", "pv_w", "pv_curtail_w",
 ]
 
 
@@ -740,6 +741,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 if solcast.available(config, repo, "pv_forecast_p10") else None)
         price, price_estimated = _price_series(
             repo, config, opt_index, now, return_estimated=True)
+        from .tariff import read_spot_signal
+        spot_price = read_spot_signal(
+            config, repo, now, opt_end).reindex(opt_index)
 
         missing_feed = 0
         if config.feed_in.mode == "db" and repo.signal_available("feed_in_tariff"):
@@ -756,7 +760,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Solarspitzengesetz: in Negativpreis-Stunden gibt es (für betroffene
         # Anlagen) keine Einspeisevergütung -> Export dort mit 0 ct bewerten.
         if config.feed_in.zero_at_negative_price:
-            feedin = feedin.where(price >= 0.0, 0.0)
+            if spot_price.notna().any():
+                feedin = feedin.where(~(spot_price < 0.0), 0.0)
+            else:
+                log.warning("Negativpreisregel ausgesetzt: kein unveränderter "
+                            "Börsenpreis verfügbar.")
 
         # Plausibilitäts-Grenzen auf die externen Eingaben (Preis/PV) UND die
         # Hauslast, bevor irgendetwas davon in Archiv/Optimierer fließt: ein
@@ -964,6 +972,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "house_load_p90_w": load_p90_opt,
                 "pv_w": pv,
                 "price_ct_kwh": price,
+                "spot_price_ct_kwh": spot_price,
                 "feedin_ct_kwh": feedin,
             }
             if pv10 is not None:
@@ -997,6 +1006,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         if solar_safe is not None else None),
             load_state=load_state,
             load_feedback=load_feedback,
+            spot_price_ct_kwh=spot_price.values.astype(float),
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
         # bewusst UNABHÄNGIG von enabled: die Pool-Temperatur ist auch dann
@@ -1173,7 +1183,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 try:
                     pos = result.table.index.get_indexer([now], method="ffill")[0]
                     row = result.table.iloc[max(pos, 0)]
+                    curtailment_status = e3dc.apply_pv_curtailment(row)
                     control_status = e3dc.apply_control(row)
+                    if curtailment_status.get("ok") is False:
+                        # Akku-Befehl trotzdem ausführen, aber den nicht
+                        # umgesetzten PV-Anteil als Steuer-Ausfall alarmieren.
+                        failed = dict(curtailment_status)
+                        failed["battery_control"] = control_status
+                        control_status = failed
+                    else:
+                        control_status["curtailment"] = curtailment_status
                     # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
                     # sofort re-applybar (schließt die Steuer-Lücke bis zum 1. Solve).
                     try:
@@ -1841,7 +1860,7 @@ def _build_display_frame(repo, config, now, history, result,
               "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
               "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
               "grid_import_w", "grid_export_w", "export_line_w", "mode",
-              "feedin_ct_kwh", "pv_curtail_w", "decision_reason",
+              "feedin_ct_kwh", "spot_price_ct_kwh", "pv_curtail_w", "decision_reason",
               "decision_energy_kwh", "decision_value_ct",
               "decision_reference_time"]:
         if c in ot.columns:
@@ -1864,9 +1883,9 @@ def _build_display_frame(repo, config, now, history, result,
             except Exception:  # pragma: no cover
                 pass
         df["feedin_ct_kwh"] = df["feedin_ct_kwh"].fillna(config.feed_in.fixed_ct_kwh)
-        if config.feed_in.zero_at_negative_price and "price_ct_kwh" in df.columns:
+        if config.feed_in.zero_at_negative_price and "spot_price_ct_kwh" in df.columns:
             df["feedin_ct_kwh"] = df["feedin_ct_kwh"].where(
-                df["price_ct_kwh"] >= 0.0, 0.0)
+                ~(df["spot_price_ct_kwh"] < 0.0), 0.0)
 
     # ---- Heutige IST-Werte (bis jetzt) zum Vergleich ----
     # Bis 'now' lesen (aktuellen Slot einschließen) und im Ist-Bereich vorwärts
@@ -2570,7 +2589,14 @@ def main() -> None:
             if ts is not None and cmd:
                 age = pd.Timestamp.now(tz=config.general.timezone) - ts
                 if age <= pd.Timedelta(minutes=2 * config.general.run_interval_minutes):
+                    startup_curtailment = e3dc.apply_pv_curtailment(cmd)
                     startup_status = e3dc.apply_control(cmd)
+                    if startup_curtailment.get("ok") is False:
+                        failed = dict(startup_curtailment)
+                        failed["battery_control"] = startup_status
+                        startup_status = failed
+                    else:
+                        startup_status["curtailment"] = startup_curtailment
                     _store_control_status(config, startup_status)
                     _publish_control_alarm(publisher, config, startup_status)
                     log.info("Sofort-Reapply: letzter Steuerbefehl (%s, Laden<=%.0f "

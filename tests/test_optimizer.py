@@ -349,6 +349,8 @@ def test_zero_at_negative_price_avoids_export_in_every_strategy(strategy):
     cfg = make_config()
     cfg.optimization.charge_strategy = strategy
     cfg.feed_in.zero_at_negative_price = True
+    cfg.e3dc_rscp.control_enabled = True
+    cfg.e3dc_rscp.curtailment_control_enabled = True
     idx = _day_index("2026-06-10")
     hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
     negative = (hour >= 10.0) & (hour < 15.0)
@@ -356,12 +358,42 @@ def test_zero_at_negative_price_avoids_export_in_every_strategy(strategy):
     feedin = np.where(negative, 0.0, 8.0)
     result = Optimizer(cfg, store_warm=False).solve(_inputs(
         idx, pv=_pv_gauss(idx, 8000), load=500.0, price=price,
-        feedin=feedin, soc=1500.0))
+        feedin=feedin, soc=1500.0, spot_price_ct_kwh=price))
     table = result.table.loc[negative]
     assert not result.infeasible
     assert float(table["grid_export_w"].sum()) <= TOL
     assert float(table["batt_dc_charge_w"].sum()) > 0.0
     assert float(table["pv_curtail_w"].sum()) > 0.0
+
+
+def test_curtailment_is_not_planned_without_a_real_actuator():
+    """Ohne RSCP-Aktor oder feste WR-Grenze muss unvermeidbarer Export im
+    Plan sichtbar bleiben; rechnerische Phantom-Abregelung ist verboten."""
+    cfg = make_config()
+    cfg.feed_in.zero_at_negative_price = True
+    cfg.inverter.max_export_w = None
+    cfg.e3dc_rscp.curtailment_control_enabled = False
+    idx = _day_index("2026-06-10")
+    spot = np.full(len(idx), -5.0)
+    result = Optimizer(cfg, store_warm=False).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 8000), load=500.0, price=30.0,
+        feedin=0.0, soc=1500.0, spot_price_ct_kwh=spot))
+    assert not result.infeasible
+    assert float(result.table["pv_curtail_w"].sum()) <= TOL
+    assert float(result.table["grid_export_w"].sum()) > TOL
+
+
+def test_raw_spot_not_retail_price_controls_negative_export_rule():
+    cfg = make_config()
+    cfg.feed_in.zero_at_negative_price = True
+    cfg.e3dc_rscp.control_enabled = True
+    cfg.e3dc_rscp.curtailment_control_enabled = True
+    idx = _day_index("2026-06-10")
+    result = Optimizer(cfg, store_warm=False).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 8000), load=500.0, price=35.0,
+        feedin=0.0, soc=1500.0,
+        spot_price_ct_kwh=np.full(len(idx), -2.0)))
+    assert float(result.table["pv_curtail_w"].sum()) > TOL
 
 
 def test_remunerated_export_at_negative_price_remains_unchanged():
@@ -584,12 +616,14 @@ def test_peak_charge_ramp_penalty_smooths_p10_catchup():
     smooth = solve(2.0)
     tv_raw = float(np.abs(np.diff(raw)).sum())
     tv_smooth = float(np.abs(np.diff(smooth)).sum())
-    jump_raw = float(np.abs(np.diff(raw)).max())
     jump_smooth = float(np.abs(np.diff(smooth)).max())
     assert tv_smooth < tv_raw - 100.0, \
         "Rampenmalus glaettet den Peak-Ladeverlauf nicht messbar"
-    assert jump_smooth < jump_raw - 100.0, \
-        "Rampenmalus reduziert die groesste einzelne Ladeleistungs-Spitze nicht"
+    # Ohne Abregel-Aktor ist die unbestrafte Referenz stärker degeneriert und
+    # CBC kann zufällig bereits eine glatte Variante wählen. Entscheidend ist
+    # deshalb zusätzlich eine absolute Obergrenze des aktiv geglätteten Plans.
+    assert jump_smooth < 1400.0, \
+        "Rampenmalus begrenzt die groesste einzelne Ladeleistungs-Spitze nicht"
 
 
 def test_grid_charge_is_explicit_not_disguised():

@@ -456,7 +456,10 @@ Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
   `forecast.fallback_load_w`. Bei Solcast müssen für Zukunftsslots alle Teilanlagen
   vorhanden sein; unvollständige P10-Reihen werden nicht zur Peak-Planung genutzt.
 - Optional `feed_in.zero_at_negative_price` (Solarspitzengesetz): Einspeisung in
-  Negativpreis-Stunden mit 0 ct bewertet.
+  Slots mit negativem **Börsenpreis** mit 0 ct bewertet. Der Rohpreis bleibt dabei
+  getrennt vom Endkundenpreis. Abregelung wird nur geplant, wenn eine physische
+  WR-Einspeisegrenze oder `e3dc_rscp.curtailment_control_enabled` vorhanden ist;
+  der RSCP-Sollwert wird zurückgelesen und beim Beenden wieder aufgehoben.
 - Geschätzte Folgetag-Preise werden zur Mitte gestaucht (`forecast.price_damping`).
 - Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten – die letzte
   gespeicherte kWh ist weniger wert als die erste.
