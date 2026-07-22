@@ -574,6 +574,9 @@ class MonitoringConfig:
     # übers Netz aus - das ist KEIN Steuerfehler, sondern Prognoseabweichung, die
     # der Akku-Check ohnehin abbildet. Netz bleibt informativ im Report.
     execution_audit_grid: bool = False
+    # Rein diagnostischer Vergleich aller Optimierungsmodi nach jedem Lauf.
+    shadow_compare_enabled: bool = True
+    shadow_recommend_min_savings_eur: float = 0.05
 
 
 @dataclass
@@ -1272,6 +1275,9 @@ def load_config(path: str) -> Config:
         execution_audit_grid=bool(mon.get("execution_audit_grid", False)),
         execution_audit_startup_grace_minutes=float(
             mon.get("execution_audit_startup_grace_minutes", 5.0)),
+        shadow_compare_enabled=bool(mon.get("shadow_compare_enabled", True)),
+        shadow_recommend_min_savings_eur=float(
+            mon.get("shadow_recommend_min_savings_eur", 0.05)),
     )
 
     rep = raw.get("report", {})

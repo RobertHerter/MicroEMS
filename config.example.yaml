@@ -529,6 +529,9 @@ monitoring:
   # RSCP-Steuerung erst wieder gesetzt/eingependelt werden muss (sonst falsche
   # "Planabweichung Akku" direkt nach dem Start). 0 = aus.
   execution_audit_startup_grace_minutes: 5.0
+  # Nach jedem Produktivlauf auto/asap/peak/late rein diagnostisch vergleichen.
+  shadow_compare_enabled: true
+  shadow_recommend_min_savings_eur: 0.05  # kleinere Vorteile nicht als Wechsel empfehlen
 
 # -----------------------------------------------------------------------------
 # Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer

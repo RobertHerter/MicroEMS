@@ -464,6 +464,14 @@ Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
 - Terminalwert (`"auto"`): fallende Grenzwert-Kurve in 3 Segmenten – die letzte
   gespeicherte kWh ist weniger wert als die erste.
 - Slot 0 wird mit Live-Messwerten verankert.
+- Nach jedem Lauf vergleicht ein rein diagnostischer Schattenlauf `auto`,
+  `asap`, `peak` und `late` nach Kosten, Netzbezug, Einspeisung/-spitze,
+  Abregelung sowie Max-/End-SoC und zeigt eine unverbindliche Empfehlung.
+- Jede besondere Planentscheidung weist ihren realen Ausführungspfad aus:
+  direktes RSCP, MQTT-Sollwert, physische Wechselrichterfunktion oder nur Modell.
+- Abgeschlossene Slots werden gegen die E3DC-Zählerenergie geprüft. Das Audit
+  zeigt Energieabweichung und Einspeisegrenze und unterscheidet Geräte-,
+  Prognose- und Modellursachen.
 - Auto: Schalt-Malus je Einschaltvorgang, optionale Ladekurve; der Ziel-SoC ist eine
   **weiche** Nebenbedingung (`car_target_penalty_ct_kwh`) und meldet Fehlmengen per
   `ems/alert`. Ohne Fahrzeug-SoC wird das Auto nicht mitoptimiert; Abfahrtzeiten je

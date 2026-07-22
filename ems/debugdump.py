@@ -92,6 +92,11 @@ def save_snapshot(config: Config, now, inputs, result, violations,
         "plan": {c: arr(t[c]) for c in t.columns
                  if pd.api.types.is_numeric_dtype(t[c])},
         "plan_mode": [str(m) for m in t["mode"]] if "mode" in t.columns else None,
+        "plan_execution": ([{
+            "path": str(row.get("execution_path", "")),
+            "label": str(row.get("execution_label", "")),
+            "detail": str(row.get("execution_detail", "")),
+        } for _, row in t.iterrows()] if "execution_path" in t.columns else None),
     }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:

@@ -68,6 +68,11 @@ _comparison_status = {
     "state": "idle", "strategy": None, "requested_at": None,
     "started_at": None, "finished_at": None, "message": "", "result": None,
 }
+_shadow_status = {
+    "state": "idle", "started_at": None, "finished_at": None,
+    "generated": None, "message": "Noch kein automatischer Vergleich",
+    "result": None,
+}
 
 
 def _runtime_iso() -> str:
@@ -83,6 +88,7 @@ def _runtime_snapshot() -> dict:
     with _runtime_lock:
         out = dict(_runtime_status)
         out["comparison"] = dict(_comparison_status)
+        out["shadow_comparison"] = dict(_shadow_status)
         return out
 
 
@@ -154,13 +160,101 @@ def _comparison_metrics(table: pd.DataFrame, total_cost_ct: float,
         "cost_eur": round(float(total_cost_ct) / 100.0, 2),
         "grid_import_kwh": energy("grid_import_w"),
         "grid_export_kwh": energy("grid_export_w"),
+        "curtailment_kwh": energy("pv_curtail_w"),
         "peak_export_w": round(float(pd.to_numeric(
             export, errors="coerce").fillna(0).max()), 0),
         "restricted_slots": int(modes.isin(
             ["hold", "limit_discharge", "block_charge", "grid_charge"]).sum()),
         "end_soc_percent": (round(float(table["house_soc_percent"].iloc[-1]), 1)
                             if "house_soc_percent" in table and len(table) else None),
+        "max_soc_percent": None,
+        "max_soc_at": None,
     }
+
+
+def _comparison_metrics_complete(table: pd.DataFrame, total_cost_ct: float,
+                                 slot_minutes: int) -> dict:
+    metrics = _comparison_metrics(table, total_cost_ct, slot_minutes)
+    if "house_soc_percent" in table and len(table):
+        soc = pd.to_numeric(table["house_soc_percent"], errors="coerce")
+        if soc.notna().any():
+            maximum = float(soc.max())
+            metrics["max_soc_percent"] = round(maximum, 1)
+            metrics["max_soc_at"] = pd.Timestamp(soc.idxmax()).isoformat()
+    return metrics
+
+
+def _start_shadow_comparison(config, inputs: OptimizerInputs,
+                             primary, primary_violations) -> None:
+    """Alle Modi nach dem Produktivlauf rein lesend im Hintergrund vergleichen."""
+    if not getattr(config.monitoring, "shadow_compare_enabled", True):
+        return
+    active = str(config.optimization.charge_strategy)
+    with _runtime_lock:
+        if _shadow_status.get("state") in ("queued", "running"):
+            log.info("Automatischer Modusvergleich läuft noch; dieser Zyklus wird gebündelt.")
+            return
+        _shadow_status.update(
+            state="queued", started_at=None, finished_at=None,
+            generated=pd.Timestamp(inputs.index[0]).isoformat(),
+            message="Vier Modi werden verglichen", result=None)
+
+    def worker():
+        try:
+            with _runtime_lock:
+                _shadow_status.update(state="running", started_at=_runtime_iso(),
+                                      message="Schattenvergleich läuft")
+            rows = {}
+            for strategy in ("auto", "asap", "peak", "late"):
+                if strategy == active:
+                    result, violations = primary, primary_violations
+                else:
+                    cfg = copy.deepcopy(config)
+                    cfg.optimization.charge_strategy = strategy
+                    result = Optimizer(
+                        cfg, stabilize_plan=False, store_warm=False).solve(inputs)
+                    violations = validate_plan(cfg, result, inputs)
+                metrics = _comparison_metrics_complete(
+                    result.table, result.total_cost_ct,
+                    config.general.slot_minutes)
+                metrics.update(
+                    status=result.status,
+                    solver_seconds=round(result.solver_seconds, 2),
+                    errors=sum(v.severity == "error" for v in violations),
+                    warnings=sum(v.severity == "warning" for v in violations),
+                    active=strategy == active)
+                rows[strategy] = metrics
+            valid = {name: value for name, value in rows.items()
+                     if not value["errors"] and value["status"] == "Optimal"}
+            best = min(valid, key=lambda name: (
+                valid[name]["cost_eur"], valid[name]["grid_import_kwh"],
+                valid[name]["peak_export_w"])) if valid else active
+            saving = round(rows[active]["cost_eur"] - rows[best]["cost_eur"], 2)
+            threshold = max(0.0, float(getattr(
+                config.monitoring, "shadow_recommend_min_savings_eur", 0.05)))
+            recommended = best if saving >= threshold else active
+            payload = {
+                "active": active, "recommended": recommended,
+                "best_raw": best, "saving_eur": max(0.0, saving),
+                "modes": rows,
+            }
+            with _runtime_lock:
+                _shadow_status.update(
+                    state="done", finished_at=_runtime_iso(), result=payload,
+                    message=(f"Empfehlung: {recommended}"
+                             + (f" (−{saving:.2f} €)" if recommended != active else
+                                " (aktuellen Modus beibehalten)")))
+            _record_dashboard_event(
+                config, "shadow_comparison", "Automatischer Modusvergleich abgeschlossen",
+                details={"active": active, "recommended": recommended,
+                         "saving_eur": max(0.0, saving)})
+        except Exception as exc:
+            with _runtime_lock:
+                _shadow_status.update(state="error", finished_at=_runtime_iso(),
+                                      message=f"Schattenvergleich fehlgeschlagen: {exc}")
+            log.exception("Automatischer Modusvergleich fehlgeschlagen")
+
+    threading.Thread(target=worker, name="ems-shadow-comparison", daemon=True).start()
 
 
 def _comparison_inputs(snapshot: dict) -> OptimizerInputs:
@@ -279,7 +373,7 @@ def _start_plan_comparison(config, strategy: str) -> dict:
     return _runtime_snapshot()["comparison"]
 
 
-def _audit_execution(config, now, live):
+def _audit_execution(config, now, live, e3dc=None):
     """Vorherigen Sollslot mit aktuellem E3DC-Snapshot vergleichen."""
     if not config.monitoring.execution_audit_enabled or not live:
         return None
@@ -292,7 +386,18 @@ def _audit_execution(config, now, live):
     grace_min = float(getattr(
         config.monitoring, "execution_audit_startup_grace_minutes", 5.0) or 0.0)
     in_grace = grace_min > 0.0 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0
-    planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, now)
+    audit_ts = now
+    meter = None
+    if e3dc is not None:
+        slot = pd.Timedelta(minutes=config.general.slot_minutes)
+        audit_ts = pd.Timestamp(now) - slot
+        try:
+            values = e3dc.read_energy_15min(audit_ts, now)
+            meter = values.get(pd.Timestamp(audit_ts).tz_convert("UTC").isoformat())
+        except Exception as exc:
+            log.debug("E3DC-Slotenergie noch nicht lesbar (%s).", exc)
+    planned = read_execution_plan_slot(
+        config.e3dc_rscp.history_db_path, audit_ts)
     if in_grace:
         # Statt die Prüfung stumm auszusetzen (Kachel fehlte dann bis zum
         # nächsten Lauf), eine NEUTRALE Kachel zeigen: ok=True (kein Alarm,
@@ -308,10 +413,90 @@ def _audit_execution(config, now, live):
                             "battery_w": live.get("battery_w"),
                             "soc": live.get("soc_percent")},
                  "deviations": {}}
-        write_execution_audit(config.e3dc_rscp.history_db_path, now, audit)
+        write_execution_audit(config.e3dc_rscp.history_db_path, audit_ts, audit)
         return audit
     if not planned:
         return None
+    if e3dc is not None and meter is None:
+        audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                 "ok": True, "state": "data_waiting", "cause": "data",
+                 "message": "Abgeschlossenes E3DC-Zählerfenster ist noch nicht verfügbar.",
+                 "planned": planned, "actual": {}, "deviations": {}}
+        write_execution_audit(config.e3dc_rscp.history_db_path, audit_ts, audit)
+        return audit
+    if meter is not None:
+        dt = config.general.slot_minutes / 60.0
+        end_plan = read_execution_plan_slot(
+            config.e3dc_rscp.history_db_path, now) or {}
+        actual = {
+            "grid_w": (float(meter["grid_import_wh"])
+                       - float(meter["grid_export_wh"])) / dt,
+            "battery_w": (float(meter["bat_in_wh"])
+                          - float(meter["bat_out_wh"])) / dt,
+            "soc": live.get("soc_percent"),
+            "pv_w": float(meter["pv_wh"]) / dt,
+            "load_w": float(meter["load_wh"]) / dt,
+            "grid_export_w": float(meter["grid_export_wh"]) / dt,
+        }
+        planned = dict(planned)
+        if end_plan.get("soc") is not None:
+            planned["soc"] = end_plan["soc"]
+        deviations = {}
+        for key in ("grid_w", "battery_w", "soc", "pv_w", "load_w"):
+            if actual.get(key) is not None and planned.get(key) is not None:
+                deviations[key] = round(
+                    float(actual[key]) - float(planned[key]), 2)
+        deviations["battery_energy_kwh"] = round(
+            (float(meter["bat_in_wh"]) - float(meter["bat_out_wh"])
+             - float(planned.get("battery_w", 0.0)) * dt) / 1000.0, 3)
+        deviations["grid_energy_kwh"] = round(
+            (float(meter["grid_import_wh"]) - float(meter["grid_export_wh"])
+             - float(planned.get("grid_w", 0.0)) * dt) / 1000.0, 3)
+        def _action(value):
+            value = float(value or 0.0)
+            return "laden" if value > 50.0 else ("entladen" if value < -50.0 else "idle")
+        expected_action = _action(planned.get("battery_w"))
+        observed_action = _action(actual.get("battery_w"))
+        batt_bad = abs(deviations.get("battery_w", 0.0)) > float(
+            config.monitoring.execution_battery_tolerance_w)
+        soc_bad = abs(deviations.get("soc", 0.0)) > float(
+            config.monitoring.execution_soc_tolerance_percent)
+        grid_bad = abs(deviations.get("grid_w", 0.0)) > float(
+            config.monitoring.execution_grid_tolerance_w)
+        forecast_bad = (abs(deviations.get("pv_w", 0.0))
+                        + abs(deviations.get("load_w", 0.0))) > float(
+                            config.monitoring.execution_grid_tolerance_w)
+        limit = planned.get("export_limit_w")
+        export_bad = (limit is not None and actual["grid_export_w"]
+                      > float(limit) + config.monitoring.execution_grid_tolerance_w)
+        model_bad = (float(planned.get("pv_curtail_w", 0.0) or 0.0) > 5.0
+                     and planned.get("execution_path") == "model")
+        failed = batt_bad or soc_bad or export_bad or (
+            config.monitoring.execution_audit_grid and grid_bad)
+        if model_bad:
+            cause, state = "model", "model_error"
+        elif batt_bad or soc_bad or export_bad:
+            cause, state = "device", "device_error"
+        elif forecast_bad or grid_bad:
+            cause, state = "forecast", "forecast_deviation"
+        else:
+            cause, state = "none", "ok"
+        ok = not failed and not model_bad
+        labels = {"device": "Geräteabweichung", "forecast": "Prognoseabweichung",
+                  "model": "nicht ausführbare Modellannahme", "none": "Soll erfüllt"}
+        message = labels[cause]
+        if export_bad:
+            message += "; Einspeisegrenze wurde überschritten"
+        audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                 "ok": ok, "state": state, "cause": cause, "message": message + ".",
+                 "planned": planned, "actual": actual, "deviations": deviations,
+                 "meter": meter, "export_limit_ok": None if limit is None else not export_bad}
+        audit["battery_action"] = {
+            "planned": expected_action, "actual": observed_action,
+            "ok": not batt_bad,
+        }
+        write_execution_audit(config.e3dc_rscp.history_db_path, audit_ts, audit)
+        return audit
     actual = {"grid_w": live.get("grid_w"), "battery_w": live.get("battery_w"),
               "soc": live.get("soc_percent")}
     tolerances = {
@@ -795,7 +980,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 except Exception as exc:
                     log.warning("Ist-Wert-Protokollierung fehlgeschlagen (%s).", exc)
             try:
-                execution_status = _audit_execution(config, now, live)
+                execution_status = _audit_execution(config, now, live, e3dc=e3dc)
             except Exception as exc:
                 log.warning("Soll/Ist-Ausführungsprüfung fehlgeschlagen (%s).", exc)
 
@@ -1025,6 +1210,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 except Exception as exc:  # pragma: no cover
                     log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", ld.name, exc)
         result = Optimizer(config, stabilize_plan=True).solve(inputs)
+        from .executability import annotate_executability
+        annotate_executability(config, result.table)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
                  result.status, result.total_cost_ct / 100.0)
         # Solver-Telemetrie vor dem Speichern gegen die bisherige Historie
@@ -1225,7 +1412,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 from .local_history import write_execution_plan
                 write_execution_plan(
                     config.e3dc_rscp.history_db_path, now, result.table,
-                    initial_soc_percent=float(soc_pct))
+                    initial_soc_percent=float(soc_pct),
+                    static_export_limit_w=config.inverter.max_export_w)
             except Exception as exc:
                 log.warning("Sollfahrplan-Audit nicht speicherbar (%s).", exc)
 
@@ -1315,6 +1503,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     )
                 except Exception as exc:
                     log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
+        _start_shadow_comparison(config, inputs, result, violations)
         _runtime_finish(now, runtime_started)
         if runtime_trigger == "manual":
             _record_dashboard_event(
@@ -1861,6 +2050,7 @@ def _build_display_frame(repo, config, now, history, result,
               "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
               "grid_import_w", "grid_export_w", "export_line_w", "mode",
               "feedin_ct_kwh", "spot_price_ct_kwh", "pv_curtail_w", "decision_reason",
+              "execution_path", "execution_label", "execution_detail",
               "decision_energy_kwh", "decision_value_ct",
               "decision_reference_time"]:
         if c in ot.columns:

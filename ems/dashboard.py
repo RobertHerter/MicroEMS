@@ -288,6 +288,8 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
         if values.notna().any():
             facts.append(
                 f"Modellschätzung {float(values.fillna(0).sum()):+.2f} ct")
+        if first.get("execution_label"):
+            facts.append(str(first.get("execution_label")))
         facts_html = "".join(f"<span>{_esc(v)}</span>" for v in facts)
         color = _MODE_COLOR.get(mode, "#7f8c99")
         cards.append(
@@ -422,7 +424,7 @@ def _slot_detail_block() -> str:
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
  async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
- function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');document.getElementById('slot-detail').open=true;}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');document.getElementById('slot-detail').open=true;}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
  function bind(){document.querySelectorAll('.plotly-graph-div').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x);});});}
  bind();setInterval(bind,2000);
 })();</script>"""
@@ -549,8 +551,11 @@ def _controls_block(config) -> str:
         "<span class='idle'>■ Idle</span><span class='now'>│ Jetzt</span></div></div>"
         "<div class='schedule-list' id='schedule-list'></div></section>")
     compare = (
-        "<section class='plan-compare'><div><b>Plan vor Übernahme vergleichen</b>"
-        "<small>Reine Vorschau mit denselben Prognosedaten – sendet keine Steuerwerte</small></div>"
+        "<section class='plan-compare'><div><b>Automatischer Modusvergleich</b>"
+        "<small>Alle vier Modi nach jedem Lauf – Empfehlung ohne automatische Umschaltung</small></div>"
+        "<div id='shadow-result' class='compare-result'>Vergleich wird nach dem nächsten Lauf erstellt.</div>"
+        "<div><b>Zusätzlichen Detailvergleich starten</b>"
+        "<small>Reine Vorschau mit Kurven – sendet keine Steuerwerte</small></div>"
         "<div class='compare-actions'><select id='compare-strategy'>"
         + "".join(f"<option value='{m}'{' selected' if m == strat else ''}>"
                   f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak", "late"))
@@ -620,6 +625,15 @@ async function emsCompare(){
   try{const r=await fetch('api/control/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:s})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));m.textContent='… Vergleich läuft';if(window.emsRuntimePoll)window.emsRuntimePoll();}catch(e){m.textContent='✗ '+e.message;}
 }
 function emsCompareApply(){const s=document.getElementById('compare-strategy').value;if(confirm('Optimierungsmodus „'+document.getElementById('compare-strategy').selectedOptions[0].text+'“ übernehmen und produktiv neu berechnen?'))emsMode(s);}
+function emsShadowRender(c){
+  const box=document.getElementById('shadow-result');if(!box||!c)return;
+  if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Schattenvergleich läuft');return;}
+  if(c.state==='error'){box.textContent='✗ '+c.message;return;}
+  if(c.state!=='done'||!c.result)return;
+  const r=c.result,names={auto:'Automatisch',asap:'Früh laden',peak:'Spitzen glätten',late:'Spät laden'},f=(v,d=2)=>v==null?'–':Number(v).toLocaleString('de-DE',{maximumFractionDigits:d});
+  let rows=Object.entries(r.modes).map(([k,m])=>'<tr class="'+(k===r.recommended?'recommended ':'')+(m.active?'active':'')+'"><th>'+names[k]+(m.active?' <small>aktiv</small>':'')+'</th><td>'+f(m.cost_eur)+' €</td><td>'+f(m.grid_import_kwh)+' kWh</td><td>'+f(m.grid_export_kwh)+' kWh</td><td>'+f(m.peak_export_w,0)+' W</td><td>'+f(m.curtailment_kwh)+' kWh</td><td>'+(m.max_soc_at?new Date(m.max_soc_at).toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'}):'–')+' ('+f(m.max_soc_percent,1)+' %%)</td><td>'+f(m.end_soc_percent,1)+' %%</td></tr>').join('');
+  box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+'</div><div class="shadow-table-wrap"><table class="shadow-table"><thead><tr><th>Modus</th><th>Kosten</th><th>Netzbezug</th><th>Einspeisung</th><th>Spitze</th><th>Abregelung</th><th>Max-SoC</th><th>End-SoC</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+(r.recommended!==r.active?'<button class="primary shadow-apply" onclick="emsMode(\\''+r.recommended+'\\')">Empfehlung übernehmen</button>':'');
+}
 function emsCompareRender(c){
   if(!c)return;const box=document.getElementById('compare-result'),apply=document.getElementById('compare-apply'),chart=document.getElementById('compare-chart');if(!box)return;
   if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Vergleich läuft');apply.disabled=true;return;}
@@ -639,6 +653,8 @@ function emsCompareRender(c){
   ],{height:340,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:66},legend:{orientation:'h',x:0,y:-.18,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
 }
 window.addEventListener('ems-status',e=>emsCompareRender(e.detail.comparison));
+window.addEventListener('ems-status',e=>emsShadowRender(e.detail.shadow_comparison));
+if(window.emsRuntimePoll)window.emsRuntimePoll();
 window.addEventListener('ems-theme-change',()=>{if(window.EMS_COMPARE_LAST)emsCompareRender({state:'done',message:'Vergleich fertig – noch nicht übernommen',strategy:document.getElementById('compare-strategy').value,result:window.EMS_COMPARE_LAST});});
 async function emsBat(a){
   const action=a==='selected'?document.getElementById('schedule-action').value:a,
@@ -841,6 +857,21 @@ def _operations_block(solver, execution) -> str:
         detail = (f"Netz {_w(planned.get('grid_w'))} → {_w(actual.get('grid_w'))} · "
                   f"Akku {_w(planned.get('battery_w'))} → {_w(actual.get('battery_w'))} · "
                   f"SoC {planned.get('soc', '–')} → {actual.get('soc', '–')} %")
+        deviations = execution.get("deviations", {})
+        action = execution.get("battery_action") or {}
+        if action:
+            detail += (f" · Aktion {action.get('planned', '–')} → "
+                       f"{action.get('actual', '–')}")
+        if deviations.get("battery_energy_kwh") is not None:
+            detail += (f" · Energieabweichung Akku "
+                       f"{float(deviations['battery_energy_kwh']):+.3f} kWh")
+        if execution.get("export_limit_ok") is not None:
+            detail += (" · Einspeisegrenze eingehalten" if execution.get(
+                "export_limit_ok") else " · Einspeisegrenze überschritten")
+        cause = {"device": "Gerät", "forecast": "Prognose", "model": "Modell",
+                 "data": "Daten", "none": "keine"}.get(
+                     execution.get("cause"), execution.get("cause", "–"))
+        detail += f" · Ursache: {cause}"
         cards.append(
             f"<article class='quality-item {'current' if execution.get('ok') else 'partial'}'>"
             "<div class='quality-source'>Plan-Ausführung</div>"
@@ -848,7 +879,7 @@ def _operations_block(solver, execution) -> str:
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
     return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
             "<span>Betriebsdiagnose</span>"
-            "<small>Solver und geplanter Soll/Ist-Vergleich</small></summary>"
+            "<small>Solver und Ergebnisprüfung abgeschlossener Slots</small></summary>"
             f"<div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
@@ -1565,6 +1596,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .compare-grid > div {{ padding: 8px; background: #fff; border: 1px solid #dfe6ed; border-radius: 7px; }}
  .compare-grid span, .compare-grid small {{ display: block; font-size: 10px; color: #74808b; }}
  .compare-grid b {{ display: block; margin: 2px 0; font-size: 14px; }}
+ .shadow-table-wrap {{ overflow-x: auto; margin: 7px 0; }}
+ .shadow-table {{ width: 100%; border-collapse: collapse; min-width: 850px; font-size: 11px; }}
+ .shadow-table th, .shadow-table td {{ padding: 7px 8px; text-align: right; border-bottom: 1px solid #dfe6ed; white-space: nowrap; }}
+ .shadow-table th:first-child {{ text-align: left; }}
+ .shadow-table tr.recommended {{ background: #e8f6ed; }}
+ .shadow-table tr.active th {{ color: #1769c2; }}
+ .shadow-apply {{ margin-top: 7px; }}
  .control-channels {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }}
  .control-channels span {{ padding: 3px 7px; border-radius: 999px; background: #e7f0f8;
         color: #315f83; font-size: 10px; }}
@@ -1669,6 +1707,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .compare-grid small {{ color: #aebbc8; }}
  html.dark .event {{ border-color: #303e4b; }}
  html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
+ html.dark .shadow-table th, html.dark .shadow-table td {{ border-color: #354352; }}
+ html.dark .shadow-table tr.recommended {{ background: #214332; }}
  html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
@@ -1821,7 +1861,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.33,'#263442'],[.34,'#329b4c'],[.66,'#329b4c'],[.67,'#596979'],[1,'#596979']]:[[0,'#e9ecef'],[.33,'#e9ecef'],[.34,'#2ca02c'],[.66,'#2ca02c'],[.67,'#adb5bd'],[1,'#adb5bd']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.33,'#263442'],[.34,'#329b4c'],[.66,'#329b4c'],[.67,'#596979'],[1,'#596979']]:[[0,'#e9ecef'],[.33,'#e9ecef'],[.34,'#2ca02c'],[.66,'#2ca02c'],[.67,'#adb5bd'],[1,'#adb5bd']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});

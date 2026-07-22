@@ -154,7 +154,8 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "PV-Spitzen glätten" in html
     assert "Spät laden" in html
     assert "maximalen Ziel-SoC möglichst spät erreichen" in html
-    assert "Plan vor Übernahme vergleichen" in html
+    assert "Automatischer Modusvergleich" in html
+    assert "Zusätzlichen Detailvergleich starten" in html
     assert "api/control/compare" in html
     assert "Modus übernehmen" in html
     assert "Direkte E3/DC-Steuerung (RSCP)" in html
@@ -164,6 +165,9 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "id='compare-chart'" in html
     assert "candidate_battery_w" in html and "candidate_soc_percent" in html
     assert "hoverlabel:{bgcolor:dark?'#202b36':'#ffffff'" in html
+    assert 'onclick="emsMode(\\\'' in html
+    assert (html.index("window.addEventListener('ems-status',e=>emsShadowRender")
+            < html.rindex("if(window.emsRuntimePoll)window.emsRuntimePoll();"))
 
 
 def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():

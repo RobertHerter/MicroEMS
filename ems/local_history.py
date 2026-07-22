@@ -132,7 +132,7 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS execution_plan ("
                 " ts TEXT PRIMARY KEY, issued_at TEXT, grid_w REAL, battery_w REAL,"
                 " soc REAL, mode TEXT, charge_limit_w REAL,"
-                " discharge_limit_w REAL, grid_charge_w REAL)")
+                " discharge_limit_w REAL, grid_charge_w REAL, details_json TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS execution_audit ("
                 " ts TEXT PRIMARY KEY, checked_at TEXT, ok INTEGER, state TEXT,"
                 " message TEXT, planned_json TEXT, actual_json TEXT,"
@@ -153,6 +153,10 @@ def _con(path: str) -> sqlite3.Connection:
     try:
         con.execute("ALTER TABLE savings_validated "
                     "ADD COLUMN baseline_end_soc_wh REAL")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        con.execute("ALTER TABLE execution_plan ADD COLUMN details_json TEXT")
     except sqlite3.OperationalError:
         pass
     con.commit()
@@ -315,7 +319,8 @@ def read_solver_runs(path: str, limit: int = 24) -> list[dict]:
 
 
 def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
-                         initial_soc_percent: float | None = None) -> int:
+                         initial_soc_percent: float | None = None,
+                         static_export_limit_w: float | None = None) -> int:
     """Publizierten Sollfahrplan fuer den spaeteren Ist-Vergleich sichern."""
     if table is None or table.empty:
         return 0
@@ -329,17 +334,38 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
         battery = (float(row.get("batt_dc_charge_w", 0.0) or 0.0)
                    + float(row.get("batt_ac_charge_w", 0.0) or 0.0)
                    - float(row.get("batt_discharge_w", 0.0) or 0.0))
+        load_cols = [name for name in table.columns
+                     if name.startswith("load_") and name.endswith("_w")]
+        total_load = (float(row.get("house_load_w", 0.0) or 0.0)
+                      + float(row.get("car_charge_w", 0.0) or 0.0)
+                      + sum(float(row.get(name, 0.0) or 0.0) for name in load_cols))
+        line = row.get("export_line_w")
+        export_limit = (float(line) if line is not None and pd.notna(line)
+                        else static_export_limit_w)
+        details = {
+            "pv_w": float(row.get("pv_w", 0.0) or 0.0),
+            "load_w": total_load,
+            "grid_export_w": float(row.get("grid_export_w", 0.0) or 0.0),
+            "export_limit_w": export_limit,
+            "pv_curtail_w": float(row.get("pv_curtail_w", 0.0) or 0.0),
+            "execution_path": row.get("execution_path"),
+            "execution_label": row.get("execution_label"),
+        }
         rows.append((key, issue, grid, battery, previous_soc,
                      str(row.get("mode", "auto")),
                      row.get("batt_charge_limit_w"),
                      row.get("batt_discharge_limit_w"),
-                     row.get("batt_grid_charge_w")))
+                     row.get("batt_grid_charge_w"),
+                     json.dumps(details, separators=(",", ":"))))
         value = row.get("house_soc_percent")
         if value is not None and pd.notna(value):
             previous_soc = float(value)
     con = _con(path)
     con.executemany(
-        "INSERT OR REPLACE INTO execution_plan VALUES(?,?,?,?,?,?,?,?,?)", rows)
+        "INSERT OR REPLACE INTO execution_plan("
+        "ts,issued_at,grid_w,battery_w,soc,mode,charge_limit_w,"
+        "discharge_limit_w,grid_charge_w,details_json) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     con.close()
     return len(rows)
@@ -351,7 +377,8 @@ def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
         con = _con(path)
         row = con.execute(
             "SELECT issued_at, grid_w, battery_w, soc, mode, charge_limit_w, "
-            "discharge_limit_w, grid_charge_w FROM execution_plan WHERE ts=?",
+            "discharge_limit_w, grid_charge_w, details_json "
+            "FROM execution_plan WHERE ts=?",
             (key,)).fetchone()
         con.close()
     except Exception:
@@ -359,8 +386,12 @@ def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
     if not row:
         return None
     names = ("issued_at", "grid_w", "battery_w", "soc", "mode",
-             "charge_limit_w", "discharge_limit_w", "grid_charge_w")
-    return dict(zip(names, row))
+             "charge_limit_w", "discharge_limit_w", "grid_charge_w",
+             "details_json")
+    out = dict(zip(names, row))
+    details = json.loads(out.pop("details_json") or "{}")
+    out.update(details)
+    return out
 
 
 def write_execution_audit(path: str, ts, audit: dict) -> None:
