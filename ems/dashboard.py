@@ -636,7 +636,7 @@ function emsCompareRender(c){
    {x:s.timestamp,y:s.candidate_grid_w,name:'Netz Vergleich',line:{color:'#357fc4'}},
    {x:s.timestamp,y:s.base_soc_percent,name:'SoC bisher',yaxis:'y2',line:{color:'#bb9154',dash:'dash'}},
    {x:s.timestamp,y:s.candidate_soc_percent,name:'SoC Vergleich',yaxis:'y2',line:{color:'#e6a12a'}}
-  ],{height:340,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},margin:{l:52,r:48,t:18,b:66},legend:{orientation:'h',x:0,y:-.18,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
+  ],{height:340,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:66},legend:{orientation:'h',x:0,y:-.18,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
 }
 window.addEventListener('ems-status',e=>emsCompareRender(e.detail.comparison));
 window.addEventListener('ems-theme-change',()=>{if(window.EMS_COMPARE_LAST)emsCompareRender({state:'done',message:'Vergleich fertig – noch nicht übernommen',strategy:document.getElementById('compare-strategy').value,result:window.EMS_COMPARE_LAST});});

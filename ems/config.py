@@ -356,6 +356,10 @@ class OptimizationConfig:
     # Zeitgewichteter Malus auf frühe PV-Ladung im Late-Modus. 0 deaktiviert
     # die zeitliche Verschiebung, ohne das Max-SoC-Ziel abzuschalten.
     late_charge_delay_ct_kwh: float = 5.0
+    # Nur bei feed_in.zero_at_negative_price: Malus auf Einspeisung in Slots
+    # mit negativem Bezugspreis und 0 ct Vergütung. Er muss größer als der
+    # Late-Zeitmalus sein, damit Laden/Abregeln Vorrang vor Einspeisen hat.
+    negative_price_export_penalty_ct_kwh: float = 10.0
     # Auto -> Peak, wenn der pessimistische Tagesueberschuss mindestens diese
     # Obergrenze der nutzbaren Akkukapazitaet erreicht. Der tatsaechliche
     # Schwellwert kann bei voraussichtlich teilgeladenem Akku kleiner sein.
@@ -1105,6 +1109,8 @@ def load_config(path: str) -> Config:
             "late_target_penalty_ct_kwh", 200.0)),
         late_charge_delay_ct_kwh=float(o.get(
             "late_charge_delay_ct_kwh", 5.0)),
+        negative_price_export_penalty_ct_kwh=float(o.get(
+            "negative_price_export_penalty_ct_kwh", 10.0)),
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
         seasonal_peak_tuning=bool(o.get("seasonal_peak_tuning", False)),
         auto_peak_threshold_winter_percent=float(o.get(

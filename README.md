@@ -237,7 +237,7 @@ Wichtige Blöcke:
 | `house_battery` / `inverter` | Kapazität, Lade-/Entladeleistungen, Wirkungsgrade, SoC-Grenzen, WR-/Netzanschlussgrenzen |
 | `vehicle` | Auto-Akku, Lade-Min/-Max, Ziel-SoC, Abfahrtzeit(en), Ladekurve |
 | `optimization` | Solver, MIP-Gap, Strafterme, Ladestrategie (`auto/peak/asap/late`), **Abend-Reserve** |
-| `feed_in` / `tariff` | Einspeisevergütung; Bezugspreis-Tarifmodell (Spot + Aufschläge + Netzentgelt) |
+| `feed_in` / `tariff` | Einspeisevergütung; bei `zero_at_negative_price` wird in Negativpreis-Slots Laden/Abregeln statt Einspeisen priorisiert; Bezugspreis-Tarifmodell |
 | `weather` / `solcast` / `pv_model` / `pv_source_selection` | Wetter- und PV-Quellen + Autowahl |
 | `e3dc_rscp` | RSCP-Zugang, `read_live`/`control_enabled`/`history_source`, Verifikation |
 | `controllable_loads` | verschiebbare + thermische Lasten (Pool-WP) |

@@ -163,6 +163,7 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "api/control/e3dc_control" in html
     assert "id='compare-chart'" in html
     assert "candidate_battery_w" in html and "candidate_soc_percent" in html
+    assert "hoverlabel:{bgcolor:dark?'#202b36':'#ffffff'" in html
 
 
 def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():

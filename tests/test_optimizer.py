@@ -342,6 +342,45 @@ def test_negative_prices_charge_from_grid():
     assert not both.any(), "Gleichzeitiger Import und Export"
 
 
+@pytest.mark.parametrize("strategy", ["asap", "peak", "auto", "late"])
+def test_zero_at_negative_price_avoids_export_in_every_strategy(strategy):
+    """Ohne Vergütung darf kein Modus PV kostenlos einspeisen: erst laden,
+    danach den nicht speicherbaren Rest abregeln."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = strategy
+    cfg.feed_in.zero_at_negative_price = True
+    idx = _day_index("2026-06-10")
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    negative = (hour >= 10.0) & (hour < 15.0)
+    price = np.where(negative, -5.0, 30.0)
+    feedin = np.where(negative, 0.0, 8.0)
+    result = Optimizer(cfg, store_warm=False).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 8000), load=500.0, price=price,
+        feedin=feedin, soc=1500.0))
+    table = result.table.loc[negative]
+    assert not result.infeasible
+    assert float(table["grid_export_w"].sum()) <= TOL
+    assert float(table["batt_dc_charge_w"].sum()) > 0.0
+    assert float(table["pv_curtail_w"].sum()) > 0.0
+
+
+def test_remunerated_export_at_negative_price_remains_unchanged():
+    """Ist zero_at_negative_price aus und Einspeisung vergütet, bleibt das
+    bisherige Verhalten erhalten: Überschuss wird nicht grundlos abgeregelt."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "peak"
+    cfg.feed_in.zero_at_negative_price = False
+    idx = _day_index("2026-06-10")
+    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    negative = (hour >= 10.0) & (hour < 15.0)
+    result = Optimizer(cfg, store_warm=False).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 8000), load=500.0,
+        price=np.where(negative, -5.0, 30.0), feedin=8.0, soc=1500.0))
+    table = result.table.loc[negative]
+    assert float(table["grid_export_w"].sum()) * 0.25 / 1000.0 > 5.0
+    assert float(table["pv_curtail_w"].sum()) * 0.25 / 1000.0 < 0.1
+
+
 @pytest.mark.slow
 def test_grid_discharge_arbitrage():
     """Akku->Netz nur, wenn künftiger Importpreis unter der Einspeisung liegt:

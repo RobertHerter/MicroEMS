@@ -964,9 +964,22 @@ class Optimizer:
         # ---- Zielfunktion ----------------------------------------------- #
         kwh = dt / 1000.0
         cost_terms = []
+        zero_negative = bool(getattr(
+            cfg.feed_in, "zero_at_negative_price", False))
+        negative_export_slots = [
+            zero_negative and float(inp.price_ct_kwh[t]) < 0.0
+            and float(inp.feedin_ct_kwh[t]) <= 0.0
+            for t in range(N)]
+        negative_export_pen = max(0.0, float(getattr(
+            cfg.optimization, "negative_price_export_penalty_ct_kwh", 10.0)))
         for t in range(N):
             cost_terms.append(g_imp[t] * inp.price_ct_kwh[t] * kwh)
             cost_terms.append(-g_exp[t] * inp.feedin_ct_kwh[t] * kwh)
+            if negative_export_slots[t] and negative_export_pen:
+                # Bei entfallender Vergütung PV zuerst lokal nutzen und den
+                # verbleibenden Überschuss abregeln. Der Malus ist auf diese
+                # Slots begrenzt und verändert normale Preisfälle nicht.
+                cost_terms.append(negative_export_pen * g_exp[t] * kwh)
 
         # Zyklus-Malus: pen ist als ct je voll ZYKLIERTER kWh gemeint (einmal
         # rein + einmal raus). Auf Lade- UND Entladeleistung angewandt daher
@@ -1224,7 +1237,8 @@ class Optimizer:
             # Einspeisevergütung (verzerrt keine echte Entscheidung), aber
             # genug, dass die MIP-Gap-Toleranz (gapAbs) nie "Abregeln statt
             # Einspeisen" als gleichwertig durchwinkt.
-            cost_terms.append(0.5 * curt[t] * kwh)
+            if not negative_export_slots[t]:
+                cost_terms.append(0.5 * curt[t] * kwh)
             # Peak-Tie-Breaker: Bei gleicher Tageslinie und Energiebilanz
             # PV-Laden spaeter am Tag bevorzugen. So exportiert Peak unterhalb
             # der Linie und sammelt erst die Erzeugungsspitze ein, statt
