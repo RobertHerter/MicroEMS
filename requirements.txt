@@ -23,9 +23,6 @@ paho-mqtt>=1.6
 # Dashboard (selbst-enthaltenes interaktives HTML)
 plotly>=5.18
 
-# Tests (pytest im Projektverzeichnis ausführen)
-pytest>=8.0
-
 # Machine Learning (für Lastprognose)
 scikit-learn>=1.3.0
 

@@ -1,6 +1,9 @@
 # Konfiguration mit Zugangsdaten (nie einchecken)
 config.yaml
 config.yaml~
+config_overrides.yaml
+kalibrierung.yaml
+kalibrierung_profil.yaml
 *~
 
 # Generierte Ausgaben

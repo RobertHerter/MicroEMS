@@ -174,8 +174,8 @@ cd /opt/ems
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt        # bzw. requirements.lock (exakt getestete Versionen)
-# optional (Solcast-Alternative / Tests): pip install pye3dc pvlib
-#                                          pip install -r requirements-dev.txt
+# nur für Entwicklung und Tests:
+# pip install -r requirements-dev.txt
 
 cp config.example.yaml config.yaml     # anpassen – siehe „Konfiguration"
 
@@ -225,7 +225,9 @@ API-Keys) und ist deshalb **nicht** im Git; sie wird vom Backup-Timer gesichert.
 Interaktive Änderungen (Dashboard-Steuerpanel) und die Kalibrierung schreiben in
 eine **Overlay-Datei `config_overrides.yaml`**, die beim Laden über `config.yaml`
 gelegt wird – so überdauern sie einen Neustart, ohne die kommentierte Basisdatei
-anzutasten.
+anzutasten. `config_overrides.yaml`, `kalibrierung.yaml` und
+`kalibrierung_profil.yaml` sind anlagenspezifische Laufzeitdateien: Sie bleiben
+lokal, werden nicht versioniert und vom Backup-Timer gesichert.
 
 Wichtige Blöcke:
 
@@ -331,6 +333,10 @@ Hardware-Maximum setzen (Eigenverbrauchs-Automatik des E3DC).
 
 Nach jedem Lauf entsteht `dashboard.html` (im Loop-Betrieb per HTTP auf Port 80,
 Auto-Reload nach jeder Neuberechnung):
+
+Die dafür benötigte `plotly.min.js` wird beim ersten Dashboard-Lauf automatisch
+aus dem installierten Plotly-Paket erzeugt. Das große, generierte Browser-Bundle
+wird deshalb nicht im Git-Repository gespeichert.
 
 - **KPI-Kacheln**: Netto-Kosten Horizont, Ersparnis gesamt (inkl. an den Zählern
   bestätigter Ersparnis), Modus jetzt (mit Limits), Eingriffe im Plan; die
