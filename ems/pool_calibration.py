@@ -88,14 +88,18 @@ def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
         return None
     grid = pd.date_range(t_pool.index.min().floor(freq),
                          t_pool.index.max().ceil(freq), freq=freq)
+    tol = pd.Timedelta(freq)
+    # Alle Reihen auf das 15-min-Raster mit method="nearest" ziehen: Ta/G aus der
+    # Wetterhistorie sind (anders als Annahme) NICHT bündig auf :00/:15 - ihr
+    # Zeitindex trägt den Sekunden-Offset des Abrufzeitpunkts. Ein exaktes
+    # reindex(grid) träfe keinen einzigen Punkt (-> alles NaN -> 0 Fenster);
+    # nearest+Toleranz mappt jeden Rasterpunkt auf den nächstgelegenen Messwert.
     df = pd.DataFrame({
-        "T": pd.Series(t_pool).reindex(grid, method="nearest",
-                                       tolerance=pd.Timedelta(freq)),
-        "Ta": pd.Series(t_amb).reindex(grid).interpolate(limit=8),
-        "G": pd.Series(g_solar).reindex(grid).interpolate(limit=8),
+        "T": pd.Series(t_pool).reindex(grid, method="nearest", tolerance=tol),
+        "Ta": pd.Series(t_amb).reindex(grid, method="nearest", tolerance=tol),
+        "G": pd.Series(g_solar).reindex(grid, method="nearest", tolerance=tol),
         # KEIN Auffüllen: nur wirklich geloggte Zyklen zählen als bekannt.
-        "p": pd.Series(permit).reindex(grid, method="nearest",
-                                       tolerance=pd.Timedelta(freq)),
+        "p": pd.Series(permit).reindex(grid, method="nearest", tolerance=tol),
     })
     stage_cols = []
     for name, series in stage_on.items():

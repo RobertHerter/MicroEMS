@@ -54,6 +54,22 @@ def test_fit_recovers_true_parameters():
     assert abs(fit.solar_absorption(8.0) - A_SOLAR / 8.0) < 0.15
 
 
+def test_fit_aligns_offset_weather_grid():
+    """Regression: die Wetterhistorie (Ta/G) liegt NICHT bündig auf :00/:15 -
+    ihr Zeitindex trägt den Sekunden-/Minuten-Offset des Abrufzeitpunkts. Der
+    Fit muss die Reihen per nearest ans Raster ziehen; ein exaktes reindex würde
+    keinen Punkt treffen (alles NaN -> 0 Fenster -> None)."""
+    t_pool, t_amb, g, permit = _synthetic(days=7)
+    off = pd.Timedelta(seconds=57, milliseconds=500) + pd.Timedelta(minutes=3)
+    t_amb = t_amb.copy(); t_amb.index = t_amb.index + off
+    g = g.copy(); g.index = g.index + off
+    fit = fit_thermal_params(t_pool, t_amb, g, permit, CAP)
+    assert fit is not None, "versetztes Wetter-Raster darf den Fit nicht killen"
+    assert fit.n_windows > 48
+    assert abs(fit.loss_w_per_k - LOSS) / LOSS < 0.15, fit.loss_w_per_k
+    assert abs(fit.a_solar_w_per_wm2 - A_SOLAR) / A_SOLAR < 0.15
+
+
 def test_fit_ignores_permitted_slots():
     """Mit Heizfenster 9-12 Uhr (permit=1) muss der Fit trotzdem stimmen -
     die beheizten Fenster fliegen raus, statt den Solareintrag aufzublähen."""
