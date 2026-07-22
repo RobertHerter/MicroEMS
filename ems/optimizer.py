@@ -1425,9 +1425,17 @@ class Optimizer:
         def _suspect_free_names():
             """Verdachts-Binäre der AKTUELLEN Lösung (varValues)."""
             core, chain = set(), set()
+            # Vermeidbarer Import: echter Netzbezug (ohne AC-Laden) DEUTLICH über
+            # dem WR-Standby, obwohl der Akku noch Energie hat UND NICHT am
+            # Maximum entlädt. Deckt sowohl die volle Entladesperre (dis≈0) als
+            # auch eine gedrosselte Teilentladung (0<dis<max) ab - beide sind als
+            # Warmstart-Artefakt beobachtet. Die Standby-Schwelle verhindert, dass
+            # normale Entladeslots (Import ~= standby_w) fälschlich geflaggt werden.
+            _imp_floor = max(80.0, standby_w + 60.0)
             for t in range(N):
-                hold_susp = ((g_imp[t].varValue or 0.0) > 5.0
-                             and (dis[t].varValue or 0.0) < 1.0
+                hold_susp = (((g_imp[t].varValue or 0.0) - (ac[t].varValue or 0.0))
+                             > _imp_floor
+                             and (dis[t].varValue or 0.0) < max_dis - 5.0
                              and (soc[t + 1].varValue or 0.0)
                              > hb.min_soc_wh + 100.0)
                 ac_susp = (ac[t].varValue or 0.0) > 5.0
