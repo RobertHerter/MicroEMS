@@ -244,6 +244,11 @@ controllable_loads: []
   #   temp_signal: "pool/temperature"   # MQTT-Topic der Ist-Temperatur (°C)
   #   feedback_required: true       # Alarm, wenn echte WP-Rückmeldung fehlt
   #   feedback_max_age_minutes: 20
+  #   # Für retained/change-only-Sensoren (z.B. Shelly), die bei konstantem Wert
+  #   # nichts mehr publizieren (WP aus -> 0 W): true = der zuletzt empfangene
+  #   # Wert gilt als gültig, solange die MQTT-Verbindung steht (veraltet nur bei
+  #   # Trennung / nie empfangenem Wert), statt nach feedback_max_age_minutes.
+  #   feedback_hold_while_connected: true
   #   season: {from: "04-15", to: "10-15"}
   #   switch_penalty_ct: 5
   #   stages:

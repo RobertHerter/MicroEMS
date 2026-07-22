@@ -197,6 +197,49 @@ def test_shared_power_topic_derives_multiple_pool_stages():
     assert pub.get_load_feedback("Pool/Zusatzstufe")["on"] is True
 
 
+def test_feedback_hold_while_connected_keeps_retained_value_fresh():
+    """Retained/change-only-Sensor (Shelly): bei konstantem Wert kommen keine
+    neuen Nachrichten. Mit feedback_hold_while_connected gilt der zuletzt
+    empfangene Wert als frisch, solange die MQTT-Verbindung steht - ohne das
+    Flag veraltet er nach feedback_max_age_minutes."""
+    import pandas as pd
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", volume_l=7000,
+        feedback_required=True, feedback_max_age_minutes=20,
+        feedback_hold_while_connected=True,
+        stages=[LoadStage("WP", 650, 4000, feedback_topic="pool/wp/on",
+                          power_topic="pool/wp/power",
+                          feedback_on_threshold_w=50)])]
+    pub = HomeyMqttPublisher(cfg)
+
+    class _Client:
+        def __init__(self, up):
+            self._up = up
+
+        def is_connected(self):
+            return self._up
+
+    pub._on_message(None, None, Msg("pool/wp/power", "0"))     # WP aus, 0 W
+    old = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=40)
+    pub.load_feedback["Pool/WP"]["power_updated"] = old        # künstlich altern
+
+    # verbunden -> gehalten, gilt weiter als frisch
+    pub._client = _Client(True)
+    fb = pub.get_load_feedback("Pool/WP", 20, hold_while_connected=True)
+    assert fb["held"] is True and fb["fresh"] is True and fb["on"] is False
+
+    # getrennt -> kein Halten, veraltet
+    pub._client = _Client(False)
+    fb = pub.get_load_feedback("Pool/WP", 20, hold_while_connected=True)
+    assert fb["held"] is False and fb["fresh"] is False
+
+    # ohne Flag -> veraltet trotz Verbindung (bisheriges Verhalten)
+    pub._client = _Client(True)
+    fb = pub.get_load_feedback("Pool/WP", 20, hold_while_connected=False)
+    assert fb["held"] is False and fb["fresh"] is False
+
+
 def test_load_lanes_includes_disabled_loads():
     """_load_lanes listet ALLE konfigurierten Lasten (auch deaktivierte)."""
     from ems.config import ControllableLoad, LoadStage

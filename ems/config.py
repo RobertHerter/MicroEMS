@@ -275,6 +275,13 @@ class ControllableLoad:
     binary_horizon_hours: float = 12.0
     feedback_required: bool = False
     feedback_max_age_minutes: float = 20.0
+    # Retained/change-only-Sensoren (z.B. Shelly-Leistungsmessung) publizieren nur
+    # bei Wertänderung. Bleibt der Wert konstant (WP aus -> 0 W), kommt keine
+    # neue Nachricht und die Rückmeldung würde nach feedback_max_age_minutes
+    # fälschlich als "veraltet" gelten. Mit true gilt der zuletzt empfangene
+    # (retained) Wert als gültig, SOLANGE die MQTT-Verbindung steht - "veraltet"
+    # dann nur bei Verbindungsabbruch bzw. wenn nie ein Wert kam.
+    feedback_hold_while_connected: bool = False
 
     @property
     def capacity_wh_per_k(self) -> float:
@@ -906,6 +913,8 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             feedback_required=bool(w.get("feedback_required", False)),
             feedback_max_age_minutes=float(
                 w.get("feedback_max_age_minutes", 20.0)),
+            feedback_hold_while_connected=bool(
+                w.get("feedback_hold_while_connected", False)),
         )
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "

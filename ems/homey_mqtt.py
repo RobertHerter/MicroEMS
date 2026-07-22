@@ -164,9 +164,14 @@ class HomeyMqttPublisher:
         """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None)."""
         return self.load_temps.get(topic)
 
-    def get_load_feedback(self, label: str, max_age_minutes: float = 20.0
-                          ) -> Optional[dict]:
-        """Letzte echte Stufenrückmeldung mit Frischebewertung."""
+    def get_load_feedback(self, label: str, max_age_minutes: float = 20.0,
+                          hold_while_connected: bool = False) -> Optional[dict]:
+        """Letzte echte Stufenrückmeldung mit Frischebewertung.
+
+        hold_while_connected: für retained/change-only-Sensoren, die bei
+        konstantem Wert (WP aus -> 0 W) nichts mehr publizieren. Dann gilt der
+        zuletzt empfangene Wert als gültig, solange die MQTT-Verbindung steht -
+        nicht per Zeit veralten (nur bei Trennung / nie empfangenem Wert)."""
         item = self.load_feedback.get(label)
         if not item:
             return None
@@ -178,14 +183,28 @@ class HomeyMqttPublisher:
                      else float("inf"))
         state_age = ((now - state_ts).total_seconds() if state_ts is not None
                      else float("inf"))
-        if out.get("power_w") is not None and power_age <= limit_s:
-            out["on"] = bool(float(out["power_w"]) >=
-                             out.get("threshold_w", 50.0))
+        # on-Zustand aus der jüngeren Quelle: bevorzugt Leistung, sonst Status.
+        if out.get("power_w") is not None and power_age <= state_age:
+            out["on"] = bool(float(out["power_w"]) >= out.get("threshold_w", 50.0))
+            age_s = power_age
+        elif out.get("on") is not None:
+            age_s = state_age
+        elif out.get("power_w") is not None:
+            out["on"] = bool(float(out["power_w"]) >= out.get("threshold_w", 50.0))
             age_s = power_age
         else:
-            age_s = state_age
+            age_s = float("inf")
+        connected = False
+        if hold_while_connected:
+            try:
+                connected = bool(self._client and self._client.is_connected())
+            except Exception:
+                connected = False
+        # Retained-Wert gilt als gültig, solange verbunden (change-only-Sensoren).
+        out["held"] = bool(connected and age_s > limit_s and out.get("on") is not None)
         out["age_seconds"] = max(0.0, age_s)
-        out["fresh"] = age_s <= limit_s and out.get("on") is not None
+        out["fresh"] = (out.get("on") is not None
+                        and (age_s <= limit_s or out["held"]))
         return out
 
     def all_load_feedback(self) -> dict:
@@ -195,7 +214,9 @@ class HomeyMqttPublisher:
                 continue
             for st in ld.stages:
                 label = f"{ld.name}/{st.name}"
-                item = self.get_load_feedback(label, ld.feedback_max_age_minutes)
+                item = self.get_load_feedback(
+                    label, ld.feedback_max_age_minutes,
+                    getattr(ld, "feedback_hold_while_connected", False))
                 if item is not None:
                     out[label] = item
         return out

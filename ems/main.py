@@ -1452,11 +1452,14 @@ def _read_load_feedback(config, publisher, now):
             label = f"{ld.name}/{stage.name}"
             configured = bool(stage.feedback_topic or stage.power_topic)
             feedback = publisher.get_load_feedback(
-                label, ld.feedback_max_age_minutes) if configured else None
+                label, ld.feedback_max_age_minutes,
+                getattr(ld, "feedback_hold_while_connected", False)
+            ) if configured else None
             item = {"label": label, "name": ld.name, "stage": stage.name,
                     "configured": configured,
                     "required": bool(ld.feedback_required),
                     "fresh": bool(feedback and feedback.get("fresh")),
+                    "held": bool(feedback and feedback.get("held")),
                     "on": feedback.get("on") if feedback else None,
                     "power_w": feedback.get("power_w") if feedback else None,
                     "age_seconds": (feedback.get("age_seconds")
