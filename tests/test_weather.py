@@ -64,6 +64,32 @@ def test_temperature_roundtrip_and_resample(tmp_path):
     assert str(s.index.tz) == TZ
 
 
+def test_reader_grid_is_slot_aligned_despite_offset_start(tmp_path):
+    """Regression (vgl. pool_calibration): wird ein aus now abgeleitetes,
+    NICHT gefloortes start/end übergeben (Sekunden-Offset), muss das Raster
+    trotzdem bündig auf den Slot-Grenzen liegen - sonst trifft ein exaktes
+    reindex(grid) beim Verbraucher (Forecaster/Kalibrierung) keinen Punkt und
+    Temperatur/Strahlung werden still komplett NaN."""
+    db = str(tmp_path / "w.sqlite")
+    base = pd.Timestamp("2026-07-01 00:00", tz="UTC")
+    write_temperature(db, {(base + pd.Timedelta(hours=i)).isoformat(): 10.0 * (i + 1)
+                           for i in range(4)})
+    write_radiation(db, {(base + pd.Timedelta(hours=i)).isoformat(): 100.0 * i
+                         for i in range(4)})
+    # start/end mit Sekunden-/Minuten-Offset (wie pd.Timestamp.now())
+    off = pd.Timedelta(minutes=7, seconds=42, microseconds=123456)
+    start = base.tz_convert(TZ) + off
+    end = (base + pd.Timedelta(hours=3)).tz_convert(TZ) + off
+    for reader in (read_temperature, read_radiation):
+        s = reader(db, start, end, TZ, "15min")
+        assert not s.empty and s.notna().any()
+        # jeder Index-Punkt liegt exakt auf einer 15-min-Grenze (kein Offset)
+        assert (s.index == s.index.floor("15min")).all(), list(s.index[:3])
+        # und deckt sich mit einem unabhängig gefloorten Verbraucher-Raster
+        grid = pd.date_range(start.floor("15min"), periods=4, freq="15min")
+        assert not s.reindex(grid).isna().all()
+
+
 def test_weather_archive_excludes_past_and_selects_asof(tmp_path):
     db = str(tmp_path / "w.sqlite")
     target = pd.Timestamp("2026-07-10 12:00", tz="UTC")

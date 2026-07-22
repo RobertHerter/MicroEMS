@@ -750,8 +750,13 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
     hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
     # tz aus den (bereits tz-bewussten) Endpunkten ableiten, NICHT zusätzlich
     # tz= übergeben (sonst pytz/zoneinfo-Konflikt in date_range).
-    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
-                         pd.Timestamp(end).tz_convert(tz), freq=freq,
+    # start/end hart aufs Slot-Boundary legen (floor/ceil): ein aus now
+    # abgeleitetes start trägt sonst den Sekunden-Offset des Aufrufers, und ein
+    # exaktes reindex(grid) beim Verbraucher (Forecaster/Kalibrierung) träfe
+    # keinen Punkt -> alles NaN. So ist das Raster IMMER phasengleich zu den
+    # (ebenfalls gefloorten) Verbraucher-Rastern, unabhängig vom Aufrufer.
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
+                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
                          inclusive="left")
     if len(grid) == 0:
         return hourly
@@ -792,8 +797,10 @@ def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:
         return pd.Series(dtype="float64")
     idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
-    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
-                         pd.Timestamp(end).tz_convert(tz), freq=freq,
+    # start/end hart aufs Slot-Boundary (floor/ceil), damit das Raster
+    # phasengleich zu den Verbraucher-Rastern ist - siehe read_temperature.
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
+                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
                          inclusive="left")
     if len(grid) == 0:
         return hourly.clip(lower=0.0)
