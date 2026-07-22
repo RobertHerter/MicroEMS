@@ -21,11 +21,23 @@ def test_live_block_contains_all_e3dc_values_and_five_second_poll():
                        "live-soc", "live-wallbox"):
         assert f'id="{element_id}"' in html
     for element_id in ("live-pv-forecast-today", "live-pv-yield-today",
+                       "live-pv-forecast-now", "live-pv-deviation-today",
                        "live-grid-import-today", "live-grid-export-today",
                        "live-battery-charge-today",
                        "live-battery-discharge-today", "live-house-today",
-                       "live-price-now"):
+                       "live-energy-balance", "live-price-now"):
         assert f'id="{element_id}"' in html
+    assert 'id="live-daily-panel" open' in html
+    assert "ems-live-daily-open" in html
+    assert "daily_energy_updated" in html
+    assert "e3dc_control_enabled" in html
+    assert (html.index('id="live-pv-yield-today"')
+            < html.index('id="live-house-today"')
+            < html.index('id="live-pv-forecast-now"')
+            < html.index('id="live-pv-deviation-today"')
+            < html.index('id="live-energy-balance"'))
+    assert (html.index('id="live-price-now"')
+            < html.index('id="live-daily-panel"'))
     assert "api/live.json" in html
     assert "setInterval(tick,5000)" in html
     assert "flow-import" in html and "flow-export" in html
@@ -143,8 +155,12 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "Plan vor Übernahme vergleichen" in html
     assert "api/control/compare" in html
     assert "Modus übernehmen" in html
-    assert "Automatische E3/DC-Steuerung" in html
+    assert "Direkte E3/DC-Steuerung (RSCP)" in html
+    assert "MQTT-Sollwerte bleiben davon unabhängig" in html
+    assert "MQTT-Sollwerte · deaktiviert" in html
     assert "api/control/e3dc_control" in html
+    assert "id='compare-chart'" in html
+    assert "candidate_battery_w" in html and "candidate_soc_percent" in html
 
 
 def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():

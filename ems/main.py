@@ -223,8 +223,35 @@ def _start_plan_comparison(config, strategy: str) -> dict:
                            if isinstance(candidate.get(key), (int, float))
                            and isinstance(base.get(key), (int, float)) else None)
                      for key in candidate}
+
+            def _series(table, *terms):
+                values = sum((factor * pd.to_numeric(table.get(
+                    column, pd.Series(0.0, index=table.index)),
+                    errors="coerce").fillna(0.0) for column, factor in terms),
+                    start=pd.Series(0.0, index=table.index))
+                return [round(float(value), 2) for value in values]
+
+            series = {
+                "timestamp": [stamp.isoformat() for stamp in inp.index],
+                "base_battery_w": _series(
+                    current, ("batt_dc_charge_w", 1), ("batt_ac_charge_w", 1),
+                    ("batt_discharge_w", -1)),
+                "candidate_battery_w": _series(
+                    result.table, ("batt_dc_charge_w", 1),
+                    ("batt_ac_charge_w", 1), ("batt_discharge_w", -1)),
+                "base_grid_w": _series(
+                    current, ("grid_import_w", 1), ("grid_export_w", -1)),
+                "candidate_grid_w": _series(
+                    result.table, ("grid_import_w", 1),
+                    ("grid_export_w", -1)),
+                "base_soc_percent": _series(
+                    current, ("house_soc_percent", 1)),
+                "candidate_soc_percent": _series(
+                    result.table, ("house_soc_percent", 1)),
+            }
             payload = {"generated": snap.get("generated"), "base": base,
                        "candidate": candidate, "delta": delta,
+                       "series": series,
                        "solver_seconds": round(result.solver_seconds, 2),
                        "status": result.status,
                        "errors": sum(v.severity == "error" for v in violations),
@@ -1962,7 +1989,7 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
     live_guard = threading.Lock()
     live_cache = {"at": 0.0, "data": None}
     daily_cache = {"at": 0.0, "day": None, "data": {}}
-    plan_summary_cache = {"mtime": None, "data": {}}
+    plan_summary_cache = {"mtime": None, "frame": None, "data": {}}
 
     pwa_manifest = json.dumps({
         "name": "E3DC EMS Steuerung", "short_name": "E3DC EMS",
@@ -1986,14 +2013,14 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
         api_path = os.path.join(directory, "api_data.json")
         try:
             mtime = os.path.getmtime(api_path)
-            if plan_summary_cache["mtime"] == mtime:
-                return dict(plan_summary_cache["data"])
-            with open(api_path, encoding="utf-8") as fh:
-                rows = json.load(fh)
-            frame = pd.DataFrame(rows)
-            frame["timestamp"] = pd.to_datetime(
-                frame["timestamp"], utc=True, format="ISO8601").dt.tz_convert(
-                    config.general.timezone)
+            frame = plan_summary_cache.get("frame")
+            if plan_summary_cache["mtime"] != mtime or frame is None:
+                with open(api_path, encoding="utf-8") as fh:
+                    rows = json.load(fh)
+                frame = pd.DataFrame(rows)
+                frame["timestamp"] = pd.to_datetime(
+                    frame["timestamp"], utc=True, format="ISO8601").dt.tz_convert(
+                        config.general.timezone)
             today = frame[frame["timestamp"].dt.date == now_ts.date()]
             pv = (pd.to_numeric(today["pv_w"], errors="coerce").dropna()
                   if "pv_w" in today else pd.Series(dtype=float))
@@ -2001,14 +2028,28 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 "pv_forecast_today_kwh": round(
                     float(pv.sum()) * config.general.dt_hours / 1000.0, 2)
                 if not pv.empty else None,
+                "pv_forecast_until_now_kwh": None,
                 "current_price_ct_kwh": None,
             }
+            if not today.empty and "pv_w" in today:
+                slot = pd.Timedelta(minutes=config.general.slot_minutes)
+                expected_wh = 0.0
+                for row in today.itertuples():
+                    value = pd.to_numeric(getattr(row, "pv_w", None),
+                                          errors="coerce")
+                    if pd.isna(value):
+                        continue
+                    overlap = max(pd.Timedelta(0), min(
+                        row.timestamp + slot, now_ts) - row.timestamp)
+                    expected_wh += float(value) * overlap.total_seconds() / 3600.0
+                summary["pv_forecast_until_now_kwh"] = round(
+                    expected_wh / 1000.0, 2)
             if "price_ct_kwh" in frame and not frame.empty:
                 pos = (frame["timestamp"] - now_ts).abs().idxmin()
                 price = pd.to_numeric(frame.loc[pos, "price_ct_kwh"], errors="coerce")
                 if pd.notna(price):
                     summary["current_price_ct_kwh"] = round(float(price), 3)
-            plan_summary_cache.update(mtime=mtime, data=summary)
+            plan_summary_cache.update(mtime=mtime, frame=frame, data=summary)
             return dict(summary)
         except Exception as exc:
             log.debug("Live-Planwerte nicht lesbar (%s).", exc)
@@ -2034,6 +2075,10 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                         meter["bat_in_wh"] / 1000.0, 2),
                     "battery_discharge_today_kwh": round(
                         meter["bat_out_wh"] / 1000.0, 2),
+                    "energy_balance_residual_kwh": (
+                        round(meter["balance_residual_wh"] / 1000.0, 3)
+                        if meter.get("balance_residual_wh") is not None else None),
+                    "energy_balance_ok": meter.get("balance_ok"),
                     "daily_energy_updated": now_ts.isoformat(),
                 }
                 daily_cache.update(at=mono, day=day, data=summary)
@@ -2061,6 +2106,13 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             now_ts = pd.Timestamp(data["updated"])
             data.update(_plan_live_summary(now_ts))
             data.update(_daily_energy_summary(now_ts, mono))
+            actual = data.get("pv_yield_today_kwh")
+            expected = data.get("pv_forecast_until_now_kwh")
+            if isinstance(actual, (int, float)) and isinstance(expected, (int, float)):
+                data["pv_deviation_today_kwh"] = round(actual - expected, 2)
+                data["pv_deviation_today_percent"] = (
+                    round((actual - expected) * 100.0 / expected, 1)
+                    if expected >= 0.1 else None)
             data["e3dc_control_enabled"] = bool(
                 config.e3dc_rscp.control_enabled)
             # Zusatz-Kacheln: Pool-Ist-Temperatur (wenn thermische Last aktiv)
@@ -2139,6 +2191,9 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             result = e3dc.set_control_enabled(enabled)
             config.e3dc_rscp.control_enabled = enabled
             save_override(config_path, "e3dc_rscp.control_enabled", enabled)
+            status = result.get("control_status")
+            _store_control_status(config, status)
+            _publish_control_alarm(publisher, config, status)
             _request_runtime_recalc()
             if publisher is not None:
                 publisher.recalc_event.set()

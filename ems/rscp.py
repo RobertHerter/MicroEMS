@@ -335,12 +335,23 @@ class E3DCLink:
         bat_out = float(d.get("bat_power_out", 0.0) or 0.0)
         grid_imp = float(d.get("grid_power_out", 0.0) or 0.0)
         grid_exp = float(d.get("grid_power_in", 0.0) or 0.0)
-        load = pv + bat_out + grid_imp - bat_in - grid_exp
-        if load < 0.0:
-            load = float(d.get("consumption", 0.0) or 0.0)
+        balance_load = pv + bat_out + grid_imp - bat_in - grid_exp
+        reported_load = float(d.get("consumption", 0.0) or 0.0)
+        load = reported_load if reported_load > 0.0 else balance_load
+        residual = (balance_load - reported_load
+                    if reported_load > 0.0 else None)
+        # DC-PV-/Batteriezähler und AC-Haus-/Netzzähler schließen wegen der
+        # Wechselrichterverluste nicht exakt. Bis 5 % des Energiedurchsatzes
+        # gelten daher als plausibel; größere Abweichungen weisen auf fehlende
+        # oder inkonsistente Aggregate hin.
+        scale = max(1000.0, abs(pv) + abs(grid_imp) + abs(bat_out))
+        balance_ok = (abs(residual) <= max(250.0, 0.05 * scale)
+                      if residual is not None else None)
         return {"pv_wh": pv, "load_wh": max(0.0, load),
                 "bat_in_wh": bat_in, "bat_out_wh": bat_out,
                 "grid_import_wh": grid_imp, "grid_export_wh": grid_exp,
+                "balance_load_wh": max(0.0, balance_load),
+                "balance_residual_wh": residual, "balance_ok": balance_ok,
                 "start": start.isoformat(), "end": end.isoformat()}
 
     def set_control_enabled(self, enabled: bool) -> dict:
@@ -366,16 +377,19 @@ class E3DCLink:
                 self._set_power(0, 0)
                 released = True
             self._wd_mode, self._wd_value = 0, 0
-            if self._limits_active:
-                if self._set_limits(False) == -1:
-                    # Nicht als "aus" melden/persistieren, solange die
-                    # langlebigen SmartPower-Limits nicht sicher frei sind.
-                    self.rc.control_enabled = True
-                    raise RuntimeError("E3/DC hat die Freigabe der EMS-Limits abgelehnt")
-                released = True
+            rc = self._set_limits(False)
+            released = rc != -1
+            verification = self._verify_limits(
+                False, self.cfg.house_battery.max_dc_charge_w,
+                self.cfg.house_battery.max_discharge_w, "disabled", force=True)
             self.rc.control_enabled = False
+        confirmed = verification.get("ok") is True
+        message = ("E3/DC-Steuerung deaktiviert; Limits bestätigt freigegeben."
+                   if confirmed else
+                   "E3/DC-Steuerung deaktiviert, aber Freigabe nicht bestätigt.")
         return {"enabled": False, "released": released,
-                "message": "E3/DC-Steuerung deaktiviert; Limits freigegeben."}
+                "verified": confirmed, "control_status": verification,
+                "message": message}
 
     # ---- Steuerung ---------------------------------------------------- #
     def _set_power(self, mode: int, value: int) -> None:
@@ -437,13 +451,14 @@ class E3DCLink:
         return status
 
     def _verify_limits(self, enabled: bool, max_charge: float,
-                       max_discharge: float, mode: str) -> dict:
+                       max_discharge: float, mode: str,
+                       force: bool = False) -> dict:
         expected = {
             "power_limits_used": bool(enabled),
             "max_charge_w": round(float(max_charge)),
             "max_discharge_w": round(float(max_discharge)),
         }
-        if not self.rc.verify_control:
+        if not self.rc.verify_control and not force:
             return self._control_status(
                 None, "unverified", mode, "Befehl gesendet; Rücklesung deaktiviert.",
                 expected=expected)

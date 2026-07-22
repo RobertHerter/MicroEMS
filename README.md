@@ -345,8 +345,11 @@ wird deshalb nicht im Git-Repository gespeichert.
   Batterieleistung, Akku-SoC, Wallbox – dazu, wenn vorhanden, die Pool-Ist-
   Temperatur und die Außentemperatur. Ein zweiter Bereich zeigt PV-Tagesprognose,
   aktuellen Bezugspreis sowie die E3/DC-Zählerstände des Tages für PV, Haus,
-  Netzbezug/-einspeisung und Speicherladung/-entladung. Momentanwerte werden 5 s,
-  die summierten Tageszähler ressourcenschonend einmal pro Minute aktualisiert.
+  Netzbezug/-einspeisung und Speicherladung/-entladung. PV-Soll bis zur aktuellen
+  Uhrzeit, Ist-Abweichung, Zähleralter und Energiebilanz machen unvollständige oder
+  veraltete Tagesdaten sichtbar. Momentanwerte werden 5 s, die summierten
+  Tageszähler ressourcenschonend einmal pro Minute aktualisiert; auf dem Handy ist
+  der Tagesbereich standardmäßig eingeklappt.
 - **Leistung** (PV mit p10–p90-Band, Verbrauch, Netz, Einspeise-Linie; Ist
   durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
   Einspeisevergütung, **Steuerung**, **Modus-Zeitleiste** (Farbstreifen + Hover-
@@ -357,7 +360,11 @@ wird deshalb nicht im Git-Repository gespeichert.
   Kernparameter, Optimierungsmodus, manuelles Akku-Laden/-Entladen – ohne MQTT.
   Die automatische direkte E3/DC-Steuerung lässt sich dort ebenfalls sicher
   schalten; beim Ausschalten werden aktive RSCP-Modi und SmartPower-Limits sofort
-  freigegeben, während das reine Live-Monitoring weiterläuft.
+  freigegeben und am Gerät zurückgelesen. Direkte RSCP-Steuerung und die davon
+  unabhängigen MQTT-Sollwerte sind im Panel klar getrennt, während das reine
+  Live-Monitoring weiterläuft.
+- **Grafischer Planvergleich**: Akku-, Netz- und SoC-Verlauf des aktiven Plans
+  gegen eine Vorschau mit anderem Optimierungsmodus, bevor dieser übernommen wird.
 - **Manuelle Akku-Zeitplanung**: Netzladen/Entladen auf einem 48-h-Zeitstrahl planen
   (persistent, auch ohne offenen Browser ausgeführt, abbrechbar; SoC-/Leistungs-
   grenzen geprüft).

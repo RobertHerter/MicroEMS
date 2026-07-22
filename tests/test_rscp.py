@@ -146,10 +146,44 @@ def test_dashboard_control_toggle_releases_limits_before_disabling():
     assert result["released"] is True
     assert cfg.e3dc_rscp.control_enabled is False
     assert link._e3dc.limit_calls[-1] is False
+    assert result["verified"] is True
+    assert result["control_status"]["ok"] is True
 
     result = link.set_control_enabled(True)
     assert result["enabled"] is True
     assert cfg.e3dc_rscp.control_enabled is True
+
+
+def test_dashboard_control_toggle_reports_limits_still_active():
+    cfg, link = _link(control_enabled=True)
+    link._e3dc.get_power_settings = lambda keepAlive=False: {
+        "powerLimitsUsed": True, "maxChargePower": 1200,
+        "maxDischargePower": 1400,
+    }
+    result = link.set_control_enabled(False)
+    assert result["enabled"] is False
+    assert result["verified"] is False
+    assert result["control_status"]["state"] == "mismatch"
+    assert cfg.e3dc_rscp.control_enabled is False
+
+
+def test_read_energy_total_validates_reported_consumption():
+    _cfg, link = _link()
+    original = link._e3dc.get_db_data_timestamp
+
+    def with_consumption(*args, **kwargs):
+        data = original(*args, **kwargs)
+        data["consumption"] = 850.0
+        return data
+
+    link._e3dc.get_db_data_timestamp = with_consumption
+    import pandas as pd
+    data = link.read_energy_total(
+        pd.Timestamp("2026-07-22 00:00", tz="Europe/Berlin"),
+        pd.Timestamp("2026-07-22 12:00", tz="Europe/Berlin"))
+    assert data["load_wh"] == 850.0
+    assert data["balance_residual_wh"] == 50.0
+    assert data["balance_ok"] is True
 
 
 def test_control_disabled_is_noop():

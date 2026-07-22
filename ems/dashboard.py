@@ -93,10 +93,12 @@ def _live_block(config: Config) -> str:
   <div class="tile live-flow" id="live-battery-tile"><div class="v" id="live-battery">–</div><div class="l">Batterie</div><div class="s" id="live-battery-dir">–</div></div>
   <div class="tile live-soc"><div class="v" id="live-soc">–</div><div class="l">Akku-SoC</div><div class="s">E3/DC Messwert</div></div>
   <div class="tile live-wallbox"><div class="v" id="live-wallbox">–</div><div class="l">Wallbox</div><div class="s">Ladeleistung aktuell</div></div>
+  <div class="tile daily-price"><div class="v" id="live-price-now">–</div><div class="l">Aktueller Strompreis</div><div class="s">Bezugspreis pro kWh</div></div>
   {pool_tile}{outdoor_tile}
  </div>
- <div class="live-day-head"><b>Heute</b><span>E3/DC-Zähler bis jetzt</span></div>
- <div class="tiles live-tiles live-daily">
+ <details class="live-daily-panel" id="live-daily-panel" open>
+ <summary><b>Heute</b><span id="live-day-status">E3/DC-Zähler werden geladen …</span></summary>
+  <div class="tiles live-tiles live-daily">
   <div class="tile live-solar"><div class="v" id="live-pv-forecast-today">–</div><div class="l">PV-Vorhersage heute</div><div class="s">gesamter Prognosetag</div></div>
   <div class="tile live-solar"><div class="v" id="live-pv-yield-today">–</div><div class="l">PV-Ertrag</div><div class="s">gemessene Energie</div></div>
   <div class="tile daily-import"><div class="v" id="live-grid-import-today">–</div><div class="l">Netzbezug</div><div class="s">gemessene Energie</div></div>
@@ -104,8 +106,11 @@ def _live_block(config: Config) -> str:
   <div class="tile daily-charge"><div class="v" id="live-battery-charge-today">–</div><div class="l">Speicher geladen</div><div class="s">gemessene Energie</div></div>
   <div class="tile daily-discharge"><div class="v" id="live-battery-discharge-today">–</div><div class="l">Speicher entladen</div><div class="s">gemessene Energie</div></div>
   <div class="tile live-house"><div class="v" id="live-house-today">–</div><div class="l">Hausverbrauch</div><div class="s">gemessene Energie</div></div>
-  <div class="tile daily-price"><div class="v" id="live-price-now">–</div><div class="l">Aktueller Strompreis</div><div class="s">Bezugspreis pro kWh</div></div>
+  <div class="tile live-solar"><div class="v" id="live-pv-forecast-now">–</div><div class="l">PV-Prognose bis jetzt</div><div class="s">zeitanteiliger Soll-Ertrag</div></div>
+  <div class="tile daily-deviation" id="live-pv-deviation-tile"><div class="v" id="live-pv-deviation-today">–</div><div class="l">PV-Abweichung</div><div class="s" id="live-pv-deviation-detail">Ist gegen Prognose bis jetzt</div></div>
+  <div class="tile daily-balance" id="live-energy-balance-tile"><div class="v" id="live-energy-balance">–</div><div class="l">Energiebilanz</div><div class="s" id="live-energy-balance-detail">Zähler werden geprüft</div></div>
  </div>
+ </details>
 </section>
 <script>(function(){{
  var root=document.getElementById('e3dc-live'), status=document.getElementById('live-status');
@@ -125,19 +130,36 @@ def _live_block(config: Config) -> str:
   temp('live-pool-temp',d.pool_temp_c); temp('live-outdoor-temp',d.outdoor_temp_c);
   document.getElementById('live-soc').textContent=(typeof d.soc_percent==='number'?num(d.soc_percent,1)+' %':'–');
   energy('live-pv-forecast-today',d.pv_forecast_today_kwh);
+  energy('live-pv-forecast-now',d.pv_forecast_until_now_kwh);
   energy('live-pv-yield-today',d.pv_yield_today_kwh);
+  energy('live-pv-deviation-today',d.pv_deviation_today_kwh);
+  var dev=document.getElementById('live-pv-deviation-tile'),devDetail=document.getElementById('live-pv-deviation-detail');
+  if(dev){{dev.classList.remove('positive','negative');if(typeof d.pv_deviation_today_kwh==='number')dev.classList.add(d.pv_deviation_today_kwh>=0?'positive':'negative');}}
+  if(devDetail)devDetail.textContent=(typeof d.pv_deviation_today_percent==='number'?(d.pv_deviation_today_percent>0?'+':'')+num(d.pv_deviation_today_percent,1)+' % gegen Soll':'Ist gegen Prognose bis jetzt');
   energy('live-grid-import-today',d.grid_import_today_kwh);
   energy('live-grid-export-today',d.grid_export_today_kwh);
   energy('live-battery-charge-today',d.battery_charge_today_kwh);
   energy('live-battery-discharge-today',d.battery_discharge_today_kwh);
   energy('live-house-today',d.house_consumption_today_kwh);
+  var balance=document.getElementById('live-energy-balance'),balanceTile=document.getElementById('live-energy-balance-tile'),balanceDetail=document.getElementById('live-energy-balance-detail');
+  if(balanceTile)balanceTile.classList.remove('ok','bad');
+  if(d.energy_balance_ok===true){{balance.textContent='✓ plausibel';balanceTile.classList.add('ok');}}
+  else if(d.energy_balance_ok===false){{balance.textContent='⚠ Abweichung';balanceTile.classList.add('bad');}}
+  else balance.textContent='nicht prüfbar';
+  if(balanceDetail)balanceDetail.textContent=typeof d.energy_balance_residual_kwh==='number'?'Rest '+(d.energy_balance_residual_kwh>0?'+':'')+num(d.energy_balance_residual_kwh,3)+' kWh':'kein separater Verbrauchszähler';
   document.getElementById('live-price-now').textContent=(typeof d.current_price_ct_kwh==='number'?num(d.current_price_ct_kwh,2)+' ct':'–');
+  var dayStatus=document.getElementById('live-day-status'),dayTs=d.daily_energy_updated?new Date(d.daily_energy_updated):null;
+  if(dayStatus&&dayTs&&!isNaN(dayTs)){{var age=Math.max(0,(Date.now()-dayTs.getTime())/1000),ageText=age<90?'aktuell':(age<3600?'vor '+Math.round(age/60)+' min':'vor '+num(age/3600,1)+' h');dayStatus.textContent='Zählerstand '+dayTs.toLocaleTimeString('de-DE',{{hour:'2-digit',minute:'2-digit'}})+' · '+ageText;dayStatus.dataset.quality=age<=90?'current':(age<=300?'warning':'stale');}}
+  var ctl=document.getElementById('e3dc-control-enabled'),ctlLabel=document.getElementById('e3dc-control-label');
+  if(ctl&&!ctl.disabled&&typeof d.e3dc_control_enabled==='boolean'){{ctl.checked=d.e3dc_control_enabled;if(ctlLabel)ctlLabel.textContent=d.e3dc_control_enabled?'aktiv':'ausgeschaltet';}}
   var ts=d.updated?new Date(d.updated):null;
   status.innerHTML='<span class="live-dot ok"></span> '+(ts&&!isNaN(ts)?'Stand '+ts.toLocaleTimeString('de-DE',{{hour:'2-digit',minute:'2-digit',second:'2-digit'}}):'aktuell');
   root.classList.remove('stale');
  }}
  function fail(){{status.innerHTML='<span class="live-dot err"></span> nicht verfügbar';root.classList.add('stale');}}
  function tick(){{fetch('api/live.json?_='+Date.now(),{{cache:'no-store'}}).then(function(r){{if(!r.ok)throw Error(r.status);return r.json();}}).then(render).catch(fail);}}
+ var daily=document.getElementById('live-daily-panel');
+ if(daily){{var mobile=window.matchMedia('(max-width:620px)').matches,saved=localStorage.getItem('ems-live-daily-open');if(mobile&&saved!=='1')daily.removeAttribute('open');daily.addEventListener('toggle',function(){{localStorage.setItem('ems-live-daily-open',daily.open?'1':'0');}});}}
  tick();setInterval(tick,{interval_ms});
 }})();</script>"""
 
@@ -485,10 +507,13 @@ def _controls_block(config) -> str:
         for m in ("auto", "asap", "peak"))
     e3dc_on = bool(getattr(getattr(config, "e3dc_rscp", None),
                            "control_enabled", False))
+    mqtt_on = bool(getattr(getattr(config, "mqtt", None), "enabled", False))
     e3dc_control = (
-        "<section class='ctl-section e3dc-control'><div><b>Automatische E3/DC-Steuerung</b>"
-        "<small>Schaltet die direkte Akku-Steuerung ein oder gibt alle EMS-Limits frei. "
-        "Livewerte bleiben weiterhin aktiv.</small></div>"
+        "<section class='ctl-section e3dc-control'><div><b>Direkte E3/DC-Steuerung (RSCP)</b>"
+        "<small>Steuert den Akku direkt und prüft die übernommenen Limits. Beim Ausschalten "
+        "werden RSCP-Limits freigegeben; MQTT-Sollwerte bleiben davon unabhängig.</small>"
+        "<div class='control-channels'><span>RSCP · direkte Akkusteuerung</span>"
+        f"<span>MQTT-Sollwerte · {'aktiv' if mqtt_on else 'deaktiviert'}</span></div></div>"
         "<label class='switch control-master'><input type='checkbox' id='e3dc-control-enabled' "
         f"{'checked' if e3dc_on else ''} onchange='emsE3dcControl(this)'>"
         "<span></span><em id='e3dc-control-label'>"
@@ -529,7 +554,8 @@ def _controls_block(config) -> str:
                   f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak"))
         + "</select><button onclick='emsCompare()'>Vergleich berechnen</button>"
         "<button class='primary' id='compare-apply' onclick='emsCompareApply()' disabled>Modus übernehmen</button></div>"
-        "<div id='compare-result' class='compare-result'>Noch kein Vergleich berechnet.</div></section>")
+        "<div id='compare-result' class='compare-result'>Noch kein Vergleich berechnet.</div>"
+        "<div id='compare-chart' class='compare-chart'></div></section>")
 
     js = """
 const EMS_LOADS=%s;
@@ -582,17 +608,18 @@ async function emsE3dcControl(el){
   const enabled=el.checked,m=document.getElementById('ctl-msg'),label=document.getElementById('e3dc-control-label');
   if(!enabled&&!confirm('E3/DC-Steuerung wirklich ausschalten? Laufende EMS-Limits werden sofort freigegeben.')){el.checked=true;return;}
   el.disabled=true;m.textContent=enabled?'… E3/DC-Steuerung wird aktiviert':'… E3/DC-Limits werden freigegeben';
-  try{const r=await fetch('api/control/e3dc_control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));const d=await r.json();label.textContent=enabled?'aktiv':'ausgeschaltet';m.textContent='✓ '+(d.result.message||'E3/DC-Steuerung geändert');if(window.emsRuntimePoll)window.emsRuntimePoll();}
+  try{const r=await fetch('api/control/e3dc_control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));const d=await r.json(),verified=d.result.verified!==false;label.textContent=enabled?'aktiv':(verified?'ausgeschaltet':'aus · unbestätigt');m.textContent=(verified?'✓ ':'⚠ ')+(d.result.message||'E3/DC-Steuerung geändert');if(window.emsRuntimePoll)window.emsRuntimePoll();}
   catch(e){el.checked=!enabled;label.textContent=el.checked?'aktiv':'ausgeschaltet';m.textContent='✗ '+e.message;}finally{el.disabled=false;}
 }
 async function emsCompare(){
-  const s=document.getElementById('compare-strategy').value,m=document.getElementById('compare-result');
+  const s=document.getElementById('compare-strategy').value,m=document.getElementById('compare-result'),chart=document.getElementById('compare-chart');
+  if(chart){chart.innerHTML='';chart.style.display='none';}
   m.textContent='… Vergleich wird vorbereitet';document.getElementById('compare-apply').disabled=true;
   try{const r=await fetch('api/control/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:s})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));m.textContent='… Vergleich läuft';if(window.emsRuntimePoll)window.emsRuntimePoll();}catch(e){m.textContent='✗ '+e.message;}
 }
 function emsCompareApply(){const s=document.getElementById('compare-strategy').value;if(confirm('Optimierungsmodus „'+document.getElementById('compare-strategy').selectedOptions[0].text+'“ übernehmen und produktiv neu berechnen?'))emsMode(s);}
 function emsCompareRender(c){
-  if(!c)return;const box=document.getElementById('compare-result'),apply=document.getElementById('compare-apply');if(!box)return;
+  if(!c)return;const box=document.getElementById('compare-result'),apply=document.getElementById('compare-apply'),chart=document.getElementById('compare-chart');if(!box)return;
   if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Vergleich läuft');apply.disabled=true;return;}
   if(c.state==='error'){box.textContent='✗ '+c.message;apply.disabled=true;return;}
   if(c.state!=='done'||!c.result)return;
@@ -600,8 +627,17 @@ function emsCompareRender(c){
   box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+' · Solver '+fmt(r.solver_seconds,' s')+'</div><div class="compare-grid">'+
     [['Kosten',b.cost_eur,n.cost_eur,d.cost_eur,' €'],['Netzbezug',b.grid_import_kwh,n.grid_import_kwh,d.grid_import_kwh,' kWh'],['Einspeisung',b.grid_export_kwh,n.grid_export_kwh,d.grid_export_kwh,' kWh'],['Einspeisespitze',b.peak_export_w,n.peak_export_w,d.peak_export_w,' W'],['Eingriffs-Slots',b.restricted_slots,n.restricted_slots,d.restricted_slots,''],['End-SoC',b.end_soc_percent,n.end_soc_percent,d.end_soc_percent,' %%']].map(x=>'<div><span>'+x[0]+'</span><b>'+fmt(x[2],x[4])+'</b><small>bisher '+fmt(x[1],x[4])+' · Δ '+sign(x[3],x[4])+'</small></div>').join('')+'</div><small>'+r.errors+' Fehler · '+r.warnings+' Warnungen · Datenstand '+new Date(r.generated).toLocaleString('de-DE')+'</small>';
   apply.disabled=r.errors>0;document.getElementById('compare-strategy').value=c.strategy;
+  window.EMS_COMPARE_LAST=r;if(chart&&r.series&&window.Plotly){const s=r.series,dark=document.documentElement.classList.contains('dark'),grid=dark?'#354352':'#e3e8ed',font=dark?'#e7edf4':'#27313a';chart.style.display='block';Plotly.react(chart,[
+   {x:s.timestamp,y:s.base_battery_w,name:'Akku bisher',line:{color:'#8c98a4',dash:'dash'}},
+   {x:s.timestamp,y:s.candidate_battery_w,name:'Akku Vergleich',line:{color:'#28a261'}},
+   {x:s.timestamp,y:s.base_grid_w,name:'Netz bisher',line:{color:'#a6afb8',dash:'dot'}},
+   {x:s.timestamp,y:s.candidate_grid_w,name:'Netz Vergleich',line:{color:'#357fc4'}},
+   {x:s.timestamp,y:s.base_soc_percent,name:'SoC bisher',yaxis:'y2',line:{color:'#bb9154',dash:'dash'}},
+   {x:s.timestamp,y:s.candidate_soc_percent,name:'SoC Vergleich',yaxis:'y2',line:{color:'#e6a12a'}}
+  ],{height:340,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},margin:{l:52,r:48,t:18,b:66},legend:{orientation:'h',x:0,y:-.18,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
 }
 window.addEventListener('ems-status',e=>emsCompareRender(e.detail.comparison));
+window.addEventListener('ems-theme-change',()=>{if(window.EMS_COMPARE_LAST)emsCompareRender({state:'done',message:'Vergleich fertig – noch nicht übernommen',strategy:document.getElementById('compare-strategy').value,result:window.EMS_COMPARE_LAST});});
 async function emsBat(a){
   const action=a==='selected'?document.getElementById('schedule-action').value:a,
     watts=parseFloat(document.getElementById('schedule-watts').value),
@@ -1319,9 +1355,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-head {{ display: flex; justify-content: space-between; align-items: center;
         margin: 2px 2px 7px; font-size: 14px; }}
  .live-head #live-status {{ color: #666; font-size: 12px; font-weight: normal; }}
- .live-day-head {{ display: flex; align-items: baseline; gap: 8px; margin: 11px 2px 7px; }}
- .live-day-head span {{ color: #707983; font-size: 11px; }}
+ .live-daily-panel {{ margin-top: 10px; }}
+ .live-daily-panel > summary {{ display: flex; align-items: baseline; gap: 8px;
+        margin: 0 2px 7px; cursor: pointer; list-style: none; }}
+ .live-daily-panel > summary::-webkit-details-marker {{ display: none; }}
+ .live-daily-panel > summary::after {{ content: '⌄'; margin-left: auto; color: #687582;
+        transition: transform .2s; }}
+ .live-daily-panel:not([open]) > summary::after {{ transform: rotate(-90deg); }}
+ .live-daily-panel > summary span {{ color: #707983; font-size: 11px; }}
+ #live-day-status[data-quality=current] {{ color: #247b45; }}
+ #live-day-status[data-quality=warning] {{ color: #9a6b00; }}
+ #live-day-status[data-quality=stale] {{ color: #b3261e; font-weight: 700; }}
  .live-tiles {{ margin-bottom: 0; }}
+ .live-daily {{ display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; }}
+ .live-daily .tile {{ max-width: none; }}
  /* Live-Kacheln nach oben begrenzen: volle Zeilen füllen weiter gleichmäßig,
     aber eine einzelne Kachel in der letzten Zeile wird nicht mehr über die ganze
     Breite gezogen (flex-grow). */
@@ -1338,6 +1385,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .live-wallbox .v {{ color: #285f9e; }}
  .live-tiles .live-temp {{ background: #fff4ec; border-color: #f0cdb0; }}
  .live-tiles .live-temp .v {{ color: #b5642a; }}
+ .live-tiles .daily-deviation.positive, .live-tiles .daily-balance.ok {{ background: #eaf8ee; border-color: #b8dfc3; }}
+ .live-tiles .daily-deviation.positive .v, .live-tiles .daily-balance.ok .v {{ color: #237a3b; }}
+ .live-tiles .daily-deviation.negative, .live-tiles .daily-balance.bad {{ background: #fff3dd; border-color: #eccb82; }}
+ .live-tiles .daily-deviation.negative .v, .live-tiles .daily-balance.bad .v {{ color: #9a6100; }}
  .live-tiles .flow-import {{ background: #fdecec; border-color: #efb6b6; }}
  .live-tiles .flow-import .v {{ color: #b3261e; }}
  .live-tiles .flow-export {{ background: #eaf8ee; border-color: #b8dfc3; }}
@@ -1506,11 +1557,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .compare-actions {{ display: flex; flex-wrap: wrap; gap: 7px; align-items: center; justify-content: flex-end; }}
  .compare-actions select {{ width: auto; min-width: 155px; }}
  .compare-result {{ grid-column: 1/-1; color: #5e6872; }}
+ .compare-chart {{ display: none; grid-column: 1/-1; width: 100%; min-height: 340px; }}
  .compare-note {{ margin-bottom: 7px; }}
  .compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(135px,1fr)); gap: 7px; margin-bottom: 7px; }}
  .compare-grid > div {{ padding: 8px; background: #fff; border: 1px solid #dfe6ed; border-radius: 7px; }}
  .compare-grid span, .compare-grid small {{ display: block; font-size: 10px; color: #74808b; }}
  .compare-grid b {{ display: block; margin: 2px 0; font-size: 14px; }}
+ .control-channels {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }}
+ .control-channels span {{ padding: 3px 7px; border-radius: 999px; background: #e7f0f8;
+        color: #315f83; font-size: 10px; }}
  .info-panel {{ margin: 10px 0; border: 1px solid #dde4eb; border-radius: 10px; background: #fff; overflow: hidden; }}
  .info-panel > summary {{ padding: 11px 13px; cursor: pointer; font-weight: 700; background: #f7f9fb; }}
  .info-panel > summary small {{ margin-left: 8px; color: #75808a; font-weight: 400; }}
@@ -1652,7 +1707,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .daily-export, html.dark .live-tiles .daily-discharge {{ background: #183522; border-color: #326541; }}
  html.dark .live-tiles .daily-charge {{ background: #192d43; border-color: #31577e; }}
  html.dark .live-tiles .daily-price {{ background: #173634; border-color: #2d615d; }}
- html.dark .live-day-head span {{ color: #aebbc8; }}
+ html.dark .live-daily-panel > summary span {{ color: #aebbc8; }}
+ html.dark #live-day-status[data-quality=current] {{ color: #73d595; }}
+ html.dark #live-day-status[data-quality=warning] {{ color: #efd06d; }}
+ html.dark #live-day-status[data-quality=stale] {{ color: #ff9691; }}
+ html.dark .live-tiles .daily-deviation.positive, html.dark .live-tiles .daily-balance.ok {{ background: #183522; border-color: #326541; }}
+ html.dark .live-tiles .daily-deviation.negative, html.dark .live-tiles .daily-balance.bad {{ background: #3a3219; border-color: #6d5e26; }}
+ html.dark .control-channels span {{ background: #263b4d; color: #b9d9f3; }}
  html.dark .live-tiles .tile .v {{ filter: brightness(1.55) saturate(1.18); }}
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
@@ -1684,11 +1745,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    #theme-toggle:after {{ content: '◐'; font-size: 21px; }}
    #install-app:after {{ content: '↓'; font-size: 22px; }}
    .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }}
+   .live-daily {{ grid-template-columns: repeat(2,minmax(0,1fr)); }}
    .tile {{ min-width: 0; padding: 9px 10px; overflow: hidden; }}
    .tile .v {{ font-size: 17px; line-height: 1.2; overflow-wrap: anywhere; }}
    .tile .l {{ font-size: 11px; }}
    .tile .s {{ font-size: 10px; line-height: 1.25; }}
    .live-head {{ margin-top: 0; }}
+   .live-daily-panel > summary {{ min-height: 42px; align-items: center; margin-bottom: 2px; }}
    .desktop-plot {{ display: none; }}
    .mobile-plot-shell {{ display: block; background: #fff; border: 1px solid #e0e5eb;
         border-radius: 12px; margin: 10px 0 13px; overflow: hidden;
@@ -1725,6 +1788,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .plan-compare {{ grid-template-columns: 1fr; }}
    .compare-actions {{ justify-content: stretch; }}
    .compare-actions > * {{ flex: 1 1 100%; min-height: 44px; }}
+   .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
    .event {{ grid-template-columns: 90px 1fr; }}
  }}
  .chips {{ font-size: 12px; color: #555; margin: -2px 0 10px; }}
