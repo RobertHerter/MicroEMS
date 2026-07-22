@@ -220,11 +220,20 @@ def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
 
 def _store_warm_solution(prob, start, slot_minutes: int) -> None:
     """Lösung fürs Warmstarten des nächsten Laufs merken (nur Werte != 0;
-    fehlende Variablen starten ohnehin bei 0)."""
+    fehlende Variablen starten ohnehin bei 0).
+
+    Die Lade-/Entlade-Ein-Aus-Binären (isch_/isdi_) werden BEWUSST NICHT
+    übernommen: sie sind aus der LP-Relaxation billig herleitbar, aber ein
+    Warmstart kann eine stale Ein-Slot-Sperre (z.B. 19:15-„hold": Import trotz
+    vollem Akku am PV->Akku-Übergang) über Zyklen weiterschleppen, weil ihre
+    Mehrkosten (~1 ct) unter der Gap-Toleranz liegen. Ohne diesen Startwert
+    entscheidet der Solver Laden/Entladen jeden Zyklus frisch (Kalt-Optimum),
+    während die teuren kombinatorischen Binären (is_full/Peak-Linien/Pool)
+    weiter warmgestartet werden."""
     vals = {}
     for v in prob.variables():
         x = v.varValue
-        if x is not None and abs(x) > 1e-9:
+        if x is not None and abs(x) > 1e-9 and not v.name.startswith(("isch_", "isdi_")):
             vals[v.name] = float(x)
     _warm_cache.clear()
     _warm_cache.update({"start": pd.Timestamp(start), "slot_min": slot_minutes,
