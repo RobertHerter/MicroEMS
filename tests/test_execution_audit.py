@@ -87,10 +87,13 @@ def test_startup_grace_suppresses_audit(tmp_path, monkeypatch):
     cfg.monitoring.execution_audit_startup_grace_minutes = 5.0
     _plan(cfg)
     live = {"grid_w": 0.0, "battery_w": -3000.0, "soc_percent": 50.0}  # Abweichung
-    # innerhalb der Karenz -> ausgesetzt
+    # innerhalb der Karenz -> neutrale "einpendeln"-Kachel (kein Alarm), keine
+    # Abweichung, aber sofort sichtbar (nicht None).
     monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic())
-    assert _audit_execution(cfg, TS, live) is None
-    # nach der Karenz -> Abweichung wird erkannt
+    audit = _audit_execution(cfg, TS, live)
+    assert audit is not None and audit["ok"] is True and audit["state"] == "startup"
+    assert "Akku" not in audit["message"] and audit["deviations"] == {}
+    # nach der Karenz -> echte Abweichung wird erkannt
     monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic() - 3600.0)
     audit = _audit_execution(cfg, TS, live)
     assert audit is not None and audit["ok"] is False and "Akku" in audit["message"]

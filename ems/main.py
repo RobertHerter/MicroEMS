@@ -64,13 +64,29 @@ def _audit_execution(config, now, live):
     # gesetzt/eingependelt (die Limits waren zwischenzeitlich freigegeben, der
     # E3DC lief auf auto) -> die erste(n) Vergleiche würden fälschlich eine
     # Akku-Abweichung melden. Erst nach der Karenz prüfen.
-    grace_min = float(getattr(
-        config.monitoring, "execution_audit_startup_grace_minutes", 5.0) or 0.0)
-    if grace_min > 0.0 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0:
-        return None
     from .local_history import (read_execution_plan_slot,
                                 write_execution_audit)
+    grace_min = float(getattr(
+        config.monitoring, "execution_audit_startup_grace_minutes", 5.0) or 0.0)
+    in_grace = grace_min > 0.0 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0
     planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, now)
+    if in_grace:
+        # Statt die Prüfung stumm auszusetzen (Kachel fehlte dann bis zum
+        # nächsten Lauf), eine NEUTRALE Kachel zeigen: ok=True (kein Alarm,
+        # setzt die Alarmzählung zurück), mit Klartext, dass nach dem Neustart
+        # die Steuerung erst gesetzt/eingependelt wird - so ist die
+        # Betriebsdiagnose sofort da, ohne falsche Akku-Abweichung.
+        audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                 "ok": True, "state": "startup",
+                 "message": "Nach Neustart – Steuerung wird gesetzt/eingependelt "
+                            "(Abweichungsprüfung pausiert).",
+                 "planned": planned or {},
+                 "actual": {"grid_w": live.get("grid_w"),
+                            "battery_w": live.get("battery_w"),
+                            "soc": live.get("soc_percent")},
+                 "deviations": {}}
+        write_execution_audit(config.e3dc_rscp.history_db_path, now, audit)
+        return audit
     if not planned:
         return None
     actual = {"grid_w": live.get("grid_w"), "battery_w": live.get("battery_w"),
