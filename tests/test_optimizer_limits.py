@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ems.config import ControllableLoad
 from ems.optimizer import Optimizer, _warm_cache
 from tests.test_optimizer import _day_index, _inputs
 from tests.test_synthetic import make_config
@@ -115,6 +116,41 @@ def test_battery_switch_penalty_avoids_single_slot_hold():
     # Bei ausreichendem SoC darf keine einzelne 0-W-Pause in einer laufenden
     # Entladephase bleiben.
     assert not ((dis[1:-1] < 1.0) & (dis[:-2] > 1.0) & (dis[2:] > 1.0)).any()
+
+
+def test_small_house_deficit_with_controllable_load_is_not_free_hold():
+    """Regression 23.07. 19:15: Die reine Haus-Restlast lag nur bei 21 W,
+    zusammen mit den Pool-WP aber ueber der Mindestentladeleistung. Der
+    Halteblock-Malus darf deshalb nicht wegen house-PV < min_dis entfallen.
+    """
+    idx = _day_index("2026-01-15")[:8]
+    price = np.array([36.1, 38.2, 41.1, 39.1, 40.5, 42.6, 42.2, 41.0])
+    load = np.array([120.0] + [500.0] * 7)
+    pv = np.array([100.0] + [0.0] * 7)  # erster Haus-Defizit-Slot nur 20 W
+
+    def solve(penalty):
+        cfg = make_config()
+        cfg.optimization.terminal_soc_value = 0.0
+        cfg.optimization.battery_switch_penalty_ct = penalty
+        cfg.optimization.battery_hold_penalty_ct_kwh = 5.0
+        cfg.optimization.min_discharge_w = 100.0
+        cfg.optimization.standby_discharge_w = 0.0
+        cfg.house_battery.max_ac_charge_w = 0.0
+        # Muss in allen acht Slots laufen; bildet eine steuerbare Zusatzlast
+        # ab, die in der reinen house-PV-Erkennung nicht enthalten ist.
+        cfg.controllable_loads = [ControllableLoad(
+            name="fixed", type="deferrable", power_w=124.0,
+            runtime_minutes=120.0, switch_penalty_ct=0.0)]
+        soc = cfg.house_battery.min_soc_wh + 900.0
+        return Optimizer(cfg).solve(_inputs(
+            idx, pv=pv, load=load, price=price, soc=soc)).table
+
+    economic = solve(0.0)
+    stable = solve(1.0)
+    assert economic.iloc[0]["discharge_limited"] == 1.0, \
+        "Testszenario bildet die Mikro-Sperre nicht ab"
+    assert stable.iloc[0]["discharge_limited"] == 0.0
+    assert stable.iloc[0]["batt_discharge_w"] >= 100.0
 
 
 def test_battery_switch_penalty_avoids_multislot_hold_block():

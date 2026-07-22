@@ -954,13 +954,17 @@ class Optimizer:
         partial_discharge_flags = [None] * N
         bat_pen = float(getattr(cfg.optimization, "battery_switch_penalty_ct", 0.0) or 0.0)
         if bat_pen and N > 1:
-            threshold = max(min_dis, 1.0)
             hold_blocks = []
             partial_imports = []
             deficits = [max(0.0, float(inp.house_load_w[t])
                             - float(inp.pv_w[t])) for t in range(N)]
             for t in range(1, N):
-                if min(deficits[t - 1:t + 1]) < threshold:
+                # Nur ein echter PV-Ueberschuss trennt Entladephasen natuerlich.
+                # Eine kleine positive Haus-Restlast unter min_dis darf den
+                # Halteblock-Malus nicht aushebeln: steuerbare Lasten (z.B.
+                # Pool-WP) koennen den realen Bedarf im selben Slot deutlich
+                # ueber die Mindestentladeleistung anheben.
+                if min(deficits[t - 1:t + 1]) <= 1.0:
                     continue
                 hold_block = pulp.LpVariable(f"batholdblock_{t}", 0, 1)
                 # Die Wiederaufnahme der Entladung beendet genau einen
@@ -1351,7 +1355,7 @@ class Optimizer:
             if v.cat == pulp.LpInteger and v.lowBound == 0 and v.upBound == 1)
         log.info("MILP-Größe: %d Slots, %d Variablen (%d binär), %d Regeln; "
                  "Warmstart %s.", N, len(variables), binary_count,
-                 len(prob.constraints), "ja" if warm else "nein")
+                 len(prob.constraints()), "ja" if warm else "nein")
         _t0 = time.monotonic()
         prob.solve(make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0
@@ -1381,7 +1385,7 @@ class Optimizer:
             neutral.solver_slots = N
             neutral.solver_variables = len(variables)
             neutral.solver_binaries = binary_count
-            neutral.solver_constraints = len(prob.constraints)
+            neutral.solver_constraints = len(prob.constraints())
             neutral.solver_warm_start = bool(warm)
             neutral.solver_mip_gap = mip_gap
             neutral.solver_hit_limit = hit_limit
@@ -1696,6 +1700,6 @@ class Optimizer:
             solver_hit_limit=hit_limit, load_mqtt_map=cl_mqtt,
             solver_seconds=solve_s, solver_polish_seconds=polish_s,
             solver_slots=N, solver_variables=len(variables),
-            solver_binaries=binary_count, solver_constraints=len(prob.constraints),
+            solver_binaries=binary_count, solver_constraints=len(prob.constraints()),
             solver_warm_start=bool(warm), solver_mip_gap=mip_gap,
         )
