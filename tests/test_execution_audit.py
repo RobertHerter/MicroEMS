@@ -6,14 +6,25 @@ speist den Überschuss ein), darf das KEINEN Ausführungsfehler auslösen.
 """
 from __future__ import annotations
 
-import pandas as pd
+import time as _time
 
+import pandas as pd
+import pytest
+
+import ems.main as _m
 from ems.local_history import write_execution_plan
 from ems.main import _audit_execution
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
 TS = pd.Timestamp("2026-07-21 12:00", tz=TZ)
+
+
+@pytest.fixture(autouse=True)
+def _past_process_start(monkeypatch):
+    """Startup-Karenz für die Standard-Audit-Tests umgehen (Prozessstart weit in
+    der Vergangenheit); der Karenz-Test setzt sie gezielt selbst."""
+    monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic() - 36000.0)
 
 
 def _cfg(tmp_path):
@@ -66,3 +77,20 @@ def test_battery_deviation_still_fails(tmp_path):
     live = {"grid_w": 0.0, "battery_w": -3000.0, "soc_percent": 50.0}  # entlädt statt laden
     audit = _audit_execution(cfg, TS, live)
     assert audit["ok"] is False and "Akku" in audit["message"]
+
+
+def test_startup_grace_suppresses_audit(tmp_path, monkeypatch):
+    """Direkt nach dem (Neu-)Start (innerhalb der Karenz) wird das Audit
+    ausgesetzt - keine falsche Akku-Abweichung, während die Steuerung erst
+    wieder gesetzt/eingependelt wird. Nach der Karenz greift es normal."""
+    cfg = _cfg(tmp_path)
+    cfg.monitoring.execution_audit_startup_grace_minutes = 5.0
+    _plan(cfg)
+    live = {"grid_w": 0.0, "battery_w": -3000.0, "soc_percent": 50.0}  # Abweichung
+    # innerhalb der Karenz -> ausgesetzt
+    monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic())
+    assert _audit_execution(cfg, TS, live) is None
+    # nach der Karenz -> Abweichung wird erkannt
+    monkeypatch.setattr(_m, "_PROCESS_START", _time.monotonic() - 3600.0)
+    audit = _audit_execution(cfg, TS, live)
+    assert audit is not None and audit["ok"] is False and "Akku" in audit["message"]

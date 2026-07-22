@@ -546,6 +546,10 @@ class MonitoringConfig:
     execution_battery_tolerance_w: float = 1500.0
     execution_soc_tolerance_percent: float = 5.0
     execution_alert_consecutive: int = 2
+    # Karenz (min) nach dem (Neu-)Start: solange wird das Ausführungs-Audit
+    # ausgesetzt, weil die RSCP-Steuerung erst wieder gesetzt/eingependelt werden
+    # muss (sonst falsche "Planabweichung Akku" direkt nach dem Start). 0 = aus.
+    execution_audit_startup_grace_minutes: float = 5.0
     # Netz als Ausführungsfehler werten? Standard AUS: die Netzleistung ist ein
     # reines Bilanz-Residuum (Netz = Last - PV + Akku). Weicht PV/Last von der
     # Prognose ab (z.B. PV über Prognose im Peak), gleicht der E3DC die Differenz
@@ -1235,6 +1239,8 @@ def load_config(path: str) -> Config:
         execution_alert_consecutive=int(
             mon.get("execution_alert_consecutive", 2)),
         execution_audit_grid=bool(mon.get("execution_audit_grid", False)),
+        execution_audit_startup_grace_minutes=float(
+            mon.get("execution_audit_startup_grace_minutes", 5.0)),
     )
 
     rep = raw.get("report", {})

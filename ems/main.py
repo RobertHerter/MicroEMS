@@ -49,12 +49,24 @@ _intraday_raw = {"load": None, "pv": None}
 _control_alarm = {"failed": False, "key": None, "last": 0.0}
 _execution_alarm = {"failed": False}
 _solver_alarm = {"failed": False}
+# Prozessstart (monoton): kurz nach einem (Neu-)Start ist die RSCP-Steuerung noch
+# nicht wieder gesetzt/eingependelt -> das Ausführungs-Audit würde fälschlich eine
+# "Planabweichung Akku" melden. In einer Karenz danach wird es ausgesetzt.
+_PROCESS_START = _time.monotonic()
 _load_feedback_alarm = {"failed": set()}
 
 
 def _audit_execution(config, now, live):
     """Vorherigen Sollslot mit aktuellem E3DC-Snapshot vergleichen."""
     if not config.monitoring.execution_audit_enabled or not live:
+        return None
+    # Startup-Karenz: nach einem (Neu-)Start ist die Steuerung noch nicht wieder
+    # gesetzt/eingependelt (die Limits waren zwischenzeitlich freigegeben, der
+    # E3DC lief auf auto) -> die erste(n) Vergleiche würden fälschlich eine
+    # Akku-Abweichung melden. Erst nach der Karenz prüfen.
+    grace_min = float(getattr(
+        config.monitoring, "execution_audit_startup_grace_minutes", 5.0) or 0.0)
+    if grace_min > 0.0 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0:
         return None
     from .local_history import (read_execution_plan_slot,
                                 write_execution_audit)

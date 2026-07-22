@@ -517,6 +517,10 @@ monitoring:
   # kein Steuerfehler - das echte Signal ist die Akku-Abweichung. Netz bleibt
   # informativ im Report.
   execution_audit_grid: false
+  # Karenz (min) nach dem (Neu-)Start: solange ist das Audit ausgesetzt, weil die
+  # RSCP-Steuerung erst wieder gesetzt/eingependelt werden muss (sonst falsche
+  # "Planabweichung Akku" direkt nach dem Start). 0 = aus.
+  execution_audit_startup_grace_minutes: 5.0
 
 # -----------------------------------------------------------------------------
 # Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer
