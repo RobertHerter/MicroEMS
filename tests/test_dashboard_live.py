@@ -152,6 +152,8 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "Automatisch" in html
     assert "Frühestmöglich laden" in html
     assert "PV-Spitzen glätten" in html
+    assert "Spät laden" in html
+    assert "maximalen Ziel-SoC möglichst spät erreichen" in html
     assert "Plan vor Übernahme vergleichen" in html
     assert "api/control/compare" in html
     assert "Modus übernehmen" in html

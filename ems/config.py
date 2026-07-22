@@ -347,8 +347,15 @@ class OptimizationConfig:
     #            einspeisen), PV-Spitze über L lädt den Akku; L minimal, sodass
     #            der Akku voll wird. (Standard)
     #   "asap" = Akku so früh wie möglich aus PV voll laden (Eigenverbrauch).
+    #   "late" = maximalen Ziel-SoC aus PV erreichen, aber so spät wie möglich.
     #   "auto" = pro Tag automatisch: viel PV-Überschuss -> peak, sonst asap. (Standard)
     charge_strategy: str = "auto"
+    # Late-Modus: hohe weiche Strafe je fehlender kWh am Ende des nutzbaren
+    # PV-Fensters. Das Ziel bleibt dadurch auch bei zu wenig PV lösbar.
+    late_target_penalty_ct_kwh: float = 200.0
+    # Zeitgewichteter Malus auf frühe PV-Ladung im Late-Modus. 0 deaktiviert
+    # die zeitliche Verschiebung, ohne das Max-SoC-Ziel abzuschalten.
+    late_charge_delay_ct_kwh: float = 5.0
     # Auto -> Peak, wenn der pessimistische Tagesueberschuss mindestens diese
     # Obergrenze der nutzbaren Akkukapazitaet erreicht. Der tatsaechliche
     # Schwellwert kann bei voraussichtlich teilgeladenem Akku kleiner sein.
@@ -1094,6 +1101,10 @@ def load_config(path: str) -> Config:
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
+        late_target_penalty_ct_kwh=float(o.get(
+            "late_target_penalty_ct_kwh", 200.0)),
+        late_charge_delay_ct_kwh=float(o.get(
+            "late_charge_delay_ct_kwh", 5.0)),
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
         seasonal_peak_tuning=bool(o.get("seasonal_peak_tuning", False)),
         auto_peak_threshold_winter_percent=float(o.get(

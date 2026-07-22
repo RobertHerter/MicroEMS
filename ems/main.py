@@ -187,8 +187,8 @@ def _comparison_inputs(snapshot: dict) -> OptimizerInputs:
 def _start_plan_comparison(config, strategy: str) -> dict:
     """Startet einen reinen Vorschau-Solve aus dem letzten Debug-Snapshot."""
     strategy = str(strategy).lower()
-    if strategy not in ("auto", "asap", "peak"):
-        raise ValueError("strategy muss asap|peak|auto sein")
+    if strategy not in ("auto", "asap", "peak", "late"):
+        raise ValueError("strategy muss asap|peak|late|auto sein")
     with _runtime_lock:
         if _comparison_status.get("state") in ("queued", "running"):
             raise ValueError("Eine Planvergleichsrechnung läuft bereits")
@@ -2230,8 +2230,8 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             return changed
         if action == "mode":
             strat = str(payload.get("strategy", "")).lower()
-            if strat not in ("asap", "peak", "auto"):
-                raise ValueError("strategy muss asap|peak|auto sein")
+            if strat not in ("asap", "peak", "late", "auto"):
+                raise ValueError("strategy muss asap|peak|late|auto sein")
             config.optimization.charge_strategy = strat
             save_override(config_path, "optimization.charge_strategy", strat)
             if publisher is not None:

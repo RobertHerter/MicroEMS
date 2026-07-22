@@ -60,6 +60,12 @@ def add_plan_explanations(table: pd.DataFrame, config) -> pd.DataFrame:
                          if pd.notna(line) else "")
             reasons[i] = ("PV-Ladung wird über den Tag verteilt, um die "
                           f"Einspeisespitze{line_text} zu begrenzen.")
+        elif mode == "late":
+            natural = max(0.0, pv[i] - load[i])
+            actual = max(0.0, float(t.iloc[i].get("batt_dc_charge_w", 0.0)))
+            energy[i] = max(0.0, natural - actual) * dt / 1000.0
+            reasons[i] = ("PV wird zunächst eingespeist, damit der maximale "
+                          "Ziel-SoC erst am Ende des PV-Fensters erreicht wird.")
         elif mode == "grid_charge":
             ac = max(0.0, float(t.iloc[i].get("batt_ac_charge_w", 0.0)))
             input_kwh = ac * dt / 1000.0

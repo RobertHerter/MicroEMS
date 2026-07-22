@@ -22,15 +22,16 @@ from .config import Config
 
 log = logging.getLogger("ems.dashboard")
 
-_MODES = ["auto", "peak", "limit_charge", "limit_discharge", "hold",
+_MODES = ["auto", "peak", "late", "limit_charge", "limit_discharge", "hold",
           "block_charge", "grid_charge", "grid_discharge"]
 _MODE_LABEL = {"auto": "auto (kein Eingriff)",
                "peak": "Peak-Laden (Linie)",
+               "late": "Spät laden",
                "limit_charge": "Laden gedrosselt",
                "limit_discharge": "Entladen gedrosselt",
                "hold": "Entladen gesperrt", "block_charge": "Laden gesperrt",
                "grid_charge": "Netzladen", "grid_discharge": "Netz-Entladen"}
-_MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476",
+_MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476", "late": "#20a39e",
                "limit_charge": "#ffd92f", "limit_discharge": "#e377c2",
                "hold": "#ff8c00", "block_charge": "#d62728",
                "grid_charge": "#1f77b4", "grid_discharge": "#9400d3"}
@@ -499,12 +500,13 @@ def _controls_block(config) -> str:
         "auto": ("Automatisch", "situativ früh laden oder Spitzen glätten"),
         "asap": ("Frühestmöglich laden", "verfügbare PV-Energie sofort nutzen"),
         "peak": ("PV-Spitzen glätten", "Akkuladung über den Tag verteilen"),
+        "late": ("Spät laden", "maximalen Ziel-SoC möglichst spät erreichen"),
     }
     mode_btns = "".join(
         f"<button class='mode{' on' if strat == m else ''}' "
         f"onclick=\"emsMode('{m}')\"><b>{mode_text[m][0]}</b>"
         f"<small>{mode_text[m][1]}</small></button>"
-        for m in ("auto", "asap", "peak"))
+        for m in ("auto", "asap", "peak", "late"))
     e3dc_on = bool(getattr(getattr(config, "e3dc_rscp", None),
                            "control_enabled", False))
     mqtt_on = bool(getattr(getattr(config, "mqtt", None), "enabled", False))
@@ -551,7 +553,7 @@ def _controls_block(config) -> str:
         "<small>Reine Vorschau mit denselben Prognosedaten – sendet keine Steuerwerte</small></div>"
         "<div class='compare-actions'><select id='compare-strategy'>"
         + "".join(f"<option value='{m}'{' selected' if m == strat else ''}>"
-                  f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak"))
+                  f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak", "late"))
         + "</select><button onclick='emsCompare()'>Vergleich berechnen</button>"
         "<button class='primary' id='compare-apply' onclick='emsCompareApply()' disabled>Modus übernehmen</button></div>"
         "<div id='compare-result' class='compare-result'>Noch kein Vergleich berechnet.</div>"
@@ -1075,8 +1077,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     n_eingriffe = 0
     if "mode" in t.columns:
         modes = t["mode"].fillna("auto")
-        # "peak" ist geformtes Normalverhalten, kein Eingriff
-        n_eingriffe = int((~modes.isin(["auto", "peak"])).sum())
+        # "peak" und "late" sind geformtes Normalverhalten, keine Störungen
+        n_eingriffe = int((~modes.isin(["auto", "peak", "late"])).sum())
         z = [[_MODES.index(m) if m in _MODES else 0 for m in modes]]
         colorscale = []
         for i, m in enumerate(_MODES):

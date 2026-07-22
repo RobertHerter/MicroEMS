@@ -236,7 +236,7 @@ Wichtige Blöcke:
 | `general` | Zeitzone, Horizont (48 h), Slot-Länge, Rechenintervall |
 | `house_battery` / `inverter` | Kapazität, Lade-/Entladeleistungen, Wirkungsgrade, SoC-Grenzen, WR-/Netzanschlussgrenzen |
 | `vehicle` | Auto-Akku, Lade-Min/-Max, Ziel-SoC, Abfahrtzeit(en), Ladekurve |
-| `optimization` | Solver, MIP-Gap, Strafterme, Ladestrategie (`auto/peak/asap`), **Abend-Reserve** |
+| `optimization` | Solver, MIP-Gap, Strafterme, Ladestrategie (`auto/peak/asap/late`), **Abend-Reserve** |
 | `feed_in` / `tariff` | Einspeisevergütung; Bezugspreis-Tarifmodell (Spot + Aufschläge + Netzentgelt) |
 | `weather` / `solcast` / `pv_model` / `pv_source_selection` | Wetter- und PV-Quellen + Autowahl |
 | `e3dc_rscp` | RSCP-Zugang, `read_live`/`control_enabled`/`history_source`, Verifikation |

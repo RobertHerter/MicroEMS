@@ -1,7 +1,7 @@
 """Gezielte Optimierer-Tests (pytest).
 
 Deckt die Randfälle ab, die der Synthetik-E2E-Test nicht prüft:
-Ladestrategien (peak/asap), negative Preise, Netz-Entlade-Arbitrage,
+Ladestrategien (peak/asap/late/auto), negative Preise, Netz-Entlade-Arbitrage,
 Infeasibility-Fallback und DST-Umstellungstage (92/100 Slots pro Tag).
 """
 from __future__ import annotations
@@ -264,6 +264,64 @@ def test_asap_strategy_exports_only_when_full_or_at_max():
     assert (full | at_max)[exporting].all(), \
         "Einspeisung obwohl Akku weder voll noch mit Max-Leistung lädt"
     assert t["house_soc_percent"].max() >= 99.0
+
+
+def test_late_strategy_reaches_max_soc_later_than_asap_without_grid_charge():
+    """Late erreicht dasselbe Max-SoC-Ziel, verschiebt die Volladung aber ans
+    Ende des PV-Fensters – auch bei kleiner Last und damit ohne Bedarfszwang."""
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 8000), load=500.0, soc=1500.0)
+
+    cfg_asap = make_config()
+    cfg_asap.optimization.charge_strategy = "asap"
+    asap = Optimizer(cfg_asap, store_warm=False).solve(inp)
+
+    cfg_late = make_config()
+    cfg_late.optimization.charge_strategy = "late"
+    late = Optimizer(cfg_late, store_warm=False).solve(inp)
+
+    assert not late.infeasible
+    assert late.table["house_soc_percent"].max() >= 99.0
+    assert (late.table["batt_ac_charge_w"] <= TOL).all()
+    asap_full = asap.table.index[asap.table["house_soc_percent"] >= 99.0][0]
+    late_full = late.table.index[late.table["house_soc_percent"] >= 99.0][0]
+    assert late_full >= asap_full + pd.Timedelta(hours=2)
+    assert (late.table["mode"] == "late").any()
+
+
+def test_late_strategy_maximizes_reachable_soc_when_full_is_impossible():
+    """Zu wenig PV aktiviert den weichen Ziel-Slack statt eines Fallbacks;
+    der höchste SoC liegt am Ende des PV-Fensters, ohne Netzladen zu erzwingen."""
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 1600), load=500.0, soc=1500.0)
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "late"
+    result = Optimizer(cfg, store_warm=False).solve(inp)
+    table = result.table
+    late_max = float(table["house_soc_percent"].max())
+    assert not result.infeasible
+    assert late_max < 99.0
+    assert (table["batt_ac_charge_w"] <= TOL).all()
+    last_surplus = table.index[table["pv_w"] > table["house_load_w"]][-1]
+    assert table["house_soc_percent"].idxmax() == last_surplus
+    assert late_max > 100.0 * 1500.0 / cfg.house_battery.capacity_wh
+
+
+@pytest.mark.parametrize("strategy", ["asap", "peak", "auto"])
+def test_late_tuning_is_inactive_for_existing_strategies(strategy):
+    """Die neuen Gewichte dürfen die Zielfunktion bestehender Modi nicht ändern."""
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 6500), load=700.0, soc=2500.0)
+    tables = []
+    for target_pen, delay_pen in ((0.0, 0.0), (1_000_000.0, 1_000_000.0)):
+        cfg = make_config()
+        cfg.optimization.charge_strategy = strategy
+        cfg.optimization.late_target_penalty_ct_kwh = target_pen
+        cfg.optimization.late_charge_delay_ct_kwh = delay_pen
+        tables.append(Optimizer(cfg, store_warm=False).solve(inp).table)
+    cols = ["batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
+            "grid_import_w", "grid_export_w", "house_soc_wh"]
+    assert np.allclose(tables[0][cols], tables[1][cols], atol=0.2)
 
 
 def test_negative_prices_charge_from_grid():

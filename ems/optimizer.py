@@ -680,7 +680,7 @@ class Optimizer:
         # freie Kapazitaet + Reserve, gedeckelt auf einen konfigurierbaren Anteil
         # der gesamten nutzbaren Kapazitaet. So muss ein teilgeladener Akku nicht
         # mehr so behandelt werden, als waere er morgens sicher leer.
-        # "peak"/"asap" = alle Tage gleich.
+        # "peak"/"asap"/"late" = alle Tage gleich.
         # Für die Entscheidung zählt das pessimistische p10 (falls vorhanden):
         # ein nur auf dem Erwartungswert "sichere" Peak-Tag wird konservativ
         # als asap behandelt (früh einsammeln statt auf die Spitze wetten).
@@ -758,11 +758,28 @@ class Optimizer:
             })
         elif strategy == "peak":
             day_mode = ["peak"] * len(_uniq)
+        elif strategy == "late":
+            day_mode = ["late"] * len(_uniq)
         else:
             day_mode = ["asap"] * len(_uniq)
         log.info("Ladestrategie '%s'%s -> Tage: %s", strategy,
                  " (p10-basiert)" if pv10 is not None and strategy == "auto" else "",
                  {str(_uniq[i]): day_mode[i] for i in range(len(_uniq))})
+
+        # Late-Modus: Zielzeit ist der LETZTE erwartete PV-Ueberschuss eines
+        # vollständigen Horizont-Tages. Der letzte angeschnittene Tag wird wie
+        # beim Peak-Modus ausgelassen, damit ein endender Vormittag nicht zu
+        # einer verfrühten Volladung führt.
+        late_target_slot = {}
+        if strategy == "late":
+            for d in range(len(_uniq)):
+                surplus = [t for t in range(N) if slot_day[t] == d
+                           and float(inp.pv_w[t]) > float(inp.house_load_w[t]) + 1.0]
+                if line_day[d] and surplus:
+                    late_target_slot[d] = max(surplus)
+            log.info("Late-Zielzeiten: %s", {
+                str(_uniq[d]): _local[t].strftime("%H:%M")
+                for d, t in late_target_slot.items()})
 
         # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
         from .loads import add_controllable_loads
@@ -834,11 +851,17 @@ class Optimizer:
             # batt_grid_charge_w-Befehl real ECHTES Netzladen kommandiert hätte
             # (z.B. 87 W "Netzladen" bei 38 ct, gespeist aus PV).
             prob += ac[t] <= g_imp[t]
-            # Strategie des jeweiligen Tages (peak/asap)
+            # Strategie des jeweiligen Tages (peak/asap/late)
             dm = day_mode[slot_day[t]]
             # Peak-Tag: kein Netzladen (reines PV-Peak-Shaving; verhindert auch
             # das Terminal-Nachlade-Artefakt).
             if dm == "peak":
+                prob += ac[t] == 0
+            elif dm == "late":
+                # Das Max-SoC-Ziel dieses Modus wird ausschließlich mit PV
+                # verfolgt. Normale ökonomische Netzlade-Arbitrage bleibt den
+                # bisherigen Modi vorbehalten und wird nicht versehentlich
+                # durch die hohe Zielstrafe ausgelöst.
                 prob += ac[t] == 0
             if not gd_allowed[t]:
                 if dm == "peak":
@@ -849,6 +872,11 @@ class Optimizer:
                     prob += g_exp[t] <= pv_to_ac
                     if line_day[slot_day[t]]:
                         prob += g_exp[t] + curt[t] <= export_line[slot_day[t]]
+                elif dm == "late":
+                    # Frühes Einspeisen ist ausdrücklich erlaubt; Entladung ins
+                    # Netz bleibt ausgeschlossen. Erst die spätesten noch
+                    # benötigten Überschüsse werden in den Akku verschoben.
+                    prob += g_exp[t] <= pv_to_ac
                 else:
                     # asap: Einspeisen nur, wenn Akku voll ODER mit Max-Leistung lädt.
                     prob += g_exp[t] <= BIGG * (is_full[t] + at_max[t])
@@ -916,6 +944,15 @@ class Optimizer:
                     prob += soc_car[t] + s >= veh.target_soc_wh
                     car_short.append(s)
 
+        # Late-Ziel weich absichern: 100 % bzw. der konfigurierte maximale SoC
+        # am Ende des nutzbaren PV-Fensters. Bei zu wenig PV bildet der Slack
+        # die Fehlmenge ab, statt den Gesamtplan infeasible zu machen.
+        late_short = []
+        for d, target_t in late_target_slot.items():
+            short = pulp.LpVariable(f"lateshort_{d}", 0)
+            prob += soc[target_t + 1] + short >= hb.max_soc_wh
+            late_short.append(short)
+
         # Ziel-SoC am letzten Slot ebenfalls sichern, falls keine Abfahrt im
         # Horizont liegt, aber an ANDEREN Wochentagen eine kommt (Vorbereitung
         # auf die nächste Abfahrt). Gibt es gar keine Abfahrten, entfällt das.
@@ -943,6 +980,10 @@ class Optimizer:
         if car_short:
             cost_terms.append(cfg.optimization.car_target_penalty_ct_kwh *
                               pulp.lpSum(car_short) / 1000.0)
+        if late_short:
+            late_target_pen = max(0.0, float(getattr(
+                cfg.optimization, "late_target_penalty_ct_kwh", 200.0)))
+            cost_terms.append(late_target_pen * pulp.lpSum(late_short) / 1000.0)
 
         # Wallbox-Schalt-Malus: jeder Einschaltvorgang (0 -> laden) kostet
         # car_switch_penalty_ct. Verhindert Dauer-Takten bei zappeligen
@@ -1193,6 +1234,17 @@ class Optimizer:
                 local_minute = _local[t].hour * 60 + _local[t].minute
                 early_weight = (24 * 60 - local_minute) / (24 * 60)
                 cost_terms.append(0.01 * early_weight * dc[t] * kwh)
+            elif day_mode[slot_day[t]] == "late" and slot_day[t] in late_target_slot:
+                target_t = late_target_slot[slot_day[t]]
+                if t <= target_t:
+                    day_slots = max(1, sum(
+                        1 for k in range(N) if slot_day[k] == slot_day[t]
+                        and k <= target_t))
+                    early_weight = max(0.0, (target_t - t) / day_slots)
+                    late_delay_pen = max(0.0, float(getattr(
+                        cfg.optimization, "late_charge_delay_ct_kwh", 5.0)))
+                    cost_terms.append(
+                        late_delay_pen * early_weight * dc[t] * kwh)
 
         # p10-Mindestpfad und "moeglichst spaet"-Tie-Breaker koennen sonst
         # gegeneinander arbeiten: Die noetige Zusatzladung wird in EINEN Slot
@@ -1645,7 +1697,8 @@ class Optimizer:
             # damit es in der Zeitleiste sichtbar ist. Gedrosseltes Laden und
             # Entladen sind getrennte Modi.
             peak_shaped = charge_limited and day_mode[slot_day[t]] == "peak"
-            charge_flag = charge_limited and not peak_shaped
+            late_shaped = charge_limited and day_mode[slot_day[t]] == "late"
+            charge_flag = charge_limited and not peak_shaped and not late_shaped
             if ac_v > tol:
                 mode = "grid_charge"
             elif charge_flag and charge_limit < tol:
@@ -1658,6 +1711,8 @@ class Optimizer:
                 mode = "limit_charge"                 # Laden gedrosselt
             elif peak_shaped:
                 mode = "peak"                         # geformtes Laden (Linie)
+            elif late_shaped:
+                mode = "late"                         # Kapazität für später freihalten
             else:
                 mode = "auto"
             # Netz-Entladen (Akku -> Netz): der Teil der Einspeisung, der nicht aus
