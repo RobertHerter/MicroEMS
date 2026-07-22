@@ -266,6 +266,14 @@ class ManualScheduleRunner:
     def _tick(self) -> None:
         now = pd.Timestamp.now(tz="UTC")
         with self._lock:
+            if (self.config.e3dc_rscp.enabled
+                    and not self.config.e3dc_rscp.control_enabled):
+                if self._active_id is not None:
+                    self.store.set_status(
+                        self._active_id, "cancelled",
+                        "E3/DC-Steuerung wurde ausgeschaltet")
+                    self._active_id = None
+                return
             for row in self.store.active():
                 start = pd.Timestamp(row["start_ts"])
                 end = pd.Timestamp(row["end_ts"])

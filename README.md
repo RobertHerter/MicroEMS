@@ -343,7 +343,10 @@ wird deshalb nicht im Git-Repository gespeichert.
   Planprüfung erscheint als eigenes Banner darüber.
 - **E3/DC-Livekacheln** (Default 5 s): Solarerzeugung, Hauslast, Netzfluss,
   Batterieleistung, Akku-SoC, Wallbox – dazu, wenn vorhanden, die Pool-Ist-
-  Temperatur und die Außentemperatur. Der Server cached die RSCP-Abfrage.
+  Temperatur und die Außentemperatur. Ein zweiter Bereich zeigt PV-Tagesprognose,
+  aktuellen Bezugspreis sowie die E3/DC-Zählerstände des Tages für PV, Haus,
+  Netzbezug/-einspeisung und Speicherladung/-entladung. Momentanwerte werden 5 s,
+  die summierten Tageszähler ressourcenschonend einmal pro Minute aktualisiert.
 - **Leistung** (PV mit p10–p90-Band, Verbrauch, Netz, Einspeise-Linie; Ist
   durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
   Einspeisevergütung, **Steuerung**, **Modus-Zeitleiste** (Farbstreifen + Hover-
@@ -352,6 +355,9 @@ wird deshalb nicht im Git-Repository gespeichert.
   Pool-Rückkopplung) – Status auch eingeklappt sichtbar.
 - **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten an/aus +
   Kernparameter, Optimierungsmodus, manuelles Akku-Laden/-Entladen – ohne MQTT.
+  Die automatische direkte E3/DC-Steuerung lässt sich dort ebenfalls sicher
+  schalten; beim Ausschalten werden aktive RSCP-Modi und SmartPower-Limits sofort
+  freigegeben, während das reine Live-Monitoring weiterläuft.
 - **Manuelle Akku-Zeitplanung**: Netzladen/Entladen auf einem 48-h-Zeitstrahl planen
   (persistent, auch ohne offenen Browser ausgeführt, abbrechbar; SoC-/Leistungs-
   grenzen geprüft).

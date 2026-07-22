@@ -124,6 +124,34 @@ def test_read_live_graceful_failure():
     assert link.read_live() is None
 
 
+def test_read_energy_total_uses_single_aggregate_and_balances_load():
+    _cfg, link = _link()
+    import pandas as pd
+    data = link.read_energy_total(
+        pd.Timestamp("2026-07-22 00:00", tz="Europe/Berlin"),
+        pd.Timestamp("2026-07-22 12:00", tz="Europe/Berlin"))
+    assert data["pv_wh"] == 500.0
+    assert data["grid_import_wh"] == 250.0
+    assert data["grid_export_wh"] == 50.0
+    assert data["bat_in_wh"] == 100.0
+    assert data["bat_out_wh"] == 300.0
+    assert data["load_wh"] == 900.0
+
+
+def test_dashboard_control_toggle_releases_limits_before_disabling():
+    cfg, link = _link(control_enabled=True)
+    link._limits_active = True
+    result = link.set_control_enabled(False)
+    assert result["enabled"] is False
+    assert result["released"] is True
+    assert cfg.e3dc_rscp.control_enabled is False
+    assert link._e3dc.limit_calls[-1] is False
+
+    result = link.set_control_enabled(True)
+    assert result["enabled"] is True
+    assert cfg.e3dc_rscp.control_enabled is True
+
+
 def test_control_disabled_is_noop():
     cfg, link = _link(control_enabled=False)
     link.apply_control({"batt_charge_limit_w": 1000, "batt_discharge_limit_w": 1000})

@@ -95,11 +95,23 @@ def _live_block(config: Config) -> str:
   <div class="tile live-wallbox"><div class="v" id="live-wallbox">–</div><div class="l">Wallbox</div><div class="s">Ladeleistung aktuell</div></div>
   {pool_tile}{outdoor_tile}
  </div>
+ <div class="live-day-head"><b>Heute</b><span>E3/DC-Zähler bis jetzt</span></div>
+ <div class="tiles live-tiles live-daily">
+  <div class="tile live-solar"><div class="v" id="live-pv-forecast-today">–</div><div class="l">PV-Vorhersage heute</div><div class="s">gesamter Prognosetag</div></div>
+  <div class="tile live-solar"><div class="v" id="live-pv-yield-today">–</div><div class="l">PV-Ertrag bis jetzt</div><div class="s">gemessene Energie</div></div>
+  <div class="tile daily-import"><div class="v" id="live-grid-import-today">–</div><div class="l">Netzbezug bis jetzt</div><div class="s">gemessene Energie</div></div>
+  <div class="tile daily-export"><div class="v" id="live-grid-export-today">–</div><div class="l">Netzeinspeisung bis jetzt</div><div class="s">gemessene Energie</div></div>
+  <div class="tile daily-charge"><div class="v" id="live-battery-charge-today">–</div><div class="l">Speicher geladen</div><div class="s">bis jetzt</div></div>
+  <div class="tile daily-discharge"><div class="v" id="live-battery-discharge-today">–</div><div class="l">Speicher entladen</div><div class="s">bis jetzt</div></div>
+  <div class="tile live-house"><div class="v" id="live-house-today">–</div><div class="l">Hausverbrauch bis jetzt</div><div class="s">gemessene Energie</div></div>
+  <div class="tile daily-price"><div class="v" id="live-price-now">–</div><div class="l">Aktueller Strompreis</div><div class="s">Bezugspreis pro kWh</div></div>
+ </div>
 </section>
 <script>(function(){{
  var root=document.getElementById('e3dc-live'), status=document.getElementById('live-status');
  function num(v,d){{return (typeof v==='number'&&isFinite(v))?v.toLocaleString('de-DE',{{maximumFractionDigits:d||0}}):'–';}}
  function power(id,v,absolute){{var e=document.getElementById(id);e.textContent=(typeof v==='number'&&isFinite(v)?num(absolute?Math.abs(v):v,0)+' W':'–');}}
+ function energy(id,v){{var e=document.getElementById(id);if(e)e.textContent=(typeof v==='number'&&isFinite(v)?num(v,2)+' kWh':'–');}}
  function temp(id,v){{var e=document.getElementById(id);if(e)e.textContent=(typeof v==='number'&&isFinite(v)?num(v,1)+' °C':'–');}}
  function direction(id,v,pos,neg,idle){{var e=document.getElementById(id);e.textContent=!(typeof v==='number'&&isFinite(v))?'–':(v>25?pos:(v < -25?neg:idle));}}
  function flow(id,cls){{var e=document.getElementById(id);e.classList.remove('flow-import','flow-export','flow-charge','flow-discharge','flow-idle');e.classList.add(cls);}}
@@ -112,6 +124,14 @@ def _live_block(config: Config) -> str:
   power('live-wallbox',d.wallbox_w,false);
   temp('live-pool-temp',d.pool_temp_c); temp('live-outdoor-temp',d.outdoor_temp_c);
   document.getElementById('live-soc').textContent=(typeof d.soc_percent==='number'?num(d.soc_percent,1)+' %':'–');
+  energy('live-pv-forecast-today',d.pv_forecast_today_kwh);
+  energy('live-pv-yield-today',d.pv_yield_today_kwh);
+  energy('live-grid-import-today',d.grid_import_today_kwh);
+  energy('live-grid-export-today',d.grid_export_today_kwh);
+  energy('live-battery-charge-today',d.battery_charge_today_kwh);
+  energy('live-battery-discharge-today',d.battery_discharge_today_kwh);
+  energy('live-house-today',d.house_consumption_today_kwh);
+  document.getElementById('live-price-now').textContent=(typeof d.current_price_ct_kwh==='number'?num(d.current_price_ct_kwh,2)+' ct':'–');
   var ts=d.updated?new Date(d.updated):null;
   status.innerHTML='<span class="live-dot ok"></span> '+(ts&&!isNaN(ts)?'Stand '+ts.toLocaleTimeString('de-DE',{{hour:'2-digit',minute:'2-digit',second:'2-digit'}}):'aktuell');
   root.classList.remove('stale');
@@ -337,6 +357,66 @@ def _js_str(s: str) -> str:
     return _j.dumps(s)
 
 
+def _runtime_block(controls_enabled: bool) -> str:
+    button = ("<button id='recalc-plan' type='button' onclick='emsRecalc()'>"
+              "↻ Plan neu berechnen</button>" if controls_enabled else "")
+    return f"""
+<section class="runtime-strip" id="runtime-strip">
+ <div class="runtime-main"><span class="runtime-dot"></span>
+  <div><b id="runtime-phase">EMS-Status wird geladen</b>
+  <small id="runtime-message">Verbindung zum Dienst …</small></div></div>
+ <div class="runtime-progress"><i id="runtime-progress"></i></div>
+ <span id="runtime-meta"></span>{button}
+</section>
+<script>(function(){{
+ let seen=null,busy=false,reloading=false;
+ const strip=document.getElementById('runtime-strip'),btn=document.getElementById('recalc-plan');
+ function fmt(s){{if(!s)return '';let d=new Date(s);return isNaN(d)?'':d.toLocaleString('de-DE',{{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}});}}
+ function render(d){{
+  strip.dataset.state=d.state||'unknown';
+  document.getElementById('runtime-phase').textContent=d.phase||'EMS';
+  document.getElementById('runtime-message').textContent=d.message||'';
+  document.getElementById('runtime-progress').style.width=Math.max(0,Math.min(100,Number(d.progress)||0))+'%';
+  document.getElementById('runtime-meta').textContent=d.state==='ready'?'Plan '+fmt(d.plan_generated)+(d.duration_seconds!=null?' · '+d.duration_seconds.toLocaleString('de-DE')+' s':''):(d.state==='running'?'läuft …':'');
+  if(btn)btn.disabled=['queued','running'].includes(d.state);
+  if(seen===null)seen=Number(d.sequence)||0;
+  if(['queued','running'].includes(d.state))busy=true;
+  if(busy&&d.state==='ready'&&!reloading){{reloading=true;setTimeout(()=>location.reload(),500);}}
+ }}
+ window.emsRuntimePoll=function(){{return fetch('api/status.json?_='+Date.now(),{{cache:'no-store'}}).then(r=>{{if(!r.ok)throw Error(r.status);return r.json();}}).then(d=>{{render(d);window.dispatchEvent(new CustomEvent('ems-status',{{detail:d}}));return d;}}).catch(()=>{{strip.dataset.state='error';document.getElementById('runtime-message').textContent='Laufzeitstatus nicht erreichbar';}});}};
+ window.emsRecalc=async function(){{if(btn)btn.disabled=true;try{{let r=await fetch('api/control/recalc',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});if(!r.ok)throw Error((await r.text()).slice(0,160));busy=true;emsRuntimePoll();}}catch(e){{if(btn)btn.disabled=false;document.getElementById('runtime-message').textContent='Neuberechnung fehlgeschlagen: '+e.message;}}}};
+ emsRuntimePoll();setInterval(emsRuntimePoll,2000);
+}})();</script>"""
+
+
+def _slot_detail_block() -> str:
+    return """
+<details class="info-panel slot-detail" id="slot-detail"><summary>⌖ Slot-Details <small>Kurve anklicken</small></summary>
+ <div id="slot-detail-body" class="detail-grid"><p>Wähle einen Zeitpunkt in einem Diagramm aus.</p></div>
+</details>
+<script>(function(){
+ let rows=null;
+ const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
+ async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
+ function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');document.getElementById('slot-detail').open=true;}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function bind(){document.querySelectorAll('.plotly-graph-div').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x);});});}
+ bind();setInterval(bind,2000);
+})();</script>"""
+
+
+def _events_block() -> str:
+    return """
+<details class="info-panel events-panel" id="events-panel"><summary>☷ Ereignisse &amp; Bedienverlauf <small>letzte 50 Einträge</small></summary>
+ <div id="events-list" class="events-list">wird geladen …</div>
+</details>
+<script>(function(){
+ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let a=(await r.json()).events||[];document.getElementById('events-list').innerHTML=a.length?a.map(e=>'<div class="event '+esc(e.level)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Noch keine Ereignisse.</p>';}catch(e){document.getElementById('events-list').textContent='Ereignisverlauf nicht erreichbar.';}}
+ document.getElementById('events-panel').addEventListener('toggle',function(){if(this.open)load();});load();setInterval(()=>{if(document.getElementById('events-panel').open)load();},10000);
+})();</script>"""
+
+
 def _controls_block(config) -> str:
     """Interaktives Steuerpanel (nur bei dashboard.controls_enabled): Lasten
     an/aus + Kernparameter/Leistungskurve, Optimierungsmodus und Akku-Handbetrieb.
@@ -403,6 +483,16 @@ def _controls_block(config) -> str:
         f"onclick=\"emsMode('{m}')\"><b>{mode_text[m][0]}</b>"
         f"<small>{mode_text[m][1]}</small></button>"
         for m in ("auto", "asap", "peak"))
+    e3dc_on = bool(getattr(getattr(config, "e3dc_rscp", None),
+                           "control_enabled", False))
+    e3dc_control = (
+        "<section class='ctl-section e3dc-control'><div><b>Automatische E3/DC-Steuerung</b>"
+        "<small>Schaltet die direkte Akku-Steuerung ein oder gibt alle EMS-Limits frei. "
+        "Livewerte bleiben weiterhin aktiv.</small></div>"
+        "<label class='switch control-master'><input type='checkbox' id='e3dc-control-enabled' "
+        f"{'checked' if e3dc_on else ''} onchange='emsE3dcControl(this)'>"
+        "<span></span><em id='e3dc-control-label'>"
+        f"{'aktiv' if e3dc_on else 'ausgeschaltet'}</em></label></section>")
     hb = config.house_battery
     battery = (
         "<section class='battery-planner'><div class='planner-head'><div>"
@@ -431,6 +521,15 @@ def _controls_block(config) -> str:
         "<span class='pv_charge'>■ Laden</span><span class='discharge'>■ Entladen</span>"
         "<span class='idle'>■ Idle</span><span class='now'>│ Jetzt</span></div></div>"
         "<div class='schedule-list' id='schedule-list'></div></section>")
+    compare = (
+        "<section class='plan-compare'><div><b>Plan vor Übernahme vergleichen</b>"
+        "<small>Reine Vorschau mit denselben Prognosedaten – sendet keine Steuerwerte</small></div>"
+        "<div class='compare-actions'><select id='compare-strategy'>"
+        + "".join(f"<option value='{m}'{' selected' if m == strat else ''}>"
+                  f"{mode_text[m][0]}</option>" for m in ("auto", "asap", "peak"))
+        + "</select><button onclick='emsCompare()'>Vergleich berechnen</button>"
+        "<button class='primary' id='compare-apply' onclick='emsCompareApply()' disabled>Modus übernehmen</button></div>"
+        "<div id='compare-result' class='compare-result'>Noch kein Vergleich berechnet.</div></section>")
 
     js = """
 const EMS_LOADS=%s;
@@ -440,8 +539,8 @@ async function emsPost(action,payload){
     const r=await fetch('api/control/'+action,{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
     if(!r.ok){ throw new Error((await r.text()).slice(0,200)); }
-    m.textContent='✓ übernommen – Neuberechnung läuft …';
-    setTimeout(()=>location.reload(), 2500);
+    m.textContent='✓ übernommen – Neuberechnung wurde vorgemerkt';
+    if(window.emsRuntimePoll)window.emsRuntimePoll();
   }catch(e){ m.textContent='✗ '+e.message; }
 }
 function emsLoad(sg){
@@ -479,6 +578,30 @@ function emsCurve(sg){
   info.className='';info.textContent=a.length+' × 15 min = '+(a.length*15)+' min · Spitze '+Math.round(max).toLocaleString('de-DE')+' W';
 }
 function emsMode(s){ emsPost('mode',{strategy:s}); }
+async function emsE3dcControl(el){
+  const enabled=el.checked,m=document.getElementById('ctl-msg'),label=document.getElementById('e3dc-control-label');
+  if(!enabled&&!confirm('E3/DC-Steuerung wirklich ausschalten? Laufende EMS-Limits werden sofort freigegeben.')){el.checked=true;return;}
+  el.disabled=true;m.textContent=enabled?'… E3/DC-Steuerung wird aktiviert':'… E3/DC-Limits werden freigegeben';
+  try{const r=await fetch('api/control/e3dc_control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));const d=await r.json();label.textContent=enabled?'aktiv':'ausgeschaltet';m.textContent='✓ '+(d.result.message||'E3/DC-Steuerung geändert');if(window.emsRuntimePoll)window.emsRuntimePoll();}
+  catch(e){el.checked=!enabled;label.textContent=el.checked?'aktiv':'ausgeschaltet';m.textContent='✗ '+e.message;}finally{el.disabled=false;}
+}
+async function emsCompare(){
+  const s=document.getElementById('compare-strategy').value,m=document.getElementById('compare-result');
+  m.textContent='… Vergleich wird vorbereitet';document.getElementById('compare-apply').disabled=true;
+  try{const r=await fetch('api/control/compare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy:s})});if(!r.ok)throw Error((await r.text()).replace(/<[^>]+>/g,' ').slice(0,180));m.textContent='… Vergleich läuft';if(window.emsRuntimePoll)window.emsRuntimePoll();}catch(e){m.textContent='✗ '+e.message;}
+}
+function emsCompareApply(){const s=document.getElementById('compare-strategy').value;if(confirm('Optimierungsmodus „'+document.getElementById('compare-strategy').selectedOptions[0].text+'“ übernehmen und produktiv neu berechnen?'))emsMode(s);}
+function emsCompareRender(c){
+  if(!c)return;const box=document.getElementById('compare-result'),apply=document.getElementById('compare-apply');if(!box)return;
+  if(c.state==='queued'||c.state==='running'){box.textContent='… '+(c.message||'Vergleich läuft');apply.disabled=true;return;}
+  if(c.state==='error'){box.textContent='✗ '+c.message;apply.disabled=true;return;}
+  if(c.state!=='done'||!c.result)return;
+  const r=c.result,b=r.base,n=r.candidate,d=r.delta,fmt=(v,u)=>Number(v).toLocaleString('de-DE',{maximumFractionDigits:3})+(u||''),sign=(v,u)=>(v>0?'+':'')+fmt(v,u);
+  box.innerHTML='<div class="compare-note">✓ '+emsEsc(c.message)+' · Solver '+fmt(r.solver_seconds,' s')+'</div><div class="compare-grid">'+
+    [['Kosten',b.cost_eur,n.cost_eur,d.cost_eur,' €'],['Netzbezug',b.grid_import_kwh,n.grid_import_kwh,d.grid_import_kwh,' kWh'],['Einspeisung',b.grid_export_kwh,n.grid_export_kwh,d.grid_export_kwh,' kWh'],['Einspeisespitze',b.peak_export_w,n.peak_export_w,d.peak_export_w,' W'],['Eingriffs-Slots',b.restricted_slots,n.restricted_slots,d.restricted_slots,''],['End-SoC',b.end_soc_percent,n.end_soc_percent,d.end_soc_percent,' %%']].map(x=>'<div><span>'+x[0]+'</span><b>'+fmt(x[2],x[4])+'</b><small>bisher '+fmt(x[1],x[4])+' · Δ '+sign(x[3],x[4])+'</small></div>').join('')+'</div><small>'+r.errors+' Fehler · '+r.warnings+' Warnungen · Datenstand '+new Date(r.generated).toLocaleString('de-DE')+'</small>';
+  apply.disabled=r.errors>0;document.getElementById('compare-strategy').value=c.strategy;
+}
+window.addEventListener('ems-status',e=>emsCompareRender(e.detail.comparison));
 async function emsBat(a){
   const action=a==='selected'?document.getElementById('schedule-action').value:a,
     watts=parseFloat(document.getElementById('schedule-watts').value),
@@ -580,9 +703,10 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
         "<div class='ctl-section-head'><b>Steuerbare Lasten</b>"
         "<small>Parameter und zeitlicher Leistungsverlauf</small></div>"
         f"<div class='load-cards'>{''.join(rows)}</div>"
+        f"{e3dc_control}"
         f"<div class='ctl-section mode-select'><div><b>Optimierungsmodus</b>"
         f"<small>Ladestrategie des Hausakkus</small></div><div class='button-group'>{mode_btns}</div></div>"
-        f"{battery}<div id='ctl-msg' class='ctl-msg'></div>"
+        f"{compare}{battery}<div id='ctl-msg' class='ctl-msg'></div>"
         f"</div></details><script>{js}</script>")
 
 
@@ -1140,6 +1264,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                         "hoverCompareCartesian"]})
     report_html = _report_block(config, now, violations)
     controls_html = _controls_block(config)
+    runtime_html = _runtime_block(bool(getattr(config.dashboard, "controls_enabled", False)))
     live_html = _live_block(config)
     decision_html = _decision_block(t, now)
     mobile_plot_html = _mobile_plot_block(now, has_loads, temp_row)
@@ -1169,6 +1294,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         border: 1px solid #ccd4dc; border-radius: 8px; background: #f4f6f8;
         color: #26313c; cursor: pointer; font: inherit; font-size: 13px; }}
  #install-app {{ display: none; }}
+ .runtime-strip {{ display: grid; grid-template-columns: minmax(220px,1fr) minmax(120px,2fr) auto auto;
+        align-items: center; gap: 12px; margin: -4px 0 12px; padding: 9px 12px;
+        border: 1px solid #dbe3eb; border-radius: 10px; background: #fff; font-size: 12px; }}
+ .runtime-main {{ display: flex; align-items: center; gap: 9px; min-width: 0; }}
+ .runtime-main small {{ display: block; color: #6e7781; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+ .runtime-dot {{ width: 10px; height: 10px; border-radius: 50%; background: #7b8794; flex: 0 0 auto; }}
+ .runtime-strip[data-state=ready] .runtime-dot {{ background: #2a9d55; }}
+ .runtime-strip[data-state=running] .runtime-dot, .runtime-strip[data-state=queued] .runtime-dot {{ background: #2678c8; animation: runtimePulse 1.2s infinite; }}
+ .runtime-strip[data-state=error] .runtime-dot {{ background: #d13a32; }}
+ @keyframes runtimePulse {{ 50% {{ opacity: .35; }} }}
+ .runtime-progress {{ height: 7px; border-radius: 7px; background: #e5eaf0; overflow: hidden; }}
+ .runtime-progress i {{ display: block; width: 0; height: 100%; background: #2678c8; transition: width .25s; }}
+ #runtime-meta {{ color: #68727c; white-space: nowrap; }}
+ #recalc-plan {{ padding: 7px 11px; border: 1px solid #a9bdd1; border-radius: 8px; background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
+ #recalc-plan:disabled {{ opacity: .55; cursor: wait; }}
  .tiles {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }}
  .tile {{ flex: 1 1 150px; background: #fff; border: 1px solid #e0e5eb;
          border-radius: 11px; padding: 11px 14px; box-shadow: 0 2px 8px rgba(25,42,65,.05); }}
@@ -1179,6 +1319,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-head {{ display: flex; justify-content: space-between; align-items: center;
         margin: 2px 2px 7px; font-size: 14px; }}
  .live-head #live-status {{ color: #666; font-size: 12px; font-weight: normal; }}
+ .live-day-head {{ display: flex; align-items: baseline; gap: 8px; margin: 11px 2px 7px; }}
+ .live-day-head span {{ color: #707983; font-size: 11px; }}
  .live-tiles {{ margin-bottom: 0; }}
  /* Live-Kacheln nach oben begrenzen: volle Zeilen füllen weiter gleichmäßig,
     aber eine einzelne Kachel in der letzten Zeile wird nicht mehr über die ganze
@@ -1206,6 +1348,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .flow-discharge .v {{ color: #b45f16; }}
  .live-tiles .flow-idle {{ background: #f4f5f6; border-color: #d7dadd; }}
  .live-tiles .flow-idle .v {{ color: #62676d; }}
+ .live-tiles .daily-import {{ background: #fdecec; border-color: #efb6b6; }}
+ .live-tiles .daily-import .v {{ color: #b3261e; }}
+ .live-tiles .daily-export {{ background: #eaf8ee; border-color: #b8dfc3; }}
+ .live-tiles .daily-export .v {{ color: #237a3b; }}
+ .live-tiles .daily-charge {{ background: #eaf3ff; border-color: #b8d2f2; }}
+ .live-tiles .daily-charge .v {{ color: #2468a9; }}
+ .live-tiles .daily-discharge {{ background: #edf9ef; border-color: #bddfc5; }}
+ .live-tiles .daily-discharge .v {{ color: #287942; }}
+ .live-tiles .daily-price {{ background: #eaf8f7; border-color: #b8dedb; }}
+ .live-tiles .daily-price .v {{ color: #147a74; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  .forecast-quality {{ margin: 10px 0 0; padding: 0; background: #fff;
         border: 1px solid #dfe6ed; border-radius: 11px;
@@ -1347,6 +1499,30 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .ctl-section input {{ width: 75px !important; margin: 0 3px; }}
  .button-group {{ display: flex; flex-wrap: wrap; gap: 6px; }}
  .controls .ctl-msg {{ margin-top: 9px; font-size: 12px; color: #555; min-height: 1em; }}
+ .plan-compare {{ display: grid; grid-template-columns: minmax(190px,1fr) minmax(320px,2fr);
+        gap: 10px 18px; margin-top: 12px; padding: 13px; border: 1px solid #dbe3eb;
+        border-radius: 9px; background: #f5f9fd; }}
+ .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: 3px; }}
+ .compare-actions {{ display: flex; flex-wrap: wrap; gap: 7px; align-items: center; justify-content: flex-end; }}
+ .compare-actions select {{ width: auto; min-width: 155px; }}
+ .compare-result {{ grid-column: 1/-1; color: #5e6872; }}
+ .compare-note {{ margin-bottom: 7px; }}
+ .compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(135px,1fr)); gap: 7px; margin-bottom: 7px; }}
+ .compare-grid > div {{ padding: 8px; background: #fff; border: 1px solid #dfe6ed; border-radius: 7px; }}
+ .compare-grid span, .compare-grid small {{ display: block; font-size: 10px; color: #74808b; }}
+ .compare-grid b {{ display: block; margin: 2px 0; font-size: 14px; }}
+ .info-panel {{ margin: 10px 0; border: 1px solid #dde4eb; border-radius: 10px; background: #fff; overflow: hidden; }}
+ .info-panel > summary {{ padding: 11px 13px; cursor: pointer; font-weight: 700; background: #f7f9fb; }}
+ .info-panel > summary small {{ margin-left: 8px; color: #75808a; font-weight: 400; }}
+ .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 7px; padding: 12px; }}
+ .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 4px; }}
+ .detail-grid > div {{ padding: 8px 9px; border-radius: 7px; background: #f4f7fa; }}
+ .detail-grid span, .detail-grid b {{ display: block; }}
+ .detail-grid span {{ color: #74808b; font-size: 10px; }}
+ .events-list {{ max-height: 360px; overflow: auto; padding: 6px 12px 11px; }}
+ .event {{ display: grid; grid-template-columns: 115px 1fr; gap: 10px; padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
+ .event time {{ color: #74808b; font-size: 11px; }}
+ .event.error span {{ color: #bd302a; }}
  .switch {{ display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }}
  .switch input {{ position: absolute; opacity: 0; pointer-events: none; }}
  .switch span {{ width: 34px; height: 19px; border-radius: 12px; background: #b9bec5;
@@ -1426,7 +1602,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark body {{ color: #e7edf4; background: linear-gradient(145deg,#111820,#17212b); }}
  html.dark .app-header, html.dark .tile, html.dark .controls,
  html.dark .schedule-chart-wrap, html.dark .schedule-item, html.dark .decisions,
- html.dark .curve-box span {{ background: #18212b; border-color: #354352; color: #e7edf4; }}
+ html.dark .curve-box span, html.dark .runtime-strip, html.dark .info-panel {{ background: #18212b; border-color: #354352; color: #e7edf4; }}
+ html.dark .runtime-main small, html.dark #runtime-meta {{ color: #b6c2ce; }}
+ html.dark .runtime-progress {{ background: #354352; }}
+ html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
+ html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
+ html.dark .detail-grid > div, html.dark .compare-grid > div {{ background: #202b36; border-color: #354352; }}
+ html.dark .detail-grid span, html.dark .event time, html.dark .compare-grid span,
+ html.dark .compare-grid small {{ color: #aebbc8; }}
+ html.dark .event {{ border-color: #303e4b; }}
+ html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
  html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
@@ -1463,6 +1648,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .flow-export {{ background: #183522; border-color: #326541; }}
  html.dark .live-tiles .flow-discharge {{ background: #422b18; border-color: #75502e; }}
  html.dark .live-tiles .flow-idle {{ background: #252d35; border-color: #46515c; }}
+ html.dark .live-tiles .daily-import {{ background: #421f22; border-color: #74373a; }}
+ html.dark .live-tiles .daily-export, html.dark .live-tiles .daily-discharge {{ background: #183522; border-color: #326541; }}
+ html.dark .live-tiles .daily-charge {{ background: #192d43; border-color: #31577e; }}
+ html.dark .live-tiles .daily-price {{ background: #173634; border-color: #2d615d; }}
+ html.dark .live-day-head span {{ color: #aebbc8; }}
  html.dark .live-tiles .tile .v {{ filter: brightness(1.55) saturate(1.18); }}
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
@@ -1527,6 +1717,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .planner-head {{ flex-direction: column; }}
    .schedule-state {{ width: 100%; text-align: left; }}
    .schedule-item {{ flex-wrap: wrap; }}
+   .runtime-strip {{ grid-template-columns: 1fr auto; gap: 8px; }}
+   .runtime-main {{ grid-column: 1/-1; }}
+   .runtime-progress {{ grid-column: 1/-1; grid-row: 2; }}
+   #runtime-meta {{ display: none; }}
+   #recalc-plan {{ min-height: 42px; grid-column: 1/-1; }}
+   .plan-compare {{ grid-template-columns: 1fr; }}
+   .compare-actions {{ justify-content: stretch; }}
+   .compare-actions > * {{ flex: 1 1 100%; min-height: 44px; }}
+   .event {{ grid-template-columns: 90px 1fr; }}
  }}
  .chips {{ font-size: 12px; color: #555; margin: -2px 0 10px; }}
  .chips .chip {{ margin-right: 14px; white-space: nowrap; }}
@@ -1537,6 +1736,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
  <div class="header-actions"><button type="button" id="install-app" title="Als App installieren">Installieren</button>
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
+{runtime_html}
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
 {_sources_block(source_status)}
@@ -1545,10 +1745,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {controls_html}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
+{_slot_detail_block()}
 {decision_html}
 {_operations_block(solver_status, execution_status)}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
+{_events_block()}
 {report_html}
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;

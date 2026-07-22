@@ -103,6 +103,14 @@ def _con(path: str) -> sqlite3.Connection:
                 " name TEXT, ts TEXT, status TEXT, n_windows INTEGER, r2 REAL,"
                 " old_json TEXT, fitted_json TEXT, applied_json TEXT,"
                 " message TEXT, PRIMARY KEY(name, ts))")
+    # Bedien- und Systemereignisse fuer das Dashboard. Bewusst kompakt und
+    # lokal: keine Zugangsdaten/Payloads, nur nachvollziehbare Aktionen.
+    con.execute("CREATE TABLE IF NOT EXISTS dashboard_event ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,"
+                " kind TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL,"
+                " details_json TEXT NOT NULL DEFAULT '{}')")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dashboard_event_ts "
+                "ON dashboard_event(ts DESC)")
     # Zuletzt an den E3DC gesendeter Steuerbefehl (aktueller Slot), als JSON.
     # Beim Dienststart sofort wieder anwendbar, um die Peak-/Steuer-Lücke
     # zwischen sauberem Herunterfahren (Limits freigegeben) und dem ersten
@@ -661,6 +669,51 @@ def read_latest_thermal_calibration(path: str, tz: str) -> list[dict]:
              "fitted": json.loads(r[6] or "{}"),
              "applied": json.loads(r[7] or "{}"), "message": r[8]}
             for r in rows]
+
+
+def write_dashboard_event(path: str, kind: str, message: str, *,
+                          level: str = "info", details: Optional[dict] = None,
+                          ts=None) -> None:
+    """Kompaktes Bedien-/Systemereignis fuer die Weboberflaeche speichern."""
+    stamp = pd.Timestamp(ts if ts is not None else pd.Timestamp.now(tz="UTC"))
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    con = _con(path)
+    con.execute(
+        "INSERT INTO dashboard_event(ts,kind,level,message,details_json) "
+        "VALUES(?,?,?,?,?)",
+        (stamp.tz_convert("UTC").isoformat(), str(kind), str(level),
+         str(message), json.dumps(details or {}, ensure_ascii=False, default=str)))
+    # Verlauf begrenzen; 500 Eintraege reichen fuer die Bedienhistorie und
+    # verhindern unbegrenztes Wachstum bei vielen manuellen Neuberechnungen.
+    con.execute("DELETE FROM dashboard_event WHERE id NOT IN "
+                "(SELECT id FROM dashboard_event ORDER BY id DESC LIMIT 500)")
+    con.commit()
+    con.close()
+
+
+def read_dashboard_events(path: str, tz: str, limit: int = 50) -> list[dict]:
+    """Neueste Dashboard-Ereignisse, absteigend sortiert."""
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT id,ts,kind,level,message,details_json FROM dashboard_event "
+            "ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 200)),)
+        ).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    out = []
+    for row in rows:
+        try:
+            details = json.loads(row[5] or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        out.append({"id": row[0],
+                    "ts": pd.Timestamp(row[1]).tz_convert(tz).isoformat(),
+                    "kind": row[2], "level": row[3], "message": row[4],
+                    "details": details})
+    return out
 
 
 def read_load_cmd(path: str, name: str, start, end, tz: str) -> pd.Series:

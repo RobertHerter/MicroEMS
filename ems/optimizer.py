@@ -37,6 +37,7 @@ import pulp
 from .config import Config
 
 log = logging.getLogger("ems.optimizer")
+_solver_serial = threading.Lock()
 
 
 @dataclass
@@ -435,12 +436,14 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
 
 
 class Optimizer:
-    def __init__(self, config: Config, *, stabilize_plan: bool = False):
+    def __init__(self, config: Config, *, stabilize_plan: bool = False,
+                 store_warm: bool = True):
         self.cfg = config
         # Nur der fortlaufende Produktivdienst darf gegen den vorherigen Lauf
         # stabilisieren. Backtests, Debug-Replays und voneinander unabhaengige
         # Tests duerfen trotz prozessweitem Warmstart nicht gekoppelt werden.
         self.stabilize_plan = bool(stabilize_plan)
+        self.store_warm = bool(store_warm)
 
     def _departure_slot_indices(self, index: pd.DatetimeIndex) -> List[int]:
         """Slot-Indizes der Abfahrtzeiten im Horizont (je Wochentag; Tage ohne
@@ -505,6 +508,15 @@ class Optimizer:
         )
 
     def solve(self, inp: OptimizerInputs) -> OptimizerResult:
+        """Solverlaeufe pro Prozess serialisieren.
+
+        Dashboard-Vergleiche koennen damit nie parallel zum produktiven Lauf
+        PuLP/HiGHS-Zustand und CPU teilen.
+        """
+        with _solver_serial:
+            return self._solve(inp)
+
+    def _solve(self, inp: OptimizerInputs) -> OptimizerResult:
         clear_solver_cancel()
         cfg = self.cfg
         hb = cfg.house_battery
@@ -1535,7 +1547,8 @@ class Optimizer:
                          "Warmstart-Stand behalten.")
         polish_s = time.monotonic() - _t1
         # Lösung für den Warmstart des nächsten Zyklus merken.
-        _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
+        if self.store_warm:
+            _store_warm_solution(prob, inp.index[0], int(round(dt * 60)))
 
         # ---- Ergebnis extrahieren --------------------------------------- #
         def val(v):

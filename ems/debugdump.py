@@ -82,7 +82,10 @@ def save_snapshot(config: Config, now, inputs, result, violations,
             # auch die Eingänge des Pool-/Thermomodells mit rein.
             "ambient_temp_c": (arr(inputs.ambient_temp_c)
                                if inputs.ambient_temp_c is not None else None),
+            "solar_w_m2": (arr(inputs.solar_w_m2)
+                            if inputs.solar_w_m2 is not None else None),
             "load_state": (inputs.load_state or None),
+            "load_feedback": (inputs.load_feedback or None),
         },
         "plan": {c: arr(t[c]) for c in t.columns
                  if pd.api.types.is_numeric_dtype(t[c])},

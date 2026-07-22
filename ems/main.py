@@ -16,9 +16,12 @@ Aufruf:
 from __future__ import annotations
 
 import argparse
+import copy
+import json
 import logging
 import os
 import signal
+import threading
 import time as _time
 from datetime import timedelta
 
@@ -54,6 +57,198 @@ _solver_alarm = {"failed": False}
 # "Planabweichung Akku" melden. In einer Karenz danach wird es ausgesetzt.
 _PROCESS_START = _time.monotonic()
 _load_feedback_alarm = {"failed": set()}
+_runtime_lock = threading.RLock()
+_runtime_status = {
+    "state": "starting", "phase": "Dienst startet", "progress": 0,
+    "started_at": None, "finished_at": None, "plan_generated": None,
+    "duration_seconds": None, "message": "Initialisierung",
+    "pending_recalc": False, "trigger": "startup", "sequence": 0,
+}
+_comparison_status = {
+    "state": "idle", "strategy": None, "requested_at": None,
+    "started_at": None, "finished_at": None, "message": "", "result": None,
+}
+
+
+def _runtime_iso() -> str:
+    return pd.Timestamp.now(tz="UTC").isoformat()
+
+
+def _runtime_update(**changes) -> None:
+    with _runtime_lock:
+        _runtime_status.update(changes)
+
+
+def _runtime_snapshot() -> dict:
+    with _runtime_lock:
+        out = dict(_runtime_status)
+        out["comparison"] = dict(_comparison_status)
+        return out
+
+
+def _request_runtime_recalc() -> tuple[bool, dict]:
+    """Genau einen Folgelauf vormerken; wiederholte Klicks werden gebuendelt."""
+    with _runtime_lock:
+        fresh = not bool(_runtime_status.get("pending_recalc"))
+        _runtime_status["pending_recalc"] = True
+        if _runtime_status.get("state") != "running":
+            _runtime_status.update(
+                state="queued", phase="Neuberechnung vorgemerkt", progress=0,
+                message="Manuelle Neuberechnung wartet auf den EMS-Loop")
+        return fresh, dict(_runtime_status)
+
+
+def _runtime_begin() -> str:
+    with _runtime_lock:
+        trigger = "manual" if _runtime_status.get("pending_recalc") else "schedule"
+        _runtime_status.update(
+            state="running", phase="Datenquellen aktualisieren", progress=5,
+            started_at=_runtime_iso(), finished_at=None, duration_seconds=None,
+            message="EMS-Zyklus läuft", pending_recalc=False, trigger=trigger,
+            sequence=int(_runtime_status.get("sequence", 0)) + 1)
+        return trigger
+
+
+def _runtime_finish(now, started_monotonic: float,
+                    message="Plan erfolgreich aktualisiert") -> None:
+    with _runtime_lock:
+        pending = bool(_runtime_status.get("pending_recalc"))
+        _runtime_status.update(
+            state="queued" if pending else "ready",
+            phase="Weitere Neuberechnung vorgemerkt" if pending else "Fertig",
+            progress=0 if pending else 100, finished_at=_runtime_iso(),
+            plan_generated=pd.Timestamp(now).isoformat(),
+            duration_seconds=round(_time.monotonic() - started_monotonic, 2),
+            message=("Plan aktualisiert; weiterer Lauf wartet" if pending else message))
+
+
+def _runtime_fail(message: str) -> None:
+    _runtime_update(state="error", phase="Fehler", progress=100,
+                    finished_at=_runtime_iso(), message=str(message))
+
+
+def _record_dashboard_event(config, kind: str, message: str, *,
+                            level="info", details=None) -> None:
+    try:
+        from .local_history import write_dashboard_event
+        write_dashboard_event(config.e3dc_rscp.history_db_path, kind, message,
+                              level=level, details=details)
+    except Exception as exc:
+        log.debug("Dashboard-Ereignis nicht speicherbar (%s).", exc)
+
+
+def _comparison_metrics(table: pd.DataFrame, total_cost_ct: float,
+                        slot_minutes: int) -> dict:
+    dt_kwh = float(slot_minutes) / 60_000.0
+
+    def energy(col):
+        values = table[col] if col in table else pd.Series(0.0, index=table.index)
+        return round(float(pd.to_numeric(values, errors="coerce").fillna(0).sum())
+                     * dt_kwh, 3)
+
+    export = (table["grid_export_w"] if "grid_export_w" in table
+              else pd.Series(0.0, index=table.index))
+    modes = (table["mode"] if "mode" in table
+             else pd.Series("auto", index=table.index)).astype(str)
+    return {
+        "cost_eur": round(float(total_cost_ct) / 100.0, 2),
+        "grid_import_kwh": energy("grid_import_w"),
+        "grid_export_kwh": energy("grid_export_w"),
+        "peak_export_w": round(float(pd.to_numeric(
+            export, errors="coerce").fillna(0).max()), 0),
+        "restricted_slots": int(modes.isin(
+            ["hold", "limit_discharge", "block_charge", "grid_charge"]).sum()),
+        "end_soc_percent": (round(float(table["house_soc_percent"].iloc[-1]), 1)
+                            if "house_soc_percent" in table and len(table) else None),
+    }
+
+
+def _comparison_inputs(snapshot: dict) -> OptimizerInputs:
+    raw = snapshot.get("inputs") or {}
+
+    def optional(name):
+        value = raw.get(name)
+        return None if value is None else np.asarray(value, dtype=float)
+
+    return OptimizerInputs(
+        index=pd.DatetimeIndex(pd.to_datetime(raw["index"])),
+        house_load_w=np.asarray(raw["house_load_w"], dtype=float),
+        pv_w=np.asarray(raw["pv_w"], dtype=float),
+        price_ct_kwh=np.asarray(raw["price_ct_kwh"], dtype=float),
+        feedin_ct_kwh=np.asarray(raw["feedin_ct_kwh"], dtype=float),
+        initial_house_soc_wh=float(raw["initial_house_soc_wh"]),
+        initial_car_soc_wh=raw.get("initial_car_soc_wh"),
+        car_present=bool(raw.get("car_present", False)),
+        pv10_w=optional("pv10_w"), ambient_temp_c=optional("ambient_temp_c"),
+        solar_w_m2=optional("solar_w_m2"), load_state=raw.get("load_state"),
+        load_feedback=raw.get("load_feedback"))
+
+
+def _start_plan_comparison(config, strategy: str) -> dict:
+    """Startet einen reinen Vorschau-Solve aus dem letzten Debug-Snapshot."""
+    strategy = str(strategy).lower()
+    if strategy not in ("auto", "asap", "peak"):
+        raise ValueError("strategy muss asap|peak|auto sein")
+    with _runtime_lock:
+        if _comparison_status.get("state") in ("queued", "running"):
+            raise ValueError("Eine Planvergleichsrechnung läuft bereits")
+        _comparison_status.update(
+            state="queued", strategy=strategy, requested_at=_runtime_iso(),
+            started_at=None, finished_at=None,
+            message="Vergleich wartet auf den Solver", result=None)
+
+    def worker():
+        try:
+            with _runtime_lock:
+                _comparison_status.update(
+                    state="running", started_at=_runtime_iso(),
+                    message="Vergleichsplan wird berechnet")
+            with open(config.report.snapshot_path, encoding="utf-8") as fh:
+                snap = json.load(fh)
+            inp = _comparison_inputs(snap)
+            cmp_cfg = copy.deepcopy(config)
+            cmp_cfg.optimization.charge_strategy = strategy
+            result = Optimizer(cmp_cfg, stabilize_plan=False,
+                               store_warm=False).solve(inp)
+            violations = validate_plan(cmp_cfg, result, inp)
+            current = pd.DataFrame(snap.get("plan") or {}, index=inp.index)
+            if snap.get("plan_mode") is not None:
+                current["mode"] = snap["plan_mode"]
+            base = _comparison_metrics(
+                current, float(snap.get("total_cost_eur", 0)) * 100.0,
+                cmp_cfg.general.slot_minutes)
+            candidate = _comparison_metrics(
+                result.table, result.total_cost_ct, cmp_cfg.general.slot_minutes)
+            delta = {key: (round(candidate[key] - base[key], 3)
+                           if isinstance(candidate.get(key), (int, float))
+                           and isinstance(base.get(key), (int, float)) else None)
+                     for key in candidate}
+            payload = {"generated": snap.get("generated"), "base": base,
+                       "candidate": candidate, "delta": delta,
+                       "solver_seconds": round(result.solver_seconds, 2),
+                       "status": result.status,
+                       "errors": sum(v.severity == "error" for v in violations),
+                       "warnings": sum(v.severity == "warning" for v in violations)}
+            with _runtime_lock:
+                _comparison_status.update(
+                    state="done", finished_at=_runtime_iso(),
+                    message="Vergleich fertig – noch nicht übernommen", result=payload)
+            _record_dashboard_event(
+                config, "comparison", f"Planvergleich für {strategy} abgeschlossen",
+                details={"cost_delta_eur": delta.get("cost_eur"),
+                         "solver_seconds": payload["solver_seconds"]})
+        except Exception as exc:
+            with _runtime_lock:
+                _comparison_status.update(
+                    state="error", finished_at=_runtime_iso(),
+                    message=f"Vergleich fehlgeschlagen: {exc}", result=None)
+            _record_dashboard_event(config, "comparison",
+                                    f"Planvergleich fehlgeschlagen: {exc}",
+                                    level="error")
+            log.exception("Planvergleich fehlgeschlagen")
+
+    threading.Thread(target=worker, name="ems-plan-comparison", daemon=True).start()
+    return _runtime_snapshot()["comparison"]
 
 
 def _audit_execution(config, now, live):
@@ -315,6 +510,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     """Ein Rechenzyklus. `publisher`/`e3dc`: persistente Verbindungen im Loop-
     Betrieb (MQTT Last Will bzw. RSCP-Watchdog-Thread); ohne werden sie pro Lauf
     erzeugt und wieder geschlossen."""
+    runtime_started = _time.monotonic()
+    runtime_trigger = _runtime_begin()
     repo = make_repository(config)
     control_status = None
     execution_status = None
@@ -397,6 +594,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         "nutze %s.", exc, config._pv_selected_source)
 
         # --- 1) Verbrauchsprognose (72 h) -------------------------------- #
+        _runtime_update(phase="Prognosen erstellen", progress=30,
+                        message="Last-, PV- und Preisprognosen werden aufbereitet")
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
         history = load_history(repo, config, now)
         forecast_end = now + timedelta(hours=config.general.forecast_horizon_hours)
@@ -627,6 +826,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                          " (Wallbox: angesteckt)" if connected is not None else "")
 
         # --- 3) Optimierung --------------------------------------------- #
+        _runtime_update(phase="Plan optimieren", progress=58,
+                        message=f"Solver berechnet {len(opt_index)} Zeitschritte")
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
         load_state = _read_load_state(config, publisher)
         load_feedback, load_feedback_status = _read_load_feedback(
@@ -820,6 +1021,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             log.warning("Solver-Telemetrie nicht speicherbar (%s).", exc)
 
         # --- 3b) Planprüfung (Invarianten) ------------------------------ #
+        _runtime_update(phase="Plan prüfen", progress=76,
+                        message="Grenzen und wirtschaftliche Entscheidungen werden geprüft")
         # Fängt Modellfehler ("das darf nie passieren") automatisch ab, statt
         # sich auf den Blick ins Dashboard zu verlassen. Errors = echter Bug,
         # Warnungen = verdächtig (siehe ems/validate.py).
@@ -853,6 +1056,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             log.warning("Debug-Schnappschuss fehlgeschlagen (%s).", exc)
 
         # --- 4) MQTT (best effort – darf den Lauf nicht abbrechen) ------ #
+        _runtime_update(phase="Steuerung übertragen", progress=84,
+                        message="Sollwerte werden an MQTT und E3DC übertragen")
         try:
             if one_shot:
                 publisher = HomeyMqttPublisher(config)
@@ -995,6 +1200,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 log.warning("Ersparnis-Tracking fehlgeschlagen (%s).", exc)
 
         # --- 6) Dashboard ----------------------------------------------- #
+        _runtime_update(phase="Dashboard aktualisieren", progress=94,
+                        message="Plan und Diagnoseansicht werden geschrieben")
         # Anzeige ab heute 00:00: Ist-Werte (bis jetzt) und Prognose (ganzer
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
@@ -1062,6 +1269,18 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     )
                 except Exception as exc:
                     log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
+        _runtime_finish(now, runtime_started)
+        if runtime_trigger == "manual":
+            _record_dashboard_event(
+                config, "recalc", "Manuelle Planneuberechnung abgeschlossen",
+                details={"duration_seconds": _runtime_snapshot().get("duration_seconds"),
+                         "solver_seconds": getattr(result, "solver_seconds", None),
+                         "violations": len(violations or [])})
+    except Exception as exc:
+        _runtime_fail(f"EMS-Zyklus fehlgeschlagen: {exc}")
+        _record_dashboard_event(config, "error", f"EMS-Zyklus fehlgeschlagen: {exc}",
+                                level="error")
+        raise
     finally:
         repo.close()
         if own_e3dc and e3dc is not None:
@@ -1742,6 +1961,8 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
         config.dashboard, "live_refresh_seconds", 5.0) or 0.0))
     live_guard = threading.Lock()
     live_cache = {"at": 0.0, "data": None}
+    daily_cache = {"at": 0.0, "day": None, "data": {}}
+    plan_summary_cache = {"mtime": None, "data": {}}
 
     pwa_manifest = json.dumps({
         "name": "E3DC EMS Steuerung", "short_name": "E3DC EMS",
@@ -1760,6 +1981,66 @@ self.addEventListener("install",e=>e.waitUntil(caches.open(CACHE).then(c=>c.addA
 self.addEventListener("activate",e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
 self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==location.origin)return;if(u.pathname==="/plotly.min.js"||u.pathname==="/app-icon.svg")e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));});'''
 
+    def _plan_live_summary(now_ts) -> dict:
+        """PV-Tagesprognose und Preis aus dem zuletzt erzeugten API-Plan."""
+        api_path = os.path.join(directory, "api_data.json")
+        try:
+            mtime = os.path.getmtime(api_path)
+            if plan_summary_cache["mtime"] == mtime:
+                return dict(plan_summary_cache["data"])
+            with open(api_path, encoding="utf-8") as fh:
+                rows = json.load(fh)
+            frame = pd.DataFrame(rows)
+            frame["timestamp"] = pd.to_datetime(
+                frame["timestamp"], utc=True, format="ISO8601").dt.tz_convert(
+                    config.general.timezone)
+            today = frame[frame["timestamp"].dt.date == now_ts.date()]
+            pv = (pd.to_numeric(today["pv_w"], errors="coerce").dropna()
+                  if "pv_w" in today else pd.Series(dtype=float))
+            summary = {
+                "pv_forecast_today_kwh": round(
+                    float(pv.sum()) * config.general.dt_hours / 1000.0, 2)
+                if not pv.empty else None,
+                "current_price_ct_kwh": None,
+            }
+            if "price_ct_kwh" in frame and not frame.empty:
+                pos = (frame["timestamp"] - now_ts).abs().idxmin()
+                price = pd.to_numeric(frame.loc[pos, "price_ct_kwh"], errors="coerce")
+                if pd.notna(price):
+                    summary["current_price_ct_kwh"] = round(float(price), 3)
+            plan_summary_cache.update(mtime=mtime, data=summary)
+            return dict(summary)
+        except Exception as exc:
+            log.debug("Live-Planwerte nicht lesbar (%s).", exc)
+            return dict(plan_summary_cache["data"])
+
+    def _daily_energy_summary(now_ts, mono) -> dict:
+        day = now_ts.date().isoformat()
+        if (daily_cache["day"] == day and daily_cache["data"]
+                and mono - daily_cache["at"] < 60.0):
+            return dict(daily_cache["data"])
+        try:
+            meter = e3dc.read_energy_total(now_ts.normalize(), now_ts)
+            if meter:
+                summary = {
+                    "pv_yield_today_kwh": round(meter["pv_wh"] / 1000.0, 2),
+                    "house_consumption_today_kwh": round(
+                        meter["load_wh"] / 1000.0, 2),
+                    "grid_import_today_kwh": round(
+                        meter["grid_import_wh"] / 1000.0, 2),
+                    "grid_export_today_kwh": round(
+                        meter["grid_export_wh"] / 1000.0, 2),
+                    "battery_charge_today_kwh": round(
+                        meter["bat_in_wh"] / 1000.0, 2),
+                    "battery_discharge_today_kwh": round(
+                        meter["bat_out_wh"] / 1000.0, 2),
+                    "daily_energy_updated": now_ts.isoformat(),
+                }
+                daily_cache.update(at=mono, day=day, data=summary)
+        except Exception as exc:
+            log.debug("Live-Tagesenergien nicht lesbar (%s).", exc)
+        return dict(daily_cache["data"])
+
     def _read_dashboard_live():
         if e3dc is None or live_interval <= 0.0:
             return None
@@ -1777,6 +2058,11 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     for k in fields}
             data["updated"] = pd.Timestamp.now(
                 tz=config.general.timezone).isoformat()
+            now_ts = pd.Timestamp(data["updated"])
+            data.update(_plan_live_summary(now_ts))
+            data.update(_daily_energy_summary(now_ts, mono))
+            data["e3dc_control_enabled"] = bool(
+                config.e3dc_rscp.control_enabled)
             # Zusatz-Kacheln: Pool-Ist-Temperatur (wenn thermische Last aktiv)
             # und aktuelle Außentemperatur (Open-Meteo-Cache).
             try:
@@ -1837,6 +2123,26 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
         from .config import save_override
         from .loads import _slug as _lslug
         from .homey_mqtt import _slug as _hslug
+        if action == "recalc":
+            fresh, status = _request_runtime_recalc()
+            if publisher is not None:
+                publisher.recalc_event.set()
+            return {"queued": fresh, "runtime": status}
+        if action == "compare":
+            return _start_plan_comparison(config, payload.get("strategy", ""))
+        if action == "e3dc_control":
+            if e3dc is None:
+                raise ValueError("Keine RSCP-Verbindung – E3/DC-Steuerung nicht schaltbar")
+            enabled = payload.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled muss true oder false sein")
+            result = e3dc.set_control_enabled(enabled)
+            config.e3dc_rscp.control_enabled = enabled
+            save_override(config_path, "e3dc_rscp.control_enabled", enabled)
+            _request_runtime_recalc()
+            if publisher is not None:
+                publisher.recalc_event.set()
+            return result
         if action == "load":
             name = str(payload.get("name", ""))
             ld = _find_load(name)
@@ -1864,6 +2170,7 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                               f"controllable_loads_overrides.{slug}.{key}", cast)
                 changed[key] = cast
             if publisher is not None:
+                _request_runtime_recalc()
                 publisher.recalc_event.set()
             return changed
         if action == "mode":
@@ -1873,12 +2180,15 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             config.optimization.charge_strategy = strat
             save_override(config_path, "optimization.charge_strategy", strat)
             if publisher is not None:
+                _request_runtime_recalc()
                 publisher.recalc_event.set()
             return {"charge_strategy": strat}
         if action == "battery":
             if e3dc is None:
                 raise ValueError("Keine RSCP-Verbindung – manuelles Laden nicht möglich")
             act = str(payload.get("action", "")).lower()
+            if not config.e3dc_rscp.control_enabled and act != "auto":
+                raise ValueError("E3/DC-Steuerung ist ausgeschaltet")
             watts = float(payload.get("watts", 0) or 0)
             minutes = float(payload.get("minutes", 15) or 15)
             return e3dc.manual_power(act, watts, minutes * 60.0)
@@ -1953,6 +2263,19 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 except Exception as exc:
                     self.send_error(500, f"Steuer-Fehler: {exc}")
                     return
+                labels = {
+                    "recalc": "Manuelle Planneuberechnung angefordert",
+                    "compare": f"Planvergleich für {payload.get('strategy', '')} angefordert",
+                    "e3dc_control": ("E3/DC-Steuerung aktiviert" if payload.get("enabled")
+                                      else "E3/DC-Steuerung deaktiviert"),
+                    "mode": f"Optimierungsmodus auf {payload.get('strategy', '')} geändert",
+                    "load": f"Last {payload.get('name', '')} geändert",
+                    "battery": "Akku-Handbetrieb geändert",
+                    "battery_schedule": "Manuelle Akkuplanung geändert",
+                }
+                _record_dashboard_event(
+                    config, action, labels.get(action, f"Steueraktion {action}"),
+                    details={"action": action})
                 self._reply({"status": "ok", "action": action, "result": result})
                 return
             # Ingest-API: Live-/Historienwerte extern einspielen (ohne RSCP/Influx).
@@ -2007,6 +2330,19 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     self._reply({"status": "unavailable"}, 503)
                 else:
                     self._reply(data)
+                return
+
+            if path == "/api/status.json":
+                status = _runtime_snapshot()
+                status["solver_running"] = solver_is_running()
+                self._reply(status)
+                return
+
+            if path == "/api/events.json":
+                from .local_history import read_dashboard_events
+                self._reply({"events": read_dashboard_events(
+                    config.e3dc_rscp.history_db_path,
+                    config.general.timezone, 50)})
                 return
 
             if path == "/api/battery-schedule.json":
@@ -2261,7 +2597,8 @@ def main() -> None:
                     break
                 step = remaining if check is None else min(check, remaining)
                 if publisher.wait_for_recalc(step):
-                    log.info("Neuberechnung per MQTT-Kommando – Zyklus startet sofort.")
+                    log.info("Neuberechnung per Dashboard/MQTT angefordert – "
+                             "Zyklus startet sofort.")
                     break
                 delta = _live_recalc_needed(config, e3dc)
                 if delta is not None:

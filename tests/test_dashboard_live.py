@@ -4,8 +4,9 @@ from ems.config import ControllableLoad
 import pandas as pd
 
 from ems.dashboard import (_control_banner, _controls_block, _decision_block,
-                           _forecast_quality_block, _live_block,
-                           _mobile_plot_block)
+                           _events_block, _forecast_quality_block, _live_block,
+                           _mobile_plot_block, _runtime_block,
+                           _slot_detail_block)
 
 
 def _config(seconds=5.0):
@@ -18,6 +19,12 @@ def test_live_block_contains_all_e3dc_values_and_five_second_poll():
 
     for element_id in ("live-pv", "live-house", "live-grid", "live-battery",
                        "live-soc", "live-wallbox"):
+        assert f'id="{element_id}"' in html
+    for element_id in ("live-pv-forecast-today", "live-pv-yield-today",
+                       "live-grid-import-today", "live-grid-export-today",
+                       "live-battery-charge-today",
+                       "live-battery-discharge-today", "live-house-today",
+                       "live-price-now"):
         assert f'id="{element_id}"' in html
     assert "api/live.json" in html
     assert "setInterval(tick,5000)" in html
@@ -133,3 +140,25 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "Automatisch" in html
     assert "Frühestmöglich laden" in html
     assert "PV-Spitzen glätten" in html
+    assert "Plan vor Übernahme vergleichen" in html
+    assert "api/control/compare" in html
+    assert "Modus übernehmen" in html
+    assert "Automatische E3/DC-Steuerung" in html
+    assert "api/control/e3dc_control" in html
+
+
+def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
+    runtime = _runtime_block(True)
+    assert "Plan neu berechnen" in runtime
+    assert "api/control/recalc" in runtime
+    assert "api/status.json" in runtime
+
+    details = _slot_detail_block()
+    assert "api/data.json" in details and "plotly_click" in details
+    assert '<details class="info-panel slot-detail"' in details
+    assert '<details class="info-panel slot-detail" open' not in details
+
+    events = _events_block()
+    assert "api/events.json" in events
+    assert '<details class="info-panel events-panel"' in events
+    assert '<details class="info-panel events-panel" open' not in events

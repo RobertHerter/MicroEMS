@@ -306,6 +306,77 @@ class E3DCLink:
             t += pd.Timedelta(minutes=15)
         return out
 
+    def read_energy_total(self, start, end) -> Optional[dict]:
+        """Summierte E3/DC-Zaehlerenergie fuer einen Zeitraum in Wh.
+
+        Anders als ``read_energy_15min`` ist dafuer nur ein RSCP-Aufruf noetig;
+        ideal fuer die laufend aktualisierten Tageswerte im Dashboard.
+        """
+        tz = self.cfg.general.timezone
+        start = pd.Timestamp(start)
+        end = pd.Timestamp(end)
+        start = (start.tz_localize(tz) if start.tz is None else start.tz_convert(tz))
+        end = (end.tz_localize(tz) if end.tz is None else end.tz_convert(tz))
+        span = max(1, int((end - start).total_seconds()))
+        local_epoch = int(start.timestamp() + start.utcoffset().total_seconds())
+        try:
+            with self._lock:
+                e = self._connect()
+                d = e.get_db_data_timestamp(
+                    startTimestamp=local_epoch, timespanSeconds=span,
+                    keepAlive=True)
+        except Exception as exc:  # pragma: no cover
+            log.debug("RSCP Tagesenergie nicht lesbar (%s).", exc)
+            return None
+        if not d:
+            return None
+        pv = float(d.get("solarProduction", 0.0) or 0.0)
+        bat_in = float(d.get("bat_power_in", 0.0) or 0.0)
+        bat_out = float(d.get("bat_power_out", 0.0) or 0.0)
+        grid_imp = float(d.get("grid_power_out", 0.0) or 0.0)
+        grid_exp = float(d.get("grid_power_in", 0.0) or 0.0)
+        load = pv + bat_out + grid_imp - bat_in - grid_exp
+        if load < 0.0:
+            load = float(d.get("consumption", 0.0) or 0.0)
+        return {"pv_wh": pv, "load_wh": max(0.0, load),
+                "bat_in_wh": bat_in, "bat_out_wh": bat_out,
+                "grid_import_wh": grid_imp, "grid_export_wh": grid_exp,
+                "start": start.isoformat(), "end": end.isoformat()}
+
+    def set_control_enabled(self, enabled: bool) -> dict:
+        """Automatische RSCP-Steuerung sicher ein-/ausschalten.
+
+        Beim Ausschalten werden laufende Watchdog-Modi und persistente
+        SmartPower-Limits sofort freigegeben, bevor das Laufzeitflag faellt.
+        """
+        enabled = bool(enabled)
+        if enabled:
+            self.rc.control_enabled = True
+            return {"enabled": True, "released": False,
+                    "message": "Automatische E3/DC-Steuerung ist aktiviert."}
+        released = False
+        with self._manual_lock:
+            if self._manual_timer is not None:
+                self._manual_timer.cancel()
+                self._manual_timer = None
+            self._manual_active = False
+            self._manual_action = None
+            self._manual_until = None
+            if self._wd_mode != 0:
+                self._set_power(0, 0)
+                released = True
+            self._wd_mode, self._wd_value = 0, 0
+            if self._limits_active:
+                if self._set_limits(False) == -1:
+                    # Nicht als "aus" melden/persistieren, solange die
+                    # langlebigen SmartPower-Limits nicht sicher frei sind.
+                    self.rc.control_enabled = True
+                    raise RuntimeError("E3/DC hat die Freigabe der EMS-Limits abgelehnt")
+                released = True
+            self.rc.control_enabled = False
+        return {"enabled": False, "released": released,
+                "message": "E3/DC-Steuerung deaktiviert; Limits freigegeben."}
+
     # ---- Steuerung ---------------------------------------------------- #
     def _set_power(self, mode: int, value: int) -> None:
         """Roh-Befehl EMS_REQ_SET_POWER (verifiziert: 0=auto, 1=idle, 2=Entladen,
@@ -327,6 +398,7 @@ class E3DCLink:
         Mode 3/4: die Grenze bleibt bis zum ausdrücklichen Zurücksetzen aktiv
         (deshalb Freigabe in close()). Rückgabe von pye3dc: 0=ok, 1=Wert
         angepasst (nicht-optimal), -1=Fehler."""
+        previous_active = self._limits_active
         with self._lock:
             e = self._connect()
             rc = e.set_power_limits(
@@ -334,8 +406,8 @@ class E3DCLink:
                 max_charge=(int(max_charge) if enable else None),
                 max_discharge=(int(max_discharge) if enable else None),
                 keepAlive=True)
-        self._limits_active = bool(enable)
         rc = 0 if rc is None else int(rc)
+        self._limits_active = (bool(enable) if rc != -1 else previous_active)
         if enable and rc == -1:
             log.warning("RSCP: Lade-/Entlade-Limit vom E3DC NICHT übernommen "
                         "(EMS_POWER_LIMITS_USED) – Begrenzung greift evtl. nicht.")
