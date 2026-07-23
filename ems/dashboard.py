@@ -250,7 +250,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
                     & future["decision_reason"].fillna("").ne("")]
     if future.empty:
         return ("<details class='decisions'><summary><span class='decision-head'>"
-                "<b>Planentscheidungen erklärt</b><small>keine besonderen "
+                "❖ <b>Planentscheidungen erklärt</b><small>keine besonderen "
                 "Eingriffe</small></span></summary><div class='decision-body'>"
                 "<div class='decision-empty'>Keine besonderen Akku-Eingriffe "
                 "geplant.</div></div></details>")
@@ -306,7 +306,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
             f"<div class='decision-facts'>{facts_html}</div></article>")
     count = len(blocks[:limit])
     return ("<details class='decisions'><summary><span class='decision-head'>"
-            "<b>Planentscheidungen erklärt</b>"
+            "❖ <b>Planentscheidungen erklärt</b>"
             f"<small>{count} Entscheidungsblöcke</small></span></summary>"
             "<div class='decision-body'><div class='decision-list'>"
             f"{''.join(cards)}</div></div></details>")
@@ -894,7 +894,7 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
         "<details class='controls' id='ems-controls'><summary>"
         "<span class='ctl-title'>⚙ Steuerung</span>"
         "<span class='ctl-summary'>Lasten, Optimierungsmodus und Akku-Handbetrieb</span>"
-        "<span class='ctl-chevron'>⌄</span></summary><div class='ctl-body'>"
+        "</summary><div class='ctl-body'>"
         "<div class='ctl-section-head'><b>Steuerbare Lasten</b>"
         "<small>Parameter und zeitlicher Leistungsverlauf</small></div>"
         f"<div class='load-cards'>{''.join(rows)}</div>"
@@ -1642,20 +1642,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
  .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
  .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
- .decisions {{ margin: 8px 0 12px; background: #fff;
-        border: 1px solid #dfe5eb; border-radius: 12px;
-        box-shadow: 0 2px 9px rgba(20,35,55,.06); }}
- .decisions > summary {{ display: flex; align-items: center; gap: 10px;
-        padding: 13px 14px; cursor: pointer; list-style: none; user-select: none; }}
- .decisions > summary::-webkit-details-marker {{ display: none; }}
- .decisions > summary:after {{ content: '⌄'; margin-left: auto; color: #69717b;
-        font-size: 19px; transition: transform .2s; }}
- .decisions[open] > summary:after {{ transform: rotate(180deg); }}
+ .decisions {{ margin: 10px 0; background: #fff; border: 1px solid #dde4eb;
+        border-radius: 10px; overflow: hidden; }}
+ .decisions > summary {{ padding: 11px 13px; cursor: pointer;
+        font-weight: 700; user-select: none; background: #f7f9fb; }}
  .decisions[open] > summary {{ border-bottom: 1px solid #e2e7ec; }}
- .decision-head {{ display: flex; justify-content: space-between; align-items: baseline;
-        gap: 10px; flex: 1; }}
- .decision-head b {{ font-size: 15px; }}
- .decision-head small {{ color: #737c86; }}
+ .decision-head b {{ font-weight: 700; }}
+ .decision-head small {{ margin-left: 8px; color: #737c86; font-weight: 400; }}
  .decision-body {{ padding: 11px 14px 14px; }}
  .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
         gap: 8px; }}
@@ -1676,17 +1669,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .report button.hot {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e;
         font-weight: 600; }}
  .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
- .controls {{ margin: 8px 0 14px; background: #fff; border: 1px solid #dfe3e8;
-        border-radius: 12px; font-size: 13px; box-shadow: 0 2px 9px rgba(20,35,55,.06); }}
- .controls > summary {{ display: flex; align-items: center; gap: 12px; padding: 14px 16px;
-        cursor: pointer; list-style: none; user-select: none; background: #f7f9fc;
-        border-radius: 12px; }}
- .controls > summary::-webkit-details-marker {{ display: none; }}
- .controls[open] > summary {{ border-radius: 12px 12px 0 0; border-bottom: 1px solid #e4e7eb; }}
- .controls .ctl-title {{ font-size: 15px; font-weight: 750; }}
- .controls .ctl-summary {{ color: #737a84; font-size: 12px; flex: 1; }}
- .controls .ctl-chevron {{ font-size: 20px; color: #69717b; transition: transform .2s; }}
- .controls[open] .ctl-chevron {{ transform: rotate(180deg); }}
+ .controls {{ margin: 10px 0; background: #fff; border: 1px solid #dde4eb;
+        border-radius: 10px; overflow: hidden; font-size: 13px; }}
+ .controls > summary {{ padding: 11px 13px; cursor: pointer; user-select: none;
+        font-weight: 700; background: #f7f9fb; }}
+ .controls[open] > summary {{ border-bottom: 1px solid #e4e7eb; }}
+ .controls .ctl-title {{ font-weight: 700; }}
+ .controls .ctl-summary {{ margin-left: 8px; color: #737a84; font-size: 12px; font-weight: 400; }}
  .controls .ctl-body {{ padding: 15px; }}
  .ctl-section-head {{ display: flex; flex-direction: column; margin: 0 0 9px 2px; }}
  .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
@@ -1918,6 +1907,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .late-confidence.very_likely {{ background: #244332; color: #a7d9b7; }}
  html.dark .late-confidence.expected_only {{ background: #4b4026; color: #f1d18a; }}
  html.dark .late-confidence.p10_unreachable {{ background: #4b2d2c; color: #efaaa5; }}
+ html.dark .decisions > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
