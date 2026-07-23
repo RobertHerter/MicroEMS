@@ -231,5 +231,7 @@ def test_pv_confidence_block_renders_auto_basis():
     html = _pv_confidence_block({"2026-06-10": {
         "mode": "peak", "p10_kwh": 12.0, "expected_kwh": 15.0,
         "threshold_kwh": 10.0, "basis": "p10"}})
-    assert "pvconf-panel" in html and "2026-06-10" in html and "peak" in html
-    assert "robust" in html          # Basis-Klartext
+    assert "pvconf-panel" in html and "pvconf-card" in html
+    assert "mode-badge peak" in html          # farbiges Modus-Badge
+    assert "10.06." in html                   # Datum lesbar formatiert
+    assert "robust" in html                   # Basis-Klartext

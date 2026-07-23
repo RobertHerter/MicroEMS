@@ -531,20 +531,33 @@ def _pv_confidence_block(auto_peak_basis) -> str:
     labels = {"p10": "p10 ≥ Schwelle (robust)",
               "expected+p10-floor": "Erwartung ≥ Schwelle, p10 über Boden",
               "insufficient": "zu wenig p10-Überschuss"}
-    rows = "".join(
-        "<tr><td>{d}</td><td>{m}</td><td>{p10}</td><td>{exp}</td>"
-        "<td>{thr}</td><td>{basis}</td></tr>".format(
-            d=_esc(str(day)), m=_esc(str(b.get("mode", ""))),
-            p10=b.get("p10_kwh", "–"), exp=b.get("expected_kwh", "–"),
-            thr=b.get("threshold_kwh", "–"),
+
+    def _day_label(day: str) -> str:
+        try:
+            return pd.Timestamp(day).strftime("%a %d.%m.")
+        except Exception:
+            return str(day)
+
+    def _n(v):
+        return f"{float(v):.1f}" if isinstance(v, (int, float)) else "–"
+
+    cards = "".join(
+        "<div class='pvconf-card'>"
+        "<div class='pvconf-head'><span class='pvconf-day'>{d}</span>"
+        "<span class='mode-badge {mode}'>{mode}</span></div>"
+        "<div class='pvconf-metrics'><span>p10<b>{p10}</b></span>"
+        "<span>Erwartung<b>{exp}</b></span><span>Schwelle<b>{thr}</b></span></div>"
+        "<div class='pvconf-basis'>{basis}</div></div>".format(
+            d=_esc(_day_label(day)), mode=_esc(str(b.get("mode", ""))),
+            p10=_n(b.get("p10_kwh")), exp=_n(b.get("expected_kwh")),
+            thr=_n(b.get("threshold_kwh")),
             basis=_esc(labels.get(b.get("basis"), str(b.get("basis", "")))))
         for day, b in auto_peak_basis.items())
     return ("<details class=\"info-panel pv-confidence-panel\" id=\"pvconf-panel\">"
-            "<summary>☀ PV-Konfidenz &amp; Auto-Modus <small>p10-basiert</small></summary>"
-            "<table class=\"pvconf-table\"><tr><th>Tag</th><th>Modus</th><th>p10</th>"
-            "<th>Erwartung</th><th>Schwelle</th><th>Basis</th></tr>" + rows + "</table>"
+            "<summary>☀ PV-Konfidenz &amp; Auto-Modus <small>p10-basiert · kWh/Tag</small></summary>"
+            "<div class=\"pvconf-grid\">" + cards + "</div>"
             "<p class=\"pvconf-note\">Peak nur, wenn der pessimistische (p10-)"
-            "Überschuss die Schwelle trägt – sonst asap. Werte als kWh je Tag.</p></details>")
+            "Überschuss die Schwelle trägt – sonst asap.</p></details>")
 
 
 def _controls_block(config) -> str:
@@ -1721,6 +1734,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
+ .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 10px; padding: 12px; }}
+ .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: 10px 11px; }}
+ .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }}
+ .pvconf-day {{ font-weight: 700; font-size: 13px; }}
+ .mode-badge {{ font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }}
+ .mode-badge.asap {{ background: #28a261; }} .mode-badge.peak {{ background: #e29a2d; }}
+ .mode-badge.late {{ background: #9b6bd3; }} .mode-badge.auto {{ background: #6b7883; }}
+ .pvconf-metrics {{ display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: #66707a; }}
+ .pvconf-metrics span {{ display: inline-flex; gap: 5px; }}
+ .pvconf-metrics b {{ color: #20252b; font-weight: 700; }}
+ .pvconf-basis {{ margin-top: 7px; font-size: 11px; color: #75808a; }}
+ .pvconf-note {{ margin: 0 12px 12px; font-size: 12px; color: #8a949d; }}
+ html.dark .pvconf-card {{ background: #202b36; border-color: #354352; }}
+ html.dark .pvconf-metrics {{ color: #97a3ad; }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
+ html.dark .pvconf-basis, html.dark .pvconf-note {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 7px; padding: 12px; }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 4px; }}
  .detail-grid > div {{ padding: 8px 9px; border-radius: 7px; background: #f4f7fa; }}
