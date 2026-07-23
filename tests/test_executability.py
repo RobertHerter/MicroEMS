@@ -65,6 +65,49 @@ def test_static_export_curtailment_below_cap_needs_actuator():
     assert table.iloc[0]["execution_path"] == "rscp"
 
 
+def test_inherent_clip_curtailment_is_inverter_work_without_actuator():
+    """Abregelung bis zur physischen WR-Clipping-Reserve (PV über AC-Nennleistung)
+    ist immer der Wechselrichter – ohne Einspeisegrenze und ohne RSCP-Aktor."""
+    cfg = make_config()
+    cfg.inverter.max_export_w = None
+    cfg.inverter.max_ac_power_w = 6000.0
+    cfg.e3dc_rscp.enabled = False
+    cfg.e3dc_rscp.control_enabled = False
+    # pv 8000, WR 6000 -> inhärentes Clipping 2000; curt 1500 <= 2000 -> inverter
+    table = _table(pv_w=8000.0, pv_curtail_w=1500.0, grid_export_w=0.0)
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "inverter"
+    # curt ÜBER der Clipping-Reserve ohne Aktor -> nur modelliert
+    table = _table(pv_w=8000.0, pv_curtail_w=3000.0, grid_export_w=0.0)
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "model"
+
+
+def test_load_command_uses_mqtt_then_model():
+    """Eine steuerbare Last (Spalte load_*_w > 0) ohne Abregelung/Akku-Eingriff
+    geht per MQTT; ohne MQTT bleibt nur 'model'."""
+    cfg = make_config()
+    cfg.e3dc_rscp.enabled = False
+    cfg.e3dc_rscp.control_enabled = False
+    cfg.mqtt.enabled = True
+    table = _table(load_pool_w=1500.0)
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "mqtt"
+    cfg.mqtt.enabled = False
+    table = _table(load_pool_w=1500.0)
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "model"
+
+
+def test_no_command_slot_is_inverter_self_consumption():
+    """Kein Eingriff (weder Abregelung noch Akku/Last) -> Eigenverbrauch/freie
+    Akkuregelung erledigt der Wechselrichter."""
+    cfg = make_config()
+    table = _table()
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "inverter"
+
+
 def test_dynamic_curtailment_requires_confirmed_rscp_actuator():
     cfg = make_config()
     cfg.inverter.max_export_w = None

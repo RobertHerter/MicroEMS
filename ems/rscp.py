@@ -534,6 +534,13 @@ class E3DCLink:
                 peak_w = before.get("installed_peak_w") or 0.0
                 if peak_w <= 0.0:
                     raise RuntimeError("installierte PV-Spitzenleistung nicht lesbar")
+                # available_w = freizugebende PV-Leistung, aus der PROGNOSE-PV des
+                # Plans (row["pv_w"]) - nicht aus der Momentanmessung. Bewusst:
+                # das Derating-Cap wird jeden Zyklus (~15 min) mit frischer
+                # Prognose neu gesetzt, was Prognosefehler eng begrenzt; die
+                # Momentan-PV wäre sub-slot-verrauscht und würde das Cap
+                # zappeln lassen. Weicht die Ist-PV stark ab, korrigiert der
+                # nächste Zyklus - Restdivergenz ist auf ein Slotintervall begrenzt.
                 available_w = max(0.0, float(row.get("pv_w", 0.0)) - requested_w)
                 target = min(normal, 100.0 * available_w / peak_w)
             self._set_derate_percent(target)

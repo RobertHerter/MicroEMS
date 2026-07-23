@@ -141,6 +141,58 @@ def test_pv_curtailment_write_failure_is_reported():
     assert status["state"] == "curtailment_write_failed"
 
 
+def test_pv_curtailment_unavailable_without_control():
+    """Abregelung geplant, aber Abregelsteuerung deaktiviert -> als Ausfall
+    gemeldet (nicht still ignoriert)."""
+    cfg, link = _link(curtailment_control_enabled=False)
+    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 4100})
+    assert status["ok"] is False and status["state"] == "curtailment_unavailable"
+
+
+def test_pv_curtailment_not_required_is_noop():
+    """Keine Abregelung geplant und keine aktive Grenze -> No-op ohne Alarm."""
+    cfg, link = _link(curtailment_control_enabled=True)
+    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 0.0})
+    assert status["state"] == "not_required" and status["ok"] is None
+    assert link._curtailment_active is False
+
+
+def test_pv_curtailment_readback_mismatch_is_reported():
+    """Bleibt der zurückgelesene Derate-Wert vom Soll entfernt (Schreiben ohne
+    Wirkung), wird das als curtailment_mismatch gemeldet."""
+    cfg, link = _link(curtailment_control_enabled=True)
+    from e3dc._rscpTags import RscpTag
+    orig = link._e3dc.sendRequest
+
+    def stuck(req, retries=3, keepAlive=False):
+        if req[0] == RscpTag.EMS_REQ_SET_DERATE_PERCENT:
+            return None                       # Schreiben ohne Wirkung
+        return orig(req, retries=retries, keepAlive=keepAlive)
+    link._e3dc.sendRequest = stuck
+    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 4100})
+    assert status["ok"] is False and status["state"] == "curtailment_mismatch"
+
+
+def test_read_energy_total_flags_implausible_balance():
+    """Weicht die gemeldete Last stark von der Energiebilanz ab, ist die
+    Zählerlage unplausibel (balance_ok=False)."""
+    _cfg, link = _link()
+    original = link._e3dc.get_db_data_timestamp
+
+    def with_bad_consumption(*args, **kwargs):
+        data = original(*args, **kwargs)
+        data["consumption"] = 100.0            # Bilanz wäre 900 Wh -> Rest 800
+        return data
+
+    link._e3dc.get_db_data_timestamp = with_bad_consumption
+    import pandas as pd
+    data = link.read_energy_total(
+        pd.Timestamp("2026-07-22 00:00", tz="Europe/Berlin"),
+        pd.Timestamp("2026-07-22 12:00", tz="Europe/Berlin"))
+    assert data["balance_ok"] is False
+    assert data["balance_residual_wh"] == 800.0
+
+
 def test_read_live_sign_flip_and_cache():
     cfg, link = _link(grid_sign=-1.0, batt_sign=-1.0)
     live = link.read_live()

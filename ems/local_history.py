@@ -327,6 +327,8 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
     issue = pd.Timestamp(issued_at).tz_convert("UTC").isoformat()
     previous_soc = initial_soc_percent
     rows = []
+    load_cols = [name for name in table.columns
+                 if name.startswith("load_") and name.endswith("_w")]
     for ts, row in table.iterrows():
         key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
         grid = float(row.get("grid_import_w", 0.0) or 0.0) - float(
@@ -334,8 +336,6 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
         battery = (float(row.get("batt_dc_charge_w", 0.0) or 0.0)
                    + float(row.get("batt_ac_charge_w", 0.0) or 0.0)
                    - float(row.get("batt_discharge_w", 0.0) or 0.0))
-        load_cols = [name for name in table.columns
-                     if name.startswith("load_") and name.endswith("_w")]
         total_load = (float(row.get("house_load_w", 0.0) or 0.0)
                       + float(row.get("car_charge_w", 0.0) or 0.0)
                       + sum(float(row.get(name, 0.0) or 0.0) for name in load_cols))

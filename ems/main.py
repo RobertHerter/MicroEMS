@@ -213,6 +213,11 @@ def _late_target_soc(result, inputs: OptimizerInputs, timezone: str):
                    if float(inputs.pv_w[i]) > float(inputs.house_load_w[i]) + 1.0]
         if surplus:
             slot = max(surplus)
+            # Positionsindex nur nutzen, wenn die Ergebnistabelle wirklich so lang
+            # ist (ein neutrales/Fallback-Ergebnis kann kürzer sein -> sonst
+            # IndexError, der den Schattenvergleich still killt).
+            if slot >= len(result.table):
+                continue
             soc = float(pd.to_numeric(
                 result.table["house_soc_percent"], errors="coerce").iloc[slot])
             if np.isfinite(soc):
@@ -861,6 +866,23 @@ def _store_control_status(config, status) -> None:
         write_control_verification(config.e3dc_rscp.history_db_path, status)
     except Exception as exc:  # Diagnose darf die Steuerung nicht beeinträchtigen
         log.warning("E3DC-Steuerstatus nicht speicherbar (%s).", exc)
+
+
+def _apply_curtailment_and_control(e3dc, cmd) -> dict:
+    """PV-Abregelung + Akku-Steuerung eines Slots anwenden und zu EINEM
+    Steuerstatus zusammenführen. Scheitert die Abregelung, wird der Akku-Befehl
+    trotzdem ausgeführt, der nicht umgesetzte PV-Anteil aber als Ausfall gemeldet
+    (Akku-Status unter 'battery_control' eingebettet); sonst hängt die
+    Abregel-Quittung als 'curtailment' am Akku-Status. (Zyklus + Startup-Reapply
+    teilen sich diese Logik.)"""
+    curtailment = e3dc.apply_pv_curtailment(cmd)
+    control = e3dc.apply_control(cmd)
+    if curtailment.get("ok") is False:
+        failed = dict(curtailment)
+        failed["battery_control"] = control
+        return failed
+    control["curtailment"] = curtailment
+    return control
 
 CONTROL_COLS = [
     # E3DC-Steuerbefehle (Limits nur bei Abweichung vom Eigenverbrauch):
@@ -1598,16 +1620,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 try:
                     pos = result.table.index.get_indexer([now], method="ffill")[0]
                     row = result.table.iloc[max(pos, 0)]
-                    curtailment_status = e3dc.apply_pv_curtailment(row)
-                    control_status = e3dc.apply_control(row)
-                    if curtailment_status.get("ok") is False:
-                        # Akku-Befehl trotzdem ausführen, aber den nicht
-                        # umgesetzten PV-Anteil als Steuer-Ausfall alarmieren.
-                        failed = dict(curtailment_status)
-                        failed["battery_control"] = control_status
-                        control_status = failed
-                    else:
-                        control_status["curtailment"] = curtailment_status
+                    control_status = _apply_curtailment_and_control(e3dc, row)
                     # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
                     # sofort re-applybar (schließt die Steuer-Lücke bis zum 1. Solve).
                     try:
@@ -2630,6 +2643,12 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             if not isinstance(enabled, bool):
                 raise ValueError("enabled muss true oder false sein")
             result = e3dc.set_control_enabled(enabled)
+            # set_control_enabled setzt bereits self.rc.control_enabled, und
+            # self.rc IST config.e3dc_rscp (dasselbe Objekt, rscp.py __init__).
+            # Die explizite Zuweisung ist daher nur ein Sicherheitsnetz, falls
+            # _handle_control je mit einer anderen Config-Instanz aufgerufen wird
+            # (Absicht = enabled). Die BESTÄTIGTE Gerätelage kommt separat über
+            # control_status (Alarm/Kachel), nicht über dieses Flag.
             config.e3dc_rscp.control_enabled = enabled
             save_override(config_path, "e3dc_rscp.control_enabled", enabled)
             status = result.get("control_status")
@@ -3022,14 +3041,7 @@ def main() -> None:
             if ts is not None and cmd:
                 age = pd.Timestamp.now(tz=config.general.timezone) - ts
                 if age <= pd.Timedelta(minutes=2 * config.general.run_interval_minutes):
-                    startup_curtailment = e3dc.apply_pv_curtailment(cmd)
-                    startup_status = e3dc.apply_control(cmd)
-                    if startup_curtailment.get("ok") is False:
-                        failed = dict(startup_curtailment)
-                        failed["battery_control"] = startup_status
-                        startup_status = failed
-                    else:
-                        startup_status["curtailment"] = startup_curtailment
+                    startup_status = _apply_curtailment_and_control(e3dc, cmd)
                     _store_control_status(config, startup_status)
                     _publish_control_alarm(publisher, config, startup_status)
                     log.info("Sofort-Reapply: letzter Steuerbefehl (%s, Laden<=%.0f "
