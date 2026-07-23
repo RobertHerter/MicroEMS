@@ -504,3 +504,13 @@ Organisationen usw.) ist ausdrücklich erlaubt; **kommerzielle Nutzung ist nicht
 lizenziert**. Es handelt sich damit um *source-available*-Software, nicht um eine
 OSI-„Open-Source"-Lizenz (eine solche dürfte kommerzielle Nutzung nicht
 ausschließen). Für eine kommerzielle Lizenz bitte den Autor kontaktieren.
+
+## Unterstützen
+
+Dieses Projekt entsteht in der Freizeit. Wenn es dir nützt, freue ich mich über
+eine kleine Spende:
+
+- **PayPal:** [paypal.me/robertherter](https://paypal.me/robertherter)
+- **GitHub:** über den **Sponsor**-Button oben im Repository
+
+Vielen Dank!
