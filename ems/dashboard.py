@@ -483,6 +483,66 @@ def _forecast_accuracy_block() -> str:
 })();</script>"""
 
 
+def _whatif_block(config) -> str:
+    """What-if-Simulator (nur bei controls_enabled): Plan mit geändertem Modus/
+    Preis-Faktor durchrechnen lassen (POST /api/whatif) und die Kennzahlen
+    anzeigen – ohne zu steuern/persistieren."""
+    if not getattr(config.dashboard, "controls_enabled", False):
+        return ""
+    return """
+<details class="info-panel whatif-panel" id="whatif-panel"><summary>⚗ What-if-Simulation <small>Plan mit anderen Parametern durchrechnen</small></summary>
+ <div class="whatif-form">
+  <label>Modus <select id="wi-mode"><option value="">(unverändert)</option><option value="auto">auto</option><option value="asap">asap</option><option value="peak">peak</option><option value="late">late</option></select></label>
+  <label>Preis-Faktor <input type="number" id="wi-factor" value="1.0" step="0.1" min="0.1" max="5"></label>
+  <button type="button" id="wi-run">Simulieren</button>
+ </div>
+ <div id="whatif-result">noch keine Simulation</div>
+</details>
+<script>(function(){
+ const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €':'–');
+ const n1=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1}):'–');
+ async function run(){var btn=document.getElementById('wi-run');btn.disabled=true;document.getElementById('whatif-result').textContent='rechnet …';
+  try{let body={mode:document.getElementById('wi-mode').value,price_factor:parseFloat(document.getElementById('wi-factor').value)||1};
+   let r=await fetch('api/whatif',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+   if(!r.ok)throw Error((await r.text()).slice(0,160));let d=(await r.json()).result;
+   document.getElementById('whatif-result').innerHTML='<table class="whatif-table">'
+    +'<tr><td>Modus</td><td>'+d.mode+'</td></tr>'
+    +'<tr><td>Preis-Faktor</td><td>'+n1(d.price_factor)+'</td></tr>'
+    +'<tr><td>erwartete Kosten</td><td>'+eur(d.total_cost_eur)+'</td></tr>'
+    +'<tr><td>Netzbezug / -einspeisung</td><td>'+n1(d.grid_import_kwh)+' / '+n1(d.grid_export_kwh)+' kWh</td></tr>'
+    +'<tr><td>End-SoC</td><td>'+n1(d.end_soc_percent)+' %</td></tr>'
+    +(d.infeasible?'<tr><td colspan=2>⚠ unzulässig</td></tr>':'')+'</table>';
+  }catch(e){document.getElementById('whatif-result').textContent='Simulation fehlgeschlagen: '+e.message;}finally{btn.disabled=false;}}
+ document.getElementById('wi-run').addEventListener('click',run);
+})();</script>"""
+
+
+def _pv_confidence_block(auto_peak_basis) -> str:
+    """Robuste PV-Planung sichtbar machen: je Horizont-Tag, ob Auto peak oder
+    asap gewählt hat und auf welcher Basis (pessimistischer p10-Überschuss vs.
+    Erwartung vs. Schwelle). Server-seitig gerendert aus der Optimierer-Basis;
+    leer außer bei charge_strategy=auto."""
+    if not auto_peak_basis:
+        return ""
+    labels = {"p10": "p10 ≥ Schwelle (robust)",
+              "expected+p10-floor": "Erwartung ≥ Schwelle, p10 über Boden",
+              "insufficient": "zu wenig p10-Überschuss"}
+    rows = "".join(
+        "<tr><td>{d}</td><td>{m}</td><td>{p10}</td><td>{exp}</td>"
+        "<td>{thr}</td><td>{basis}</td></tr>".format(
+            d=_esc(str(day)), m=_esc(str(b.get("mode", ""))),
+            p10=b.get("p10_kwh", "–"), exp=b.get("expected_kwh", "–"),
+            thr=b.get("threshold_kwh", "–"),
+            basis=_esc(labels.get(b.get("basis"), str(b.get("basis", "")))))
+        for day, b in auto_peak_basis.items())
+    return ("<details class=\"info-panel pv-confidence-panel\" id=\"pvconf-panel\">"
+            "<summary>☀ PV-Konfidenz &amp; Auto-Modus <small>p10-basiert</small></summary>"
+            "<table class=\"pvconf-table\"><tr><th>Tag</th><th>Modus</th><th>p10</th>"
+            "<th>Erwartung</th><th>Schwelle</th><th>Basis</th></tr>" + rows + "</table>"
+            "<p class=\"pvconf-note\">Peak nur, wenn der pessimistische (p10-)"
+            "Überschuss die Schwelle trägt – sonst asap. Werte als kWh je Tag.</p></details>")
+
+
 def _battery_health_block() -> str:
     """Akku-Gesundheit (letzte 30 Tage): äquivalente Vollzyklen, Durchsatz und
     Verweildauer bei ~100 %/min-SoC. Lädt lazy aus /api/battery-health.json."""
@@ -987,7 +1047,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     control_status=None, forecast_quality=None,
                     solver_status=None, execution_status=None,
                     load_feedback_status=None,
-                    thermal_calibration=None) -> str:
+                    thermal_calibration=None, auto_peak_basis=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -1923,6 +1983,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_operations_block(solver_status, execution_status)}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
+{_pv_confidence_block(auto_peak_basis)}
+{_whatif_block(config)}
 {_forecast_accuracy_block()}
 {_savings_history_block()}
 {_battery_health_block()}

@@ -396,6 +396,24 @@ def test_raw_spot_not_retail_price_controls_negative_export_rule():
     assert float(result.table["pv_curtail_w"].sum()) > TOL
 
 
+def test_auto_peak_basis_is_exposed_on_result():
+    """#5: bei charge_strategy=auto trägt das Ergebnis die p10-gestützte
+    Peak/asap-Entscheidungsbasis je Tag; bei festen Strategien ist sie None."""
+    idx = _day_index("2026-06-10")
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "auto"
+    r = Optimizer(cfg, store_warm=False).solve(
+        _inputs(idx, pv=_pv_gauss(idx, 6000), load=500.0))
+    assert isinstance(r.auto_peak_basis, dict) and r.auto_peak_basis
+    day = next(iter(r.auto_peak_basis.values()))
+    assert {"basis", "mode", "p10_kwh", "expected_kwh", "threshold_kwh"} <= set(day)
+
+    cfg2 = make_config()
+    cfg2.optimization.charge_strategy = "asap"
+    r2 = Optimizer(cfg2, store_warm=False).solve(_inputs(idx, pv=_pv_gauss(idx, 6000)))
+    assert r2.auto_peak_basis is None
+
+
 def test_full_hold_penalty_reduces_time_at_high_soc():
     """#4b: die optionale Voll-Verweil-Strafe (Zellschonung) senkt die über der
     Schwelle gehaltene SoC-Energie; Default 0 lässt das Verhalten unverändert."""

@@ -211,3 +211,25 @@ def test_forecast_accuracy_and_savings_panels_are_lazy():
     bh = _battery_health_block()
     assert "api/battery-health.json" in bh and 'id="bhealth-panel"' in bh
     assert "toggle" in bh
+
+
+def test_whatif_block_only_with_controls_enabled():
+    from types import SimpleNamespace
+
+    from ems.dashboard import _whatif_block
+    off = SimpleNamespace(dashboard=SimpleNamespace(controls_enabled=False))
+    assert _whatif_block(off) == ""
+    on = SimpleNamespace(dashboard=SimpleNamespace(controls_enabled=True))
+    html = _whatif_block(on)
+    assert "api/whatif" in html and 'id="whatif-panel"' in html and "wi-run" in html
+
+
+def test_pv_confidence_block_renders_auto_basis():
+    from ems.dashboard import _pv_confidence_block
+    assert _pv_confidence_block(None) == ""
+    assert _pv_confidence_block({}) == ""
+    html = _pv_confidence_block({"2026-06-10": {
+        "mode": "peak", "p10_kwh": 12.0, "expected_kwh": 15.0,
+        "threshold_kwh": 10.0, "basis": "p10"}})
+    assert "pvconf-panel" in html and "2026-06-10" in html and "peak" in html
+    assert "robust" in html          # Basis-Klartext

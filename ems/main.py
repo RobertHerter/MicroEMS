@@ -71,6 +71,10 @@ _shadow_status = {
     "result": None,
 }
 _shadow_curves = {"generated": None, "series": None}
+# Snapshot der Eingaben des letzten Produktivlaufs für den What-if-Simulator
+# (Dashboard): so kann mit geänderten Parametern neu gerechnet werden, ohne die
+# Datenpipeline erneut zu ziehen. Nur lesend genutzt, nie in die Steuerung.
+_last_solve_snapshot = {"inputs": None, "config": None}
 
 
 def _runtime_iso() -> str:
@@ -911,6 +915,44 @@ class _RateLimiter:
             return True
 
 
+def _run_whatif(overrides: dict, snapshot=None) -> dict:
+    """What-if-Simulation: die Eingaben des letzten Produktivlaufs mit geänderten
+    Parametern neu rechnen, OHNE zu persistieren/steuern. overrides:
+    mode (asap|peak|late|auto), price_factor (0.1..5.0, skaliert Bezugs- und
+    Spotpreis). Rückgabe: kompakte Plan-Kennzahlen. Wirft ValueError, wenn noch
+    kein Produktivlauf vorliegt."""
+    import dataclasses as _dc
+    snap = snapshot if snapshot is not None else _last_solve_snapshot
+    inp, base_cfg = snap.get("inputs"), snap.get("config")
+    if inp is None or base_cfg is None:
+        raise ValueError("Noch kein Produktivlauf – Simulation erst nach dem "
+                         "ersten Zyklus möglich.")
+    cfg = copy.deepcopy(base_cfg)
+    mode = str(overrides.get("mode", "")).lower()
+    if mode in ("asap", "peak", "late", "auto"):
+        cfg.optimization.charge_strategy = mode
+    factor = min(5.0, max(0.1, float(overrides.get("price_factor", 1.0) or 1.0)))
+    new_inp = _dc.replace(
+        inp, price_ct_kwh=np.asarray(inp.price_ct_kwh, dtype=float) * factor,
+        spot_price_ct_kwh=(np.asarray(inp.spot_price_ct_kwh, dtype=float) * factor
+                           if inp.spot_price_ct_kwh is not None else None))
+    result = Optimizer(cfg, store_warm=False).solve(new_inp)
+    tbl = result.table
+    dt = base_cfg.general.dt_hours
+    return {
+        "mode": cfg.optimization.charge_strategy,
+        "price_factor": round(factor, 3),
+        "infeasible": bool(result.infeasible),
+        "status": result.status,
+        "total_cost_eur": round(float(result.total_cost_ct) / 100.0, 2),
+        "grid_import_kwh": round(float(tbl["grid_import_w"].sum()) * dt / 1000.0, 1),
+        "grid_export_kwh": round(float(tbl["grid_export_w"].sum()) * dt / 1000.0, 1),
+        "end_soc_percent": (round(float(tbl["house_soc_percent"].iloc[-1]), 1)
+                            if "house_soc_percent" in tbl and len(tbl) else None),
+        "auto_peak_basis": result.auto_peak_basis,
+    }
+
+
 def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
                       schedule_runner, find_load, load_params):
     """Dashboard-Steuer-Aktion ausführen (Laufzeit) und Lasten-/Modus-Änderungen
@@ -1052,6 +1094,11 @@ def _resolve_post_route(path: str, config):
         if not getattr(config.dashboard, "controls_enabled", False):
             return ("error", 403, "Steuerung deaktiviert (dashboard.controls_enabled)")
         return ("control", path[len("/api/control/"):].strip("/"))
+    if path == "/api/whatif":
+        # Simulation rechnet einen Solve (CPU) -> wie die Steuerung gated.
+        if not getattr(config.dashboard, "controls_enabled", False):
+            return ("error", 403, "Steuerung deaktiviert (dashboard.controls_enabled)")
+        return ("whatif",)
     if not getattr(config.dashboard, "ingest_enabled", False):
         return ("error", 403, "Ingest deaktiviert (dashboard.ingest_enabled)")
     if not path.startswith("/api/ingest/"):
@@ -1670,6 +1717,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 except Exception as exc:  # pragma: no cover
                     log.debug("Ist-Temp-Historie (%s) fehlgeschlagen: %s", ld.name, exc)
         result = Optimizer(config, stabilize_plan=True).solve(inputs)
+        _last_solve_snapshot["inputs"] = inputs      # für den What-if-Simulator
+        _last_solve_snapshot["config"] = config
         from .executability import annotate_executability
         annotate_executability(config, result.table)
         log.info("Optimierung: %s, erwartete Netto-Kosten %.2f € (Horizont).",
@@ -1945,7 +1994,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             solver_status=solver_status,
                             execution_status=execution_status,
                             load_feedback_status=load_feedback_status,
-                            thermal_calibration=thermal_calibration)
+                            thermal_calibration=thermal_calibration,
+                            auto_peak_basis=getattr(result, "auto_peak_basis", None))
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -2890,6 +2940,22 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             route = _resolve_post_route(path, config)
             if route[0] == "error":
                 self.send_error(route[1], route[2])
+                return
+            # What-if-Simulation: rechnet einen Solve mit geänderten Parametern,
+            # ohne zu steuern/persistieren (rate-limitiert wie die Steuerung).
+            if route[0] == "whatif":
+                if not control_limiter.allow(_time.monotonic()):
+                    self.send_error(429, "Zu viele Simulationen – bitte kurz warten")
+                    return
+                try:
+                    result = _run_whatif(self._body_json())
+                except ValueError as exc:
+                    self.send_error(409, f"Simulation nicht möglich: {exc}")
+                    return
+                except Exception as exc:
+                    self.send_error(500, f"Simulationsfehler: {exc}")
+                    return
+                self._reply({"status": "ok", "result": result})
                 return
             # Interaktive Steuerung (/api/control/<action>): Lasten, Modus, Akku.
             if route[0] == "control":

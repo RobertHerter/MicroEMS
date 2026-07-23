@@ -95,6 +95,10 @@ class OptimizerResult:
     solver_constraints: int = 0
     solver_warm_start: bool = False
     solver_mip_gap: Optional[float] = None
+    # Auto-Peak-Entscheidungsbasis je Tag {tag: {p10_kwh, expected_kwh,
+    # threshold_kwh, basis, mode, ...}} - macht die p10-gestützte Peak/asap-Wahl
+    # im Dashboard sichtbar (robuste PV-Planung). Leer außer bei charge_strategy=auto.
+    auto_peak_basis: Optional[dict] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -689,6 +693,7 @@ class Optimizer:
         EPS_SOC = 20.0   # Wh
         EPS_P = 20.0     # W
         strategy = getattr(cfg.optimization, "charge_strategy", "asap")
+        auto_peak_basis = None       # nur bei strategy="auto" gefüllt (fürs Dashboard)
         pv_max = float(max(1.0, np.max(inp.pv_w)))
         # Peak-Modus: Einspeise-Linie PRO TAG. Einspeisung wird je Kalendertag auf
         # L_tag gedeckelt (alles darunter eingespeist), die PV-Spitze DARÜBER lädt
@@ -775,7 +780,7 @@ class Optimizer:
             ]
             day_mode = ["peak" if line_day[i] and robust_peak[i] else "asap"
                         for i in range(len(_uniq))]
-            log.info("Auto-Peak-Bewertung: %s", {
+            auto_peak_basis = {
                 str(_uniq[i]): {
                     "p10_kwh": round(_day_surplus[i] / 1000.0, 1),
                     "expected_kwh": round(
@@ -791,7 +796,8 @@ class Optimizer:
                               else "insufficient"),
                     "mode": day_mode[i],
                 } for i in range(len(_uniq))
-            })
+            }
+            log.info("Auto-Peak-Bewertung: %s", auto_peak_basis)
         elif strategy == "peak":
             day_mode = ["peak"] * len(_uniq)
         elif strategy == "late":
@@ -1845,4 +1851,5 @@ class Optimizer:
             solver_slots=N, solver_variables=len(variables),
             solver_binaries=binary_count, solver_constraints=len(prob.constraints()),
             solver_warm_start=bool(warm), solver_mip_gap=mip_gap,
+            auto_peak_basis=auto_peak_basis,
         )

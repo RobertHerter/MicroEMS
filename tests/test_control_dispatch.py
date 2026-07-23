@@ -112,6 +112,30 @@ def test_unknown_action_raises_keyerror(tmp_path):
         _dispatch("explode", {}, cfg, tmp_path)
 
 
+def test_run_whatif_uses_snapshot_and_applies_overrides(tmp_path):
+    import numpy as np
+    import pandas as pd
+
+    from ems.optimizer import OptimizerInputs
+    cfg = _cfg(tmp_path)
+    cfg.controllable_loads = []                       # Solve ohne Pool schlank halten
+    cfg.optimization.charge_strategy = "auto"
+    idx = pd.date_range("2026-06-10", periods=8, freq="15min", tz="Europe/Berlin")
+    n = len(idx)
+    inp = OptimizerInputs(
+        index=idx, house_load_w=np.full(n, 400.0), pv_w=np.zeros(n),
+        price_ct_kwh=np.full(n, 30.0), feedin_ct_kwh=np.full(n, 8.0),
+        initial_house_soc_wh=cfg.house_battery.min_soc_wh)
+    snap = {"inputs": inp, "config": cfg}
+    out = m._run_whatif({"mode": "asap", "price_factor": 2.0}, snapshot=snap)
+    assert out["mode"] == "asap" and out["price_factor"] == 2.0
+    assert out["infeasible"] is False and "total_cost_eur" in out
+    assert "grid_import_kwh" in out and "end_soc_percent" in out
+    # ohne Produktivlauf -> klarer Fehler
+    with pytest.raises(ValueError):
+        m._run_whatif({}, snapshot={"inputs": None, "config": None})
+
+
 def test_status_api_payload_status_and_events(tmp_path):
     from ems.local_history import write_dashboard_event
     cfg = _cfg(tmp_path)
@@ -144,9 +168,11 @@ def test_resolve_post_route_gating(tmp_path):
     cfg.dashboard.ingest_enabled = True
     assert m._resolve_post_route("/api/control/mode", cfg) == ("control", "mode")
     assert m._resolve_post_route("/api/ingest/live", cfg) == ("ingest", "live")
+    assert m._resolve_post_route("/api/whatif", cfg) == ("whatif",)
     # Gating: Steuerung/Ingest deaktiviert -> 403
     cfg.dashboard.controls_enabled = False
     assert m._resolve_post_route("/api/control/mode", cfg)[:2] == ("error", 403)
+    assert m._resolve_post_route("/api/whatif", cfg)[:2] == ("error", 403)
     cfg.dashboard.ingest_enabled = False
     assert m._resolve_post_route("/api/ingest/live", cfg)[:2] == ("error", 403)
     # Ingest an, aber unbekannter Pfad -> 404
