@@ -396,6 +396,25 @@ def test_raw_spot_not_retail_price_controls_negative_export_rule():
     assert float(result.table["pv_curtail_w"].sum()) > TOL
 
 
+def test_negative_export_rule_off_without_real_spot_series():
+    """P2#5: ohne echte Spot-Reihe greift die Negativpreis-Regel NICHT (wie in
+    der Ersparnis-Abrechnung). Ein negativer RETAIL-Preis allein darf keine
+    Abregelung auslösen – der Überschuss wird eingespeist statt abgeregelt.
+    (Zuvor fiel der Optimierer auf den Retailpreis zurück -> Divergenz zur
+    Abrechnung.)"""
+    cfg = make_config()
+    cfg.feed_in.zero_at_negative_price = True
+    cfg.e3dc_rscp.control_enabled = True
+    cfg.e3dc_rscp.curtailment_control_enabled = True
+    idx = _day_index("2026-06-10")
+    result = Optimizer(cfg, store_warm=False).solve(_inputs(
+        idx, pv=_pv_gauss(idx, 8000), load=500.0, price=-2.0,
+        feedin=0.0, soc=1500.0, spot_price_ct_kwh=None))   # keine Spot-Reihe
+    assert not result.infeasible
+    assert float(result.table["pv_curtail_w"].sum()) <= TOL
+    assert float(result.table["grid_export_w"].sum()) > TOL
+
+
 def test_remunerated_export_at_negative_price_remains_unchanged():
     """Ist zero_at_negative_price aus und Einspeisung vergütet, bleibt das
     bisherige Verhalten erhalten: Überschuss wird nicht grundlos abgeregelt."""

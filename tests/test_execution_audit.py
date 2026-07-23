@@ -148,6 +148,54 @@ def test_completed_slot_separates_forecast_deviation(tmp_path):
     assert audit["deviations"]["battery_energy_kwh"] == 0.0
 
 
+class _MultiWindowEnergyLink:
+    """read_energy_15min liefert EIN Aggregat je 15-min-Fenster; ein 60-min-Slot
+    umfasst 4 Fenster. Gibt je Fenster denselben Teilbeitrag zurück."""
+    def __init__(self, per_window):
+        self.per_window = per_window
+
+    def read_energy_15min(self, start, end):
+        out, t = {}, pd.Timestamp(start)
+        while t < pd.Timestamp(end):
+            out[t.tz_convert("UTC").isoformat()] = dict(self.per_window)
+            t += pd.Timedelta(minutes=15)
+        return out
+
+
+def test_meter_audit_sums_all_windows_for_wide_slots(tmp_path):
+    """Regression: bei slot_minutes=60 umfasst ein Plan-Slot 4 Zählerfenster.
+    Alle müssen summiert werden – vorher zählte nur das erste Viertel, sodass
+    gemessene Leistung/Energie 4× zu niedrig war (falsche Geräteabweichungen)."""
+    cfg = _cfg(tmp_path)
+    cfg.general.slot_minutes = 60
+    _completed_plan(cfg)                       # Slot TS: geplant Laden 2000 W
+    # Ist: je 15-min-Fenster 500 Wh Ladung -> 4×500 = 2000 Wh -> 2000 W über 1 h.
+    link = _MultiWindowEnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                                   "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                                   "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+    audit = _audit_execution(cfg, TS + pd.Timedelta(minutes=75),
+                             {"soc_percent": 52.0}, e3dc=link)
+    assert audit["actual"]["battery_w"] == 2000.0    # summiert, nicht 500
+    assert audit["deviations"]["battery_energy_kwh"] == 0.0
+    assert audit["ok"] is True
+
+
+def test_meter_audit_skips_and_falls_back_to_live_for_sub_15min_slots(tmp_path):
+    """Bei slot_minutes=5 lässt sich ein Plan-Slot nicht aus 15-min-Zählern
+    rekonstruieren -> KEIN dauerhaftes data_waiting, sondern Live-Prüfung."""
+    cfg = _cfg(tmp_path)
+    cfg.general.slot_minutes = 5
+    _plan(cfg)                                 # Live-Plan-Slot bei TS
+    link = _EnergyLink({"pv_wh": 0.0, "load_wh": 0.0, "bat_in_wh": 0.0,
+                        "bat_out_wh": 0.0, "grid_import_wh": 0.0,
+                        "grid_export_wh": 0.0})
+    live = {"grid_w": 0.0, "battery_w": -3000.0, "soc_percent": 50.0}
+    audit = _audit_execution(cfg, TS, live, e3dc=link)
+    assert audit is not None
+    assert audit["state"] != "data_waiting"          # nicht hängen bleiben
+    assert audit["ok"] is False and "Akku" in audit["message"]  # Live-Prüfung greift
+
+
 def test_delayed_meter_audit_uses_historical_end_soc(tmp_path):
     cfg = _cfg(tmp_path)
     _completed_plan(cfg)

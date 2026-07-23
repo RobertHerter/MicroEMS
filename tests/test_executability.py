@@ -35,12 +35,34 @@ def test_battery_decision_falls_back_to_mqtt_then_model():
     assert table.iloc[0]["execution_path"] == "model"
 
 
-def test_static_export_curtailment_is_inverter_work():
+def test_static_export_curtailment_at_cap_is_inverter_work():
+    """Regelt der Plan nur so weit ab, dass die Einspeisung AUF der Grenze liegt,
+    erledigt das der statische Einspeise-Limiter (Überschuss kappen)."""
     cfg = make_config()
     cfg.inverter.max_export_w = 5000.0
-    table = _table(pv_curtail_w=2000.0)
+    table = _table(pv_curtail_w=2000.0, grid_export_w=5000.0)   # an der Grenze
     annotate_executability(cfg, table)
     assert table.iloc[0]["execution_path"] == "inverter"
+
+
+def test_static_export_curtailment_below_cap_needs_actuator():
+    """Regelt der Plan PV UNTER die Einspeisegrenze ab (z.B. Negativpreis, Akku
+    voll -> Einspeisung auf 0), kann ein statischer Limiter das NICHT leisten.
+    Ohne steuerbaren Aktor ist das nur modelliert -> der Audit muss es fangen."""
+    cfg = make_config()
+    cfg.inverter.max_export_w = 5000.0
+    cfg.e3dc_rscp.enabled = False
+    cfg.e3dc_rscp.control_enabled = False
+    table = _table(pv_curtail_w=2000.0, grid_export_w=0.0)      # unter der Grenze
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "model"
+
+    # Mit bestätigtem RSCP-Derating-Aktor ist dieselbe Abregelung ausführbar.
+    cfg.e3dc_rscp.enabled = True
+    cfg.e3dc_rscp.control_enabled = True
+    cfg.e3dc_rscp.curtailment_control_enabled = True
+    annotate_executability(cfg, table)
+    assert table.iloc[0]["execution_path"] == "rscp"
 
 
 def test_dynamic_curtailment_requires_confirmed_rscp_actuator():

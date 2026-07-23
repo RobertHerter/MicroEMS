@@ -1166,6 +1166,21 @@ def load_config(path: str) -> Config:
         evening_reserve_hold_from_hour=int(o.get("evening_reserve_hold_from_hour", 11)),
         evening_reserve_price_factor=float(o.get("evening_reserve_price_factor", 1.15)),
     )
+    # Invariante bei aktiver Negativpreis-Nullung: der Einspeise-Malus muss den
+    # Late-Zeitmalus übersteigen, sonst spart der Optimierer im Late-Modus den
+    # (bis zu late_charge_delay großen) Frühlade-Malus, indem er EINSPEIST statt
+    # zu laden/abzuregeln – genau das Gegenteil des gewollten Verhaltens. Ein
+    # (auch per Overlay gesetzter) kleinerer Wert würde das still umkehren.
+    if (feed_in.zero_at_negative_price
+            and optimization.negative_price_export_penalty_ct_kwh
+            <= optimization.late_charge_delay_ct_kwh):
+        raise ValueError(
+            "optimization.negative_price_export_penalty_ct_kwh "
+            f"({optimization.negative_price_export_penalty_ct_kwh}) muss größer "
+            "als optimization.late_charge_delay_ct_kwh "
+            f"({optimization.late_charge_delay_ct_kwh}) sein, wenn "
+            "feed_in.zero_at_negative_price aktiv ist – sonst wird bei "
+            "Negativpreis eingespeist statt geladen/abgeregelt.")
 
     f = raw.get("forecast", {})
     forecast = ForecastConfig(

@@ -62,6 +62,27 @@ def test_load_config_merges_overlay(tmp_path):
     assert c.optimization.charge_strategy == "peak"
 
 
+def test_penalty_invariant_enforced_when_zeroing_negative_price(tmp_path):
+    """P2#6: bei feed_in.zero_at_negative_price muss der Einspeise-Malus größer
+    als der Late-Zeitmalus sein – sonst wird bei Negativpreis eingespeist statt
+    geladen/abgeregelt. Ein (auch per Overlay) kleinerer Wert bricht den Start ab."""
+    import shutil
+
+    import pytest
+
+    from ems.config import load_config
+    cfg = tmp_path / "config.yaml"
+    shutil.copy("/opt/ems/config.yaml", cfg)
+    save_override(str(cfg), "feed_in.zero_at_negative_price", True)
+    save_override(str(cfg), "optimization.late_charge_delay_ct_kwh", 5.0)
+    save_override(str(cfg), "optimization.negative_price_export_penalty_ct_kwh", 1.0)
+    with pytest.raises(ValueError, match="negative_price_export_penalty"):
+        load_config(str(cfg))
+    # Gültige Kombination (Malus > Zeitmalus) lädt wieder.
+    save_override(str(cfg), "optimization.negative_price_export_penalty_ct_kwh", 10.0)
+    assert load_config(str(cfg)) is not None
+
+
 def test_calibration_overrides_are_reloaded_without_restart(tmp_path):
     """Wöchentliche PV-Bandkalibrierung wird im nächsten EMS-Zyklus aktiv."""
     import shutil

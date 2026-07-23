@@ -184,6 +184,9 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "Plan neu berechnen" in runtime
     assert "api/control/recalc" in runtime
     assert "api/status.json" in runtime
+    # P3#4: Auto-Reload nur bei neuem Plan (Sequenz erhöht) und nicht während
+    # einer Eingabe – sonst würde ein turnusmäßiger Recalc Eingaben verwerfen.
+    assert "advanced" in runtime and "editing" in runtime
 
     details = _slot_detail_block()
     assert "api/data.json" in details and "plotly_click" in details

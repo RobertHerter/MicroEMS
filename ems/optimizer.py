@@ -514,7 +514,12 @@ class Optimizer:
         """Solverlaeufe pro Prozess serialisieren.
 
         Dashboard-Vergleiche koennen damit nie parallel zum produktiven Lauf
-        PuLP/HiGHS-Zustand und CPU teilen.
+        PuLP/HiGHS-Zustand und CPU teilen. Der Lock wird PRO solve()-Aufruf
+        genommen und freigegeben – der mehrstufige Schattenvergleich (mehrere
+        aufeinanderfolgende solve()) haelt ihn also NICHT am Stueck. Ein faellig
+        werdender Produktivlauf wartet damit hoechstens auf EINEN laufenden Solve
+        (Sekunden), nicht auf die ganze Vergleichsserie – kein Sonder-Prioritaets-
+        mechanismus noetig, der den kritischen Solver-Pfad verkomplizieren wuerde.
         """
         with _solver_serial:
             return self._solve(inp)
@@ -550,7 +555,12 @@ class Optimizer:
 
         # Derselbe verschobene Vorplan dient sowohl als Solver-Warmstart als
         # auch (nur bei wirklich fortgeschrittener Zeit) als Stabilitaetsanker.
-        warm = _shifted_warm_values(inp.index[0], int(round(dt * 60)))
+        # Warmstart NUR im Produktivlauf LESEN (store_warm): sonst würden
+        # Dashboard-/Backtest-/Schattenläufe vom prozessweiten Inkumbenten des
+        # Produktivlaufs geseedet und wären nicht unabhängig reproduzierbar
+        # (und könnten Warmstart-Artefakte erben). store_warm=False -> kalt.
+        warm = (_shifted_warm_values(inp.index[0], int(round(dt * 60)))
+                if self.store_warm else None)
         previous_plan = (warm if self.stabilize_plan and warm and _warm_cache
                          and pd.Timestamp(inp.index[0]) > _warm_cache["start"]
                          else None)
@@ -576,20 +586,32 @@ class Optimizer:
         dc = [pulp.LpVariable(f"dc_{t}", 0, max_dc) for t in range(N)]
         ac = [pulp.LpVariable(f"ac_{t}", 0, max_ac) for t in range(N)]
         dis = [pulp.LpVariable(f"dis_{t}", 0, max_dis) for t in range(N)]
-        # PV-Abregelung: nötig, wenn Akku voll UND Export begrenzt/wertlos ist
-        # (max_export_w, Negativpreis ohne Vergütung). Sonst via Mini-Malus 0.
-        can_execute_curtailment = bool(
-            cfg.inverter.max_export_w is not None
-            or (cfg.e3dc_rscp.control_enabled
-                and getattr(cfg.e3dc_rscp, "curtailment_control_enabled", False)))
-        # Keine Phantom-Abregelung: ohne steuerbaren Aktor ist nur das ohnehin
-        # physische WR-Clipping oberhalb der AC-Nennleistung zulässig. Diese
-        # Reserve verhindert zugleich Infeasibility bei PV > WR-Leistung.
-        curt = [pulp.LpVariable(
-            f"curt_{t}", 0,
-            None if can_execute_curtailment
-            else max(0.0, float(inp.pv_w[t]) - max_inv))
-            for t in range(N)]
+        # PV-Abregelung – realistische Obergrenze je nach vorhandenem Aktor, damit
+        # der Plan keine physikalisch unmögliche Abregelung annimmt:
+        #  * steuerbares RSCP-Derating -> beliebig abregelbar (None).
+        #  * NUR statische Einspeisegrenze -> ein Limiter kappt die PV nur so weit,
+        #    bis die Einspeisung auf max_export_w liegt; er kann NICHT darunter
+        #    drücken. Obergrenze = physisches WR-Clipping + (PV - Last - Grenze)+.
+        #    (Zuvor unbeschränkt -> der Plan konnte am Negativpreis auf 0 Einspeisung
+        #    abregeln und "sparte" Kosten, die real weiter anfielen.)
+        #  * gar kein Aktor -> nur das ohnehin physische WR-Clipping oberhalb der
+        #    AC-Nennleistung (verhindert zugleich Infeasibility bei PV > WR).
+        curtail_actuator = bool(
+            cfg.e3dc_rscp.control_enabled
+            and getattr(cfg.e3dc_rscp, "curtailment_control_enabled", False))
+        static_cap = (float(cfg.inverter.max_export_w)
+                      if cfg.inverter.max_export_w is not None else None)
+
+        def _curt_ub(t):
+            if curtail_actuator:
+                return None
+            clip = max(0.0, float(inp.pv_w[t]) - max_inv)
+            if static_cap is not None:
+                load_t = float(np.nan_to_num(inp.house_load_w[t]))
+                return clip + max(0.0, float(inp.pv_w[t]) - load_t - static_cap)
+            return clip
+
+        curt = [pulp.LpVariable(f"curt_{t}", 0, _curt_ub(t)) for t in range(N)]
         g_imp = [pulp.LpVariable(f"gimp_{t}", 0) for t in range(N)]
         g_exp = [pulp.LpVariable(f"gexp_{t}", 0) for t in range(N)]
         is_ch = [pulp.LpVariable(f"isch_{t}", cat="Binary") for t in range(N)]
@@ -980,10 +1002,16 @@ class Optimizer:
         cost_terms = []
         zero_negative = bool(getattr(
             cfg.feed_in, "zero_at_negative_price", False))
-        raw_spot = (inp.spot_price_ct_kwh
-                    if inp.spot_price_ct_kwh is not None else inp.price_ct_kwh)
+        # Negativpreis-Trigger AUSSCHLIESSLICH aus dem echten Börsenpreis – wie
+        # die Ersparnis-Abrechnung (savings_validate). Fehlt die Spot-Reihe ganz,
+        # NICHT auf den Retailpreis zurückfallen: sonst wären Planung und
+        # Abrechnung uneinig darüber, ob ein Slot als Negativpreis zählt. raw_spot
+        # (mit Retail-Fallback) bleibt nur für die informative Tabellenausgabe.
+        spot_series = inp.spot_price_ct_kwh
+        raw_spot = spot_series if spot_series is not None else inp.price_ct_kwh
         negative_export_slots = [
-            zero_negative and float(raw_spot[t]) < 0.0
+            zero_negative and spot_series is not None
+            and float(spot_series[t]) < 0.0
             and float(inp.feedin_ct_kwh[t]) <= 0.0
             for t in range(N)]
         negative_export_pen = max(0.0, float(getattr(

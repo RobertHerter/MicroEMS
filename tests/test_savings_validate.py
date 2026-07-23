@@ -60,6 +60,33 @@ def test_reconcile_flags_inverted_grid_sign():
     assert r["tracker"]["sign_ok"] is False
 
 
+def test_reconcile_warns_when_zeroing_active_but_spot_missing(caplog):
+    """P3#5: ist zero_at_negative_price aktiv, aber keine Spot-Reihe übergeben,
+    darf die Nullung nicht still übersprungen werden (sonst überschätzte
+    Vergütung) – es muss eine Warnung erscheinen; die Vergütung bleibt erhalten."""
+    cfg = make_config()
+    cfg.feed_in.zero_at_negative_price = True
+    meter, price, feedin, grid_w = _scenario()
+    with caplog.at_level("WARNING", logger="ems.savings_validate"):
+        r = reconcile(meter, price, feedin, cfg, actual_grid_w=grid_w,
+                      soc0_wh=cfg.house_battery.min_soc_wh)   # spot fehlt
+    assert any("Spot-Reihe" in m for m in caplog.messages)
+    assert r["meter"]["export_kwh"] == pytest.approx(0.2)      # nicht genullt
+    assert r["meter"]["net_cost_eur"] == pytest.approx(0.40, abs=0.01)
+
+
+def test_reconcile_zeroes_feedin_at_negative_spot():
+    """Mit echter Spot-Reihe wird die Einspeisung in Negativpreis-Slots genullt."""
+    cfg = make_config()
+    cfg.feed_in.zero_at_negative_price = True
+    meter, price, feedin, grid_w = _scenario()
+    spot = pd.Series([30.0, -3.0, 30.0, 30.0], index=meter.index)  # Slot 1 negativ
+    r = reconcile(meter, price, feedin, cfg, actual_grid_w=grid_w,
+                  soc0_wh=cfg.house_battery.min_soc_wh, spot=spot)
+    # 0.2 kWh Einspeisung im Negativslot -> keine Vergütung mehr -> Kosten höher
+    assert r["meter"]["net_cost_eur"] == pytest.approx(0.40 + 0.2 * 8 / 100.0, abs=0.01)
+
+
 def test_reconcile_handles_empty_after_dropping_gaps():
     cfg = make_config()
     meter, price, feedin, _ = _scenario()

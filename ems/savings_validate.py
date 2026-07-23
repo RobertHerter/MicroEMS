@@ -17,12 +17,15 @@ Beschaffung erledigt savings_check.py.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 from .optimizer import natural_battery_step
+
+log = logging.getLogger("ems.savings_validate")
 
 METER_COLUMNS = ("pv_wh", "load_wh", "bat_in_wh", "bat_out_wh",
                  "grid_import_wh", "grid_export_wh")
@@ -53,6 +56,13 @@ def reconcile(meter: pd.DataFrame, price: pd.Series, feedin: pd.Series, cfg,
     if cfg.feed_in.zero_at_negative_price and spot is not None:
         raw_spot = spot.reindex(idx).astype(float)
         feedin = feedin.where(~(raw_spot < 0.0), 0.0)
+    elif cfg.feed_in.zero_at_negative_price and spot is None:
+        # Ohne echte Spot-Reihe kann die Negativpreis-Nullung nicht angewandt
+        # werden -> die Vergütung würde überschätzt. Sichtbar machen statt still
+        # eine zu hohe "reale Ersparnis" auszuweisen.
+        log.warning("reconcile: zero_at_negative_price aktiv, aber keine "
+                    "Spot-Reihe übergeben – Negativpreis-Nullung übersprungen "
+                    "(Einspeisevergütung ggf. zu hoch angesetzt).")
 
     valid = df.notna().all(axis=1) & price.notna() & feedin.notna()
     df, price, feedin = df[valid], price[valid], feedin[valid]

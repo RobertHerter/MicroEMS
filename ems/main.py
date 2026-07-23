@@ -398,12 +398,19 @@ def _audit_execution(config, now, live, e3dc=None):
     # Die Karenz betrifft nur aktuelle Livewerte nach dem Reapply. Ein um
     # 75 Minuten gereifter Zaehler-Slot liegt vor dem Neustart und darf nicht
     # uebersprungen werden (er wuerde im naechsten Lauf sonst nie nachgeholt).
-    in_grace = (e3dc is None and grace_min > 0.0
+    # Der Zähler-Audit funktioniert nur, wenn die Slotbreite ein Vielfaches der
+    # 15-min-Zählerfenster des E3DC ist (15/30/60). Bei 5/10 min kann ein
+    # einzelner Plan-Slot nicht aus 15-min-Aggregaten rekonstruiert werden ->
+    # dann NICHT den (dauerhaft in data_waiting hängenden) Zähler-Audit fahren,
+    # sondern auf die Live-Prüfung zurückfallen (use_meter=False).
+    use_meter = (e3dc is not None
+                 and config.general.slot_minutes % 15 == 0)
+    in_grace = (not use_meter and grace_min > 0.0
                 and (_time.monotonic() - _PROCESS_START) < grace_min * 60.0)
     audit_ts = now
     audit_end = now
     meter = None
-    if e3dc is not None:
+    if use_meter:
         slot = pd.Timedelta(minutes=config.general.slot_minutes)
         delay_minutes = max(float(config.general.slot_minutes), float(getattr(
             config.monitoring, "execution_meter_delay_minutes", 75.0) or 75.0))
@@ -411,9 +418,18 @@ def _audit_execution(config, now, live, e3dc=None):
             minutes=delay_minutes)).floor(
                 f"{config.general.slot_minutes}min")
         audit_end = audit_ts + slot
+        expected_windows = config.general.slot_minutes // 15
         try:
             values = e3dc.read_energy_15min(audit_ts, audit_end)
-            meter = values.get(pd.Timestamp(audit_ts).tz_convert("UTC").isoformat())
+            # Ein Plan-Slot kann mehrere 15-min-Zählerfenster umfassen (30/60 min).
+            # ALLE Fenster des Slots aufsummieren – vorher wurde nur das erste
+            # Viertel gelesen (Leistung 2–4× zu niedrig -> falsche Abweichungen).
+            # Erst prüfen, wenn der ganze Slot gereift ist (alle Fenster da).
+            if expected_windows >= 1 and len(values) == expected_windows:
+                keys = ("pv_wh", "load_wh", "bat_in_wh", "bat_out_wh",
+                        "grid_import_wh", "grid_export_wh")
+                meter = {k: float(sum(w[k] for w in values.values()))
+                         for k in keys}
         except Exception as exc:
             log.debug("E3DC-Slotenergie noch nicht lesbar (%s).", exc)
     planned = read_execution_plan_slot(
@@ -438,7 +454,7 @@ def _audit_execution(config, now, live, e3dc=None):
         return audit
     if not planned:
         return None
-    if e3dc is not None and meter is None:
+    if use_meter and meter is None:
         audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
                  "ok": True, "state": "data_waiting", "cause": "data",
                  "message": "Abgeschlossenes E3DC-Zählerfenster ist noch nicht verfügbar.",
@@ -933,7 +949,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     erzeugt und wieder geschlossen."""
     runtime_started = _time.monotonic()
     runtime_trigger = _runtime_begin()
-    repo = make_repository(config)
+    repo = None
     control_status = None
     execution_status = None
     solver_status = None
@@ -951,6 +967,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
+        # Repository-Init in den try ziehen: schlägt es fehl, muss der
+        # Runtime-Status auf "error" fallen (via except -> _runtime_fail) und darf
+        # NICHT auf "running" hängen bleiben (Dashboard zeigte sonst ewig "läuft").
+        repo = make_repository(config)
         _reload_calibration_overrides(config)
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
@@ -1725,7 +1745,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                 level="error")
         raise
     finally:
-        repo.close()
+        if repo is not None:
+            repo.close()
         if own_e3dc and e3dc is not None:
             e3dc.close()
 

@@ -406,7 +406,12 @@ def _runtime_block(controls_enabled: bool) -> str:
   if(btn)btn.disabled=['queued','running'].includes(d.state);
   if(seen===null)seen=Number(d.sequence)||0;
   if(['queued','running'].includes(d.state))busy=true;
-  if(busy&&d.state==='ready'&&!reloading){{reloading=true;setTimeout(()=>location.reload(),500);}}
+  // Nur neu laden, wenn WIRKLICH ein neuer Plan gelandet ist (Sequenz erhöht) und
+  // der Nutzer gerade nichts im Steuerpanel eingibt – sonst würde ein turnusmäßiger
+  // Recalc die Seite mitten in einer Eingabe neu laden und Eingaben verwerfen.
+  var advanced=(Number(d.sequence)||0)>seen;
+  var ae=document.activeElement,editing=ae&&['INPUT','SELECT','TEXTAREA'].includes(ae.tagName);
+  if(busy&&d.state==='ready'&&advanced&&!editing&&!reloading){{reloading=true;setTimeout(()=>location.reload(),500);}}
  }}
  window.emsRuntimePoll=function(){{return fetch('api/status.json?_='+Date.now(),{{cache:'no-store'}}).then(r=>{{if(!r.ok)throw Error(r.status);return r.json();}}).then(d=>{{render(d);window.dispatchEvent(new CustomEvent('ems-status',{{detail:d}}));return d;}}).catch(()=>{{strip.dataset.state='error';document.getElementById('runtime-message').textContent='Laufzeitstatus nicht erreichbar';}});}};
  window.emsRecalc=async function(){{if(btn)btn.disabled=true;try{{let r=await fetch('api/control/recalc',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});if(!r.ok)throw Error((await r.text()).slice(0,160));busy=true;emsRuntimePoll();}}catch(e){{if(btn)btn.disabled=false;document.getElementById('runtime-message').textContent='Neuberechnung fehlgeschlagen: '+e.message;}}}};
