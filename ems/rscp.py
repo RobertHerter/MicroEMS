@@ -503,17 +503,38 @@ class E3DCLink:
             e.sendRequest((RscpTag.EMS_REQ_SET_DERATE_PERCENT,
                            RscpType.Float32, value), keepAlive=True)
 
+    def _curtailment_inverter_handled(self, row) -> bool:
+        """Wird die geplante Abregelung ohnehin PHYSISCH vom Wechselrichter
+        erledigt – also ohne steuerbaren Aktor? Zwei Fälle (wie in
+        executability.py): (a) inhärentes WR-Clipping oberhalb der AC-Nenn-
+        leistung (PV kann gar nicht voll umgewandelt werden), (b) statische
+        Einspeisegrenze erreicht (der Limiter kappt bis auf max_export_w). Dann
+        ist die Abregelung automatisch und KEIN Steuer-Ausfall."""
+        curt = max(0.0, float(row.get("pv_curtail_w", 0.0) or 0.0))
+        pv = max(0.0, float(row.get("pv_w", 0.0) or 0.0))
+        inherent_clip = max(0.0, pv - float(self.cfg.inverter.max_ac_power_w))
+        if curt <= inherent_clip + 5.0:
+            return True
+        cap = self.cfg.inverter.max_export_w
+        if cap is not None:
+            export = max(0.0, float(row.get("grid_export_w", 0.0) or 0.0))
+            if export >= float(cap) - 5.0:
+                return True
+        return False
+
     def apply_pv_curtailment(self, row) -> dict:
         """Plan-Abregelung real setzen, zurücklesen und außerhalb des Slots lösen."""
         requested_w = max(0.0, float(row.get("pv_curtail_w", 0.0)))
         if not self.rc.curtailment_control_enabled:
-            if requested_w > 5.0:
+            if requested_w > 5.0 and not self._curtailment_inverter_handled(row):
                 return self._control_status(
                     False, "curtailment_unavailable", "pv_curtailment",
                     "PV-Abregelung geplant, aber E3DC-Abregelsteuerung ist deaktiviert.",
                     expected={"curtail_w": round(requested_w)})
             return self._control_status(
                 None, "not_required", "pv_curtailment",
+                "Keine aktive PV-Abregelung erforderlich (WR erledigt sie physisch)."
+                if requested_w > 5.0 else
                 "Keine aktive PV-Abregelung erforderlich.")
         if requested_w <= 5.0 and not self._curtailment_active:
             return self._control_status(

@@ -142,11 +142,25 @@ def test_pv_curtailment_write_failure_is_reported():
 
 
 def test_pv_curtailment_unavailable_without_control():
-    """Abregelung geplant, aber Abregelsteuerung deaktiviert -> als Ausfall
-    gemeldet (nicht still ignoriert)."""
+    """Abregelung UNTER dem WR-Clipping (echter Aktor nötig), aber
+    Abregelsteuerung deaktiviert -> als Ausfall gemeldet (nicht still ignoriert)."""
     cfg, link = _link(curtailment_control_enabled=False)
-    status = link.apply_pv_curtailment({"pv_w": 8200, "pv_curtail_w": 4100})
+    # PV knapp über AC-Nennleistung, aber viel mehr Abregelung verlangt als das
+    # physische Clipping hergibt -> das bräuchte einen Aktor.
+    pv = cfg.inverter.max_ac_power_w + 300.0
+    status = link.apply_pv_curtailment({"pv_w": pv, "pv_curtail_w": 4100})
     assert status["ok"] is False and status["state"] == "curtailment_unavailable"
+
+
+def test_pv_curtailment_inherent_clip_is_not_a_failure():
+    """Fehlalarm-Fix: ohne Aktor ist eine Abregelung, die nur das physische
+    WR-Clipping (PV über AC-Nennleistung) darstellt, KEIN Steuer-Ausfall – der
+    Wechselrichter erledigt das automatisch (Akku 100 %, Peak, PV-Spitze)."""
+    cfg, link = _link(curtailment_control_enabled=False)
+    max_ac = cfg.inverter.max_ac_power_w
+    status = link.apply_pv_curtailment(
+        {"pv_w": max_ac + 3000.0, "pv_curtail_w": 3000.0})
+    assert status["state"] == "not_required" and status["ok"] is None
 
 
 def test_pv_curtailment_not_required_is_noop():
