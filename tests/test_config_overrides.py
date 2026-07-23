@@ -60,3 +60,23 @@ def test_load_config_merges_overlay(tmp_path):
     save_override(str(cfg), "optimization.charge_strategy", "peak")
     c = load_config(str(cfg))
     assert c.optimization.charge_strategy == "peak"
+
+
+def test_calibration_overrides_are_reloaded_without_restart(tmp_path):
+    """Wöchentliche PV-Bandkalibrierung wird im nächsten EMS-Zyklus aktiv."""
+    import shutil
+    from ems.config import load_config
+    from ems.main import _reload_calibration_overrides
+
+    cfg = tmp_path / "config.yaml"
+    shutil.copy("/opt/ems/config.yaml", cfg)
+    running = load_config(str(cfg))
+    assert running.pv_model.p10_uncertainty != 0.511
+    assert running.pv_model.p90_uncertainty != 0.293
+
+    save_override(str(cfg), "pv_model.p10_uncertainty", 0.511)
+    save_override(str(cfg), "pv_model.p90_uncertainty", 0.293)
+    _reload_calibration_overrides(running)
+
+    assert running.pv_model.p10_uncertainty == 0.511
+    assert running.pv_model.p90_uncertainty == 0.293

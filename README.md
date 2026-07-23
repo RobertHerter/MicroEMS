@@ -208,7 +208,8 @@ Lebenszeichen ausbleibt). Die Timer:
 
 - **`ems-kalibrierung.timer`** (So 03:00): Verbrauchs-/PV-Kalibrierung
   (`kalibrierung.py`) inkl. pvlib-p10/p90-Bandkalibrierung + Pool-Thermomodell
-  (`ems.pool_calibration --apply`).
+  (`ems.pool_calibration --apply`). Korrekturprofil, PV-Band und Poolparameter
+  werden spätestens im nächsten EMS-Zyklus ohne Dienstneustart übernommen.
 - **`ems-savings.timer`** (täglich 02:45): validiert die Vortags-Ersparnis gegen
   die echten E3DC-Zähler (`savings_check.py --persist`).
 - **`ems-backup.timer`** (wöchentlich): sichert die unversionierten Dateien

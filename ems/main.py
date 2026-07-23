@@ -951,7 +951,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
-        _reload_thermal_calibration(config)
+        _reload_calibration_overrides(config)
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
         # Per MQTT gesetzte Overrides (ems/cmd/car_departure_time,
@@ -2065,8 +2065,8 @@ def _read_load_state(config, publisher):
     return st or None
 
 
-def _reload_thermal_calibration(config) -> None:
-    """Extern automatisch kalibrierte Overlay-Werte ohne Neustart übernehmen."""
+def _reload_calibration_overrides(config) -> None:
+    """Extern kalibrierte Laufzeitwerte ohne Neustart übernehmen."""
     path = getattr(config, "_source_path", None)
     if not path:
         return
@@ -2078,9 +2078,14 @@ def _reload_thermal_calibration(config) -> None:
     if mtime <= getattr(config, "_overrides_mtime", 0.0):
         return
     fresh = load_config(path)
+    changes = []
+    for field in ("p10_uncertainty", "p90_uncertainty"):
+        old, new = getattr(config.pv_model, field), getattr(fresh.pv_model, field)
+        if old != new:
+            setattr(config.pv_model, field, new)
+            changes.append(f"pv_model.{field}={new}")
     by_name = {ld.name: ld for ld in fresh.controllable_loads
                if ld.type == "thermal"}
-    changes = []
     for current in config.controllable_loads:
         newer = by_name.get(current.name)
         if current.type != "thermal" or newer is None:
@@ -2097,7 +2102,7 @@ def _reload_thermal_calibration(config) -> None:
                 changes.append(f"{current.name}/{stage.name}.heat_w={stage.heat_w}")
     config._overrides_mtime = mtime
     if changes:
-        log.info("Thermokalibrierung automatisch übernommen: %s",
+        log.info("Kalibrierungswerte automatisch übernommen: %s",
                  ", ".join(changes))
 
 
