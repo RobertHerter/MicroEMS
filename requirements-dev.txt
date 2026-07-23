@@ -2,3 +2,7 @@
 #   pip install -r requirements-dev.txt
 pytest>=8.0
 pytest-xdist>=3.5      # parallele Testausführung (-n auto), s. pytest.ini
+# Schnellerer, in der Praxis genutzter Solver; ohne ihn fällt der Optimierer auf
+# das gebündelte CBC zurück. In CI/Test installiert, damit dieselbe Solver-Basis
+# wie im Betrieb getestet wird (deterministische Ergebnisse).
+highspy>=1.7

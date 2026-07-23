@@ -2,10 +2,23 @@
 load_config merged sie über die Basis; steuerbare Lasten werden per Slug überlagert."""
 from __future__ import annotations
 
+import os
+
+import pytest
 import yaml
 
 from ems.config import (_deep_merge, _overrides_path, save_override,
                         parse_controllable_loads)
+
+_REAL_CONFIG = "/opt/ems/config.yaml"
+
+
+def _require_real_config() -> str:
+    """Pfad zur echten Deployment-Config; überspringt den Test, wenn sie fehlt
+    (z. B. in CI – config.yaml ist gitignored und enthält Secrets)."""
+    if not os.path.exists(_REAL_CONFIG):
+        pytest.skip("Deployment-Config /opt/ems/config.yaml nicht vorhanden (CI)")
+    return _REAL_CONFIG
 
 
 def test_deep_merge_nested():
@@ -54,7 +67,7 @@ def test_load_config_merges_overlay(tmp_path):
     """End-to-end: reale config.yaml + Overlay -> gemergter Wert."""
     import shutil
     from ems.config import load_config
-    src = "/opt/ems/config.yaml"
+    src = _require_real_config()
     cfg = tmp_path / "config.yaml"
     shutil.copy(src, cfg)
     save_override(str(cfg), "optimization.charge_strategy", "peak")
@@ -68,11 +81,9 @@ def test_penalty_invariant_enforced_when_zeroing_negative_price(tmp_path):
     geladen/abgeregelt. Ein (auch per Overlay) kleinerer Wert bricht den Start ab."""
     import shutil
 
-    import pytest
-
     from ems.config import load_config
     cfg = tmp_path / "config.yaml"
-    shutil.copy("/opt/ems/config.yaml", cfg)
+    shutil.copy(_require_real_config(), cfg)
     save_override(str(cfg), "feed_in.zero_at_negative_price", True)
     save_override(str(cfg), "optimization.late_charge_delay_ct_kwh", 5.0)
     save_override(str(cfg), "optimization.negative_price_export_penalty_ct_kwh", 1.0)
@@ -90,7 +101,7 @@ def test_calibration_overrides_are_reloaded_without_restart(tmp_path):
     from ems.main import _reload_calibration_overrides
 
     cfg = tmp_path / "config.yaml"
-    shutil.copy("/opt/ems/config.yaml", cfg)
+    shutil.copy(_require_real_config(), cfg)
     running = load_config(str(cfg))
     assert running.pv_model.p10_uncertainty != 0.511
     assert running.pv_model.p90_uncertainty != 0.293
