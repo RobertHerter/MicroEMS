@@ -756,7 +756,7 @@ class RecalcConfig:
     laufenden Slots verglichen; überschreitet die Abweichung die Schwelle (Wolke
     bricht PV ein, großer Verbraucher springt an), rechnet der Dienst sofort neu,
     statt auf die nächste Marke zu warten. Ergänzt die Intraday-Korrektur."""
-    enabled: bool = True
+    enabled: bool = False
     deviation_w: float = 3000.0
     check_seconds: float = 90.0
 
@@ -1409,7 +1409,7 @@ def load_config(path: str) -> Config:
     )
     rc = raw.get("recalc", {})
     recalc = RecalcConfig(
-        enabled=bool(rc.get("enabled", True)),
+        enabled=bool(rc.get("enabled", False)),
         deviation_w=float(rc.get("deviation_w", 3000.0)),
         check_seconds=float(rc.get("check_seconds", 90.0)),
     )

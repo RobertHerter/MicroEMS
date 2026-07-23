@@ -204,7 +204,7 @@ sanity:
 # statt bis zur nächsten Marke zu warten. Netz = Last - PV + Akku bündelt PV- und
 # Last-Prognosefehler. Ergänzt die Intraday-Korrektur.
 recalc:
-  enabled: true
+  enabled: false
   deviation_w: 3000.0            # Schwelle |Ist-Netz - Soll-Netz|
   check_seconds: 90.0           # Prüf-Intervall im Wartefenster
 

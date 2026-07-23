@@ -22,6 +22,7 @@ def _cfg(tmp_path):
     cfg = make_config()
     cfg.general.timezone = TZ
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.recalc.enabled = True     # Default ist inzwischen aus -> hier gezielt an
     return cfg
 
 
