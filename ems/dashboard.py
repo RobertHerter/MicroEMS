@@ -1604,12 +1604,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .daily-price {{ background: #eaf8f7; border-color: #b8dedb; }}
  .live-tiles .daily-price .v {{ color: #147a74; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
- .forecast-quality {{ margin: 10px 0 0; padding: 0; background: #fff;
-        border: 1px solid #dfe6ed; border-radius: 11px;
-        box-shadow: 0 2px 8px rgba(25,42,65,.05); }}
+ /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
+ .forecast-quality {{ margin: 10px 0; padding: 0; background: #fff;
+        border: 1px solid #dde4eb; border-radius: 10px; overflow: hidden; }}
  .forecast-quality > summary {{ display: flex; align-items: baseline; gap: 9px;
-        padding: 11px 38px 11px 12px; cursor: pointer; position: relative;
-        font-weight: 700; list-style: none; }}
+        padding: 11px 38px 11px 13px; cursor: pointer; position: relative;
+        font-weight: 700; list-style: none; background: #f7f9fb; }}
  .forecast-quality > summary::-webkit-details-marker {{ display: none; }}
  .forecast-quality > summary::after {{ content: '⌄'; position: absolute;
         right: 13px; top: 8px; font-size: 18px; transition: transform .16s; }}
@@ -1617,9 +1617,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  /* Statusfarbe des Panels – auch eingeklappt sichtbar (Akzentrand + Punkt). */
  .forecast-quality > summary::before {{ content: ''; width: 9px; height: 9px;
         border-radius: 50%; background: #b6bdc5; align-self: center; flex: none; }}
- .forecast-quality.lvl-current {{ border-left: 4px solid #2ca02c; }}
- .forecast-quality.lvl-partial {{ border-left: 4px solid #e6a700; }}
- .forecast-quality.lvl-replaced {{ border-left: 4px solid #d62728; }}
  .forecast-quality.lvl-current > summary::before {{ background: #2ca02c; }}
  .forecast-quality.lvl-partial > summary::before {{ background: #e6a700; }}
  .forecast-quality.lvl-replaced > summary::before {{ background: #d62728; }}
@@ -1980,6 +1977,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
  html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
  html.dark .forecast-quality {{ background: #18212b; border-color: #354352; }}
+ html.dark .forecast-quality > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
  html.dark .quality-item {{ background: #202b36; border-color: #43515f; }}
  html.dark .quality-item.current {{ background: #173326; border-left-color: #58b879; }}
@@ -1988,9 +1986,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
  html.dark .quality-item.replaced .quality-state {{ color: #f1a29c; }}
- html.dark .forecast-quality.lvl-current {{ border-left-color: #58b879; }}
- html.dark .forecast-quality.lvl-partial {{ border-left-color: #d9b83f; }}
- html.dark .forecast-quality.lvl-replaced {{ border-left-color: #df6c68; }}
  html.dark .forecast-quality.lvl-current > summary::before {{ background: #58b879; }}
  html.dark .forecast-quality.lvl-partial > summary::before {{ background: #d9b83f; }}
  html.dark .forecast-quality.lvl-replaced > summary::before {{ background: #df6c68; }}
@@ -2028,7 +2023,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .mobile-plot-tabs button.on, .horizon-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
    html.dark .mobile-plot-tabs button, html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
    html.dark .mobile-plot-tabs button.on, html.dark .horizon-switch button.on {{ background: #287fd8; }}
-   .horizon-switch {{ display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }}
+   .horizon-switch {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }}
    #mobile-plot {{ min-height: 420px; }}
    .controls .ctl-summary {{ display: none; }}
    .controls > summary {{ min-height: 44px; box-sizing: border-box; }}
@@ -2073,9 +2068,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_operations_block(solver_status, execution_status)}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
+{_analysis_block(analysis_headline)}
 {_pv_confidence_block(auto_peak_basis)}
 {_whatif_block(config)}
-{_analysis_block(analysis_headline)}
 {_events_block()}
 {report_html}
 <script>(function(){{
