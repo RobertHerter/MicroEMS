@@ -496,27 +496,27 @@ def _whatif_block(config) -> str:
     return """
 <details class="info-panel whatif-panel" id="whatif-panel"><summary>⚗ What-if-Simulation <small>Plan mit anderen Parametern durchrechnen</small></summary>
  <div class="whatif-form">
-  <label>Modus <select id="wi-mode"><option value="">(unverändert)</option><option value="auto">auto</option><option value="asap">asap</option><option value="peak">peak</option><option value="late">late</option></select></label>
-  <label>Preis-Faktor <input type="number" id="wi-factor" value="1.0" step="0.1" min="0.1" max="5"></label>
-  <button type="button" id="wi-run">Simulieren</button>
+  <label class="wi-field"><span>Modus</span><select id="wi-mode"><option value="">unverändert</option><option value="auto">auto</option><option value="asap">asap</option><option value="peak">peak</option><option value="late">late</option></select></label>
+  <label class="wi-field"><span>Preis-Faktor</span><input type="number" id="wi-factor" value="1.0" step="0.1" min="0.1" max="5"></label>
+  <button type="button" id="wi-run" class="primary">Simulieren</button>
  </div>
- <div id="whatif-result">noch keine Simulation</div>
+ <div id="whatif-result" class="whatif-result"><span class="an-hint">noch keine Simulation</span></div>
 </details>
 <script>(function(){
- const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €':'–');
+ const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}):'–');
  const n1=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1}):'–');
- async function run(){var btn=document.getElementById('wi-run');btn.disabled=true;document.getElementById('whatif-result').textContent='rechnet …';
+ const tile=(v,l,s)=>'<div class="tile"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';
+ async function run(){var btn=document.getElementById('wi-run'),box=document.getElementById('whatif-result');btn.disabled=true;box.innerHTML='<span class="an-hint">rechnet …</span>';
   try{let body={mode:document.getElementById('wi-mode').value,price_factor:parseFloat(document.getElementById('wi-factor').value)||1};
    let r=await fetch('api/whatif',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
    if(!r.ok)throw Error((await r.text()).slice(0,160));let d=(await r.json()).result;
-   document.getElementById('whatif-result').innerHTML='<table class="whatif-table">'
-    +'<tr><td>Modus</td><td>'+d.mode+'</td></tr>'
-    +'<tr><td>Preis-Faktor</td><td>'+n1(d.price_factor)+'</td></tr>'
-    +'<tr><td>erwartete Kosten</td><td>'+eur(d.total_cost_eur)+'</td></tr>'
-    +'<tr><td>Netzbezug / -einspeisung</td><td>'+n1(d.grid_import_kwh)+' / '+n1(d.grid_export_kwh)+' kWh</td></tr>'
-    +'<tr><td>End-SoC</td><td>'+n1(d.end_soc_percent)+' %</td></tr>'
-    +(d.infeasible?'<tr><td colspan=2>⚠ unzulässig</td></tr>':'')+'</table>';
-  }catch(e){document.getElementById('whatif-result').textContent='Simulation fehlgeschlagen: '+e.message;}finally{btn.disabled=false;}}
+   box.innerHTML='<div class="whatif-head"><span class="mode-badge '+(d.mode||'')+'">'+(d.mode||'–')+'</span><small>Preis-Faktor '+n1(d.price_factor)+(d.infeasible?' · <b class="wi-bad">⚠ unzulässig</b>':'')+'</small></div>'
+    +'<div class="tiles">'
+    +tile(eur(d.total_cost_eur)+' €','erwartete Kosten','über den Horizont')
+    +tile(n1(d.grid_import_kwh)+' kWh','Netzbezug','Einspeisung '+n1(d.grid_export_kwh)+' kWh')
+    +tile(n1(d.end_soc_percent)+' %','End-SoC','')
+    +'</div>';
+  }catch(e){box.innerHTML='<span class="an-hint">Simulation fehlgeschlagen: '+e.message+'</span>';}finally{btn.disabled=false;}}
  document.getElementById('wi-run').addEventListener('click',run);
 })();</script>"""
 
@@ -1749,6 +1749,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .pvconf-card {{ background: #202b36; border-color: #354352; }}
  html.dark .pvconf-metrics {{ color: #97a3ad; }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
  html.dark .pvconf-basis, html.dark .pvconf-note {{ color: #97a3ad; }}
+ .whatif-form {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 12px; }}
+ .wi-field {{ display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #66707a; }}
+ .wi-field select, .wi-field input {{ padding: 6px 9px; border: 1px solid #cfd7df; border-radius: 7px; background: #fff; color: #20252b; font-size: 14px; }}
+ .whatif-form button.primary {{ padding: 8px 16px; }}
+ .whatif-result {{ padding: 0 12px 12px; }}
+ .whatif-head {{ display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }}
+ .whatif-head small {{ color: #75808a; }} .wi-bad {{ color: #d1495b; }}
+ html.dark .wi-field {{ color: #97a3ad; }}
+ html.dark .wi-field select, html.dark .wi-field input {{ background: #202b36; border-color: #354352; color: #e7edf4; }}
+ html.dark .whatif-head small {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 7px; padding: 12px; }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 4px; }}
  .detail-grid > div {{ padding: 8px 9px; border-radius: 7px; background: #f4f7fa; }}

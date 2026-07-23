@@ -222,6 +222,7 @@ def test_whatif_block_only_with_controls_enabled():
     on = SimpleNamespace(dashboard=SimpleNamespace(controls_enabled=True))
     html = _whatif_block(on)
     assert "api/whatif" in html and 'id="whatif-panel"' in html and "wi-run" in html
+    assert 'class="tiles"' in html and "mode-badge" in html   # Kachel-Look statt Tabelle
 
 
 def test_pv_confidence_block_renders_auto_basis():
