@@ -934,6 +934,13 @@ def _panel_level(levels) -> str:
     return worst
 
 
+def _panel_dot(levels) -> str:
+    """Ampel-Punktklasse (.an-dot) für die Panel-Kopfzeile – wie beim
+    Analyse-Panel, damit die Diagnose-Panels denselben Look tragen."""
+    return {"current": "ok", "partial": "warn", "replaced": "bad"}.get(
+        _panel_level(levels), "ok")
+
+
 def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
     """Operative Prognosequalität je Quelle und aktuellem Horizont."""
     if not quality:
@@ -960,10 +967,10 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
             f"<div class='quality-detail'>{_esc(source.get('detail', ''))}"
             f"{issue_text}</div>"
             "</article>")
-    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
-            "<span>Prognosequalität</span><small>verwendete Daten im aktuellen "
-            "Optimierungshorizont</small></summary><div class='quality-grid'>"
-            f"{''.join(items)}</div></details>")
+    return (f'<details class="info-panel"><summary>'
+            f'<span class="an-dot {_panel_dot(levels)}"></span>⌁ Prognosequalität '
+            "<small>verwendete Daten im aktuellen Optimierungshorizont</small>"
+            f"</summary><div class='quality-grid'>{''.join(items)}</div></details>")
 
 
 def _operations_block(solver, execution) -> str:
@@ -1018,10 +1025,10 @@ def _operations_block(solver, execution) -> str:
             "<div class='quality-source'>Plan-Ausführung</div>"
             f"<div class='quality-state'>{_esc(execution.get('message', ''))}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
-    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
-            "<span>Betriebsdiagnose</span>"
-            "<small>Solver und Ergebnisprüfung abgeschlossener Slots</small></summary>"
-            f"<div class='quality-grid'>{''.join(cards)}</div></details>")
+    return (f'<details class="info-panel"><summary>'
+            f'<span class="an-dot {_panel_dot(levels)}"></span>⚙ Betriebsdiagnose '
+            "<small>Solver und Ergebnisprüfung abgeschlossener Slots</small>"
+            f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
 def _thermal_feedback_block(feedback, calibrations) -> str:
@@ -1064,10 +1071,10 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
             f"Thermomodell {_esc(cal.get('name', ''))}</div>"
             f"<div class='quality-state'>{state}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
-    return (f"<details class='forecast-quality lvl-{_panel_level(levels)}'><summary>"
-            "<span>Pool-Rückkopplung"
-            "</span><small>reale Wärmepumpen und Thermomodell</small></summary>"
-            f"<div class='quality-grid'>{''.join(cards)}</div></details>")
+    return (f'<details class="info-panel"><summary>'
+            f'<span class="an-dot {_panel_dot(levels)}"></span>♨ Pool-Rückkopplung '
+            "<small>reale Wärmepumpen und Thermomodell</small>"
+            f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
 def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
@@ -1605,25 +1612,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .daily-price .v {{ color: #147a74; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
- .forecast-quality {{ margin: 10px 0; padding: 0; background: #fff;
-        border: 1px solid #dde4eb; border-radius: 10px; overflow: hidden; }}
- .forecast-quality > summary {{ display: flex; align-items: baseline; gap: 9px;
-        padding: 11px 38px 11px 13px; cursor: pointer; position: relative;
-        font-weight: 700; list-style: none; background: #f7f9fb; }}
- .forecast-quality > summary::-webkit-details-marker {{ display: none; }}
- .forecast-quality > summary::after {{ content: '⌄'; position: absolute;
-        right: 13px; top: 8px; font-size: 18px; transition: transform .16s; }}
- .forecast-quality[open] > summary::after {{ transform: rotate(180deg); }}
- /* Statusfarbe des Panels – auch eingeklappt sichtbar (Akzentrand + Punkt). */
- .forecast-quality > summary::before {{ content: ''; width: 9px; height: 9px;
-        border-radius: 50%; background: #b6bdc5; align-self: center; flex: none; }}
- .forecast-quality.lvl-current > summary::before {{ background: #2ca02c; }}
- .forecast-quality.lvl-partial > summary::before {{ background: #e6a700; }}
- .forecast-quality.lvl-replaced > summary::before {{ background: #d62728; }}
- .forecast-quality > summary small {{ color: #737d87; font-size: 11px;
-        font-weight: 400; }}
+ /* Betriebsdiagnose/Pool-Rückkopplung/Prognosequalität nutzen jetzt den
+    .info-panel-Look; die Statusfarbe steckt im .an-dot der Kopfzeile
+    (wie beim Analyse-Panel). */
  .quality-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr));
-        gap: 7px; padding: 0 12px 12px; }}
+        gap: 7px; padding: 11px 13px 13px; }}
  .quality-item {{ position: relative; min-width: 0; padding: 8px 9px 8px 12px;
         border: 1px solid #dfe5eb; border-left: 4px solid #999;
         border-radius: 8px; background: #f8fafb; }}
@@ -1976,8 +1969,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
  html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
- html.dark .forecast-quality {{ background: #18212b; border-color: #354352; }}
- html.dark .forecast-quality > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
  html.dark .quality-item {{ background: #202b36; border-color: #43515f; }}
  html.dark .quality-item.current {{ background: #173326; border-left-color: #58b879; }}
@@ -1986,9 +1977,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
  html.dark .quality-item.replaced .quality-state {{ color: #f1a29c; }}
- html.dark .forecast-quality.lvl-current > summary::before {{ background: #58b879; }}
- html.dark .forecast-quality.lvl-partial > summary::before {{ background: #d9b83f; }}
- html.dark .forecast-quality.lvl-replaced > summary::before {{ background: #df6c68; }}
  html.dark .banner.ok {{ background: #173326; border-color: #285b40; color: #8fd7a9; }}
  html.dark .banner.warn {{ background: #3a3219; border-color: #6a5925; color: #e1c96b; }}
  html.dark .banner.err {{ background: #402124; border-color: #73383d; color: #f1a29c; }}

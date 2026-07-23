@@ -111,9 +111,10 @@ def test_forecast_quality_block_renders_all_quality_states():
          "state": "vollständig ersetzt", "detail": "alle Slots ersetzt"},
     ])
     assert "Prognosequalität" in html
-    # Panel trägt die Statusfarbe des schlechtesten Items (hier replaced) -
-    # auch im eingeklappten Zustand sichtbar.
-    assert html.startswith("<details class='forecast-quality lvl-replaced'>")
+    # Einheitlicher .info-panel-Look; die Statusfarbe des schlechtesten Items
+    # (hier replaced -> bad) steckt im Ampelpunkt der Kopfzeile.
+    assert html.startswith('<details class="info-panel"><summary>')
+    assert '<span class="an-dot bad">' in html
     assert " open>" not in html
     assert "aktuell" in html and "teilweise ergänzt" in html
     assert "vollständig ersetzt" in html
