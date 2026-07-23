@@ -483,6 +483,28 @@ def _forecast_accuracy_block() -> str:
 })();</script>"""
 
 
+def _battery_health_block() -> str:
+    """Akku-Gesundheit (letzte 30 Tage): äquivalente Vollzyklen, Durchsatz und
+    Verweildauer bei ~100 %/min-SoC. Lädt lazy aus /api/battery-health.json."""
+    return """
+<details class="info-panel battery-health-panel" id="bhealth-panel"><summary>⚡ Akku-Gesundheit <small>Zyklen &amp; Vollstand · 30 Tage</small></summary>
+ <div id="bhealth-body">wird beim Aufklappen geladen …</div>
+</details>
+<script>(function(){
+ const n1=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1}):'–');
+ async function load(){try{let r=await fetch('api/battery-health.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();
+  document.getElementById('bhealth-body').innerHTML='<table class="bhealth-table">'
+   +'<tr><td>Vollzyklen (äquiv.)</td><td>'+n1(d.cycles_equiv)+'</td></tr>'
+   +'<tr><td>Ladedurchsatz</td><td>'+n1(d.throughput_kwh)+' kWh</td></tr>'
+   +'<tr><td>Zeit ~100 %</td><td>'+n1(d.full_hours)+' h ('+n1(d.time_full_pct)+' %)</td></tr>'
+   +'<tr><td>Zeit ~min-SoC</td><td>'+n1(d.empty_hours)+' h ('+n1(d.time_empty_pct)+' %)</td></tr>'
+   +'<tr><td>SoC min/Ø/max</td><td>'+n1(d.soc_min_pct)+' / '+n1(d.soc_avg_pct)+' / '+n1(d.soc_max_pct)+' %</td></tr>'
+   +'</table>';
+ }catch(e){document.getElementById('bhealth-body').textContent='Akku-Gesundheit nicht erreichbar.';}}
+ document.getElementById('bhealth-panel').addEventListener('toggle',function(){if(this.open)load();});
+})();</script>"""
+
+
 def _controls_block(config) -> str:
     """Interaktives Steuerpanel (nur bei dashboard.controls_enabled): Lasten
     an/aus + Kernparameter/Leistungskurve, Optimierungsmodus und Akku-Handbetrieb.
@@ -1903,6 +1925,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
 {_forecast_accuracy_block()}
 {_savings_history_block()}
+{_battery_health_block()}
 {_events_block()}
 {report_html}
 <script>(function(){{

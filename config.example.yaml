@@ -287,6 +287,11 @@ house_battery:
   # AC-Laden (Netz) läuft zusätzlich durch den Wechselrichter -> real
   # schlechter als DC-Laden. Weglassen = wie charge_efficiency.
   ac_charge_efficiency: 0.92
+  # Zellschonung (optional): sanfte Strafe je kWh·h, die der SoC oberhalb der
+  # Schwelle gehalten wird. Macht langes Verweilen bei ~100 % leicht
+  # unattraktiv, ohne die Ökonomie umzuwerfen. 0 = aus (Default, unverändert).
+  full_hold_penalty_ct_kwh: 0.0
+  full_hold_soc_threshold_percent: 95.0
 
 # -----------------------------------------------------------------------------
 # Wechselrichter

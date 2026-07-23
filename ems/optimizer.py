@@ -1033,6 +1033,21 @@ class Optimizer:
             for t in range(N):
                 cost_terms.append(0.5 * pen * (dc[t] + ac[t] + dis[t]) * kwh)
 
+        # Zellschonung (optional, Default aus): sanfte Strafe je kWh·h, die der
+        # SoC oberhalb der Schwelle gehalten wird -> langes Verweilen bei ~100 %
+        # wird leicht unattraktiv, ohne die Ökonomie umzuwerfen. Slack hold[t] >=
+        # soc(Slotende) - Schwelle. Nur bei pen>0 gebaut -> sonst 0 zusätzliche
+        # Variablen und exakt unverändertes Verhalten.
+        hold_pen = max(0.0, float(getattr(hb, "full_hold_penalty_ct_kwh", 0.0)))
+        if hold_pen > 0.0:
+            hold_thr = (max(0.0, min(100.0, float(getattr(
+                hb, "full_hold_soc_threshold_percent", 95.0))))
+                / 100.0 * hb.capacity_wh)
+            hold = [pulp.LpVariable(f"hold_{t}", 0) for t in range(N)]
+            for t in range(N):
+                prob += hold[t] >= soc[t + 1] - hold_thr   # Slotende-SoC
+            cost_terms.append(hold_pen * pulp.lpSum(hold) * kwh)
+
         # Auto-Ziel-Verfehlung bestrafen (weiche Nebenbedingung, s.o.)
         if car_short:
             cost_terms.append(cfg.optimization.car_target_penalty_ct_kwh *

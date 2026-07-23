@@ -121,6 +121,11 @@ class HouseBatteryConfig:
     ac_charge_efficiency: Optional[float] = None
     # physikalische Gesamt-Ladeleistung (DC + AC zusammen). None -> max(dc, ac)
     max_charge_w: Optional[float] = None
+    # Zellschonung: sanfte Strafe je kWh·h, die der SoC OBERHALB der Schwelle
+    # gehalten wird (langes Verweilen bei ~100 % altert die Zellen). 0 = aus
+    # (Default, Verhalten exakt unverändert). Getrennt von der Zyklenstrafe.
+    full_hold_penalty_ct_kwh: float = 0.0
+    full_hold_soc_threshold_percent: float = 95.0
 
     @property
     def eff_ac_charge(self) -> float:
@@ -1084,6 +1089,9 @@ def load_config(path: str) -> Config:
         ac_charge_efficiency=(float(hb["ac_charge_efficiency"])
                               if hb.get("ac_charge_efficiency") is not None else None),
         max_charge_w=(float(hb["max_charge_w"]) if hb.get("max_charge_w") is not None else None),
+        full_hold_penalty_ct_kwh=float(hb.get("full_hold_penalty_ct_kwh", 0.0)),
+        full_hold_soc_threshold_percent=float(
+            hb.get("full_hold_soc_threshold_percent", 95.0)),
     )
 
     inv = raw["inverter"]

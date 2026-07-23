@@ -207,3 +207,7 @@ def test_forecast_accuracy_and_savings_panels_are_lazy():
     sv = _savings_history_block()
     assert "api/savings-history.json" in sv and 'id="savings-panel"' in sv
     assert "toggle" in sv
+    from ems.dashboard import _battery_health_block
+    bh = _battery_health_block()
+    assert "api/battery-health.json" in bh and 'id="bhealth-panel"' in bh
+    assert "toggle" in bh

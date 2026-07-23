@@ -396,6 +396,31 @@ def test_raw_spot_not_retail_price_controls_negative_export_rule():
     assert float(result.table["pv_curtail_w"].sum()) > TOL
 
 
+def test_full_hold_penalty_reduces_time_at_high_soc():
+    """#4b: die optionale Voll-Verweil-Strafe (Zellschonung) senkt die über der
+    Schwelle gehaltene SoC-Energie; Default 0 lässt das Verhalten unverändert."""
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 9000)
+
+    def above95(cfg):
+        r = Optimizer(cfg, store_warm=False).solve(
+            _inputs(idx, pv=pv, load=400.0, price=30.0, feedin=8.0, soc=1500.0))
+        assert not r.infeasible
+        soc = pd.to_numeric(r.table["house_soc_percent"], errors="coerce")
+        return float((soc.clip(lower=95.0) - 95.0).sum())
+
+    base_cfg = make_config()
+    base_cfg.optimization.charge_strategy = "asap"
+    base = above95(base_cfg)
+    assert base > 0.0                                  # Szenario füllt den Akku
+
+    pen_cfg = make_config()
+    pen_cfg.optimization.charge_strategy = "asap"
+    pen_cfg.house_battery.full_hold_penalty_ct_kwh = 20.0
+    pen_cfg.house_battery.full_hold_soc_threshold_percent = 95.0
+    assert above95(pen_cfg) < base                     # Strafe verkürzt Vollstand
+
+
 def test_negative_export_rule_off_without_real_spot_series():
     """P2#5: ohne echte Spot-Reihe greift die Negativpreis-Regel NICHT (wie in
     der Ersparnis-Abrechnung). Ein negativer RETAIL-Preis allein darf keine

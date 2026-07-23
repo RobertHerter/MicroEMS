@@ -2,7 +2,10 @@
 und Prognosegüte – reine Leser/Aggregatoren über die lokale Historie."""
 from __future__ import annotations
 
-from ems.observability import _metrics, _wape, forecast_accuracy, savings_over_time
+import pandas as pd
+
+from ems.observability import (_metrics, _wape, battery_health,
+                               forecast_accuracy, savings_over_time)
 from tests.test_synthetic import make_config
 
 
@@ -45,6 +48,32 @@ def test_savings_over_time_empty(tmp_path):
     out = savings_over_time(str(tmp_path / "leer.sqlite"))
     assert out == {"days": 0, "total_saved_eur": 0.0,
                    "daily": [], "weekly": [], "monthly": []}
+
+
+def test_battery_health_from_actuals(tmp_path):
+    """Durchsatz/äquiv. Vollzyklen und Vollstand-Verweildauer aus den Ist-Werten."""
+    from ems.local_history import write_actuals
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    db = cfg.e3dc_rscp.history_db_path
+    step = pd.Timedelta(minutes=cfg.general.slot_minutes)
+    now = pd.Timestamp.now(tz=cfg.general.timezone).floor(step)
+    for i in range(8):                              # 4x laden, SoC ab Slot 2 = 100 %
+        write_actuals(db, now - step * (8 - i), {
+            "battery_w": 2000.0 if i < 4 else 0.0,
+            "soc_percent": 100.0 if i >= 2 else 50.0,
+            "pv_w": 0.0, "house_load_w": 0.0, "grid_w": 0.0})
+    h = battery_health(cfg, days=1)
+    assert h["n"] == 8
+    assert h["throughput_kwh"] > 0.0 and h["cycles_equiv"] >= 0.0
+    assert h["soc_max_pct"] == 100.0 and h["time_full_pct"] == 75.0
+
+
+def test_battery_health_empty(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "leer.sqlite")
+    h = battery_health(cfg, days=7)
+    assert h["n"] == 0 and h["throughput_kwh"] is None
 
 
 def test_forecast_accuracy_graceful_on_empty_history(tmp_path):

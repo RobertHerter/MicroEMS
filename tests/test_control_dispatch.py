@@ -166,6 +166,7 @@ def test_resolve_get_route_assets_live_status(tmp_path):
     assert r("/report.json") == ("file", "report")
     assert r("/api/savings-history.json") == ("status", "/api/savings-history.json")
     assert r("/api/forecast-accuracy.json") == ("status", "/api/forecast-accuracy.json")
+    assert r("/api/battery-health.json") == ("status", "/api/battery-health.json")
     assert r("/index.html") is None                       # -> statische Datei
 
 
@@ -176,6 +177,8 @@ def test_status_api_payload_observability(tmp_path):
     obj, code = m._status_api_payload("/api/forecast-accuracy.json", cfg)
     assert code == 200 and "7d" in obj and "30d" in obj
     assert obj["7d"]["pv"]["n"] == 0 and obj["7d"]["load"]["n"] == 0
+    obj, code = m._status_api_payload("/api/battery-health.json", cfg)
+    assert code == 200 and obj["n"] == 0 and "cycles_equiv" in obj
 
 
 def test_resolve_get_route_battery_schedule_and_data_gating(tmp_path):

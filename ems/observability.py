@@ -75,6 +75,43 @@ def savings_over_time(db: str, start_day: Optional[str] = None) -> dict:
             "daily": daily, "weekly": weekly, "monthly": monthly}
 
 
+def battery_health(config, days: int = 30) -> dict:
+    """Akku-Gesundheit aus den Ist-Werten: Ladeenergie-Durchsatz und äquivalente
+    Vollzyklen sowie Verweildauer bei ~100 %/~min-SoC (langes Vollstehen altert
+    die Zellen). Rein lesend über die actuals-Tabelle."""
+    from .local_history import read_actual
+    db = config.e3dc_rscp.history_db_path
+    tz = config.general.timezone
+    hb = config.house_battery
+    cap = float(hb.capacity_wh)
+    dt = config.general.slot_minutes / 60.0
+    now = pd.Timestamp.now(tz=tz)
+    start = now - pd.Timedelta(days=int(days))
+    soc = read_actual(db, "soc", start, now, tz).dropna()
+    batt = read_actual(db, "battery_w", start, now, tz).dropna()
+    out = {"days": int(days), "n": int(len(soc)),
+           "throughput_kwh": None, "cycles_equiv": None,
+           "full_hours": None, "empty_hours": None,
+           "time_full_pct": None, "time_empty_pct": None,
+           "soc_min_pct": None, "soc_avg_pct": None, "soc_max_pct": None}
+    if not batt.empty and cap > 0:
+        charge_wh = float(batt.clip(lower=0.0).sum()) * dt   # nur Laden zählt
+        out["throughput_kwh"] = round(charge_wh / 1000.0, 1)
+        out["cycles_equiv"] = round(charge_wh / cap, 1)
+    if not soc.empty:
+        full_mask = soc >= 99.0
+        empty_mask = soc <= float(hb.min_soc_percent) + 1.0
+        out.update(
+            full_hours=round(float(full_mask.sum()) * dt, 1),
+            empty_hours=round(float(empty_mask.sum()) * dt, 1),
+            time_full_pct=round(100.0 * float(full_mask.mean()), 1),
+            time_empty_pct=round(100.0 * float(empty_mask.mean()), 1),
+            soc_min_pct=round(float(soc.min()), 1),
+            soc_avg_pct=round(float(soc.mean()), 1),
+            soc_max_pct=round(float(soc.max()), 1))
+    return out
+
+
 def _load_accuracy(config, start, now) -> dict:
     """Rollierende Last-Prognosegüte: je Tag den vor Tagesbeginn gültigen
     Optimierer-Snapshot gegen die real gemessene Hauslast stellen."""
