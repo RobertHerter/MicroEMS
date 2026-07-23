@@ -1006,6 +1006,56 @@ def _status_api_payload(path: str, config):
     return None
 
 
+def _resolve_post_route(path: str, config):
+    """Reine POST-Routing-/Gating-Entscheidung (ohne Body/IO): was der Handler
+    ausführt. Deskriptor:
+      ('control', action) | ('ingest', kind) | ('error', code, message).
+    Gating über dashboard.controls_enabled / dashboard.ingest_enabled – so ist
+    das Freigabe-Verhalten (403) ohne HTTP-Server testbar."""
+    if path.startswith("/api/control/"):
+        if not getattr(config.dashboard, "controls_enabled", False):
+            return ("error", 403, "Steuerung deaktiviert (dashboard.controls_enabled)")
+        return ("control", path[len("/api/control/"):].strip("/"))
+    if not getattr(config.dashboard, "ingest_enabled", False):
+        return ("error", 403, "Ingest deaktiviert (dashboard.ingest_enabled)")
+    if not path.startswith("/api/ingest/"):
+        return ("error", 404, "Nur /api/ingest/<kind> oder /api/control/<action>")
+    return ("ingest", path[len("/api/ingest/"):].strip("/"))
+
+
+def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
+    """Reine GET-Routing-Entscheidung (ohne IO): welchen Endpoint der Handler
+    bedient. Deskriptor:
+      ('raw', 'manifest'|'icon'|'sw') | ('live',) | ('status', path) |
+      ('json', obj, code) | ('schedule',) | ('file', 'data'|'report') |
+      ('version',) | None (statische Datei / Index).
+    Enthält das Gating für battery-schedule (controls_enabled / Runner
+    vorhanden) und api_data.json (api_enabled) – ohne Socket/Datei-IO."""
+    if path == "/manifest.webmanifest":
+        return ("raw", "manifest")
+    if path == "/app-icon.svg":
+        return ("raw", "icon")
+    if path == "/sw.js":
+        return ("raw", "sw")
+    if path == "/api/live.json":
+        return ("live",)
+    if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json"):
+        return ("status", path)
+    if path == "/api/battery-schedule.json":
+        if not getattr(config.dashboard, "controls_enabled", False):
+            return ("json", {"status": "disabled"}, 403)
+        if not has_schedule_runner:
+            return ("json", {"status": "unavailable"}, 503)
+        return ("schedule",)
+    if getattr(config.dashboard, "api_enabled", False) and path == "/api/data.json":
+        return ("file", "data")
+    if path == "/version":
+        return ("version",)
+    if path == "/report.json":
+        return ("file", "report")
+    return None
+
+
 CONTROL_COLS = [
     # E3DC-Steuerbefehle (Limits nur bei Abweichung vom Eigenverbrauch):
     "batt_charge_limit_w", "batt_discharge_limit_w",
@@ -2795,12 +2845,13 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             if not self._authed():
                 return
             path = self.path.split("?")[0]
+            route = _resolve_post_route(path, config)
+            if route[0] == "error":
+                self.send_error(route[1], route[2])
+                return
             # Interaktive Steuerung (/api/control/<action>): Lasten, Modus, Akku.
-            if path.startswith("/api/control/"):
-                if not getattr(config.dashboard, "controls_enabled", False):
-                    self.send_error(403, "Steuerung deaktiviert (dashboard.controls_enabled)")
-                    return
-                action = path[len("/api/control/"):].strip("/")
+            if route[0] == "control":
+                action = route[1]
                 try:
                     payload = self._body_json()
                     result = _handle_control(action, payload)
@@ -2828,13 +2879,7 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 self._reply({"status": "ok", "action": action, "result": result})
                 return
             # Ingest-API: Live-/Historienwerte extern einspielen (ohne RSCP/Influx).
-            if not getattr(config.dashboard, "ingest_enabled", False):
-                self.send_error(403, "Ingest deaktiviert (dashboard.ingest_enabled)")
-                return
-            if not path.startswith("/api/ingest/"):
-                self.send_error(404, "Nur /api/ingest/<kind> oder /api/control/<action>")
-                return
-            kind = path[len("/api/ingest/"):].strip("/")
+            kind = route[1]
             try:
                 length = int(self.headers.get("Content-Length", 0) or 0)
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -2853,97 +2898,81 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_file(self, path, content_type, not_found, disposition=None):
+            try:
+                with open(path, "rb") as fh:
+                    body = fh.read()
+            except OSError:
+                self.send_error(404, not_found)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            if disposition:
+                self.send_header("Content-Disposition", disposition)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             if not self._authed():
                 return
-
             path = self.path.split("?")[0]
-            if path == "/manifest.webmanifest":
-                self._raw_reply(pwa_manifest,
-                                "application/manifest+json; charset=utf-8")
-                return
-            if path == "/app-icon.svg":
-                self._raw_reply(pwa_icon, "image/svg+xml; charset=utf-8",
-                                "public, max-age=86400")
-                return
-            if path == "/sw.js":
-                self._raw_reply(service_worker,
-                                "application/javascript; charset=utf-8")
-                return
-
-            # Leichtgewichtige E3/DC-Livewerte für die Kacheln. Die Abfrage
-            # startet weder Optimierer noch Dashboard-Neugenerierung.
-            if path == "/api/live.json":
-                data = _read_dashboard_live()
-                if data is None:
-                    self._reply({"status": "unavailable"}, 503)
-                else:
-                    self._reply(data)
-                return
-
-            # Reine Status-JSON-Endpoints (status/mode-comparison/events) – das
-            # Routing + der Payload liegen modulweit in _status_api_payload und
-            # sind dort direkt testbar; hier nur noch ausliefern.
-            _status = _status_api_payload(path, config)
-            if _status is not None:
-                self._reply(_status[0], _status[1])
-                return
-
-            if path == "/api/battery-schedule.json":
-                if not getattr(config.dashboard, "controls_enabled", False):
-                    self._reply({"status": "disabled"}, 403)
-                elif schedule_runner is None:
-                    self._reply({"status": "unavailable"}, 503)
-                else:
+            # Routing + Gating (ohne IO) modulweit in _resolve_get_route -> dort
+            # testbar; hier nur noch mit den Laufzeit-Ressourcen ausführen.
+            route = _resolve_get_route(
+                path, config, has_schedule_runner=schedule_runner is not None)
+            if route is not None:
+                kind = route[0]
+                if kind == "raw":
+                    asset = {
+                        "manifest": (pwa_manifest,
+                                     "application/manifest+json; charset=utf-8", "no-cache"),
+                        "icon": (pwa_icon, "image/svg+xml; charset=utf-8",
+                                 "public, max-age=86400"),
+                        "sw": (service_worker,
+                               "application/javascript; charset=utf-8", "no-cache"),
+                    }[route[1]]
+                    self._raw_reply(asset[0], asset[1], asset[2])
+                    return
+                if kind == "live":
+                    # E3/DC-Livewerte für die Kacheln (startet keinen Optimierer).
+                    data = _read_dashboard_live()
+                    self._reply(data if data is not None else {"status": "unavailable"},
+                                200 if data is not None else 503)
+                    return
+                if kind == "status":
+                    obj, code = _status_api_payload(route[1], config)
+                    self._reply(obj, code)
+                    return
+                if kind == "json":
+                    self._reply(route[1], route[2])
+                    return
+                if kind == "schedule":
                     self._reply(schedule_runner.snapshot())
-                return
-
-            # API Endpunkt für Optimierungsdaten
-            if getattr(config.dashboard, "api_enabled", False) and path == "/api/data.json":
-                api_path = os.path.join(directory, "api_data.json")
-                try:
-                    with open(api_path, "rb") as fh:
-                        body = fh.read()
-                except OSError:
-                    self.send_error(404, "Noch keine API-Daten vorhanden")
                     return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-
-            # Leichtgewichtiger Versions-Endpunkt: mtime der Dashboard-Datei.
-            # Die Seite pollt diesen und lädt bei Änderung (neue Berechnung) neu.
-            if path in ("/version",):
-                try:
-                    body = ("%.0f" % os.path.getmtime(out)).encode()
-                except OSError:
-                    body = b"0"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            # Debug-Schnappschuss als Download (Button im Dashboard).
-            if path == "/report.json":
-                try:
-                    with open(snap_path, "rb") as fh:
-                        body = fh.read()
-                except OSError:
-                    self.send_error(404, "Noch kein Debug-Schnappschuss vorhanden")
+                if kind == "version":
+                    # mtime der Dashboard-Datei; die Seite pollt und lädt bei Änderung neu.
+                    try:
+                        body = ("%.0f" % os.path.getmtime(out)).encode()
+                    except OSError:
+                        body = b"0"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Disposition",
-                                 'attachment; filename="last_run_debug.json"')
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
+                if kind == "file" and route[1] == "data":
+                    self._send_file(os.path.join(directory, "api_data.json"),
+                                    "application/json; charset=utf-8",
+                                    "Noch keine API-Daten vorhanden")
+                    return
+                if kind == "file" and route[1] == "report":
+                    self._send_file(snap_path, "application/json; charset=utf-8",
+                                    "Noch kein Debug-Schnappschuss vorhanden",
+                                    'attachment; filename="last_run_debug.json"')
+                    return
             if self.path in ("/", "/index.html", "/dashboard", "/dashboard.html"):
                 self.path = "/" + fname
             return super().do_GET()

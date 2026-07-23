@@ -126,6 +126,56 @@ def test_status_api_payload_status_and_events(tmp_path):
     assert m._status_api_payload("/index.html", cfg) is None   # kein Status-Pfad
 
 
+def test_resolve_post_route_gating(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.dashboard.controls_enabled = True
+    cfg.dashboard.ingest_enabled = True
+    assert m._resolve_post_route("/api/control/mode", cfg) == ("control", "mode")
+    assert m._resolve_post_route("/api/ingest/live", cfg) == ("ingest", "live")
+    # Gating: Steuerung/Ingest deaktiviert -> 403
+    cfg.dashboard.controls_enabled = False
+    assert m._resolve_post_route("/api/control/mode", cfg)[:2] == ("error", 403)
+    cfg.dashboard.ingest_enabled = False
+    assert m._resolve_post_route("/api/ingest/live", cfg)[:2] == ("error", 403)
+    # Ingest an, aber unbekannter Pfad -> 404
+    cfg.dashboard.ingest_enabled = True
+    assert m._resolve_post_route("/api/anderes", cfg)[:2] == ("error", 404)
+
+
+def test_resolve_get_route_assets_live_status(tmp_path):
+    cfg = _cfg(tmp_path)
+    r = lambda p: m._resolve_get_route(p, cfg, has_schedule_runner=True)
+    assert r("/manifest.webmanifest") == ("raw", "manifest")
+    assert r("/app-icon.svg") == ("raw", "icon")
+    assert r("/sw.js") == ("raw", "sw")
+    assert r("/api/live.json") == ("live",)
+    assert r("/api/status.json") == ("status", "/api/status.json")
+    assert r("/version") == ("version",)
+    assert r("/report.json") == ("file", "report")
+    assert r("/index.html") is None                       # -> statische Datei
+
+
+def test_resolve_get_route_battery_schedule_and_data_gating(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.dashboard.controls_enabled = False
+    assert m._resolve_get_route("/api/battery-schedule.json", cfg,
+                                has_schedule_runner=True) == (
+        "json", {"status": "disabled"}, 403)
+    cfg.dashboard.controls_enabled = True
+    assert m._resolve_get_route("/api/battery-schedule.json", cfg,
+                                has_schedule_runner=False) == (
+        "json", {"status": "unavailable"}, 503)
+    assert m._resolve_get_route("/api/battery-schedule.json", cfg,
+                                has_schedule_runner=True) == ("schedule",)
+    # api_data.json nur bei api_enabled
+    cfg.dashboard.api_enabled = False
+    assert m._resolve_get_route("/api/data.json", cfg,
+                                has_schedule_runner=True) is None
+    cfg.dashboard.api_enabled = True
+    assert m._resolve_get_route("/api/data.json", cfg,
+                                has_schedule_runner=True) == ("file", "data")
+
+
 def test_status_api_payload_mode_comparison(tmp_path):
     cfg = _cfg(tmp_path)
     with m._runtime_lock:
