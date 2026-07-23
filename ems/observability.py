@@ -75,6 +75,55 @@ def savings_over_time(db: str, start_day: Optional[str] = None) -> dict:
             "daily": daily, "weekly": weekly, "monthly": monthly}
 
 
+def savings_drivers(config, days: int = 30) -> dict:
+    """Treiber des Nutzens aus den Ist-Werten (kein exakter €-Split, sondern die
+    physikalischen Hebel): Eigenverbrauchsquote, Autarkiegrad und die – idealer-
+    weise vermiedene – Einspeisung bei negativem Börsenpreis. Rein lesend über
+    actuals (+ spot_price für den Negativpreis-Anteil)."""
+    from .local_history import read_actual, read_spot
+    db = config.e3dc_rscp.history_db_path
+    tz = config.general.timezone
+    dt = config.general.dt_hours
+    now = pd.Timestamp.now(tz=tz)
+    start = now - pd.Timedelta(days=int(days))
+    pv = read_actual(db, "pv_w", start, now, tz).dropna()
+    grid = read_actual(db, "grid_w", start, now, tz).dropna()   # +Bezug / -Einspeisung
+    house = read_actual(db, "house_w", start, now, tz).dropna()
+    out = {"days": int(days), "n": int(len(grid)), "pv_kwh": None,
+           "self_consumed_kwh": None, "self_consumption_pct": None,
+           "autarky_pct": None, "import_kwh": None, "export_kwh": None,
+           "negative_price_export_kwh": None}
+    if grid.empty:
+        return out
+    imp = grid.clip(lower=0.0)
+    exp = (-grid).clip(lower=0.0)
+    to_kwh = lambda s: float(s.sum()) * dt / 1000.0
+    import_kwh, export_kwh = to_kwh(imp), to_kwh(exp)
+    out["import_kwh"] = round(import_kwh, 1)
+    out["export_kwh"] = round(export_kwh, 1)
+    if not pv.empty:
+        pv_kwh = to_kwh(pv.clip(lower=0.0))
+        self_c = max(0.0, pv_kwh - export_kwh)          # lokal genutzte PV
+        out["pv_kwh"] = round(pv_kwh, 1)
+        out["self_consumed_kwh"] = round(self_c, 1)
+        out["self_consumption_pct"] = (round(100.0 * self_c / pv_kwh, 1)
+                                       if pv_kwh > 0.1 else None)
+    if not house.empty:
+        load_kwh = to_kwh(house.clip(lower=0.0))
+        if load_kwh > 0.1:
+            out["autarky_pct"] = round(
+                100.0 * max(0.0, load_kwh - import_kwh) / load_kwh, 1)
+    try:
+        spot = read_spot(db, start, now, tz, config.general.slot_minutes)
+        neg = spot.reindex(exp.index).astype(float) < 0.0
+        if neg.any():
+            out["negative_price_export_kwh"] = round(
+                float(exp[neg.fillna(False)].sum()) * dt / 1000.0, 2)
+    except Exception:
+        pass
+    return out
+
+
 def battery_health(config, days: int = 30) -> dict:
     """Akku-Gesundheit aus den Ist-Werten: Ladeenergie-Durchsatz und äquivalente
     Vollzyklen sowie Verweildauer bei ~100 %/~min-SoC (langes Vollstehen altert

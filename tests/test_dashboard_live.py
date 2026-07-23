@@ -211,6 +211,11 @@ def test_analysis_block_bundles_all_three_lazily():
     assert "api/savings-history.json" in an
     assert "api/battery-health.json" in an
     assert 'class="tiles"' in an and "toggle" in an   # Kachel-Look, lazy
+    assert 'id="an-spark"' in an and 'id="an-drivers"' in an  # Sparkline + Treiber
+    # Server-seitige Titel-Kennzahl + Ampel (eingeklappt sichtbar)
+    with_head = _analysis_block({"status": "warn", "text": "Ersparnis 12,00 € · 3 Tage"})
+    assert '<span class="an-dot warn">' in with_head
+    assert "Ersparnis 12,00 € · 3 Tage" in with_head
 
 
 def test_whatif_block_only_with_controls_enabled():

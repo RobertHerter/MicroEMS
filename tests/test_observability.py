@@ -3,9 +3,11 @@ und Prognosegüte – reine Leser/Aggregatoren über die lokale Historie."""
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from ems.observability import (_metrics, _wape, battery_health,
-                               forecast_accuracy, savings_over_time)
+                               forecast_accuracy, savings_drivers,
+                               savings_over_time)
 from tests.test_synthetic import make_config
 
 
@@ -67,6 +69,27 @@ def test_battery_health_from_actuals(tmp_path):
     assert h["n"] == 8
     assert h["throughput_kwh"] > 0.0 and h["cycles_equiv"] >= 0.0
     assert h["soc_max_pct"] == 100.0 and h["time_full_pct"] == 75.0
+
+
+def test_savings_drivers_from_actuals(tmp_path):
+    """#5: Treiber (Eigenverbrauch/Autarkie) aus den Ist-Werten."""
+    from ems.local_history import write_actuals
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    db = cfg.e3dc_rscp.history_db_path
+    step = pd.Timedelta(minutes=cfg.general.slot_minutes)
+    now = pd.Timestamp.now(tz=cfg.general.timezone).floor(step)
+    for i in range(4):                     # PV 2000, Last 500, Einspeisung 1000 W
+        write_actuals(db, now - step * (4 - i), {
+            "pv_w": 2000.0, "house_load_w": 500.0, "grid_w": -1000.0,
+            "battery_w": 0.0, "soc_percent": 80.0})
+    d = savings_drivers(cfg, days=1)
+    assert d["n"] == 4
+    assert d["pv_kwh"] == pytest.approx(2.0) and d["export_kwh"] == pytest.approx(1.0)
+    assert d["self_consumed_kwh"] == pytest.approx(1.0)
+    assert d["self_consumption_pct"] == pytest.approx(50.0)
+    assert d["import_kwh"] == pytest.approx(0.0)
+    assert d["autarky_pct"] == pytest.approx(100.0)   # kein Netzbezug
 
 
 def test_battery_health_empty(tmp_path):

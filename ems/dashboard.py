@@ -447,16 +447,26 @@ def _events_block() -> str:
 })();</script>"""
 
 
-def _analysis_block() -> str:
-    """Zusammengefasstes Analyse-Panel (Prognosegüte, Ersparnis-Verlauf,
-    Akku-Gesundheit) als Stat-Kacheln im Live-Kachel-Look. Lädt alle drei
-    Endpoints lazy beim Aufklappen (die Prognosegüte rechnet kurz)."""
-    return """
-<details class="info-panel analysis-panel" id="analysis-panel"><summary>◴ Analyse &amp; Gesundheit <small>Prognosegüte · Ersparnis · Akku</small></summary>
+def _analysis_block(headline=None) -> str:
+    """Zusammengefasstes Analyse-Panel (Prognosegüte, Ersparnis inkl. Verlaufs-
+    Sparkline + Treiber, Akku-Gesundheit) als Stat-Kacheln. Lädt lazy beim
+    Aufklappen. `headline` (server-seitig, günstig) zeigt schon im eingeklappten
+    Titel die Gesamt-Ersparnis + eine Status-Ampel."""
+    if headline:
+        summary = ('<summary><span class="an-dot ' + _esc(headline.get("status", "ok"))
+                   + '"></span>◴ Analyse &amp; Gesundheit <small>'
+                   + _esc(headline.get("text", "")) + '</small></summary>')
+    else:
+        summary = ('<summary>◴ Analyse &amp; Gesundheit '
+                   '<small>Prognosegüte · Ersparnis · Akku</small></summary>')
+    body = """
  <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
  <div class="tiles" id="an-facc"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
  <h4>Ersparnis-Verlauf <small>validiert gegen die Zähler</small></h4>
  <div class="tiles" id="an-savings"><span class="an-hint">wird geladen …</span></div>
+ <div class="sparkline" id="an-spark"></div>
+ <h4>Treiber <small>Eigenverbrauch · Autarkie · Negativpreis · 30 Tage</small></h4>
+ <div class="tiles" id="an-drivers"></div>
  <h4>Akku-Gesundheit <small>letzte 30 Tage</small></h4>
  <div class="tiles" id="an-bhealth"><span class="an-hint">wird geladen …</span></div>
 </details>
@@ -471,11 +481,18 @@ def _analysis_block() -> str:
    +tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')
    +tile((pv.source||'–'),'PV-Quelle','n='+((pv.n)||0)+' Slots');
  }catch(e){fail('an-facc','Prognosegüte nicht erreichbar.');}}
- async function savings(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let days=d.days||0,avg=days?d.total_saved_eur/days:null,wk=(d.weekly||[]).slice(-1)[0];
+ function spark(weekly){var wk=(weekly||[]).slice(-12);if(!wk.length){g('an-spark').innerHTML='<span class="an-hint">noch keine Wochendaten</span>';return;}
+  var mx=Math.max(1,...wk.map(x=>Math.abs(x.saved_eur)||0));
+  g('an-spark').innerHTML=wk.map(x=>'<span class="bar'+((x.saved_eur||0)<0?' neg':'')+'" style="height:'+Math.max(4,Math.round(100*Math.abs(x.saved_eur||0)/mx))+'%" title="'+x.period+': '+eur(x.saved_eur)+' €"></span>').join('');}
+ async function savings(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let days=d.days||0,avg=days?d.total_saved_eur/days:null,wk=(d.weekly||[]).slice(-1)[0],dr=d.drivers||{};
   g('an-savings').innerHTML=tile(eur(d.total_saved_eur)+' €','Gesamt',days+' validierte Tage')
    +tile(eur(avg)+' €','Ø je Tag','')
    +tile(wk?eur(wk.saved_eur)+' €':'–','Letzte Woche',wk?wk.period:'noch keine');
- }catch(e){fail('an-savings','Ersparnis-Verlauf nicht erreichbar.');}}
+  spark(d.weekly);
+  g('an-drivers').innerHTML=tile(num(dr.self_consumption_pct)+' %','Eigenverbrauch',num(dr.self_consumed_kwh)+' / '+num(dr.pv_kwh)+' kWh PV')
+   +tile(num(dr.autarky_pct)+' %','Autarkie','Netzbezug '+num(dr.import_kwh)+' kWh')
+   +tile(num(dr.negative_price_export_kwh,2)+' kWh','Einspeisung @Neg.-Preis','möglichst 0');
+ }catch(e){fail('an-savings','Ersparnis-Verlauf nicht erreichbar.');g('an-drivers').innerHTML='';}}
  async function bhealth(){try{let r=await fetch('api/battery-health.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();
   g('an-bhealth').innerHTML=tile(num(d.cycles_equiv),'Vollzyklen','äquiv. · '+num(d.throughput_kwh)+' kWh Durchsatz')
    +tile(num(d.time_full_pct)+' %','Zeit ~100 %',num(d.full_hours)+' h')
@@ -485,6 +502,8 @@ def _analysis_block() -> str:
  let done=false;
  g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;facc();savings();bhealth();}});
 })();</script>"""
+    return ('<details class="info-panel analysis-panel" id="analysis-panel">'
+            + summary + body)
 
 
 def _whatif_block(config) -> str:
@@ -1052,6 +1071,26 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     x = t.index
     now = pd.Timestamp.now(tz=x.tz)
     load_temp_actual = load_temp_actual or {}
+
+    # Günstige Kennzahl für den (eingeklappten) Analyse-Panel-Titel + Ampel:
+    # Gesamt-Ersparnis (kleine Tabelle) und Akku-Vollstand-Anteil (Ist-Werte).
+    analysis_headline = None
+    try:
+        from .observability import battery_health, savings_over_time
+        _sv = savings_over_time(config.e3dc_rscp.history_db_path)
+        _bh = battery_health(config, days=30)
+        _full = _bh.get("time_full_pct")
+        _txt = ("Ersparnis %s € · %d Tage" % (
+            f"{_sv.get('total_saved_eur', 0.0):.2f}".replace(".", ","),
+            int(_sv.get("days", 0))))
+        if isinstance(_full, (int, float)):
+            _txt += " · Akku %.0f %% Zeit voll" % _full
+        analysis_headline = {
+            "status": ("warn" if isinstance(_full, (int, float)) and _full >= 25.0
+                       else "ok"),
+            "text": _txt}
+    except Exception as exc:  # Analyse-Kennzahl darf den Build nie stören
+        log.debug("Analyse-Headline nicht berechenbar: %s", exc)
 
     loads_cfg = list(getattr(config, "controllable_loads", []) or [])
     has_loads = len(loads_cfg) > 0
@@ -1734,6 +1773,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
+ .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
+ .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
+ .sparkline {{ display: flex; align-items: flex-end; gap: 3px; height: 46px; padding: 0 12px 12px; }}
+ .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
+ .sparkline .bar.neg {{ background: #d1495b; }}
  .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 10px; padding: 12px; }}
  .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: 10px 11px; }}
  .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }}
@@ -2014,7 +2058,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
 {_pv_confidence_block(auto_peak_basis)}
 {_whatif_block(config)}
-{_analysis_block()}
+{_analysis_block(analysis_headline)}
 {_events_block()}
 {report_html}
 <script>(function(){{

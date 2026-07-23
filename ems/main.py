@@ -1138,8 +1138,10 @@ def _status_api_payload(path: str, config):
         return {"events": read_dashboard_events(
             config.e3dc_rscp.history_db_path, config.general.timezone, 50)}, 200
     if path == "/api/savings-history.json":
-        from .observability import savings_over_time
-        return savings_over_time(config.e3dc_rscp.history_db_path), 200
+        from .observability import savings_drivers, savings_over_time
+        payload = savings_over_time(config.e3dc_rscp.history_db_path)
+        payload["drivers"] = savings_drivers(config, days=30)
+        return payload, 200
     if path == "/api/forecast-accuracy.json":
         from .observability import forecast_accuracy
         return {"7d": forecast_accuracy(config, days=7),
