@@ -23,6 +23,7 @@ import os
 import signal
 import threading
 import time as _time
+from collections import deque
 from datetime import timedelta
 
 import numpy as np
@@ -883,6 +884,31 @@ def _apply_curtailment_and_control(e3dc, cmd) -> dict:
         return failed
     control["curtailment"] = curtailment
     return control
+
+
+class _RateLimiter:
+    """Sliding-Window-Zähler: höchstens ``max_events`` Ereignisse in ``window_s``
+    Sekunden. Die Zeit wird per ``now`` injiziert, damit er ohne echte Uhr
+    testbar ist. ``max_events <= 0`` bedeutet unbegrenzt. Thread-sicher, weil der
+    Dashboard-Server mehrere Requests parallel bedienen kann."""
+
+    def __init__(self, max_events: int, window_s: float = 60.0):
+        self.max_events = int(max_events)
+        self.window_s = float(window_s)
+        self._events = deque()
+        self._lock = threading.Lock()
+
+    def allow(self, now: float) -> bool:
+        if self.max_events <= 0:
+            return True
+        with self._lock:
+            cutoff = now - self.window_s
+            while self._events and self._events[0] <= cutoff:
+                self._events.popleft()
+            if len(self._events) >= self.max_events:
+                return False
+            self._events.append(now)
+            return True
 
 
 def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
@@ -2618,6 +2644,10 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
     live_cache = {"at": 0.0, "data": None}
     daily_cache = {"at": 0.0, "day": None, "data": {}}
     plan_summary_cache = {"mtime": None, "frame": None, "data": {}}
+    # Rate-Limit für den realen Steuerpfad (/api/control/*), schützt vor
+    # versehentlichem/böswilligem Befehlssturm. 0 = unbegrenzt.
+    control_limiter = _RateLimiter(
+        getattr(config.dashboard, "control_rate_limit_per_min", 60), 60.0)
 
     pwa_manifest = json.dumps({
         "name": "E3DC EMS Steuerung", "short_name": "E3DC EMS",
@@ -2851,6 +2881,9 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                 return
             # Interaktive Steuerung (/api/control/<action>): Lasten, Modus, Akku.
             if route[0] == "control":
+                if not control_limiter.allow(_time.monotonic()):
+                    self.send_error(429, "Zu viele Steuerbefehle – bitte kurz warten")
+                    return
                 action = route[1]
                 try:
                     payload = self._body_json()
@@ -3023,10 +3056,72 @@ def _apply_system_limits(config: Config, lim: dict) -> None:
         log.info("Anlagengrenzen vom E3DC übernommen: %s", ", ".join(changes))
 
 
+def check_config(config) -> dict:
+    """Trockenlauf: die (bereits von load_config validierte) Konfiguration mit
+    EINEM Optimierer-Solve auf konservativen Fallback-Eingaben prüfen – ganz
+    OHNE MQTT/RSCP/Dashboard/Netzwerk. Fängt Konfigurationsfehler, die das
+    Modell unzulässig machen (falsche Grenzen, unerfüllbare Lastvorgaben), vor
+    dem Deploy ab. Rückgabe: Report-Dict inkl. ok/infeasible/Status."""
+    now = _now_slot(config)
+    index = _optimization_index(config, now)
+    n = len(index)
+    hb = config.house_battery
+    inp = OptimizerInputs(
+        index=index,
+        house_load_w=np.full(n, float(config.forecast.fallback_load_w)),
+        pv_w=np.zeros(n),
+        price_ct_kwh=np.full(n, 30.0),
+        feedin_ct_kwh=np.full(n, float(config.feed_in.fixed_ct_kwh)),
+        initial_house_soc_wh=float(hb.min_soc_wh),
+        ambient_temp_c=np.full(n, 15.0),
+        solar_w_m2=np.zeros(n),
+    )
+    result = Optimizer(config, store_warm=False).solve(inp)
+    loads = [ld.name for ld in getattr(config, "controllable_loads", [])
+             if ld.enabled]
+    return {
+        "ok": not result.infeasible,
+        "status": result.status,
+        "infeasible": bool(result.infeasible),
+        "horizon_slots": n,
+        "slot_minutes": config.general.slot_minutes,
+        "charge_strategy": config.optimization.charge_strategy,
+        "rscp_control_enabled": bool(config.e3dc_rscp.control_enabled),
+        "rscp_enabled": bool(config.e3dc_rscp.enabled),
+        "mqtt_enabled": bool(getattr(config.mqtt, "enabled", False)),
+        "pv_source": ("solcast" if config.solcast.enabled
+                      else "pvlib" if config.pv_model.arrays else "—"),
+        "controllable_loads": loads,
+        "fallback_plan_cost_ct": round(float(result.total_cost_ct), 2),
+    }
+
+
+def _run_check(config_path: str) -> int:
+    """--check: Config laden+validieren und check_config ausführen; Report
+    drucken. Exit 0 = ok, 1 = Modell unzulässig, 2 = Config ungültig."""
+    try:
+        config = load_config(config_path)
+    except Exception as exc:
+        print(f"Konfiguration UNGÜLTIG: {exc}")
+        return 2
+    report = check_config(config)
+    width = max(len(k) for k in report)
+    for key, value in report.items():
+        print(f"  {key.ljust(width)} : {value}")
+    if report["ok"]:
+        print("OK – Konfiguration gültig und Optimierer lösbar (Trockenlauf).")
+    else:
+        print("FEHLER – Optimierer meldet den Fallback-Plan als unzulässig.")
+    return 0 if report["ok"] else 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="EMS – Energy Management System")
     parser.add_argument("--config", default="config.yaml", help="Pfad zur Konfiguration")
     parser.add_argument("--loop", action="store_true", help="Dauerbetrieb im Intervall")
+    parser.add_argument("--check", action="store_true",
+                        help="Trockenlauf: Config validieren + einen Solve rechnen, "
+                             "ohne zu steuern (Exit 0=ok, 1=unlösbar, 2=Config ungültig)")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -3034,6 +3129,8 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.check:
+        raise SystemExit(_run_check(args.config))
     config = load_config(args.config)
 
     if not args.loop:

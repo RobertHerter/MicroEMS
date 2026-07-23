@@ -47,6 +47,18 @@ def test_finish_returns_to_queued_when_recalc_pending():
     assert m._runtime_snapshot()["state"] == "queued"
 
 
+def test_check_config_dry_run_is_solvable_and_side_effect_free():
+    """--check (check_config): validierte Config muss auf Fallback-Eingaben
+    lösbar sein und einen Report ohne MQTT/RSCP/Dashboard liefern."""
+    cfg = make_config()
+    report = m.check_config(cfg)
+    assert report["ok"] is True and report["infeasible"] is False
+    assert report["status"] in ("Optimal", "Optimal ")
+    assert report["horizon_slots"] > 0
+    assert "charge_strategy" in report and "pv_source" in report
+    assert isinstance(report["fallback_plan_cost_ct"], float)
+
+
 def test_run_once_sets_error_state_when_repository_init_fails(monkeypatch):
     """P3#1: schlägt die Repository-Initialisierung fehl, muss der Runtime-Status
     auf 'error' fallen – NICHT auf 'running' hängen bleiben (sonst zeigt das

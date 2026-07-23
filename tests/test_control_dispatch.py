@@ -126,6 +126,18 @@ def test_status_api_payload_status_and_events(tmp_path):
     assert m._status_api_payload("/index.html", cfg) is None   # kein Status-Pfad
 
 
+def test_rate_limiter_sliding_window():
+    """Höchstens max_events je window_s; danach erst wieder, wenn das Fenster
+    weitergerückt ist. 0 = unbegrenzt."""
+    rl = m._RateLimiter(2, window_s=60.0)
+    assert rl.allow(1000.0) is True
+    assert rl.allow(1000.5) is True
+    assert rl.allow(1001.0) is False          # 3. innerhalb 60 s -> blockiert
+    assert rl.allow(1061.0) is True           # erstes Ereignis aus dem Fenster
+    assert m._RateLimiter(0).allow(5.0) is True    # 0 -> unbegrenzt
+    assert all(m._RateLimiter(-1).allow(float(i)) for i in range(50))
+
+
 def test_resolve_post_route_gating(tmp_path):
     cfg = _cfg(tmp_path)
     cfg.dashboard.controls_enabled = True

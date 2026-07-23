@@ -635,3 +635,6 @@ dashboard:
   # Standard AUS - manuelles Laden/Entladen greift real in den Akku ein;
   # mit username/password absichern!
   controls_enabled: false
+  # Rate-Limit für /api/control/* (Steuerbefehle pro Minute, Sliding Window).
+  # Schützt den realen Steuerpfad vor Befehlssturm; 0 = unbegrenzt.
+  control_rate_limit_per_min: 60
