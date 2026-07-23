@@ -494,3 +494,13 @@ Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
 - WR-Durchsatz begrenzt (`pv_to_ac + Entladung + AC-Laden ≤ WR_max`); optionale
   Einspeisebegrenzung `inverter.max_export_w` (gilt auch für die Baseline).
 - Lade-/Entladewirkungsgrade wirken auf die SoC-Bilanz.
+
+## Lizenz
+
+**PolyForm Noncommercial License 1.0.0** – siehe [LICENSE](LICENSE).
+
+Die nichtkommerzielle Nutzung (privat, Forschung, Bildung, gemeinnützige
+Organisationen usw.) ist ausdrücklich erlaubt; **kommerzielle Nutzung ist nicht
+lizenziert**. Es handelt sich damit um *source-available*-Software, nicht um eine
+OSI-„Open-Source"-Lizenz (eine solche dürfte kommerzielle Nutzung nicht
+ausschließen). Für eine kommerzielle Lizenz bitte den Autor kontaktieren.
