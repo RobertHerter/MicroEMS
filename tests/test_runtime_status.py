@@ -66,6 +66,20 @@ def test_staleness_threshold_auto_configured_off():
     assert m._staleness_threshold_minutes(cfg) is None
 
 
+def test_maybe_snapshot_forecast_accuracy_writes_once_per_day(tmp_path):
+    """#3: der tägliche Prognosegüte-Snapshot schreibt genau einen Trend-Punkt
+    pro Tag (zweiter Aufruf am selben Tag ist ein No-op durch das Gate)."""
+    from ems.local_history import (latest_forecast_accuracy_day,
+                                   read_forecast_accuracy)
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    today = pd.Timestamp.now(tz=cfg.general.timezone).strftime("%Y-%m-%d")
+    m._maybe_snapshot_forecast_accuracy(cfg)
+    assert latest_forecast_accuracy_day(cfg.e3dc_rscp.history_db_path) == today
+    m._maybe_snapshot_forecast_accuracy(cfg)
+    assert len(read_forecast_accuracy(cfg.e3dc_rscp.history_db_path, 30)) == 1
+
+
 def test_check_config_dry_run_is_solvable_and_side_effect_free():
     """--check (check_config): validierte Config muss auf Fallback-Eingaben
     lösbar sein und einen Report ohne MQTT/RSCP/Dashboard liefern."""

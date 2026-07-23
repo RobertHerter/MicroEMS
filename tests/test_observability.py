@@ -99,6 +99,28 @@ def test_battery_health_empty(tmp_path):
     assert h["n"] == 0 and h["throughput_kwh"] is None
 
 
+def test_forecast_accuracy_daily_roundtrip(tmp_path):
+    """#3: Tages-Prognosegüte persistieren und als aufsteigenden Trend lesen."""
+    from ems.local_history import (latest_forecast_accuracy_day,
+                                   read_forecast_accuracy,
+                                   write_forecast_accuracy)
+    db = str(tmp_path / "h.sqlite")
+    write_forecast_accuracy(db, "2026-07-21", {
+        "pv": {"wape_pct": 12.0, "bias_w": -5.0, "n": 40},
+        "load": {"wape_pct": 20.0, "bias_w": 3.0, "n": 96}})
+    write_forecast_accuracy(db, "2026-07-22", {
+        "pv": {"wape_pct": 9.0, "bias_w": 1.0, "n": 42},
+        "load": {"wape_pct": 18.0, "bias_w": 2.0, "n": 96}})
+    trend = read_forecast_accuracy(db, days=30)
+    assert [t["day"] for t in trend] == ["2026-07-21", "2026-07-22"]  # aufsteigend
+    assert trend[-1]["pv_wape"] == 9.0 and trend[0]["load_wape"] == 20.0
+    assert latest_forecast_accuracy_day(db) == "2026-07-22"
+    # idempotent je Tag
+    write_forecast_accuracy(db, "2026-07-22", {
+        "pv": {"wape_pct": 7.0, "n": 42}, "load": {"wape_pct": 17.0, "n": 96}})
+    assert len(read_forecast_accuracy(db, days=30)) == 2
+
+
 def test_forecast_accuracy_graceful_on_empty_history(tmp_path):
     """Ohne Historie liefert forecast_accuracy leere, aber wohlgeformte Metriken
     (n=0) statt zu werfen."""

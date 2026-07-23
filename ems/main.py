@@ -1019,6 +1019,23 @@ def _run_whatif(overrides: dict, snapshot=None) -> dict:
     }
 
 
+def _maybe_snapshot_forecast_accuracy(config) -> None:
+    """Einmal täglich die 7-Tage-Prognosegüte als Trend-Punkt sichern (für das
+    Dashboard-Trend-Panel). Günstig gated: nur rechnen, wenn für heute noch kein
+    Eintrag existiert – der teure compare_sources läuft so max. 1×/Tag."""
+    try:
+        from .local_history import (latest_forecast_accuracy_day,
+                                     write_forecast_accuracy)
+        from .observability import forecast_accuracy
+        db = config.e3dc_rscp.history_db_path
+        today = pd.Timestamp.now(tz=config.general.timezone).strftime("%Y-%m-%d")
+        if latest_forecast_accuracy_day(db) == today:
+            return
+        write_forecast_accuracy(db, today, forecast_accuracy(config, days=7))
+    except Exception as exc:  # darf den Zyklus nie stören
+        log.debug("Prognosegüte-Snapshot fehlgeschlagen: %s", exc)
+
+
 def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
                       schedule_runner, find_load, load_params):
     """Dashboard-Steuer-Aktion ausführen (Laufzeit) und Lasten-/Modus-Änderungen
@@ -1143,9 +1160,12 @@ def _status_api_payload(path: str, config):
         payload["drivers"] = savings_drivers(config, days=30)
         return payload, 200
     if path == "/api/forecast-accuracy.json":
+        from .local_history import read_forecast_accuracy
         from .observability import forecast_accuracy
         return {"7d": forecast_accuracy(config, days=7),
-                "30d": forecast_accuracy(config, days=30)}, 200
+                "30d": forecast_accuracy(config, days=30),
+                "trend": read_forecast_accuracy(
+                    config.e3dc_rscp.history_db_path, days=30)}, 200
     if path == "/api/battery-health.json":
         from .observability import battery_health
         return battery_health(config, days=30), 200
@@ -2073,6 +2093,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 except Exception as exc:
                     log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
         _start_shadow_comparison(config, inputs, result, violations)
+        _maybe_snapshot_forecast_accuracy(config)   # 1×/Tag Trend-Punkt sichern
         _runtime_finish(now, runtime_started)
         if runtime_trigger == "manual":
             _record_dashboard_event(

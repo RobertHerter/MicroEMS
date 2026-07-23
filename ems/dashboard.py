@@ -468,6 +468,7 @@ def _analysis_block(headline=None) -> str:
     body = """
  <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
  <div class="tiles" id="an-facc"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
+ <div class="facc-trend" id="an-facc-trend"></div>
  <h4>Ersparnis-Verlauf <small>validiert gegen die Zähler</small></h4>
  <div class="tiles" id="an-savings"><span class="an-hint">wird geladen …</span></div>
  <div class="sparkline" id="an-spark"></div>
@@ -482,10 +483,17 @@ def _analysis_block(headline=None) -> str:
  const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}):'–');
  function tile(v,l,s){return '<div class="tile"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';}
  function fail(id,msg){var e=g(id);if(e)e.innerHTML='<span class="an-hint">'+msg+'</span>';}
+ function trendSvg(trend){var t=(trend||[]).filter(function(x){return typeof x.pv_wape==='number'||typeof x.load_wape==='number';});
+  if(t.length<2)return '<span class="an-hint">Trend erscheint ab dem 2. Tag mit Daten</span>';
+  var W=280,H=42,n=t.length,all=[];t.forEach(function(x){if(typeof x.pv_wape==='number')all.push(x.pv_wape);if(typeof x.load_wape==='number')all.push(x.load_wape);});
+  var mx=Math.max(10,Math.max.apply(null,all));
+  function line(key,color){var pts=t.map(function(x,i){var v=x[key];if(typeof v!=='number')return null;return ((i/(n-1))*W).toFixed(1)+','+(H-(v/mx)*H).toFixed(1);}).filter(Boolean).join(' ');return pts?'<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>':'';}
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" class="facc-svg">'+line('pv_wape','#3a86c8')+line('load_wape','#e29a2d')+'</svg><div class="facc-legend"><span style="color:#3a86c8">■ PV</span> <span style="color:#e29a2d">■ Last</span> · WAPE % über '+n+' Tage</div>';}
  async function facc(){try{g('an-facc').innerHTML='<span class="an-hint">wird gemessen …</span>';let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=(b.pv||{}),lo30=(b.load||{});
   g('an-facc').innerHTML=tile(num(pv.wape_pct)+' %','PV WAPE','30 T: '+num(pv30.wape_pct)+' % · Bias '+num(pv.bias_w,0)+' W')
    +tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')
    +tile((pv.source||'–'),'PV-Quelle','n='+((pv.n)||0)+' Slots');
+  g('an-facc-trend').innerHTML=trendSvg(d.trend);
  }catch(e){fail('an-facc','Prognosegüte nicht erreichbar.');}}
  function spark(weekly){var wk=(weekly||[]).slice(-12);if(!wk.length){g('an-spark').innerHTML='<span class="an-hint">noch keine Wochendaten</span>';return;}
   var mx=Math.max(1,...wk.map(x=>Math.abs(x.saved_eur)||0));
@@ -1784,6 +1792,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .sparkline {{ display: flex; align-items: flex-end; gap: 3px; height: 46px; padding: 0 12px 12px; }}
  .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
  .sparkline .bar.neg {{ background: #d1495b; }}
+ .facc-trend {{ padding: 2px 12px 10px; }}
+ .facc-svg {{ width: 100%; height: 42px; display: block; }}
+ .facc-legend {{ font-size: 11px; color: #8a949d; margin-top: 3px; }}
  .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 10px; padding: 12px; }}
  .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: 10px 11px; }}
  .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }}

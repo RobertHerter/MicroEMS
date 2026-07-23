@@ -203,6 +203,7 @@ def test_status_api_payload_observability(tmp_path):
     obj, code = m._status_api_payload("/api/forecast-accuracy.json", cfg)
     assert code == 200 and "7d" in obj and "30d" in obj
     assert obj["7d"]["pv"]["n"] == 0 and obj["7d"]["load"]["n"] == 0
+    assert obj["trend"] == []          # #3: Trend-Reihe (leer auf frischer DB)
     obj, code = m._status_api_payload("/api/battery-health.json", cfg)
     assert code == 200 and obj["n"] == 0 and "cycles_equiv" in obj
 

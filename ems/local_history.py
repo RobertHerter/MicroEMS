@@ -158,8 +158,55 @@ def _con(path: str) -> sqlite3.Connection:
         con.execute("ALTER TABLE execution_plan ADD COLUMN details_json TEXT")
     except sqlite3.OperationalError:
         pass
+    con.execute("CREATE TABLE IF NOT EXISTS forecast_accuracy_daily ("
+                " day TEXT PRIMARY KEY, computed_ts TEXT,"
+                " pv_wape REAL, pv_bias_w REAL, pv_n INTEGER,"
+                " load_wape REAL, load_bias_w REAL, load_n INTEGER)")
     con.commit()
     return con
+
+
+def write_forecast_accuracy(path: str, day: str, acc: dict) -> None:
+    """Tages-Prognosegüte (WAPE/Bias PV+Last) idempotent je Kalendertag ablegen.
+    `acc` = Rückgabe von observability.forecast_accuracy."""
+    pv = acc.get("pv") or {}
+    load = acc.get("load") or {}
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO forecast_accuracy_daily VALUES(?,?,?,?,?,?,?,?)",
+        (str(day), pd.Timestamp.now(tz="UTC").isoformat(),
+         pv.get("wape_pct"), pv.get("bias_w"), int(pv.get("n") or 0),
+         load.get("wape_pct"), load.get("bias_w"), int(load.get("n") or 0)))
+    con.commit()
+    con.close()
+
+
+def read_forecast_accuracy(path: str, days: int = 30) -> list:
+    """Letzte `days` Tages-Prognosegüte-Punkte (aufsteigend) für den Trend."""
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT day, pv_wape, pv_bias_w, load_wape, load_bias_w"
+            " FROM forecast_accuracy_daily ORDER BY day DESC LIMIT ?",
+            (int(days),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    cols = ["day", "pv_wape", "pv_bias_w", "load_wape", "load_bias_w"]
+    return [dict(zip(cols, r)) for r in reversed(rows)]
+
+
+def latest_forecast_accuracy_day(path: str) -> Optional[str]:
+    """Jüngster gespeicherter Prognosegüte-Tag (YYYY-MM-DD) oder None."""
+    try:
+        con = _con(path)
+        row = con.execute(
+            "SELECT day FROM forecast_accuracy_daily ORDER BY day DESC LIMIT 1"
+        ).fetchone()
+        con.close()
+    except Exception:
+        row = None
+    return row[0] if row else None
 
 
 def latest_pv_forecast_issue(path: str, sources=None) -> Optional[pd.Timestamp]:
