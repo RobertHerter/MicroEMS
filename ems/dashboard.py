@@ -447,6 +447,42 @@ def _events_block() -> str:
 })();</script>"""
 
 
+def _savings_history_block() -> str:
+    """Ersparnis-Verlauf (validiert gegen die Zähler) – Summe + Wochenreihe.
+    Lädt lazy aus /api/savings-history.json beim Aufklappen."""
+    return """
+<details class="info-panel savings-panel" id="savings-panel"><summary>€ Ersparnis-Verlauf <small>validiert gegen die Zähler</small></summary>
+ <div id="savings-summary" class="savings-summary">wird geladen …</div>
+ <table id="savings-weekly" class="savings-table"></table>
+</details>
+<script>(function(){
+ const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €':'–');
+ async function load(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();
+  document.getElementById('savings-summary').innerHTML='<b>'+eur(d.total_saved_eur)+'</b> gesamt · '+((d.days)||0)+' validierte Tage';
+  let w=(d.weekly||[]).slice(-8).reverse();
+  document.getElementById('savings-weekly').innerHTML='<tr><th>Woche</th><th>Ersparnis</th><th>Tage</th></tr>'+(w.length?w.map(x=>'<tr><td>'+x.period+'</td><td>'+eur(x.saved_eur)+'</td><td>'+x.days+'</td></tr>').join(''):'<tr><td colspan=3>noch keine Daten</td></tr>');
+ }catch(e){document.getElementById('savings-summary').textContent='Ersparnis-Verlauf nicht erreichbar.';}}
+ document.getElementById('savings-panel').addEventListener('toggle',function(){if(this.open)load();});
+})();</script>"""
+
+
+def _forecast_accuracy_block() -> str:
+    """Prognosegüte (WAPE/Bias) für PV und Hauslast über 7/30 Tage. Lädt lazy
+    aus /api/forecast-accuracy.json beim Aufklappen (compare_sources dauert kurz)."""
+    return """
+<details class="info-panel forecast-accuracy-panel" id="facc-panel"><summary>◴ Prognosegüte <small>PV &amp; Last · WAPE/Bias</small></summary>
+ <div id="facc-body">beim Aufklappen wird gemessen …</div>
+</details>
+<script>(function(){
+ const pct=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1})+' %':'–');
+ const w=v=>(typeof v==='number'?Math.round(v)+' W':'–');
+ function row(label,m){m=m||{};return '<tr><td>'+label+'</td><td>'+pct(m.wape_pct)+'</td><td>'+w(m.bias_w)+'</td><td>'+((m.n)||0)+'</td></tr>';}
+ function tbl(title,a){a=a||{};return '<h4>'+title+'</h4><table class="facc-table"><tr><th></th><th>WAPE</th><th>Bias</th><th>n</th></tr>'+row('PV',a.pv)+row('Last',a.load)+'</table>';}
+ async function load(){try{document.getElementById('facc-body').textContent='wird gemessen …';let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();document.getElementById('facc-body').innerHTML=tbl('7 Tage',d['7d'])+tbl('30 Tage',d['30d']);}catch(e){document.getElementById('facc-body').textContent='Prognosegüte nicht erreichbar.';}}
+ document.getElementById('facc-panel').addEventListener('toggle',function(){if(this.open)load();});
+})();</script>"""
+
+
 def _controls_block(config) -> str:
     """Interaktives Steuerpanel (nur bei dashboard.controls_enabled): Lasten
     an/aus + Kernparameter/Leistungskurve, Optimierungsmodus und Akku-Handbetrieb.
@@ -1865,6 +1901,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_operations_block(solver_status, execution_status)}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
+{_forecast_accuracy_block()}
+{_savings_history_block()}
 {_events_block()}
 {report_html}
 <script>(function(){{

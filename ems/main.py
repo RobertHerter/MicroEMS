@@ -1029,6 +1029,13 @@ def _status_api_payload(path: str, config):
         from .local_history import read_dashboard_events
         return {"events": read_dashboard_events(
             config.e3dc_rscp.history_db_path, config.general.timezone, 50)}, 200
+    if path == "/api/savings-history.json":
+        from .observability import savings_over_time
+        return savings_over_time(config.e3dc_rscp.history_db_path), 200
+    if path == "/api/forecast-accuracy.json":
+        from .observability import forecast_accuracy
+        return {"7d": forecast_accuracy(config, days=7),
+                "30d": forecast_accuracy(config, days=30)}, 200
     return None
 
 
@@ -1065,7 +1072,8 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         return ("raw", "sw")
     if path == "/api/live.json":
         return ("live",)
-    if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json"):
+    if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json",
+                "/api/savings-history.json", "/api/forecast-accuracy.json"):
         return ("status", path)
     if path == "/api/battery-schedule.json":
         if not getattr(config.dashboard, "controls_enabled", False):

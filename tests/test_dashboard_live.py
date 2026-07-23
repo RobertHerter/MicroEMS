@@ -197,3 +197,13 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "api/events.json" in events
     assert '<details class="info-panel events-panel"' in events
     assert '<details class="info-panel events-panel" open' not in events
+
+
+def test_forecast_accuracy_and_savings_panels_are_lazy():
+    from ems.dashboard import _forecast_accuracy_block, _savings_history_block
+    fa = _forecast_accuracy_block()
+    assert "api/forecast-accuracy.json" in fa and 'id="facc-panel"' in fa
+    assert "toggle" in fa                      # lazy erst beim Aufklappen
+    sv = _savings_history_block()
+    assert "api/savings-history.json" in sv and 'id="savings-panel"' in sv
+    assert "toggle" in sv
