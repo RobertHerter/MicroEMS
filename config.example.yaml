@@ -548,6 +548,9 @@ monitoring:
   # Nach jedem Produktivlauf auto/asap/peak/late rein diagnostisch vergleichen.
   shadow_compare_enabled: true
   shadow_recommend_min_savings_eur: 0.05  # kleinere Vorteile nicht als Wechsel empfehlen
+  # Alarm, wenn seit X min kein Zyklus mehr ERFOLGREICH lief (Dienst hängt,
+  # RSCP/Netz klemmt). 0 = auto (2,5 × run_interval_minutes), negativ = aus.
+  cycle_staleness_alert_minutes: 0.0
 
 # -----------------------------------------------------------------------------
 # Debug-Report-Button im Dashboard (nur sichtbar bei enabled: true). Bei einer

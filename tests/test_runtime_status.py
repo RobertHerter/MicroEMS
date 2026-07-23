@@ -47,6 +47,25 @@ def test_finish_returns_to_queued_when_recalc_pending():
     assert m._runtime_snapshot()["state"] == "queued"
 
 
+def test_cycle_overdue_pure():
+    """#7: überfällige Sekunden – None bei nie gelaufen/frisch/deaktiviert."""
+    assert m._cycle_overdue(None, 100.0, 60.0) is None       # nie erfolgreich
+    assert m._cycle_overdue(100.0, 130.0, 60.0) is None      # frisch (30 < 60)
+    assert m._cycle_overdue(100.0, 200.0, 60.0) == pytest.approx(40.0)
+    assert m._cycle_overdue(100.0, 200.0, 0.0) is None       # Schwelle 0 -> aus
+
+
+def test_staleness_threshold_auto_configured_off():
+    cfg = make_config()
+    cfg.general.run_interval_minutes = 20
+    cfg.monitoring.cycle_staleness_alert_minutes = 0.0       # auto = 2,5 × 20
+    assert m._staleness_threshold_minutes(cfg) == pytest.approx(50.0)
+    cfg.monitoring.cycle_staleness_alert_minutes = 30.0
+    assert m._staleness_threshold_minutes(cfg) == 30.0
+    cfg.monitoring.cycle_staleness_alert_minutes = -1.0      # aus
+    assert m._staleness_threshold_minutes(cfg) is None
+
+
 def test_check_config_dry_run_is_solvable_and_side_effect_free():
     """--check (check_config): validierte Config muss auf Fallback-Eingaben
     lösbar sein und einen Report ohne MQTT/RSCP/Dashboard liefern."""

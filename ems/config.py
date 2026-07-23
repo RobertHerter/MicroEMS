@@ -598,6 +598,10 @@ class MonitoringConfig:
     # Rein diagnostischer Vergleich aller Optimierungsmodi nach jedem Lauf.
     shadow_compare_enabled: bool = True
     shadow_recommend_min_savings_eur: float = 0.05
+    # Alarm, wenn seit X Minuten kein Zyklus mehr ERFOLGREICH durchlief (Dienst
+    # hängt, RSCP/Netz klemmt) – der systemd-Watchdog fängt nur Totalausfälle.
+    # 0 = auto (2,5 × run_interval_minutes). Negativ = aus.
+    cycle_staleness_alert_minutes: float = 0.0
 
 
 @dataclass
@@ -1331,6 +1335,8 @@ def load_config(path: str) -> Config:
         shadow_compare_enabled=bool(mon.get("shadow_compare_enabled", True)),
         shadow_recommend_min_savings_eur=float(
             mon.get("shadow_recommend_min_savings_eur", 0.05)),
+        cycle_staleness_alert_minutes=float(
+            mon.get("cycle_staleness_alert_minutes", 0.0)),
     )
 
     rep = raw.get("report", {})

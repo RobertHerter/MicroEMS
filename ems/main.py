@@ -75,6 +75,8 @@ _shadow_curves = {"generated": None, "series": None}
 # (Dashboard): so kann mit geänderten Parametern neu gerechnet werden, ohne die
 # Datenpipeline erneut zu ziehen. Nur lesend genutzt, nie in die Steuerung.
 _last_solve_snapshot = {"inputs": None, "config": None}
+# Monotone Zeit des letzten erfolgreichen Zyklus (Staleness-Watchdog, #7).
+_last_cycle_ok = {"monotonic": None}
 
 
 def _runtime_iso() -> str:
@@ -127,6 +129,67 @@ def _runtime_finish(now, started_monotonic: float,
             plan_generated=pd.Timestamp(now).isoformat(),
             duration_seconds=round(_time.monotonic() - started_monotonic, 2),
             message=("Plan aktualisiert; weiterer Lauf wartet" if pending else message))
+    # Zeitstempel des letzten ERFOLGREICHEN Zyklus (für den Staleness-Watchdog).
+    _last_cycle_ok["monotonic"] = _time.monotonic()
+
+
+def _cycle_overdue(last_ok_monotonic, now_monotonic: float,
+                   threshold_s: float):
+    """Sekunden, die der letzte erfolgreiche Zyklus überfällig ist – oder None,
+    wenn frisch bzw. noch nie ein Zyklus erfolgreich war (kein Startup-Alarm).
+    Rein, damit die Staleness-Entscheidung ohne Threads testbar ist."""
+    if last_ok_monotonic is None or threshold_s <= 0:
+        return None
+    overdue = now_monotonic - last_ok_monotonic - threshold_s
+    return overdue if overdue > 0 else None
+
+
+def _staleness_threshold_minutes(config):
+    """Schwelle für den Staleness-Watchdog: konfiguriert, 0 = auto
+    (2,5 × run_interval), negativ = aus (None)."""
+    minutes = float(getattr(config.monitoring, "cycle_staleness_alert_minutes", 0.0))
+    if minutes < 0:
+        return None
+    return minutes if minutes > 0 else 2.5 * config.general.run_interval_minutes
+
+
+def _start_cycle_watchdog(config, publisher, stop_event):
+    """Daemon-Thread, der alarmiert, wenn seit der Schwelle kein Zyklus mehr
+    ERFOLGREICH durchlief (Dienst hängt, RSCP/Netz klemmt) – ergänzt den
+    systemd-Watchdog (der nur Totalausfälle fängt). Gedrosselt + Entwarnung."""
+    threshold_min = _staleness_threshold_minutes(config)
+    if threshold_min is None or publisher is None:
+        return None
+    threshold_s = threshold_min * 60.0
+    repeat_s = max(60.0, float(config.e3dc_rscp.control_alarm_repeat_minutes) * 60.0)
+    check_s = max(20.0, min(60.0, threshold_s / 3.0))
+    state = {"alarmed": False, "last": 0.0}
+
+    def loop():
+        while not stop_event.wait(check_s):
+            overdue = _cycle_overdue(
+                _last_cycle_ok["monotonic"], _time.monotonic(), threshold_s)
+            now = _time.time()
+            if overdue is not None:
+                if not state["alarmed"] or now - state["last"] >= repeat_s:
+                    mins = (overdue + threshold_s) / 60.0
+                    try:
+                        publisher.publish_alert(
+                            "error", f"EMS: seit {mins:.0f} min kein erfolgreicher "
+                            "Optimierungszyklus (Dienst hängt?).")
+                    except Exception:  # pragma: no cover
+                        pass
+                    state.update(alarmed=True, last=now)
+            elif state["alarmed"] and _last_cycle_ok["monotonic"] is not None:
+                try:
+                    publisher.publish_alert("info", "EMS: Zyklen laufen wieder.")
+                except Exception:  # pragma: no cover
+                    pass
+                state["alarmed"] = False
+
+    thread = threading.Thread(target=loop, name="ems-cycle-watchdog", daemon=True)
+    thread.start()
+    return thread
 
 
 def _runtime_fail(message: str) -> None:
@@ -3299,6 +3362,9 @@ def main() -> None:
                                schedule_runner=schedule_runner)
 
     live_execution = _LiveExecutionMonitor(config, publisher, e3dc)
+    # Staleness-Watchdog: alarmiert, wenn zu lange kein Zyklus erfolgreich lief.
+    watchdog_stop = threading.Event()
+    _start_cycle_watchdog(config, publisher, watchdog_stop)
 
     # Geordnetes Beenden: SIGTERM (systemctl stop/restart) und SIGINT lösen ein
     # SystemExit aus, damit der finally-Block läuft und u. a. die persistenten
@@ -3373,6 +3439,7 @@ def main() -> None:
         log.info("EMS wird beendet – Verbindungen werden geschlossen.")
     finally:
         _sd_notify("STOPPING=1")
+        watchdog_stop.set()
         if schedule_runner is not None:
             try:
                 schedule_runner.close()
