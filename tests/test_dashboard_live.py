@@ -66,6 +66,8 @@ def test_mobile_plot_has_panel_tabs_and_24_48_hour_switch():
                   "temperature"):
         assert f'data-panel="{panel}"' in html
     assert 'data-hours="24"' in html and 'data-hours="48"' in html
+    assert 'data-hours="all"' in html               # "Alles"-Button
+    assert "dayStart" in html and "setHours(0,0,0,0)" in html  # Start um 00:00
     assert "displayModeBar:false" in html
     assert "ems-mobile-hours" in html
 

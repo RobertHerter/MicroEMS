@@ -189,14 +189,14 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
  <div class="mobile-plot-toolbar">
   <div class="mobile-plot-tabs" role="tablist">{buttons}</div>
   <div class="horizon-switch" aria-label="Zeitraum">
-   <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button>
+   <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
   </div>
  </div>
  <div id="mobile-plot"></div>
 </section>
 <script>(function(){{
  var axes={axes}, now={now_iso}, current='power';
- var hours=parseInt(localStorage.getItem('ems-mobile-hours')||'24',10); if(hours!==48)hours=24;
+ var hours=localStorage.getItem('ems-mobile-hours')||'24'; if(hours!=='48'&&hours!=='all')hours='24';
  function source(){{return document.querySelector('.desktop-plot .plotly-graph-div');}}
  function colors(){{var dark=document.documentElement.classList.contains('dark');return dark?{{paper:'#18212b',plot:'#18212b',font:'#e7edf4',grid:'#354352'}}:{{paper:'#fff',plot:'#fff',font:'#20252b',grid:'#e7ebef'}};}}
  function render(){{
@@ -209,21 +209,27 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
    return n;}});
   var btn=document.querySelector('.mobile-plot-tabs button[data-panel="'+current+'"]');
   if(!traces.length){{var fallback=document.querySelector('.mobile-plot-tabs button:not([hidden])');if(fallback&&fallback!==btn){{current=fallback.dataset.panel;render();}}return;}}
-  var end=new Date(new Date(now).getTime()+hours*3600000).toISOString();
+  // Wie im Desktop bei 00:00 des Tages beginnen (die Ist-Kurven reichen zurück),
+  // NICHT bei der aktuellen Uhrzeit. 'all' zeigt die volle Datenspanne.
+  var dayStart=new Date(now); dayStart.setHours(0,0,0,0);
+  var xaxis={{gridcolor:c.grid,tickformat:'%a %H:%M'}};
+  if(hours==='all'){{xaxis.autorange=true;}}
+  else{{var end=new Date(dayStart.getTime()+parseInt(hours,10)*3600000);
+   xaxis.range=[dayStart.toISOString(),end.toISOString()];}}
   var srcAxis=src.layout[axis==='y'?'yaxis':'yaxis'+axis.slice(1)]||{{}};
   var layout={{height:420,autosize:true,hovermode:'x unified',separators:',.',showlegend:true,
    paper_bgcolor:c.paper,plot_bgcolor:c.plot,font:{{color:c.font}},margin:{{l:48,r:12,t:18,b:85}},
    legend:{{orientation:'h',x:0,y:-.2,font:{{size:10}}}},
-   xaxis:{{range:[now,end],gridcolor:c.grid,tickformat:'%a %H:%M'}},
+   xaxis:xaxis,
    yaxis:{{title:srcAxis.title||'',gridcolor:c.grid,zerolinecolor:c.grid}}}};
   if(current==='soc')layout.yaxis.range=[0,101];
   if(current==='loads')layout.yaxis.autorange='reversed';
   Plotly.react('mobile-plot',traces,layout,{{responsive:true,displaylogo:false,displayModeBar:false,scrollZoom:false}});
   document.querySelectorAll('.mobile-plot-tabs button').forEach(function(b){{b.classList.toggle('on',b.dataset.panel===current);}});
-  document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.classList.toggle('on',parseInt(b.dataset.hours,10)===hours);}});
+  document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.classList.toggle('on',b.dataset.hours===hours);}});
  }}
  document.querySelectorAll('.mobile-plot-tabs button').forEach(function(b){{b.addEventListener('click',function(){{current=b.dataset.panel;render();}});}});
- document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.addEventListener('click',function(){{hours=parseInt(b.dataset.hours,10);localStorage.setItem('ems-mobile-hours',hours);render();}});}});
+ document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.addEventListener('click',function(){{hours=b.dataset.hours;localStorage.setItem('ems-mobile-hours',hours);render();}});}});
  window.addEventListener('resize',render);window.addEventListener('ems-theme-change',render);setTimeout(render,0);
 }})();</script>"""
 
