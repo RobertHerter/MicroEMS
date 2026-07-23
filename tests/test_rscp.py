@@ -203,6 +203,38 @@ def test_dashboard_control_toggle_reports_limits_still_active():
     assert cfg.e3dc_rscp.control_enabled is False
 
 
+def test_close_frees_limits_after_failed_disable_release():
+    """S1: schlägt die Limit-Freigabe beim Deaktivieren fehl, bleibt
+    _limits_active True und control_enabled fällt trotzdem auf False. close()
+    MUSS die Limits dann anhand von _limits_active (nicht control_enabled)
+    freigeben – sonst blieben sie dauerhaft aktiv."""
+    cfg, link = _link(control_enabled=True)
+    link._limits_active = True
+    link._e3dc.limits_rc = -1                 # E3DC verweigert die Freigabe
+    result = link.set_control_enabled(False)
+    assert result["enabled"] is False
+    assert cfg.e3dc_rscp.control_enabled is False
+    assert link._limits_active is True        # nicht bestätigt -> bleibt aktiv
+    fake = link._e3dc
+    link._e3dc.limits_rc = 0                   # jetzt akzeptiert der E3DC die Freigabe
+    link.close()
+    assert fake.limit_calls[-1] is False       # beim Beenden doch freigegeben
+    assert link._limits_active is False
+
+
+def test_disable_stops_watchdog_and_sends_auto_last():
+    """S2: beim Ausschalten wird der Watchdog gestoppt und auto als LETZTER
+    Befehl gesendet – kein bereits gelesener Manuell-Modus darf danach noch
+    einmal nachgesendet werden."""
+    cfg, link = _link(control_enabled=True)
+    link.manual_power("discharge", watts=2000, seconds=900)   # Mode 2, Watchdog an
+    assert link._wd_thread is not None and link._wd_mode == 2
+    link.set_control_enabled(False)
+    assert link._wd_thread is None             # Watchdog gestoppt
+    assert link._wd_mode == 0
+    assert link._e3dc.power_calls[-1] == (0, 0)  # letzter Befehl = auto
+
+
 def test_read_energy_total_validates_reported_consumption():
     _cfg, link = _link()
     original = link._e3dc.get_db_data_timestamp

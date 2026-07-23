@@ -109,16 +109,19 @@ class E3DCLink:
             self._wd_thread.join(timeout=2)
             self._wd_thread = None
         try:
-            if self._e3dc is not None and self.rc.control_enabled and self._wd_mode != 0:
+            if self._e3dc is not None and self._wd_mode != 0:
                 self._set_power(0, 0)
         except Exception:  # pragma: no cover
             pass
         self._wd_mode = 0
         # Persistente Lade-/Entlade-Limits ausdrücklich freigeben – sie haben
         # keinen E3DC-Watchdog und blieben sonst nach dem Beenden unbegrenzt aktiv
-        # (EMS_POWER_LIMITS_USED = false).
+        # (EMS_POWER_LIMITS_USED = false). Bewusst NUR an _limits_active gekoppelt,
+        # NICHT an control_enabled: schlug eine Freigabe beim Deaktivieren fehl
+        # (control_enabled bereits False, _limits_active aber noch True), müssen
+        # die Limits hier trotzdem gelöst werden – sonst blieben sie für immer aktiv.
         try:
-            if self._e3dc is not None and self.rc.control_enabled and self._limits_active:
+            if self._e3dc is not None and self._limits_active:
                 self._set_limits(False)
                 log.info("RSCP: Lade-/Entlade-Limits beim Beenden freigegeben "
                          "(EMS_POWER_LIMITS_USED=false).")
@@ -377,7 +380,6 @@ class E3DCLink:
             self.rc.control_enabled = True
             return {"enabled": True, "released": False,
                     "message": "Automatische E3/DC-Steuerung ist aktiviert."}
-        released = False
         with self._manual_lock:
             if self._manual_timer is not None:
                 self._manual_timer.cancel()
@@ -385,16 +387,34 @@ class E3DCLink:
             self._manual_active = False
             self._manual_action = None
             self._manual_until = None
-            if self._wd_mode != 0:
-                self._set_power(0, 0)
-                released = True
+            prior_mode = self._wd_mode
+            # Reihenfolge ist sicherheitskritisch: erst den Modus auf auto setzen
+            # UND den Watchdog stoppen, DANN den Auto-Befehl senden. Sonst kann
+            # der Watchdog-Loop einen kurz zuvor gelesenen Manuell-Modus (z.B.
+            # Entladen) nach dem Umschalten erneut senden -> der Akku liefe bis
+            # zu einem Resend-Intervall (~10 s) nach dem Ausschalten weiter.
             self._wd_mode, self._wd_value = 0, 0
+            self._wd_stop.set()
+            if self._wd_thread is not None:
+                self._wd_thread.join(timeout=2)
+                self._wd_thread = None
+            wd_released = False
+            if prior_mode != 0:
+                self._set_power(0, 0)          # als letzter Befehl -> auto
+                wd_released = True
             rc = self._set_limits(False)
-            released = rc != -1
+            for _ in range(2):                 # Freigabe hat keinen Watchdog:
+                if rc != -1:                   # bei Fehler erneut versuchen
+                    break
+                rc = self._set_limits(False)
+            released = wd_released or (rc != -1)
             verification = self._verify_limits(
                 False, self.cfg.house_battery.max_dc_charge_w,
                 self.cfg.house_battery.max_discharge_w, "disabled", force=True)
             self.rc.control_enabled = False
+            if verification.get("ok") is not True:
+                log.warning("RSCP: Steuerung deaktiviert, aber Limit-Freigabe "
+                            "NICHT bestätigt – close() gibt sie beim Beenden frei.")
         confirmed = verification.get("ok") is True
         message = ("E3/DC-Steuerung deaktiviert; Limits bestätigt freigegeben."
                    if confirmed else
