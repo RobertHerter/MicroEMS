@@ -2689,7 +2689,6 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
     (/api/control/*); config_path: Basis für die Overlay-Persistenz."""
     import functools
     import http.server
-    import json
     import os
     import threading
     import base64

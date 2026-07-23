@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from ems import local_history, pv_eval
 from ems.config import PvArray, SolcastSource

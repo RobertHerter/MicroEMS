@@ -4,7 +4,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ems import energycharts, tariff
-from ems.config import GridFeeWindow, parse_grid_fee_windows
+from ems.config import parse_grid_fee_windows
 from ems.local_history import read_spot, write_spot
 
 

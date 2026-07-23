@@ -143,7 +143,7 @@ def test_controllable_load_covered_by_battery_not_grid():
         name="wp", type="deferrable", power_w=1000.0, runtime_minutes=120.0,
         window_from_hour=0, window_to_hour=6, switch_penalty_ct=0.0)]
     idx = _day_index("2026-01-20")           # Winter, damit nachts geheizt wird
-    n = len(idx)
+    len(idx)
     hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
     # Teuer im Lauf-Fenster (0-6 h), danach billig -> Entladen JETZT ist eindeutig
     # optimal (kein Anreiz, den Akku für später/Terminalwert zu halten).
@@ -276,7 +276,7 @@ def test_deferrable_deadline_keeps_run_today():
         deadline_hours=24.0)]
     idx = _day_index("2026-01-15", days=2)
     n = len(idx)
-    hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
+    np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
     day2 = np.arange(n) >= n // 2
     # Tag 2 ist DEUTLICH billiger -> ohne Deadline liefe die WM dort.
     price = np.where(day2, 10.0, 35.0)

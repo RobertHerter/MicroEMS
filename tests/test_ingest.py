@@ -8,8 +8,7 @@ import pytest
 
 from ems import ingest
 from ems.influx import NoOpRepository, make_repository
-from ems.local_history import (read_actual, read_house_load, read_pv_forecast,
-                               read_spot)
+from ems.local_history import (read_actual, read_house_load, read_pv_forecast)
 from tests.test_synthetic import make_config
 
 UTC = "UTC"

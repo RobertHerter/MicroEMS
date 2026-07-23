@@ -195,7 +195,7 @@ def test_auto_terminal_does_not_curtail_exportable_pv():
     cfg = make_config()                       # terminal_soc_value="auto"
     cfg.inverter.max_export_w = None          # Einspeisung nicht begrenzt
     idx = _day_index("2026-07-14")
-    n = len(idx)
+    len(idx)
     hour = np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
     # Preis-Spreizung (mittags billig) -> p25 << Mittel, damit die alte/neue Kurve
     # sich unterscheiden. Kräftige PV füllt den Akku, Nachmittags-Überschuss bleibt.

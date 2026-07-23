@@ -1,0 +1,8 @@
+# Bewusst konservative Regelauswahl: echte Fehler statt Stil-Rauschen.
+#   F   = pyflakes  (ungenutzte Importe/Variablen, undefinierte Namen …)
+#   E9  = Syntax-/Laufzeitfehler-Klasse
+# Erweiterbar, wenn der Code stilistisch vereinheitlicht werden soll.
+target-version = "py313"
+
+[lint]
+select = ["F", "E9"]

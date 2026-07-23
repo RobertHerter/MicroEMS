@@ -244,8 +244,8 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
                                  stage_on=stage_on)
         print(f"== {ld.name} ==")
         if fit is None:
-            print(f"  Noch zu wenig Daten (sicher-aus-Fenster fehlen) - nach "
-                  f"ein paar Tagen erneut ausführen (load_cmd-Log läuft).")
+            print("  Noch zu wenig Daten (sicher-aus-Fenster fehlen) - nach "
+                  "ein paar Tagen erneut ausführen (load_cmd-Log läuft).")
             if apply:
                 write_thermal_calibration(db, ld.name, {
                     "ts": now, "status": "insufficient", "n_windows": 0,

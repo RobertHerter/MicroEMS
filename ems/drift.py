@@ -17,7 +17,6 @@ import logging
 from datetime import timedelta
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from .config import Config

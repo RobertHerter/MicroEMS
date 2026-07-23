@@ -65,7 +65,6 @@ def economic_comparison(config: Config, result: OptimizerResult,
     t = result.table
     hb = config.house_battery
     dt = config.general.dt_hours
-    kwh = dt / 1000.0
 
     def col(name, default=0.0):
         return t[name] if name in t.columns else pd.Series(default, index=t.index)
@@ -134,6 +133,7 @@ def economic_comparison(config: Config, result: OptimizerResult,
     min_dis = config.optimization.min_discharge_w
     b_cost, b_soc = 0.0, prev0
     b_exp_w = np.zeros(len(t))
+    kwh = dt / 1000.0
     for i in range(len(t)):
         pv_i = max(0.0, float(inputs.pv_w[i]))
         load_i = max(0.0, float(inputs.house_load_w[i]) + float(cl_vals[i]))
@@ -168,7 +168,6 @@ def validate_plan(config: Config, result: OptimizerResult,
     t = result.table
     hb = config.house_battery
     dt = config.general.dt_hours
-    kwh = dt / 1000.0
     v: List[Violation] = []
 
     def col(name, default=0.0):

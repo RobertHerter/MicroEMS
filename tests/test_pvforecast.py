@@ -8,7 +8,7 @@ import pytest
 pytest.importorskip("pvlib")
 
 from ems import pvforecast
-from ems.config import PvArray, PvModelConfig, SolcastConfig, WeatherConfig
+from ems.config import PvArray, PvModelConfig, WeatherConfig
 from tests.test_synthetic import make_config
 
 UTC_DAY = pd.date_range("2026-07-15 00:00", "2026-07-15 23:00", freq="1h", tz="UTC")

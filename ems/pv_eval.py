@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -91,7 +91,6 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
     grid = _grid(start, end, tz, slot_minutes)
     s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
-    lead = pd.Timedelta(hours=lead_hours)
     placeholders = ",".join("?" * len(sources))
     # Maximale issue_ts je (source, target) unter der Lead-Schranke; die
     # Schranke wird pro Zeile über datetime(target, '-Xh') ausgewertet.

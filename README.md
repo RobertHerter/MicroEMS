@@ -1,5 +1,7 @@
 # EMS – Energy Management System
 
+[![CI](https://github.com/RobertHerter/MicroEMS/actions/workflows/ci.yml/badge.svg)](https://github.com/RobertHerter/MicroEMS/actions/workflows/ci.yml)
+
 Kostenoptimale Steuerung von Haus-Akku, PV, Fahrzeug und steuerbaren Lasten
 (z. B. Pool-Wärmepumpen). Läuft als Python-Dienst auf einem Raspberry Pi
 (Raspberry Pi OS **Trixie** / Debian 13), berechnet per **MILP** die optimale

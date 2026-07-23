@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import zlib
-from datetime import datetime
 from typing import Dict, Optional
 
 import pandas as pd

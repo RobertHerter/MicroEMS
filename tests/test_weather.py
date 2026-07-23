@@ -53,7 +53,6 @@ def test_temperature_roundtrip_and_resample(tmp_path):
     mapping = {(base + pd.Timedelta(hours=i)).isoformat(): 10.0 * (i + 1)
                for i in range(3)}
     assert write_temperature(db, mapping) == 3
-    start = pd.Timestamp("2026-07-01 00:00", tz=TZ).tz_convert(TZ)
     # lokale Zeit: UTC 00:00 = 02:00 MESZ
     s = read_temperature(db, base.tz_convert(TZ), (base + pd.Timedelta(hours=2)).tz_convert(TZ),
                          TZ, "15min")

@@ -26,8 +26,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
@@ -694,7 +693,6 @@ class Optimizer:
         EPS_P = 20.0     # W
         strategy = getattr(cfg.optimization, "charge_strategy", "asap")
         auto_peak_basis = None       # nur bei strategy="auto" gefüllt (fürs Dashboard)
-        pv_max = float(max(1.0, np.max(inp.pv_w)))
         # Peak-Modus: Einspeise-Linie PRO TAG. Einspeisung wird je Kalendertag auf
         # L_tag gedeckelt (alles darunter eingespeist), die PV-Spitze DARÜBER lädt
         # den Akku. Jedes L_tag wird minimiert -> so tief wie möglich, sodass der
