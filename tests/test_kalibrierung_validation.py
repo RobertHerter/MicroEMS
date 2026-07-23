@@ -19,7 +19,7 @@ from tests.test_synthetic import make_config, synthetic_history
 pytestmark = pytest.mark.slow
 
 
-def _setup(days=120):
+def _setup(days=60):
     cfg = make_config()
     cfg.forecast.lookback_days = days
     now = pd.Timestamp("2026-06-10 00:00", tz=cfg.general.timezone)

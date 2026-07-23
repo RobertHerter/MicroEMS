@@ -9,7 +9,7 @@ import pulp
 from ems.config import ControllableLoad, LoadStage
 from ems.loads import add_controllable_loads
 from ems.optimizer import Optimizer
-from tests.test_optimizer import _day_index, _inputs, _pv_gauss
+from tests.test_optimizer import FREQ, TZ, _day_index, _inputs, _pv_gauss
 from tests.test_synthetic import make_config
 
 DT_H = 0.25
@@ -272,27 +272,30 @@ def test_deferrable_deadline_keeps_run_today():
     prof = [2000.0, 500.0, 500.0, 2000.0]
     cfg.controllable_loads = [ControllableLoad(
         name="wm", type="deferrable", power_profile_w=prof, runtime_minutes=60.0,
-        window_from_hour=8, window_to_hour=22, switch_penalty_ct=0.0,
+        window_from_hour=0, window_to_hour=3, switch_penalty_ct=0.0,
         deadline_hours=24.0)]
-    idx = _day_index("2026-01-15", days=2)
-    n = len(idx)
-    np.asarray(idx.hour + idx.minute / 60.0, dtype=float)
-    day2 = np.arange(n) >= n // 2
-    # Tag 2 ist DEUTLICH billiger -> ohne Deadline liefe die WM dort.
-    price = np.where(day2, 10.0, 35.0)
+    # Schlanker 26-h-Horizont (statt 2 volle Tage): die ersten 24 h teuer, die
+    # Stunden 24-26 (JENSEITS der Deadline, Fenster 0-3 am "Tag 2") billig. So
+    # bleibt der Deadline-vs-billiger-Tag-Konflikt erhalten, aber das MILP ist
+    # klein (schneller Test).
+    start = pd.Timestamp("2026-01-15 00:00", tz=TZ)
+    idx = pd.date_range(start, periods=26 * 4, freq=FREQ)
+    hours = (idx - idx[0]) / pd.Timedelta(hours=1)
+    beyond = np.asarray(hours >= 24.0)          # billige Stunden hinter der Deadline
+    price = np.where(beyond, 10.0, 35.0)
     res = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=300.0, price=price,
                                        soc=cfg.house_battery.min_soc_wh))
     assert not res.infeasible
     w = res.table["load_wm_w"]
-    assert float(w.iloc[:n // 2].sum()) * DT_H > 500.0, \
-        "Zyklus läuft nicht innerhalb der Deadline (Tag 1)"
-    assert float(w.iloc[n // 2:].sum()) < 1.0, "Zyklus trotz Deadline auf Tag 2"
-    # Gegenprobe: ohne Deadline wandert er auf den billigen Tag 2
+    assert float(w[~beyond].sum()) * DT_H > 500.0, \
+        "Zyklus läuft nicht innerhalb der Deadline (erste 24 h)"
+    assert float(w[beyond].sum()) < 1.0, "Zyklus trotz Deadline in den billigen Stunden"
+    # Gegenprobe: ohne Deadline wandert er in die billigen Stunden 24-26
     cfg.controllable_loads[0].deadline_hours = 0.0
     res2 = Optimizer(cfg).solve(_inputs(idx, pv=0.0, load=300.0, price=price,
                                         soc=cfg.house_battery.min_soc_wh))
     w2 = res2.table["load_wm_w"]
-    assert float(w2.iloc[n // 2:].sum()) * DT_H > 500.0
+    assert float(w2[beyond].sum()) * DT_H > 500.0
 
 
 def test_deferrable_profile_cycle_runs_once_in_cheap_slots():
@@ -302,7 +305,9 @@ def test_deferrable_profile_cycle_runs_once_in_cheap_slots():
     cfg.controllable_loads = [ControllableLoad(
         name="wm", type="deferrable", power_profile_w=prof, runtime_minutes=60.0,
         switch_penalty_ct=0.0)]
-    idx = _day_index("2026-01-15")
+    # Schlanker 12-h-Horizont genügt für "läuft in den günstigen Slots".
+    start = pd.Timestamp("2026-01-15 00:00", tz=TZ)
+    idx = pd.date_range(start, periods=12 * 4, freq=FREQ)
     n = len(idx)
     price = np.full(n, 40.0)
     price[:8] = 5.0

@@ -728,9 +728,14 @@ def test_export_cap_at_grid_connection():
 def test_car_switch_penalty_limits_toggling():
     """Hoher Schalt-Malus: Auto lädt in EINEM zusammenhängenden Block, auch
     wenn die Preise zappeln."""
+    from datetime import time
     cfg = make_config()
     cfg.optimization.car_switch_penalty_ct = 1000.0
-    idx = _day_index("2026-01-20")
+    cfg.vehicle.departure_time = time(7, 0)
+    # 8-h-Fenster bis kurz nach der Abfahrt genügt (danach lädt das Auto nicht) –
+    # ein voller Tag (96 Slots) machte das Auto-MILP nur unnötig langsam.
+    start = pd.Timestamp("2026-01-20 00:00", tz=TZ)
+    idx = pd.date_range(start, periods=8 * 4, freq=FREQ)
     price = np.where(idx.hour % 2 == 0, 10.0, 40.0).astype(float)  # Zickzack
     res = Optimizer(cfg).solve(_inputs(
         idx, pv=0.0, load=300.0, price=price,
