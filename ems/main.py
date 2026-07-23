@@ -373,6 +373,9 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                     generated=pd.Timestamp(inputs.index[0]).isoformat(),
                     series={"timestamp": [stamp.isoformat()
                                           for stamp in inputs.index],
+                            # PV-Prognose als gemeinsame Kontext-Kurve (für alle
+                            # Modi gleich) -> macht den Modusvergleich lesbarer.
+                            "pv_w": [round(float(v), 1) for v in inputs.pv_w],
                             "modes": curves})
                 _shadow_status.update(
                     state="done", finished_at=_runtime_iso(), result=payload,

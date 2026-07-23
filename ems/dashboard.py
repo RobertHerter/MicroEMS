@@ -447,39 +447,43 @@ def _events_block() -> str:
 })();</script>"""
 
 
-def _savings_history_block() -> str:
-    """Ersparnis-Verlauf (validiert gegen die Zähler) – Summe + Wochenreihe.
-    Lädt lazy aus /api/savings-history.json beim Aufklappen."""
+def _analysis_block() -> str:
+    """Zusammengefasstes Analyse-Panel (Prognosegüte, Ersparnis-Verlauf,
+    Akku-Gesundheit) als Stat-Kacheln im Live-Kachel-Look. Lädt alle drei
+    Endpoints lazy beim Aufklappen (die Prognosegüte rechnet kurz)."""
     return """
-<details class="info-panel savings-panel" id="savings-panel"><summary>€ Ersparnis-Verlauf <small>validiert gegen die Zähler</small></summary>
- <div id="savings-summary" class="savings-summary">wird geladen …</div>
- <table id="savings-weekly" class="savings-table"></table>
+<details class="info-panel analysis-panel" id="analysis-panel"><summary>◴ Analyse &amp; Gesundheit <small>Prognosegüte · Ersparnis · Akku</small></summary>
+ <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
+ <div class="tiles" id="an-facc"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
+ <h4>Ersparnis-Verlauf <small>validiert gegen die Zähler</small></h4>
+ <div class="tiles" id="an-savings"><span class="an-hint">wird geladen …</span></div>
+ <h4>Akku-Gesundheit <small>letzte 30 Tage</small></h4>
+ <div class="tiles" id="an-bhealth"><span class="an-hint">wird geladen …</span></div>
 </details>
 <script>(function(){
- const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' €':'–');
- async function load(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();
-  document.getElementById('savings-summary').innerHTML='<b>'+eur(d.total_saved_eur)+'</b> gesamt · '+((d.days)||0)+' validierte Tage';
-  let w=(d.weekly||[]).slice(-8).reverse();
-  document.getElementById('savings-weekly').innerHTML='<tr><th>Woche</th><th>Ersparnis</th><th>Tage</th></tr>'+(w.length?w.map(x=>'<tr><td>'+x.period+'</td><td>'+eur(x.saved_eur)+'</td><td>'+x.days+'</td></tr>').join(''):'<tr><td colspan=3>noch keine Daten</td></tr>');
- }catch(e){document.getElementById('savings-summary').textContent='Ersparnis-Verlauf nicht erreichbar.';}}
- document.getElementById('savings-panel').addEventListener('toggle',function(){if(this.open)load();});
-})();</script>"""
-
-
-def _forecast_accuracy_block() -> str:
-    """Prognosegüte (WAPE/Bias) für PV und Hauslast über 7/30 Tage. Lädt lazy
-    aus /api/forecast-accuracy.json beim Aufklappen (compare_sources dauert kurz)."""
-    return """
-<details class="info-panel forecast-accuracy-panel" id="facc-panel"><summary>◴ Prognosegüte <small>PV &amp; Last · WAPE/Bias</small></summary>
- <div id="facc-body">beim Aufklappen wird gemessen …</div>
-</details>
-<script>(function(){
- const pct=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1})+' %':'–');
- const w=v=>(typeof v==='number'?Math.round(v)+' W':'–');
- function row(label,m){m=m||{};return '<tr><td>'+label+'</td><td>'+pct(m.wape_pct)+'</td><td>'+w(m.bias_w)+'</td><td>'+((m.n)||0)+'</td></tr>';}
- function tbl(title,a){a=a||{};return '<h4>'+title+'</h4><table class="facc-table"><tr><th></th><th>WAPE</th><th>Bias</th><th>n</th></tr>'+row('PV',a.pv)+row('Last',a.load)+'</table>';}
- async function load(){try{document.getElementById('facc-body').textContent='wird gemessen …';let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();document.getElementById('facc-body').innerHTML=tbl('7 Tage',d['7d'])+tbl('30 Tage',d['30d']);}catch(e){document.getElementById('facc-body').textContent='Prognosegüte nicht erreichbar.';}}
- document.getElementById('facc-panel').addEventListener('toggle',function(){if(this.open)load();});
+ const g=id=>document.getElementById(id);
+ const num=(v,d)=>(typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d==null?1:d}):'–');
+ const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}):'–');
+ function tile(v,l,s){return '<div class="tile"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';}
+ function fail(id,msg){var e=g(id);if(e)e.innerHTML='<span class="an-hint">'+msg+'</span>';}
+ async function facc(){try{g('an-facc').innerHTML='<span class="an-hint">wird gemessen …</span>';let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=(b.pv||{}),lo30=(b.load||{});
+  g('an-facc').innerHTML=tile(num(pv.wape_pct)+' %','PV WAPE','30 T: '+num(pv30.wape_pct)+' % · Bias '+num(pv.bias_w,0)+' W')
+   +tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')
+   +tile((pv.source||'–'),'PV-Quelle','n='+((pv.n)||0)+' Slots');
+ }catch(e){fail('an-facc','Prognosegüte nicht erreichbar.');}}
+ async function savings(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let days=d.days||0,avg=days?d.total_saved_eur/days:null,wk=(d.weekly||[]).slice(-1)[0];
+  g('an-savings').innerHTML=tile(eur(d.total_saved_eur)+' €','Gesamt',days+' validierte Tage')
+   +tile(eur(avg)+' €','Ø je Tag','')
+   +tile(wk?eur(wk.saved_eur)+' €':'–','Letzte Woche',wk?wk.period:'noch keine');
+ }catch(e){fail('an-savings','Ersparnis-Verlauf nicht erreichbar.');}}
+ async function bhealth(){try{let r=await fetch('api/battery-health.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();
+  g('an-bhealth').innerHTML=tile(num(d.cycles_equiv),'Vollzyklen','äquiv. · '+num(d.throughput_kwh)+' kWh Durchsatz')
+   +tile(num(d.time_full_pct)+' %','Zeit ~100 %',num(d.full_hours)+' h')
+   +tile(num(d.time_empty_pct)+' %','Zeit ~min-SoC',num(d.empty_hours)+' h')
+   +tile(num(d.soc_avg_pct)+' %','SoC Ø','min '+num(d.soc_min_pct)+' / max '+num(d.soc_max_pct)+' %');
+ }catch(e){fail('an-bhealth','Akku-Gesundheit nicht erreichbar.');}}
+ let done=false;
+ g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;facc();savings();bhealth();}});
 })();</script>"""
 
 
@@ -541,28 +545,6 @@ def _pv_confidence_block(auto_peak_basis) -> str:
             "<th>Erwartung</th><th>Schwelle</th><th>Basis</th></tr>" + rows + "</table>"
             "<p class=\"pvconf-note\">Peak nur, wenn der pessimistische (p10-)"
             "Überschuss die Schwelle trägt – sonst asap. Werte als kWh je Tag.</p></details>")
-
-
-def _battery_health_block() -> str:
-    """Akku-Gesundheit (letzte 30 Tage): äquivalente Vollzyklen, Durchsatz und
-    Verweildauer bei ~100 %/min-SoC. Lädt lazy aus /api/battery-health.json."""
-    return """
-<details class="info-panel battery-health-panel" id="bhealth-panel"><summary>⚡ Akku-Gesundheit <small>Zyklen &amp; Vollstand · 30 Tage</small></summary>
- <div id="bhealth-body">wird beim Aufklappen geladen …</div>
-</details>
-<script>(function(){
- const n1=v=>(typeof v==='number'?v.toLocaleString('de-DE',{maximumFractionDigits:1}):'–');
- async function load(){try{let r=await fetch('api/battery-health.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json();
-  document.getElementById('bhealth-body').innerHTML='<table class="bhealth-table">'
-   +'<tr><td>Vollzyklen (äquiv.)</td><td>'+n1(d.cycles_equiv)+'</td></tr>'
-   +'<tr><td>Ladedurchsatz</td><td>'+n1(d.throughput_kwh)+' kWh</td></tr>'
-   +'<tr><td>Zeit ~100 %</td><td>'+n1(d.full_hours)+' h ('+n1(d.time_full_pct)+' %)</td></tr>'
-   +'<tr><td>Zeit ~min-SoC</td><td>'+n1(d.empty_hours)+' h ('+n1(d.time_empty_pct)+' %)</td></tr>'
-   +'<tr><td>SoC min/Ø/max</td><td>'+n1(d.soc_min_pct)+' / '+n1(d.soc_avg_pct)+' / '+n1(d.soc_max_pct)+' %</td></tr>'
-   +'</table>';
- }catch(e){document.getElementById('bhealth-body').textContent='Akku-Gesundheit nicht erreichbar.';}}
- document.getElementById('bhealth-panel').addEventListener('toggle',function(){if(this.open)load();});
-})();</script>"""
 
 
 def _controls_block(config) -> str:
@@ -761,8 +743,10 @@ async function emsShadowCurves(generated){
 function emsShadowChart(s){
   const chart=document.getElementById('shadow-chart');if(!chart||!s||!window.Plotly)return;
   const controls=document.getElementById('ems-controls');if(controls&&!controls.open)return;
-  const dark=document.documentElement.classList.contains('dark'),grid=dark?'#354352':'#e3e8ed',font=dark?'#e7edf4':'#27313a',colors={asap:'#28a261',peak:'#e29a2d',late:'#9b6bd3'},tr=[];Object.entries(s.modes).filter(([k])=>k!=='auto').forEach(([k,v])=>{tr.push({x:s.timestamp,y:v.battery_w,name:emsModeName(k)+' · Akku',line:{color:colors[k]}});tr.push({x:s.timestamp,y:v.soc_percent,name:emsModeName(k)+' · SoC',yaxis:'y2',line:{color:colors[k],dash:'dot'}});tr.push({x:s.timestamp,y:v.grid_w,name:emsModeName(k)+' · Netz',visible:'legendonly',line:{color:colors[k],dash:'dash'}});});chart.style.display='block';Plotly.react(chart,tr,
-  {height:380,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:76},legend:{orientation:'h',x:0,y:-.2,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Akkuleistung W',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
+  const dark=document.documentElement.classList.contains('dark'),grid=dark?'#354352':'#e3e8ed',font=dark?'#e7edf4':'#27313a',colors={asap:'#28a261',peak:'#e29a2d',late:'#9b6bd3'},tr=[];
+  if(s.pv_w)tr.push({x:s.timestamp,y:s.pv_w,name:'PV-Prognose',line:{color:dark?'#6f7d8a':'#c3ccd5',width:1},fill:'tozeroy',fillcolor:dark?'rgba(120,140,160,0.14)':'rgba(150,167,181,0.16)',hoverinfo:'skip'});
+  Object.entries(s.modes).filter(([k])=>k!=='auto').forEach(([k,v])=>{tr.push({x:s.timestamp,y:v.battery_w,name:emsModeName(k)+' · Akku',line:{color:colors[k]}});tr.push({x:s.timestamp,y:v.soc_percent,name:emsModeName(k)+' · SoC',yaxis:'y2',line:{color:colors[k],dash:'dot'}});tr.push({x:s.timestamp,y:v.grid_w,name:emsModeName(k)+' · Netz',visible:'legendonly',line:{color:colors[k],dash:'dash'}});});chart.style.display='block';Plotly.react(chart,tr,
+  {height:380,autosize:true,hovermode:'x unified',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',font:{color:font},hoverlabel:{bgcolor:dark?'#202b36':'#ffffff',bordercolor:dark?'#536273':'#cfd7df',font:{color:font}},margin:{l:52,r:48,t:18,b:76},legend:{orientation:'h',x:0,y:-.2,font:{size:10}},xaxis:{gridcolor:grid},yaxis:{title:'Leistung W (Akku · PV)',gridcolor:grid,zerolinecolor:grid},yaxis2:{title:'SoC %%',overlaying:'y',side:'right',range:[0,100],gridcolor:grid}},{responsive:true,displaylogo:false,displayModeBar:false});}
 window.addEventListener('ems-status',e=>emsShadowRender(e.detail.shadow_comparison));
 if(window.emsRuntimePoll)window.emsRuntimePoll();
 window.addEventListener('ems-theme-change',()=>{if(window.EMS_SHADOW_CURVES)emsShadowChart(window.EMS_SHADOW_CURVES);});
@@ -1730,6 +1714,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .info-panel {{ margin: 10px 0; border: 1px solid #dde4eb; border-radius: 10px; background: #fff; overflow: hidden; }}
  .info-panel > summary {{ padding: 11px 13px; cursor: pointer; font-weight: 700; background: #f7f9fb; }}
  .info-panel > summary small {{ margin-left: 8px; color: #75808a; font-weight: 400; }}
+ .analysis-panel h4 {{ margin: 13px 12px 6px; font-size: 13px; font-weight: 700; color: #55606a; }}
+ .analysis-panel h4 small {{ margin-left: 6px; font-weight: 400; color: #8a949d; }}
+ .analysis-panel .tiles {{ padding: 0 12px; margin-bottom: 4px; }}
+ .analysis-panel .tiles:last-of-type {{ padding-bottom: 14px; }}
+ .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
+ html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
+ html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 7px; padding: 12px; }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 4px; }}
  .detail-grid > div {{ padding: 8px 9px; border-radius: 7px; background: #f4f7fa; }}
@@ -1985,9 +1976,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
 {_pv_confidence_block(auto_peak_basis)}
 {_whatif_block(config)}
-{_forecast_accuracy_block()}
-{_savings_history_block()}
-{_battery_health_block()}
+{_analysis_block()}
 {_events_block()}
 {report_html}
 <script>(function(){{

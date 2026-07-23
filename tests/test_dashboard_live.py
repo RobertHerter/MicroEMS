@@ -162,6 +162,8 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     assert "mode-compare-grid" in html
     assert "Eingriffe</span>" in html and "intervention_slots" in html
     assert "filter(([k])=>k!=='auto')" in html
+    # PV-Prognose als Kontext-Kurve im Modusvergleich-Chart
+    assert "PV-Prognose" in html and "s.pv_w" in html
     assert "100 % sehr wahrscheinlich" not in html  # kommt dynamisch aus dem Laufstatus
     assert "emsLateBadge" in html
     assert "api/control/compare" not in html
@@ -199,18 +201,16 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert '<details class="info-panel events-panel" open' not in events
 
 
-def test_forecast_accuracy_and_savings_panels_are_lazy():
-    from ems.dashboard import _forecast_accuracy_block, _savings_history_block
-    fa = _forecast_accuracy_block()
-    assert "api/forecast-accuracy.json" in fa and 'id="facc-panel"' in fa
-    assert "toggle" in fa                      # lazy erst beim Aufklappen
-    sv = _savings_history_block()
-    assert "api/savings-history.json" in sv and 'id="savings-panel"' in sv
-    assert "toggle" in sv
-    from ems.dashboard import _battery_health_block
-    bh = _battery_health_block()
-    assert "api/battery-health.json" in bh and 'id="bhealth-panel"' in bh
-    assert "toggle" in bh
+def test_analysis_block_bundles_all_three_lazily():
+    """Ein zusammengefasstes Analyse-Panel mit Stat-Kacheln für alle drei
+    Auswertungen; lädt alle Endpoints erst beim Aufklappen."""
+    from ems.dashboard import _analysis_block
+    an = _analysis_block()
+    assert 'id="analysis-panel"' in an
+    assert "api/forecast-accuracy.json" in an
+    assert "api/savings-history.json" in an
+    assert "api/battery-health.json" in an
+    assert 'class="tiles"' in an and "toggle" in an   # Kachel-Look, lazy
 
 
 def test_whatif_block_only_with_controls_enabled():
