@@ -884,6 +884,128 @@ def _apply_curtailment_and_control(e3dc, cmd) -> dict:
     control["curtailment"] = curtailment
     return control
 
+
+def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
+                      schedule_runner, find_load, load_params):
+    """Dashboard-Steuer-Aktion ausführen (Laufzeit) und Lasten-/Modus-Änderungen
+    ins Overlay (config_overrides.yaml) persistieren.
+
+    Modulweit und dependency-injected, damit der HTTP-Handler eine dünne Hülle
+    bleibt und der Dispatcher direkt testbar ist. Wirft KeyError bei unbekannter
+    Aktion und ValueError bei ungültiger Eingabe (vom Handler zu 404/400)."""
+    from .config import save_override
+    from .loads import _slug as _lslug
+    from .homey_mqtt import _slug as _hslug
+    if action == "recalc":
+        fresh, status = _request_runtime_recalc()
+        if publisher is not None:
+            publisher.recalc_event.set()
+        return {"queued": fresh, "runtime": status}
+    if action == "e3dc_control":
+        if e3dc is None:
+            raise ValueError("Keine RSCP-Verbindung – E3/DC-Steuerung nicht schaltbar")
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled muss true oder false sein")
+        result = e3dc.set_control_enabled(enabled)
+        # set_control_enabled setzt bereits self.rc.control_enabled, und self.rc
+        # IST config.e3dc_rscp (dasselbe Objekt, rscp.py __init__). Die explizite
+        # Zuweisung ist daher nur ein Sicherheitsnetz (Absicht = enabled). Die
+        # BESTÄTIGTE Gerätelage kommt separat über control_status (Alarm/Kachel).
+        config.e3dc_rscp.control_enabled = enabled
+        save_override(config_path, "e3dc_rscp.control_enabled", enabled)
+        status = result.get("control_status")
+        _store_control_status(config, status)
+        _publish_control_alarm(publisher, config, status)
+        _request_runtime_recalc()
+        if publisher is not None:
+            publisher.recalc_event.set()
+        return result
+    if action == "load":
+        name = str(payload.get("name", ""))
+        ld = find_load(name)
+        slug = _lslug(name)          # Overlay-/Spalten-Konvention (config_overrides)
+        changed = {}
+        if "enabled" in payload:
+            en = bool(payload["enabled"])
+            ld.enabled = en
+            # apply_load_overrides überschreibt ld.enabled JEDEN Zyklus aus
+            # publisher.load_overrides[homey-slug] – daher MUSS hier der
+            # homey-slug (kleingeschrieben) genutzt werden, sonst greift die
+            # Änderung nicht (der direkte ld.enabled-Set würde überschrieben).
+            if publisher is not None:
+                publisher.load_overrides[_hslug(name)] = en
+            save_override(config_path,
+                          f"controllable_loads_overrides.{slug}.enabled", en)
+            changed["enabled"] = en
+        allowed = load_params.get(ld.type, {})
+        for key, val in (payload.get("params") or {}).items():
+            if key not in allowed:
+                raise ValueError(f"Parameter {key!r} für {ld.type} nicht erlaubt")
+            cast = allowed[key](val)
+            setattr(ld, key, cast)
+            save_override(config_path,
+                          f"controllable_loads_overrides.{slug}.{key}", cast)
+            changed[key] = cast
+        if publisher is not None:
+            _request_runtime_recalc()
+            publisher.recalc_event.set()
+        return changed
+    if action == "mode":
+        strat = str(payload.get("strategy", "")).lower()
+        if strat not in ("asap", "peak", "late", "auto"):
+            raise ValueError("strategy muss asap|peak|late|auto sein")
+        config.optimization.charge_strategy = strat
+        save_override(config_path, "optimization.charge_strategy", strat)
+        if publisher is not None:
+            _request_runtime_recalc()
+            publisher.recalc_event.set()
+        return {"charge_strategy": strat}
+    if action == "battery":
+        if e3dc is None:
+            raise ValueError("Keine RSCP-Verbindung – manuelles Laden nicht möglich")
+        act = str(payload.get("action", "")).lower()
+        if not config.e3dc_rscp.control_enabled and act != "auto":
+            raise ValueError("E3/DC-Steuerung ist ausgeschaltet")
+        watts = float(payload.get("watts", 0) or 0)
+        minutes = float(payload.get("minutes", 15) or 15)
+        return e3dc.manual_power(act, watts, minutes * 60.0)
+    if action == "battery_schedule":
+        if schedule_runner is None:
+            raise ValueError("Akku-Zeitplanung ist nicht verfügbar")
+        op = str(payload.get("op", "add")).lower()
+        if op == "add":
+            return schedule_runner.add(payload)
+        if op == "cancel":
+            return schedule_runner.cancel(int(payload.get("id", 0)))
+        if op == "delete":
+            return schedule_runner.delete(int(payload.get("id", 0)))
+        raise ValueError("Unbekannte Planungsaktion")
+    raise KeyError(action)
+
+
+def _status_api_payload(path: str, config):
+    """Payload + HTTP-Code der reinen Status-JSON-Endpoints (status/mode-
+    comparison/events). Modulweit und ohne Live-/Datei-IO, damit das Routing der
+    Handler-GET direkt testbar ist. None, wenn der Pfad kein Status-Endpoint ist."""
+    if path == "/api/status.json":
+        status = _runtime_snapshot()
+        status["solver_running"] = solver_is_running()
+        return status, 200
+    if path == "/api/mode-comparison.json":
+        with _runtime_lock:
+            curves = {"generated": _shadow_curves.get("generated"),
+                      "series": _shadow_curves.get("series")}
+        if curves["series"] is None:
+            return {"status": "unavailable"}, 503
+        return curves, 200
+    if path == "/api/events.json":
+        from .local_history import read_dashboard_events
+        return {"events": read_dashboard_events(
+            config.e3dc_rscp.history_db_path, config.general.timezone, 50)}, 200
+    return None
+
+
 CONTROL_COLS = [
     # E3DC-Steuerbefehle (Limits nur bei Abweichung vom Eigenverbrauch):
     "batt_charge_limit_w", "batt_discharge_limit_w",
@@ -2626,99 +2748,12 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
         raise ValueError(f"Unbekannte Last: {name!r}")
 
     def _handle_control(action: str, payload: dict):
-        """Führt eine Dashboard-Steuer-Aktion aus (Laufzeit) und persistiert
-        Lasten-/Modus-Änderungen ins Overlay (config_overrides.yaml)."""
-        from .config import save_override
-        from .loads import _slug as _lslug
-        from .homey_mqtt import _slug as _hslug
-        if action == "recalc":
-            fresh, status = _request_runtime_recalc()
-            if publisher is not None:
-                publisher.recalc_event.set()
-            return {"queued": fresh, "runtime": status}
-        if action == "e3dc_control":
-            if e3dc is None:
-                raise ValueError("Keine RSCP-Verbindung – E3/DC-Steuerung nicht schaltbar")
-            enabled = payload.get("enabled")
-            if not isinstance(enabled, bool):
-                raise ValueError("enabled muss true oder false sein")
-            result = e3dc.set_control_enabled(enabled)
-            # set_control_enabled setzt bereits self.rc.control_enabled, und
-            # self.rc IST config.e3dc_rscp (dasselbe Objekt, rscp.py __init__).
-            # Die explizite Zuweisung ist daher nur ein Sicherheitsnetz, falls
-            # _handle_control je mit einer anderen Config-Instanz aufgerufen wird
-            # (Absicht = enabled). Die BESTÄTIGTE Gerätelage kommt separat über
-            # control_status (Alarm/Kachel), nicht über dieses Flag.
-            config.e3dc_rscp.control_enabled = enabled
-            save_override(config_path, "e3dc_rscp.control_enabled", enabled)
-            status = result.get("control_status")
-            _store_control_status(config, status)
-            _publish_control_alarm(publisher, config, status)
-            _request_runtime_recalc()
-            if publisher is not None:
-                publisher.recalc_event.set()
-            return result
-        if action == "load":
-            name = str(payload.get("name", ""))
-            ld = _find_load(name)
-            slug = _lslug(name)          # Overlay-/Spalten-Konvention (config_overrides)
-            changed = {}
-            if "enabled" in payload:
-                en = bool(payload["enabled"])
-                ld.enabled = en
-                # apply_load_overrides überschreibt ld.enabled JEDEN Zyklus aus
-                # publisher.load_overrides[homey-slug] – daher MUSS hier der
-                # homey-slug (kleingeschrieben) genutzt werden, sonst greift die
-                # Änderung nicht (der direkte ld.enabled-Set würde überschrieben).
-                if publisher is not None:
-                    publisher.load_overrides[_hslug(name)] = en
-                save_override(config_path,
-                              f"controllable_loads_overrides.{slug}.enabled", en)
-                changed["enabled"] = en
-            allowed = _LOAD_PARAMS.get(ld.type, {})
-            for key, val in (payload.get("params") or {}).items():
-                if key not in allowed:
-                    raise ValueError(f"Parameter {key!r} für {ld.type} nicht erlaubt")
-                cast = allowed[key](val)
-                setattr(ld, key, cast)
-                save_override(config_path,
-                              f"controllable_loads_overrides.{slug}.{key}", cast)
-                changed[key] = cast
-            if publisher is not None:
-                _request_runtime_recalc()
-                publisher.recalc_event.set()
-            return changed
-        if action == "mode":
-            strat = str(payload.get("strategy", "")).lower()
-            if strat not in ("asap", "peak", "late", "auto"):
-                raise ValueError("strategy muss asap|peak|late|auto sein")
-            config.optimization.charge_strategy = strat
-            save_override(config_path, "optimization.charge_strategy", strat)
-            if publisher is not None:
-                _request_runtime_recalc()
-                publisher.recalc_event.set()
-            return {"charge_strategy": strat}
-        if action == "battery":
-            if e3dc is None:
-                raise ValueError("Keine RSCP-Verbindung – manuelles Laden nicht möglich")
-            act = str(payload.get("action", "")).lower()
-            if not config.e3dc_rscp.control_enabled and act != "auto":
-                raise ValueError("E3/DC-Steuerung ist ausgeschaltet")
-            watts = float(payload.get("watts", 0) or 0)
-            minutes = float(payload.get("minutes", 15) or 15)
-            return e3dc.manual_power(act, watts, minutes * 60.0)
-        if action == "battery_schedule":
-            if schedule_runner is None:
-                raise ValueError("Akku-Zeitplanung ist nicht verfügbar")
-            op = str(payload.get("op", "add")).lower()
-            if op == "add":
-                return schedule_runner.add(payload)
-            if op == "cancel":
-                return schedule_runner.cancel(int(payload.get("id", 0)))
-            if op == "delete":
-                return schedule_runner.delete(int(payload.get("id", 0)))
-            raise ValueError("Unbekannte Planungsaktion")
-        raise KeyError(action)
+        """Dünne Hülle um _dispatch_control (Modulebene) mit den Laufzeit-
+        Abhängigkeiten dieses Servers."""
+        return _dispatch_control(
+            action, payload, config=config, publisher=publisher, e3dc=e3dc,
+            config_path=config_path, schedule_runner=schedule_runner,
+            find_load=_find_load, load_params=_LOAD_PARAMS)
 
     class Handler(http.server.SimpleHTTPRequestHandler):
         def _authed(self) -> bool:
@@ -2846,29 +2881,12 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     self._reply(data)
                 return
 
-            if path == "/api/status.json":
-                status = _runtime_snapshot()
-                status["solver_running"] = solver_is_running()
-                self._reply(status)
-                return
-
-            # Kurven des bereits automatisch gerechneten Modusvergleichs.
-            # Bewusst nicht Teil des häufig gepollten Status-Payloads.
-            if path == "/api/mode-comparison.json":
-                with _runtime_lock:
-                    curves = {"generated": _shadow_curves.get("generated"),
-                              "series": _shadow_curves.get("series")}
-                if curves["series"] is None:
-                    self._reply({"status": "unavailable"}, 503)
-                else:
-                    self._reply(curves)
-                return
-
-            if path == "/api/events.json":
-                from .local_history import read_dashboard_events
-                self._reply({"events": read_dashboard_events(
-                    config.e3dc_rscp.history_db_path,
-                    config.general.timezone, 50)})
+            # Reine Status-JSON-Endpoints (status/mode-comparison/events) – das
+            # Routing + der Payload liegen modulweit in _status_api_payload und
+            # sind dort direkt testbar; hier nur noch ausliefern.
+            _status = _status_api_payload(path, config)
+            if _status is not None:
+                self._reply(_status[0], _status[1])
                 return
 
             if path == "/api/battery-schedule.json":
