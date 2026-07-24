@@ -2,7 +2,7 @@
 # Install into a venv:  python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 # Reproduzierbare Installation (exakt getestete Versionen): pip install -r requirements.lock
 
-PyYAML>=6.0
+PyYAML>=6.0.3
 pandas>=2.0
 numpy>=1.24
 python-dateutil>=2.8
