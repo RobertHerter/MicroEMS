@@ -221,52 +221,176 @@ Lebenszeichen ausbleibt). Die Timer:
 
 ### Alternativ: Docker (optional)
 
-Das EMS lässt sich statt als systemd-Dienst auch als Container betreiben – das
-lokale `/opt/ems`-Setup bleibt davon unberührt. Config und persistente Daten
-werden gemountet (nicht ins Image gebaut), Secrets bleiben also außerhalb.
+MicroEMS lässt sich statt als systemd-Dienst vollständig mit Docker Compose
+betreiben. Das fertige Multi-Arch-Image unterstützt `linux/amd64` und
+`linux/arm64` (Raspberry Pi):
 
 ```bash
+ghcr.io/robertherter/microems:1.4.0
+```
+
+Voraussetzung sind Docker Engine mit Compose-Plugin sowie Netzwerkzugriff des
+Containers auf E3/DC, MQTT, InfluxDB und die verwendeten Internetdienste. Bei
+Diensten auf demselben Host in der Config nicht `localhost`, sondern die
+Host-IP oder ein gemeinsames Docker-Netz verwenden.
+
+#### 1. Verzeichnisse und Konfiguration vorbereiten
+
+```bash
+mkdir -p ~/microems/config ~/microems/data
+cd ~/microems
+curl -fsSL \
+  https://raw.githubusercontent.com/RobertHerter/MicroEMS/v1.4.0/config.example.yaml \
+  -o config/config.yaml
+chmod 600 config/config.yaml
+```
+
+In `config/config.yaml` die Anlagenwerte, Zugangsdaten und IP-Adressen setzen.
+Zusätzlich die folgenden vorhandenen Einträge auf die gemounteten
+Containerpfade ändern:
+
+```yaml
+e3dc_rscp:
+  history_db_path: /app/data/e3dc_history.sqlite
+
+dashboard:
+  enabled: true
+  serve: true
+  host: 0.0.0.0
+  port: 8080
+  output_path: /app/data/dashboard.html
+
+report:
+  snapshot_path: /app/data/last_run_debug.json
+
+calibration:
+  pv_profile: /app/data/kalibrierung_profil.yaml
+
+savings:
+  state_path: /app/data/savings_state.json
+```
+
+`config` enthält anschließend auch das automatisch erzeugte
+`config_overrides.yaml`. Historie, Dashboard, Kalibrierprofile und
+Ersparnisstatus liegen dauerhaft unter `data`; ein Container-Update löscht
+diese Dateien nicht.
+
+#### 2. Compose-Datei für das fertige Image anlegen
+
+Als `compose.yaml` speichern:
+
+```yaml
+name: microems
+
+x-microems: &microems
+  image: ghcr.io/robertherter/microems:${MICROEMS_TAG:-1.4.0}
+  restart: unless-stopped
+  environment:
+    TZ: Europe/Berlin
+  volumes:
+    - ./config:/app/config
+    - ./data:/app/data
+
+services:
+  ems:
+    <<: *microems
+    container_name: microems
+    ports:
+      - "${EMS_PORT:-8080}:8080"
+
+  scheduler:
+    <<: *microems
+    container_name: microems-scheduler
+    depends_on:
+      - ems
+    entrypoint: ["cron", "-f"]
+    healthcheck:
+      disable: true
+```
+
+Der Tag ist bewusst auf eine feste Version gesetzt. Alternativ kann in einer
+Datei `.env` beispielsweise `MICROEMS_TAG=1.4` oder für stets den neuesten
+Build `MICROEMS_TAG=latest` hinterlegt werden.
+
+#### 3. Konfiguration prüfen und EMS starten
+
+```bash
+docker compose pull
+docker compose run --rm ems --config /app/config/config.yaml --check
+docker compose up -d
+docker compose ps
+```
+
+`--check` validiert die Konfiguration und löst einen Optimierungstest, ohne
+Steuerwerte zu senden. Nach dem Start ist das Dashboard unter
+`http://<Docker-Host>:8080` erreichbar. Der Healthcheck benötigt beim ersten
+Start bis zu 90 Sekunden.
+
+```bash
+docker compose logs -f ems
+docker compose logs -f scheduler
+curl -fsS http://localhost:8080/version
+```
+
+Der Container `ems` führt den regulären 15-Minuten-Loop aus. `scheduler`
+ersetzt die systemd-Timer und startet über [docker/crontab](docker/crontab):
+
+- täglich um 02:45 Uhr die Ersparnis-Validierung,
+- sonntags um 03:00 Uhr die Verbrauchs-, PV- und Pool-Kalibrierung.
+
+#### 4. Von systemd auf Docker umsteigen
+
+**Niemals systemd- und Docker-EMS gleichzeitig mit aktivierter
+E3/DC-Steuerung betreiben.** Beide Instanzen würden sonst konkurrierende
+Lade-/Entladelimits senden. Vor dem produktiven Docker-Start die lokale Instanz
+und ihre Timer stoppen:
+
+```bash
+sudo systemctl disable --now ems.service
+sudo systemctl disable --now ems-kalibrierung.timer ems-savings.timer ems-backup.timer
+docker compose up -d
+```
+
+Für einen gefahrlosen Paralleltest zuerst `e3dc_rscp.control_enabled: false`
+und `dashboard.controls_enabled: false` verwenden.
+
+#### 5. Aktualisieren, stoppen und sichern
+
+Für ein Update den gewünschten Tag in `.env` ändern und anschließend:
+
+```bash
+docker compose pull
+docker compose up -d
+docker image prune
+```
+
+Stoppen und wieder starten:
+
+```bash
+docker compose stop
+docker compose start
+```
+
+`docker compose down` entfernt nur Container und Netzwerk, nicht die
+Bind-Mount-Daten in `config` und `data`. Beide Verzeichnisse regelmäßig auf ein
+externes Ziel sichern.
+
+#### Image lokal selbst bauen
+
+Das Repository enthält weiterhin eine Build-Variante in
+[docker-compose.yml](docker-compose.yml):
+
+```bash
+git clone https://github.com/RobertHerter/MicroEMS.git
+cd MicroEMS
 mkdir -p config data
 cp config.example.yaml config/config.yaml
-# In config/config.yaml die Secrets eintragen UND die Schreibpfade auf das
-# gemountete Daten-Volume legen:
-#   e3dc_rscp.history_db_path: /app/data/e3dc_history.sqlite
-#   dashboard.output_path:     /app/data/dashboard.html
-#   report.snapshot_path:      /app/data/last_run_debug.json
-#   calibration.pv_profile:    /app/data/kalibrierung_profil.yaml
-#   savings.state_path:        /app/data/savings_state.json
-docker compose up -d --build          # Dashboard dann auf http://<host>:8080
-docker compose logs -f
+docker compose up -d --build
 ```
 
-Alternativ zum lokalen Build gibt es ein vorgebautes Multi-Arch-Image (amd64 +
-arm64) aus GitHub Actions ([docker.yml](.github/workflows/docker.yml)) in der
-GitHub Container Registry. Dann in `docker-compose.yml` bei beiden Diensten
-`build: .` durch `image: ghcr.io/robertherter/microems:latest` ersetzen (bzw.
-einen SemVer-Tag wie `:1.4.0`) und `docker compose pull && docker compose up -d`.
-
-Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.13-slim`, bringt
-HiGHS (via `highspy`) und CBC (`coinor-cbc`, Fallback) mit und startet
-`python -m ems.main --loop`. Ein einmaliger Prüflauf ohne Dienstbetrieb:
-
-```bash
-docker compose run --rm ems --config /app/config/config.yaml --check
-```
-
-**Geplante Jobs (Pendant zu den systemd-Timern):** Das Compose bringt einen
-zweiten Container `scheduler` mit (gleiches Image, `cron` im Vordergrund,
-[docker/crontab](docker/crontab)), der die **Ersparnis-Validierung** (täglich
-02:45) und die **Kalibrierung** inkl. Pool-Thermomodell (sonntags 03:00) fährt –
-Ausgaben in `docker compose logs scheduler`. Beide Container teilen sich die
-`config`- und `data`-Volumes, sodass Kalibrierprofile und Ersparnis-Status vom
-Loop-Container übernommen werden.
-
-Hinweise: Die Container laufen als root (unkompliziert bei gemounteten Volumes im
-Heimnetz). InfluxDB/MQTT/E3DC müssen vom Container aus erreichbar sein – nutze
-für `localhost`-Dienste des Hosts die jeweilige Host-IP bzw. ein passendes
-Docker-Netz. **Backup:** Im Docker-Betrieb liegen alle unversionierten Dateien
-bereits auf den Host-Verzeichnissen `./config` und `./data` – diese beiden
-einfach extern sichern (statt des `ems-backup.timer` aus dem systemd-Setup).
+Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.13-slim`, enthält
+HiGHS sowie CBC als Solver-Fallback und startet
+`python -m ems.main --config /app/config/config.yaml --loop`.
 
 ## Konfiguration
 
