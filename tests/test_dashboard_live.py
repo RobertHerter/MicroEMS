@@ -202,6 +202,9 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "api/events.json" in events
     assert '<details class="info-panel events-panel"' in events
     assert '<details class="info-panel events-panel" open' not in events
+    # Ereignisart (kind) fließt in die CSS-Klasse -> Warnungen/Schaltvorgänge
+    # werden im Panel eingefärbt.
+    assert "+esc(e.kind)+" in events
 
 
 def test_analysis_block_bundles_all_three_lazily():

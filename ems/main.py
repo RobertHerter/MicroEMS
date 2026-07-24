@@ -20,6 +20,7 @@ import copy
 import json
 import logging
 import os
+import re
 import signal
 import threading
 import time as _time
@@ -205,6 +206,74 @@ def _record_dashboard_event(config, kind: str, message: str, *,
                               level=level, details=details)
     except Exception as exc:
         log.debug("Dashboard-Ereignis nicht speicherbar (%s).", exc)
+
+
+# --- Alarme (Warnungen/Fehler/Infos) zusätzlich ins Ereignis-Log ------------ #
+# publish_alert schreibt bisher nur nach MQTT. Über einen Sink am Publisher
+# landet JEDER Alarm auch im Bedien-/Ereignisverlauf des Dashboards. Dedupe:
+# viele Alarme (Ziel-SoC, Anschluss-Überlast, Planprüfung) feuern JEDEN Zyklus,
+# solange die Ursache besteht - identische Meldungen (Zahlen maskiert) werden
+# 30 min lang nur einmal geloggt, Zustandswechsel/Erholungen sofort.
+_ALERT_EVENT_NUM = re.compile(r"\d+(?:[.,]\d+)?")
+_alert_event_last: dict = {}
+_ALERT_EVENT_WINDOW_S = 1800.0
+
+
+def _make_alert_event_sink(config):
+    def sink(level: str, message: str) -> None:
+        try:
+            key = f"{level}|{_ALERT_EVENT_NUM.sub('#', str(message))}"
+            now = _time.monotonic()
+            if now - _alert_event_last.get(key, -1e18) < _ALERT_EVENT_WINDOW_S:
+                return
+            if len(_alert_event_last) > 300:
+                _alert_event_last.clear()
+            _alert_event_last[key] = now
+            _record_dashboard_event(config, "alarm", str(message), level=str(level))
+        except Exception as exc:   # pragma: no cover - reine Absicherung
+            log.debug("Alarm-Ereignis nicht speicherbar (%s).", exc)
+    return sink
+
+
+# Schaltvorgänge: nur bei tatsächlicher Änderung gegenüber dem letzten Zyklus.
+_MODE_LABELS = {
+    "auto": "Automatik", "hold": "Akku halten (Entladen gesperrt)",
+    "limit_discharge": "Entladen gedrosselt", "limit_charge": "Laden gedrosselt",
+    "block_charge": "Laden gesperrt", "grid_charge": "Netzladen",
+    "grid_discharge": "Netzeinspeisung aus Akku", "peak": "PV-Spitze glätten",
+    "late": "spätes Laden",
+}
+_last_switch_state: dict = {"battery_mode": None, "loads": {}}
+
+
+def _log_switching_events(config, table, load_cmds) -> None:
+    """Schaltvorgänge (Akku-Steuermodus- und Laststufen-Wechsel des aktuellen
+    Slots) ins Ereignis-Log - nur bei echter Änderung gegenüber dem Vorzyklus,
+    damit der Verlauf nicht je Zyklus zugemüllt wird."""
+    try:
+        if table is None or len(table) == 0:
+            return
+        mode = str(table.iloc[0].get("mode", "") or "")
+        prev = _last_switch_state.get("battery_mode")
+        if mode and mode != prev:
+            if prev is not None:      # erster Lauf ist kein "Wechsel"
+                _record_dashboard_event(
+                    config, "switch",
+                    f"Akku-Steuerung: {_MODE_LABELS.get(prev, prev)} → "
+                    f"{_MODE_LABELS.get(mode, mode)}",
+                    details={"from": prev, "to": mode})
+            _last_switch_state["battery_mode"] = mode
+        old = _last_switch_state.get("loads", {})
+        cur = {str(k): int(bool(v)) for k, v in (load_cmds or {}).items()}
+        for label, on in cur.items():
+            if label in old and on != old[label]:
+                _record_dashboard_event(
+                    config, "switch",
+                    f"{label} {'eingeschaltet' if on else 'ausgeschaltet'}",
+                    details={"load": label, "on": on})
+        _last_switch_state["loads"] = {**old, **cur}
+    except Exception as exc:   # pragma: no cover - reine Absicherung
+        log.debug("Schaltvorgang-Ereignis nicht speicherbar (%s).", exc)
 
 
 def _comparison_metrics(table: pd.DataFrame, total_cost_ct: float,
@@ -1882,6 +1951,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         try:
             if one_shot:
                 publisher = HomeyMqttPublisher(config)
+                publisher.event_sink = _make_alert_event_sink(config)
             # Ein konsolidierter Alarm aus der Planprüfung (deckt infeasible und
             # Solver-Zeitlimit mit ab); Errors haben Vorrang vor Warnungen.
             if plan_errors:
@@ -1913,6 +1983,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             _publish_load_feedback_alarm(publisher, load_feedback_status)
             load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
             plan_published = True
+            _log_switching_events(config, result.table, load_cmds)  # Schaltvorgänge
             # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
             # aus): Grundlage der Thermomodell-Kalibrierung
             # (python -m ems.pool_calibration). NUR bei aktiver Steuerung UND
@@ -3318,6 +3389,7 @@ def main() -> None:
     # Persistente MQTT-Verbindung mit Last Will: stirbt der Prozess, setzt der
     # Broker ems/status selbst auf "offline" (Watchdog-Signal für Homey).
     publisher = HomeyMqttPublisher(config)
+    publisher.event_sink = _make_alert_event_sink(config)
     try:
         # Temperatur-, Kommando- und WP-Rückmeldungen bereits vor dem ersten
         # Solve abonnieren. So stehen retained/live Istwerte rechtzeitig zur

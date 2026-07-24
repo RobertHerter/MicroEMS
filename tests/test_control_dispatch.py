@@ -136,6 +136,50 @@ def test_run_whatif_uses_snapshot_and_applies_overrides(tmp_path):
         m._run_whatif({}, snapshot={"inputs": None, "config": None})
 
 
+def test_alert_event_sink_logs_and_dedupes(tmp_path):
+    """Jeder Alarm (publish_alert) landet zusätzlich im Ereignis-Log; identische
+    Meldungen (nur Zahlen abweichend) werden im Fenster nur einmal geloggt,
+    andere Meldungen sofort."""
+    from ems.local_history import read_dashboard_events
+    cfg = _cfg(tmp_path)
+    m._alert_event_last.clear()
+    sink = m._make_alert_event_sink(cfg)
+    sink("warning", "Ziel-SoC nicht erreichbar: 3.2 kWh fehlen.")
+    sink("warning", "Ziel-SoC nicht erreichbar: 3.1 kWh fehlen.")   # nur Zahl -> dedupe
+    sink("error", "E3DC-Steuer-Ausfall: Limit nicht übernommen")    # neue Meldung
+    ev = read_dashboard_events(cfg.e3dc_rscp.history_db_path, "Europe/Berlin", 50)
+    msgs = [e["message"] for e in ev]
+    assert any("3.2 kWh" in x for x in msgs)
+    assert not any("3.1 kWh" in x for x in msgs)          # unterdrückt
+    assert any("Steuer-Ausfall" in x for x in msgs)
+    assert all(e["kind"] == "alarm" for e in ev)
+    assert {"warning", "error"} <= {e["level"] for e in ev}
+
+
+def test_log_switching_events_only_on_change(tmp_path):
+    """Schaltvorgänge werden nur bei echter Änderung geloggt (Akku-Modus- und
+    Laststufen-Wechsel), nicht je Zyklus."""
+    import pandas as pd
+    from ems.local_history import read_dashboard_events
+    cfg = _cfg(tmp_path)
+    m._last_switch_state.clear()
+    m._last_switch_state.update(battery_mode=None, loads={})
+    idx = pd.date_range("2026-07-24 12:00", periods=1, freq="15min",
+                        tz="Europe/Berlin")
+
+    def tbl(mode):
+        return pd.DataFrame({"mode": [mode]}, index=idx)
+
+    m._log_switching_events(cfg, tbl("auto"), {"Pool": 0})   # 1. Lauf -> kein Wechsel
+    m._log_switching_events(cfg, tbl("hold"), {"Pool": 1})   # Modus + Last wechseln
+    m._log_switching_events(cfg, tbl("hold"), {"Pool": 1})   # unverändert -> nichts
+    ev = read_dashboard_events(cfg.e3dc_rscp.history_db_path, "Europe/Berlin", 50)
+    switch = [e for e in ev if e["kind"] == "switch"]
+    joined = " | ".join(e["message"] for e in switch)
+    assert len(switch) == 2
+    assert "Akku-Steuerung" in joined and "Pool eingeschaltet" in joined
+
+
 def test_status_api_payload_status_and_events(tmp_path):
     from ems.local_history import write_dashboard_event
     cfg = _cfg(tmp_path)

@@ -448,7 +448,7 @@ def _events_block() -> str:
 </details>
 <script>(function(){
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let a=(await r.json()).events||[];document.getElementById('events-list').innerHTML=a.length?a.map(e=>'<div class="event '+esc(e.level)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Noch keine Ereignisse.</p>';}catch(e){document.getElementById('events-list').textContent='Ereignisverlauf nicht erreichbar.';}}
+ async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let a=(await r.json()).events||[];document.getElementById('events-list').innerHTML=a.length?a.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Noch keine Ereignisse.</p>';}catch(e){document.getElementById('events-list').textContent='Ereignisverlauf nicht erreichbar.';}}
  document.getElementById('events-panel').addEventListener('toggle',function(){if(this.open)load();});load();setInterval(()=>{if(document.getElementById('events-panel').open)load();},10000);
 })();</script>"""
 
@@ -1807,7 +1807,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .events-list {{ max-height: 360px; overflow: auto; padding: 6px 12px 11px; }}
  .event {{ display: grid; grid-template-columns: 115px 1fr; gap: 10px; padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
  .event time {{ color: #74808b; font-size: 11px; }}
- .event.error span {{ color: #bd302a; }}
+ .event.error span {{ color: #bd302a; font-weight: 600; }}
+ .event.warn span, .event.warning span {{ color: #9a6b00; }}
+ .event.switch span {{ color: #2f6f9e; }}
  .switch {{ display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }}
  .switch input {{ position: absolute; opacity: 0; pointer-events: none; }}
  .switch span {{ width: 34px; height: 19px; border-radius: 12px; background: #b9bec5;
@@ -1896,6 +1898,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .detail-grid span, html.dark .event time {{ color: #aebbc8; }}
  html.dark .compare-chart-status {{ color: #aebbc8; }}
  html.dark .event {{ border-color: #303e4b; }}
+ html.dark .event.error span {{ color: #f1a29c; }}
+ html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
+ html.dark .event.switch span {{ color: #8fc0e8; }}
  html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
  html.dark .mode-compare-card {{ background: #202b36; border-color: #425364; }}
  html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}

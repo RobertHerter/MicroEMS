@@ -438,7 +438,14 @@ class HomeyMqttPublisher:
         return triggered
 
     def publish_alert(self, level: str, message: str) -> None:
-        """Publiziert eine Störung/Warnung (ems/alert) für Homey-Push-Flows."""
+        """Publiziert eine Störung/Warnung (ems/alert) für Homey-Push-Flows.
+
+        Ein optionaler event_sink (von main gesetzt) protokolliert JEDEN Alarm
+        zusätzlich im Dashboard-Ereignisverlauf - unabhängig davon, ob MQTT
+        aktiv ist."""
+        sink = getattr(self, "event_sink", None)
+        if sink is not None:
+            sink(level, message)
         if not self.cfg.enabled:
             return
         try:
