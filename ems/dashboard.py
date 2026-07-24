@@ -461,7 +461,7 @@ def _events_block() -> str:
  function render(){
   const act=active();
   const rows=LAST.filter(e=>act.has(lvlClass(e.level)));
-  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' k-'+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+icon(lvlClass(e.level))+' '+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
+  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' k-'+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span><i class="ev-ic">'+icon(lvlClass(e.level))+'</i>'+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
   listEl.scrollTop=0;   // neueste (oben) zeigen, NICHT ans Ende springen
  }
  async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';}}
@@ -1829,8 +1829,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .events-filter button.info.on {{ background: #eef6f0; border-color: #4a9d6a; color: #237a3b; }}
  .events-filter button.warn.on {{ background: #fdf4e2; border-color: #d9a441; color: #8a6d00; }}
  .events-filter button.err.on {{ background: #fdecec; border-color: #d1746e; color: #bd302a; }}
- .event {{ display: grid; grid-template-columns: 115px 1fr; gap: 10px; padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
- .event time {{ color: #74808b; font-size: 11px; }}
+ .event {{ display: grid; grid-template-columns: 118px 1fr; gap: 10px; align-items: center;
+        padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
+ .event time {{ color: #55606b; font-size: 12.5px; white-space: nowrap; }}
+ .event > span {{ display: flex; align-items: center; gap: 7px; }}
+ .ev-ic {{ font-style: normal; flex: 0 0 auto; font-size: 13px; line-height: 1; }}
  .event.error span {{ color: #bd302a; font-weight: 600; }}
  .event.warn span, .event.warning span {{ color: #9a6b00; }}
  .event.k-switch span {{ color: #2f6f9e; }}
@@ -1919,7 +1922,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
  html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .detail-grid > div {{ background: #202b36; border-color: #354352; }}
- html.dark .detail-grid span, html.dark .event time {{ color: #aebbc8; }}
+ html.dark .detail-grid span {{ color: #aebbc8; }}
+ html.dark .event time {{ color: #c3cdd8; }}
  html.dark .compare-chart-status {{ color: #aebbc8; }}
  html.dark .event {{ border-color: #303e4b; }}
  html.dark .event.error span {{ color: #f1a29c; }}
