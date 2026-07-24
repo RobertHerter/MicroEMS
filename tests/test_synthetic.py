@@ -28,7 +28,8 @@ from ems.dashboard import build_dashboard
 
 
 def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
-    return Config(
+    import os
+    cfg = Config(
         general=GeneralConfig(),
         influxdb=InfluxConfig(version=2, v1={}, v2={}, signals={}, outputs={}),
         feed_in=FeedInConfig(mode="fixed", fixed_ct_kwh=8.0),
@@ -58,6 +59,13 @@ def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
         dashboard=DashboardConfig(enabled=True, output_path=tmp_html),
         calibration=CalibrationConfig(enabled=False),
     )
+    # Test-Artefakte NIE in die echte History-DB schreiben: der Default
+    # history_db_path ist relativ (./e3dc_history.sqlite) und kollidierte bei
+    # cwd=/opt/ems mit der Live-DB - Fehlerpfad-/Ereignis-Writes landeten sonst
+    # im echten Dashboard. Pro Prozess isoliert (xdist-Worker teilen sich sonst
+    # eine Datei -> "database is locked").
+    cfg.e3dc_rscp.history_db_path = f"/tmp/ems_test_history_{os.getpid()}.sqlite"
+    return cfg
 
 
 def synthetic_history(cfg: Config, now: pd.Timestamp) -> pd.Series:

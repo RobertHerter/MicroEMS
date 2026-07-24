@@ -92,12 +92,13 @@ def test_check_config_dry_run_is_solvable_and_side_effect_free():
     assert isinstance(report["fallback_plan_cost_ct"], float)
 
 
-def test_run_once_sets_error_state_when_repository_init_fails(monkeypatch):
+def test_run_once_sets_error_state_when_repository_init_fails(monkeypatch, tmp_path):
     """P3#1: schlägt die Repository-Initialisierung fehl, muss der Runtime-Status
     auf 'error' fallen – NICHT auf 'running' hängen bleiben (sonst zeigt das
     Dashboard dauerhaft "Zyklus läuft", ohne Fehler und ohne Erholung)."""
     cfg = make_config()
     cfg.e3dc_rscp.enabled = False        # E3DC-Pfad für den Test außen vor
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")  # nicht in Live-DB
 
     def boom(config):
         raise RuntimeError("DB nicht erreichbar")
