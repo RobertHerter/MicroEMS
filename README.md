@@ -219,6 +219,38 @@ Lebenszeichen ausbleibt). Die Timer:
   [backup.sh](backup.sh). **Für echte Sicherheit ein externes Ziel setzen**
   (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
 
+### Alternativ: Docker (optional)
+
+Das EMS lässt sich statt als systemd-Dienst auch als Container betreiben – das
+lokale `/opt/ems`-Setup bleibt davon unberührt. Config und persistente Daten
+werden gemountet (nicht ins Image gebaut), Secrets bleiben also außerhalb.
+
+```bash
+mkdir -p config data
+cp config.example.yaml config/config.yaml
+# In config/config.yaml die Secrets eintragen UND die Schreibpfade auf das
+# gemountete Daten-Volume legen:
+#   e3dc_rscp.history_db_path: /app/data/e3dc_history.sqlite
+#   dashboard.output_path:     /app/data/dashboard.html
+#   report.snapshot_path:      /app/data/last_run_debug.json
+docker compose up -d --build          # Dashboard dann auf http://<host>:8080
+docker compose logs -f
+```
+
+Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.13-slim`, bringt
+HiGHS (via `highspy`) und CBC (`coinor-cbc`, Fallback) mit und startet
+`python -m ems.main --loop`. Ein einmaliger Prüflauf ohne Dienstbetrieb:
+
+```bash
+docker compose run --rm ems --config /app/config/config.yaml --check
+```
+
+Hinweise: Der Container läuft als root (unkompliziert bei gemounteten Volumes im
+Heimnetz). InfluxDB/MQTT/E3DC müssen vom Container aus erreichbar sein – nutze
+für `localhost`-Dienste des Hosts die jeweilige Host-IP bzw. ein passendes
+Docker-Netz. Die systemd-Timer (Kalibrierung/Ersparnis/Backup) sind Teil des
+lokalen Setups und im Container nicht enthalten.
+
 ## Konfiguration
 
 Zentrale Datei `config.yaml` (aus `config.example.yaml` kopieren – dort ist jeder

@@ -1,0 +1,25 @@
+# Build-Kontext schlank halten – und Secrets/State NIE ins Image.
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+tests
+.claude
+
+# Secrets & lokaler Zustand (werden zur Laufzeit gemountet)
+config.yaml
+config.yaml~
+config_overrides.yaml
+*.sqlite
+dashboard.html
+last_run_debug.json
+api_data.json
+
+# Nicht im Laufzeit-Image benötigt
+docker-compose.yml
+Dockerfile
+.dockerignore
+*.md

@@ -1,0 +1,29 @@
+# Optionaler Container-Betrieb von MicroEMS.
+#
+#   1) Config vorbereiten:
+#        mkdir -p config data
+#        cp config.example.yaml config/config.yaml
+#        # in config/config.yaml Secrets eintragen UND die Schreibpfade auf das
+#        # gemountete Daten-Volume legen:
+#        #   e3dc_rscp.history_db_path: /app/data/e3dc_history.sqlite
+#        #   dashboard.output_path:     /app/data/dashboard.html
+#        #   report.snapshot_path:      /app/data/last_run_debug.json
+#   2) docker compose up -d --build
+#   3) Dashboard: http://<host>:8080
+#
+# Das lokale /opt/ems + systemd-Setup läuft davon unabhängig weiter.
+services:
+  ems:
+    build: .
+    image: microems:latest
+    container_name: microems
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+    ports:
+      - "8080:8080"            # Dashboard (dashboard.port)
+    volumes:
+      - ./config:/app/config   # config.yaml (+ config_overrides.yaml daneben)
+      - ./data:/app/data       # SQLite-Historie, Dashboard-HTML, Debug-Snapshot
+    # command überschreibt bei Bedarf das Dockerfile-CMD, z.B. für --check:
+    # command: ["--config", "/app/config/config.yaml", "--check"]
