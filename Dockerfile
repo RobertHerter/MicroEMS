@@ -3,7 +3,7 @@
 # Das lokale Setup (/opt/ems + systemd-Dienst) bleibt davon UNBERÜHRT; dieses
 # Image ist eine eigenständige Alternative. Config und persistente Daten werden
 # zur Laufzeit gemountet (nicht ins Image gebaut) – so bleiben Secrets außen vor.
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # Zeitzone (Fahrpläne/Slots rechnen lokal) + CBC als Solver-Fallback.
 # HiGHS (Standard-Solver, deterministisch) kommt via pip (highspy).
