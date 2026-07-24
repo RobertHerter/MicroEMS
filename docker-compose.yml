@@ -8,10 +8,14 @@
 #        #   e3dc_rscp.history_db_path: /app/data/e3dc_history.sqlite
 #        #   dashboard.output_path:     /app/data/dashboard.html
 #        #   report.snapshot_path:      /app/data/last_run_debug.json
+#        #   calibration.pv_profile:    /app/data/kalibrierung_profil.yaml
+#        #   savings.state_path:        /app/data/savings_state.json
 #   2) docker compose up -d --build
 #   3) Dashboard: http://<host>:8080
 #
-# Das lokale /opt/ems + systemd-Setup läuft davon unabhängig weiter.
+# Der Dienst "ems" fährt den 15-min-Loop; "scheduler" ersetzt die systemd-Timer
+# (Kalibrierung/Ersparnis) per cron. Das lokale /opt/ems + systemd-Setup läuft
+# davon unabhängig weiter.
 services:
   ems:
     build: .
@@ -27,3 +31,21 @@ services:
       - ./data:/app/data       # SQLite-Historie, Dashboard-HTML, Debug-Snapshot
     # command überschreibt bei Bedarf das Dockerfile-CMD, z.B. für --check:
     # command: ["--config", "/app/config/config.yaml", "--check"]
+
+  # Pendant zu den systemd-Timern: cron im Vordergrund, gleiches Image + gleiche
+  # Volumes. Zeitplan siehe docker/crontab (Ersparnis täglich 02:45,
+  # Kalibrierung So 03:00). Job-Ausgabe in `docker compose logs scheduler`.
+  scheduler:
+    build: .
+    image: microems:latest
+    container_name: microems-scheduler
+    restart: unless-stopped
+    depends_on: [ems]
+    environment:
+      TZ: Europe/Berlin
+    entrypoint: ["cron", "-f"]
+    healthcheck:
+      disable: true            # dieser Container bedient keinen HTTP-Port
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data

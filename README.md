@@ -233,6 +233,8 @@ cp config.example.yaml config/config.yaml
 #   e3dc_rscp.history_db_path: /app/data/e3dc_history.sqlite
 #   dashboard.output_path:     /app/data/dashboard.html
 #   report.snapshot_path:      /app/data/last_run_debug.json
+#   calibration.pv_profile:    /app/data/kalibrierung_profil.yaml
+#   savings.state_path:        /app/data/savings_state.json
 docker compose up -d --build          # Dashboard dann auf http://<host>:8080
 docker compose logs -f
 ```
@@ -245,11 +247,20 @@ HiGHS (via `highspy`) und CBC (`coinor-cbc`, Fallback) mit und startet
 docker compose run --rm ems --config /app/config/config.yaml --check
 ```
 
-Hinweise: Der Container läuft als root (unkompliziert bei gemounteten Volumes im
+**Geplante Jobs (Pendant zu den systemd-Timern):** Das Compose bringt einen
+zweiten Container `scheduler` mit (gleiches Image, `cron` im Vordergrund,
+[docker/crontab](docker/crontab)), der die **Ersparnis-Validierung** (täglich
+02:45) und die **Kalibrierung** inkl. Pool-Thermomodell (sonntags 03:00) fährt –
+Ausgaben in `docker compose logs scheduler`. Beide Container teilen sich die
+`config`- und `data`-Volumes, sodass Kalibrierprofile und Ersparnis-Status vom
+Loop-Container übernommen werden.
+
+Hinweise: Die Container laufen als root (unkompliziert bei gemounteten Volumes im
 Heimnetz). InfluxDB/MQTT/E3DC müssen vom Container aus erreichbar sein – nutze
 für `localhost`-Dienste des Hosts die jeweilige Host-IP bzw. ein passendes
-Docker-Netz. Die systemd-Timer (Kalibrierung/Ersparnis/Backup) sind Teil des
-lokalen Setups und im Container nicht enthalten.
+Docker-Netz. **Backup:** Im Docker-Betrieb liegen alle unversionierten Dateien
+bereits auf den Host-Verzeichnissen `./config` und `./data` – diese beiden
+einfach extern sichern (statt des `ems-backup.timer` aus dem systemd-Setup).
 
 ## Konfiguration
 

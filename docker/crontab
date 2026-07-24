@@ -1,0 +1,10 @@
+# MicroEMS – geplante Jobs im Container (Pendant zu den systemd-Timern).
+# Wird als /etc/cron.d/ems installiert; Zeiten in Europe/Berlin (/etc/localtime).
+# Job-Ausgabe geht über /proc/1/fd/1 an die Container-Logs (docker compose logs).
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Ersparnis-Validierung gegen die E3DC-Zähler – täglich 02:45
+45 2 * * * root /app/docker/scheduler-run.sh savings >>/proc/1/fd/1 2>&1
+
+# Verbrauchs-/PV-/Pool-Kalibrierung – sonntags 03:00
+0 3 * * 0 root /app/docker/scheduler-run.sh kalibrierung >>/proc/1/fd/1 2>&1

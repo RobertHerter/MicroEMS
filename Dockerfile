@@ -11,7 +11,9 @@ ENV TZ=Europe/Berlin \
     PYTHONUNBUFFERED=1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        tzdata coinor-cbc ca-certificates \
+        tzdata coinor-cbc ca-certificates cron \
+    && ln -sf /usr/share/zoneinfo/Europe/Berlin /etc/localtime \
+    && echo "Europe/Berlin" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -20,8 +22,13 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt "highspy>=1.7"
 
-# Nur das Anwendungspaket; Config/Daten kommen als Mounts.
+# Anwendungspaket + die für die geplanten Jobs nötigen Top-Level-Skripte.
+# (Config/Daten kommen als Mounts.)
 COPY ems ./ems
+COPY kalibrierung.py savings_check.py backup.sh ./
+COPY docker ./docker
+RUN chmod +x /app/docker/scheduler-run.sh /app/backup.sh \
+    && install -m 0644 /app/docker/crontab /etc/cron.d/ems
 
 # Dashboard-HTTP-Server (config: dashboard.port, Default 8080).
 EXPOSE 8080
