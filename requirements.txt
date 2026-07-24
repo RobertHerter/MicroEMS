@@ -8,7 +8,7 @@ numpy>=1.24
 python-dateutil>=2.8
 
 # Optimierung (MILP). PuLP bringt den CBC-Solver bereits mit.
-PuLP>=2.7
+PuLP>=3.3.2
 
 # Feiertage (Verbrauchsprognose)
 holidays>=0.45
