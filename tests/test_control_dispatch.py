@@ -157,27 +157,34 @@ def test_alert_event_sink_logs_and_dedupes(tmp_path):
 
 
 def test_log_switching_events_only_on_change(tmp_path):
-    """Schaltvorgänge werden nur bei echter Änderung geloggt (Akku-Modus- und
-    Laststufen-Wechsel), nicht je Zyklus."""
+    """Schalthandlungen (Ladebegrenzung, Laststufe) werden nur beim Übergang
+    geloggt - nicht je Zyklus, solange die Steueraktion gleich bleibt."""
     import pandas as pd
     from ems.local_history import read_dashboard_events
     cfg = _cfg(tmp_path)
     m._last_switch_state.clear()
-    m._last_switch_state.update(battery_mode=None, loads={})
+    m._last_switch_state.update(ctl=None, loads={})
     idx = pd.date_range("2026-07-24 12:00", periods=1, freq="15min",
                         tz="Europe/Berlin")
 
-    def tbl(mode):
-        return pd.DataFrame({"mode": [mode]}, index=idx)
+    def tbl(charge_lim, charge_w=0.0):
+        return pd.DataFrame({
+            "mode": ["auto"], "charge_limited": [charge_lim],
+            "batt_charge_limit_w": [charge_w], "discharge_limited": [0],
+            "batt_discharge_limit_w": [5000.0], "batt_grid_charge_w": [0.0],
+            "batt_grid_discharge_w": [0.0]}, index=idx)
 
-    m._log_switching_events(cfg, tbl("auto"), {"Pool": 0})   # 1. Lauf -> kein Wechsel
-    m._log_switching_events(cfg, tbl("hold"), {"Pool": 1})   # Modus + Last wechseln
-    m._log_switching_events(cfg, tbl("hold"), {"Pool": 1})   # unverändert -> nichts
+    m._log_switching_events(cfg, tbl(0), {"Pool": 0})      # Basis -> keine Events
+    m._log_switching_events(cfg, tbl(1, 0.0), {"Pool": 1})  # Laden sperren + Pool an
+    m._log_switching_events(cfg, tbl(1, 0.0), {"Pool": 1})  # unverändert -> nichts
+    m._log_switching_events(cfg, tbl(0), {"Pool": 1})       # Begrenzung aufgehoben
     ev = read_dashboard_events(cfg.e3dc_rscp.history_db_path, "Europe/Berlin", 50)
     switch = [e for e in ev if e["kind"] == "switch"]
     joined = " | ".join(e["message"] for e in switch)
-    assert len(switch) == 2
-    assert "Akku-Steuerung" in joined and "Pool eingeschaltet" in joined
+    assert len(switch) == 3
+    assert "Laden gesperrt" in joined
+    assert "Pool eingeschaltet" in joined
+    assert "Ladebegrenzung aufgehoben" in joined
 
 
 def test_status_api_payload_status_and_events(tmp_path):

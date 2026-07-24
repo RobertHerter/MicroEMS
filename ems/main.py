@@ -236,42 +236,73 @@ def _make_alert_event_sink(config):
 
 
 # Schaltvorgänge: nur bei tatsächlicher Änderung gegenüber dem letzten Zyklus.
-_MODE_LABELS = {
-    "auto": "Automatik", "hold": "Akku halten (Entladen gesperrt)",
-    "limit_discharge": "Entladen gedrosselt", "limit_charge": "Laden gedrosselt",
-    "block_charge": "Laden gesperrt", "grid_charge": "Netzladen",
-    "grid_discharge": "Netzeinspeisung aus Akku", "peak": "PV-Spitze glätten",
-    "late": "spätes Laden",
-}
-_last_switch_state: dict = {"battery_mode": None, "loads": {}}
+_last_switch_state: dict = {"ctl": None, "loads": {}}
+# Modusvergleich nur bei WECHSEL der Empfehlung loggen (sonst flutet er als
+# Jede-Zyklus-Ereignis den Verlauf und verdeckt die echten Schalthandlungen).
+_last_shadow_recommendation: dict = {"value": None}
+
+
+def _control_state(row) -> dict:
+    """Grobe (bool'sche) Steueraktion des aktuellen Slots aus der Plantabelle -
+    Grundlage für Schalthandlungs-Ereignisse. Nur Ein/Aus der Begriffe zählt
+    (nicht jeder Watt-Wert), damit der Verlauf nicht bei jeder Rampe volläuft."""
+    def num(col):
+        try:
+            return float(row.get(col, 0.0) or 0.0)
+        except Exception:
+            return 0.0
+    return {
+        "charge_lim": num("charge_limited") > 0.5,
+        "charge_w": num("batt_charge_limit_w"),
+        "dis_lim": num("discharge_limited") > 0.5,
+        "dis_w": num("batt_discharge_limit_w"),
+        "grid_charge": num("batt_grid_charge_w") > 5.0,
+        "grid_charge_w": num("batt_grid_charge_w"),
+        "grid_dis": num("batt_grid_discharge_w") > 5.0,
+    }
 
 
 def _log_switching_events(config, table, load_cmds) -> None:
-    """Schaltvorgänge (Akku-Steuermodus- und Laststufen-Wechsel des aktuellen
-    Slots) ins Ereignis-Log - nur bei echter Änderung gegenüber dem Vorzyklus,
-    damit der Verlauf nicht je Zyklus zugemüllt wird."""
+    """Tatsächliche Schalthandlungen des aktuellen Slots ins Ereignis-Log:
+    Lade-/Entladebegrenzung an/aus, Netzladen/-einspeisung an/aus sowie
+    Laststufen-Wechsel - jeweils nur beim Übergang gegenüber dem Vorzyklus."""
     try:
         if table is None or len(table) == 0:
             return
-        mode = str(table.iloc[0].get("mode", "") or "")
-        prev = _last_switch_state.get("battery_mode")
-        if mode and mode != prev:
-            if prev is not None:      # erster Lauf ist kein "Wechsel"
-                _record_dashboard_event(
-                    config, "switch",
-                    f"Akku-Steuerung: {_MODE_LABELS.get(prev, prev)} → "
-                    f"{_MODE_LABELS.get(mode, mode)}",
-                    details={"from": prev, "to": mode})
-            _last_switch_state["battery_mode"] = mode
+        cur = _control_state(table.iloc[0])
+        prev = _last_switch_state.get("ctl")
+        _last_switch_state["ctl"] = cur
+        if prev is not None:
+            msgs = []
+            if cur["charge_lim"] and not prev["charge_lim"]:
+                msgs.append("Laden gesperrt (Limit 0 W)" if cur["charge_w"] < 50
+                            else f"Laden begrenzt auf {cur['charge_w']:.0f} W")
+            elif not cur["charge_lim"] and prev["charge_lim"]:
+                msgs.append("Ladebegrenzung aufgehoben")
+            if cur["dis_lim"] and not prev["dis_lim"]:
+                msgs.append("Entladen gesperrt (Akku halten)" if cur["dis_w"] < 50
+                            else f"Entladen begrenzt auf {cur['dis_w']:.0f} W")
+            elif not cur["dis_lim"] and prev["dis_lim"]:
+                msgs.append("Entladebegrenzung aufgehoben")
+            if cur["grid_charge"] and not prev["grid_charge"]:
+                msgs.append(f"Netzladen gestartet ({cur['grid_charge_w']:.0f} W)")
+            elif not cur["grid_charge"] and prev["grid_charge"]:
+                msgs.append("Netzladen beendet")
+            if cur["grid_dis"] and not prev["grid_dis"]:
+                msgs.append("Netzeinspeisung aus Akku gestartet")
+            elif not cur["grid_dis"] and prev["grid_dis"]:
+                msgs.append("Netzeinspeisung aus Akku beendet")
+            for msg in msgs:
+                _record_dashboard_event(config, "switch", msg)
         old = _last_switch_state.get("loads", {})
-        cur = {str(k): int(bool(v)) for k, v in (load_cmds or {}).items()}
-        for label, on in cur.items():
+        loads = {str(k): int(bool(v)) for k, v in (load_cmds or {}).items()}
+        for label, on in loads.items():
             if label in old and on != old[label]:
                 _record_dashboard_event(
                     config, "switch",
                     f"{label} {'eingeschaltet' if on else 'ausgeschaltet'}",
                     details={"load": label, "on": on})
-        _last_switch_state["loads"] = {**old, **cur}
+        _last_switch_state["loads"] = {**old, **loads}
     except Exception as exc:   # pragma: no cover - reine Absicherung
         log.debug("Schaltvorgang-Ereignis nicht speicherbar (%s).", exc)
 
@@ -514,11 +545,16 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                     message=(f"Empfehlung: {recommended}"
                              + (f" (−{saving:.2f} €)" if recommended != active else
                                 " (aktuellen Modus beibehalten)")))
-            _record_dashboard_event(
-                config, "shadow_comparison", "Automatischer Modusvergleich abgeschlossen",
-                details={"active": active, "configured_mode": configured,
-                         "recommended": recommended,
-                         "saving_eur": max(0.0, saving)})
+            if recommended != _last_shadow_recommendation.get("value"):
+                _last_shadow_recommendation["value"] = recommended
+                _record_dashboard_event(
+                    config, "shadow_comparison",
+                    f"Modusvergleich: Empfehlung {recommended}"
+                    + ("" if recommended == active
+                       else f" statt {active} (−{max(0.0, saving):.2f} €)"),
+                    details={"active": active, "configured_mode": configured,
+                             "recommended": recommended,
+                             "saving_eur": max(0.0, saving)})
         except Exception as exc:
             with _runtime_lock:
                 _shadow_status.update(state="error", finished_at=_runtime_iso(),
@@ -2172,12 +2208,19 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         _start_shadow_comparison(config, inputs, result, violations)
         _maybe_snapshot_forecast_accuracy(config)   # 1×/Tag Trend-Punkt sichern
         _runtime_finish(now, runtime_started)
-        if runtime_trigger == "manual":
-            _record_dashboard_event(
-                config, "recalc", "Manuelle Planneuberechnung abgeschlossen",
-                details={"duration_seconds": _runtime_snapshot().get("duration_seconds"),
-                         "solver_seconds": getattr(result, "solver_seconds", None),
-                         "violations": len(violations or [])})
+        # Jede abgeschlossene Neuberechnung ins Ereignis-Log (nicht nur manuelle),
+        # mit dem aktuell gefahrenen Steuermodus als Kurzinfo.
+        _cur_mode = (str(result.table.iloc[0].get("mode", "auto"))
+                     if getattr(result, "table", None) is not None
+                     and len(result.table) else "auto")
+        _record_dashboard_event(
+            config, "recalc",
+            ("Plan manuell neu berechnet" if runtime_trigger == "manual"
+             else "Plan neu berechnet") + f" · Modus {_cur_mode}",
+            details={"trigger": runtime_trigger, "mode": _cur_mode,
+                     "duration_seconds": _runtime_snapshot().get("duration_seconds"),
+                     "solver_seconds": getattr(result, "solver_seconds", None),
+                     "violations": len(violations or [])})
     except Exception as exc:
         _runtime_fail(f"EMS-Zyklus fehlgeschlagen: {exc}")
         _record_dashboard_event(config, "error", f"EMS-Zyklus fehlgeschlagen: {exc}",

@@ -443,13 +443,29 @@ def _slot_detail_block() -> str:
 
 def _events_block() -> str:
     return """
-<details class="info-panel events-panel" id="events-panel"><summary>☷ Ereignisse &amp; Bedienverlauf <small>letzte 50 Einträge</small></summary>
+<details class="info-panel events-panel" id="events-panel"><summary>☷ Ereignisse &amp; Bedienverlauf <small>neueste zuerst · nach Stufe filterbar</small></summary>
+ <div class="events-filter" id="events-filter">
+  <button type="button" data-lvl="info" class="info">Info</button>
+  <button type="button" data-lvl="warning" class="warn">Warnung</button>
+  <button type="button" data-lvl="error" class="err">Fehler</button>
+ </div>
  <div id="events-list" class="events-list">wird geladen …</div>
 </details>
 <script>(function(){
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let a=(await r.json()).events||[];document.getElementById('events-list').innerHTML=a.length?a.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Noch keine Ereignisse.</p>';}catch(e){document.getElementById('events-list').textContent='Ereignisverlauf nicht erreichbar.';}}
- document.getElementById('events-panel').addEventListener('toggle',function(){if(this.open)load();});load();setInterval(()=>{if(document.getElementById('events-panel').open)load();},10000);
+ const listEl=document.getElementById('events-list');
+ let LAST=[];
+ const lvlClass=l=>{l=String(l||'info');return l.indexOf('err')===0?'error':l.indexOf('warn')===0?'warning':'info';};
+ const active=()=>{try{return new Set(JSON.parse(localStorage.getItem('ems-event-filter'))||['info','warning','error']);}catch(e){return new Set(['info','warning','error']);}};
+ function render(){
+  const act=active();
+  const rows=LAST.filter(e=>act.has(lvlClass(e.level)));
+  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
+  listEl.scrollTop=0;   // neueste (oben) zeigen, NICHT ans Ende springen
+ }
+ async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';}}
+ (function(){const act=active();document.querySelectorAll('#events-filter button').forEach(b=>{b.classList.toggle('on',act.has(b.dataset.lvl));b.addEventListener('click',()=>{const a=active();if(a.has(b.dataset.lvl))a.delete(b.dataset.lvl);else a.add(b.dataset.lvl);localStorage.setItem('ems-event-filter',JSON.stringify([...a]));b.classList.toggle('on',a.has(b.dataset.lvl));render();});});})();
+ document.getElementById('events-panel').addEventListener('toggle',function(){if(this.open){load();listEl.scrollTop=0;}});load();setInterval(()=>{if(document.getElementById('events-panel').open)load();},10000);
 })();</script>"""
 
 
@@ -1805,6 +1821,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .detail-grid span, .detail-grid b {{ display: block; }}
  .detail-grid span {{ color: #74808b; font-size: 10px; }}
  .events-list {{ max-height: 360px; overflow: auto; padding: 6px 12px 11px; }}
+ .events-filter {{ display: flex; gap: 6px; padding: 9px 12px 2px; }}
+ .events-filter button {{ flex: 0 0 auto; font-size: 12px; padding: 4px 11px;
+        border-radius: 7px; border: 1px solid #cfd6dd; background: #f2f5f8;
+        color: #7a8590; cursor: pointer; }}
+ .events-filter button.info.on {{ background: #eef6f0; border-color: #4a9d6a; color: #237a3b; }}
+ .events-filter button.warn.on {{ background: #fdf4e2; border-color: #d9a441; color: #8a6d00; }}
+ .events-filter button.err.on {{ background: #fdecec; border-color: #d1746e; color: #bd302a; }}
  .event {{ display: grid; grid-template-columns: 115px 1fr; gap: 10px; padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
  .event time {{ color: #74808b; font-size: 11px; }}
  .event.error span {{ color: #bd302a; font-weight: 600; }}
@@ -1901,6 +1924,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .event.error span {{ color: #f1a29c; }}
  html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
  html.dark .event.switch span {{ color: #8fc0e8; }}
+ html.dark .events-filter button {{ background: #263442; border-color: #4b5b6b; color: #aebbc8; }}
+ html.dark .events-filter button.info.on {{ background: #173326; border-color: #58b879; color: #8fd7a9; }}
+ html.dark .events-filter button.warn.on {{ background: #3a3219; border-color: #d9b83f; color: #e1c96b; }}
+ html.dark .events-filter button.err.on {{ background: #402124; border-color: #df6c68; color: #f1a29c; }}
  html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
  html.dark .mode-compare-card {{ background: #202b36; border-color: #425364; }}
  html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}
