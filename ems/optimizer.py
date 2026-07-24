@@ -79,6 +79,10 @@ class OptimizerResult:
     # Fehlmenge (Wh) zum Auto-Ziel-SoC bei Abfahrt (weiche Nebenbedingung);
     # > 0 = Ziel im Plan nicht erreichbar -> Alarm.
     car_target_shortfall_wh: float = 0.0
+    # Über die Hausanschluss-Grenze (max_import_w) hinaus geplante Energie (Wh)
+    # über den Horizont (weiche Nebenbedingung); > 0 = eine Lastspitze war im
+    # Plan nicht ohne Grenzüberschreitung deckbar -> Alarm.
+    grid_overload_wh: float = 0.0
     # Solver hat das Zeitlimit erreicht: CBC liefert dann den besten
     # Zwischenstand und PuLP meldet trotzdem "Optimal" - der Plan kann
     # deutlich suboptimal sein (z.B. sinnlose Dumps/Sperren) -> Alarm.
@@ -133,6 +137,20 @@ def solver_is_running() -> bool:
     return _solver_active.is_set()
 
 _TRAIL_IDX = re.compile(r"^(.+)_(\d+)$")
+
+# Nur diese Präfixe sind echt SLOT-indiziert und dürfen beim Warmstart um den
+# Zeitversatz verschoben werden. Alle anderen Endungen `name_<int>` tragen einen
+# ANDEREN Index - Tag (L_day_, lateshort_), Segment (batsuff_, termseg_),
+# Reserve (evres_deficit_) oder Block (cl_<last>_<stufe>_b<b>) - und würden durch
+# das Verschieben auf einen falschen Variablennamen gesetzt. Ein falsch
+# benannter Startwert ist schädlicher als gar keiner.
+_WARM_SLOT_PREFIXES = frozenset({
+    "dc", "ac", "dis", "curt", "gimp", "gexp", "soc",
+    "full", "atmax", "bgrid",
+    "car", "iscar", "soccar", "carshort", "carstart",
+    "batholdblock", "matimp", "partdis", "hasbat", "avoidimp", "p10s", "hold",
+    "plan_delta_dc", "plan_delta_ac", "plan_delta_dis", "plan_delta_car",
+})
 
 
 def _complete_pv10(pv10_w, expected_pv_w):
@@ -201,9 +219,10 @@ def _seasonal_peak_values(optimization, ts) -> tuple[float, float, float]:
 
 def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
     """Warm-Werte des letzten Laufs auf den neuen Horizont verschieben:
-    alter Slot-Index -> neuer = alt - Versatz. Nicht-Slot-Variablen (z.B.
-    L_day_<i> = Tagesindex der Einspeise-Linie) werden ausgelassen - ein
-    falsch verschobener Tagesindex wäre schädlicher als kein Startwert.
+    alter Slot-Index -> neuer = alt - Versatz. Verschoben werden AUSSCHLIESSLICH
+    echt slot-indizierte Variablen (_WARM_SLOT_PREFIXES); alles andere (Tages-,
+    Segment-, Reserve- oder Block-Index) wird ausgelassen, weil ein Verschieben
+    dort einen falsch benannten - und damit schädlichen - Startwert erzeugte.
     None, wenn kein (nutzbarer) letzter Lauf vorliegt."""
     c = _warm_cache
     if not c or c.get("slot_min") != slot_minutes:
@@ -217,7 +236,7 @@ def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
     out = {}
     for name, val in c["values"].items():
         m = _TRAIL_IDX.match(name)
-        if not m or m.group(1).startswith("L_day"):
+        if not m or m.group(1) not in _WARM_SLOT_PREFIXES:
             continue
         i = int(m.group(2)) - shift
         if i >= 0:
@@ -431,10 +450,23 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
             if highs.available():
                 log.info("Solver: HiGHS (highspy).")
                 return highs
-            log.warning("HiGHS-Solver ist nicht verfügbar (ist 'highspy' installiert?). Fallback auf CBC.")
+            log.warning("HiGHS als Solver konfiguriert, aber nicht verfügbar "
+                        "(ist 'highspy' installiert?). Fallback auf CBC – OHNE "
+                        "Warmstart und OHNE garantierten Determinismus; "
+                        "Plan-Stabilität und Warmstart-Artefakt-Erkennung sind "
+                        "dann eingeschränkt.")
         except Exception as exc:
-            log.warning("Fehler beim Laden des HiGHS-Solvers: %s. Fallback auf CBC.", exc)
+            log.warning("Fehler beim Laden des HiGHS-Solvers: %s. Fallback auf "
+                        "CBC – ohne Warmstart/garantierten Determinismus.", exc)
 
+    # CBC-Fallback: nutzt die konfigurierten Threads (Default cpu-1). Mehrfädiges
+    # CBC ist NICHT reproduzierbar, und der Rest des Systems (Plan-Stabilität,
+    # Warmstart-Artefakt-Erkennung, Kalt-Resolve) setzt "gleicher Input ->
+    # gleicher Plan" voraus. Ein erzwungenes threads=1 wurde dennoch BEWUSST NICHT
+    # gewählt: es legt CBC innerhalb der MIP-Gap auf teils schlechtere Inkumbenten
+    # fest (Regressionstests belegen z.B. Export bei Negativpreis). Der
+    # Produktivpfad ist HiGHS (mit Seed + threads=1 deterministisch); der
+    # CBC-Fallback ist Notlauf und oben laut gewarnt.
     coin = pulp.COIN_CMD(**kwargs)
     if coin.available():
         return coin
@@ -453,15 +485,25 @@ class Optimizer:
 
     def _departure_slot_indices(self, index: pd.DatetimeIndex) -> List[int]:
         """Slot-Indizes der Abfahrtzeiten im Horizont (je Wochentag; Tage ohne
-        Abfahrt - z.B. Wochenende - liefern keinen Slot)."""
+        Abfahrt - z.B. Wochenende - liefern keinen Slot).
+
+        Abfahrtszeiten, die nicht exakt auf dem Slot-Raster liegen (z.B. 07:50
+        bei 15-min-Slots), werden auf den FRÜHEREN Slot abgerundet (07:45) - das
+        Auto ist dann rechtzeitig VOR der Abfahrt geladen. Ohne dieses Abrunden
+        fand die exakte Gleichheitsprüfung keinen Slot und das Ladeziel entfiel
+        für den Tag still."""
         if not (self.cfg.vehicle.enabled):
             return []
         veh = self.cfg.vehicle
+        slot = max(1, int(self.cfg.general.slot_minutes))
         local = index.tz_convert(self.cfg.general.timezone)
         out = []
         for i, ts in enumerate(local):
             dep = veh.departure_for_weekday(ts.weekday())
-            if dep is not None and ts.hour == dep.hour and ts.minute == dep.minute:
+            if dep is None:
+                continue
+            snapped = (dep.hour * 60 + dep.minute) // slot * slot
+            if ts.hour * 60 + ts.minute == snapped:
                 out.append(i)
         return out
 
@@ -634,6 +676,7 @@ class Optimizer:
             car = [0.0] * N
             soc_car = None
         car_short: List = []   # Slack je Abfahrt: Fehlmenge zum Ziel-SoC (Wh)
+        grid_overload: List = []   # Slack je Slot: Netzbezug über max_import_w (W)
 
         # ---- Anfangszustände -------------------------------------------- #
         prob += soc[0] == max(hb.min_soc_wh, min(hb.max_soc_wh, inp.initial_house_soc_wh))
@@ -932,11 +975,16 @@ class Optimizer:
             # Kein gleichzeitiges Netzladen (Import) und Einspeisen (Export)
             prob += g_imp[t] <= BIGG * b_grid[t]
             prob += g_exp[t] <= BIGG * (1 - b_grid[t])
-            # Hausanschluss-Grenze (Sicherung): der geplante Netzbezug darf
-            # die Anschlussleistung nie überschreiten - sonst könnte der Plan
-            # bei Netzladen + Auto + Lasten real die Sicherung überlasten.
+            # Hausanschluss-Grenze (Sicherung): der geplante Netzbezug soll die
+            # Anschlussleistung nicht überschreiten. WEICH mit sehr hoher Strafe
+            # (statt hart), damit eine einzelne physikalisch unvermeidbare
+            # Lastspitze nicht den GESAMTEN Horizont infeasible macht und auf
+            # 'auto ohne Eingriff' verwirft - der betroffene Slot zahlt die
+            # Strafe und wird als Alarm gemeldet, der Rest bleibt optimiert.
             if cfg.inverter.max_import_w is not None:
-                prob += g_imp[t] <= cfg.inverter.max_import_w
+                over = pulp.LpVariable(f"gimpover_{t}", 0)
+                grid_overload.append(over)
+                prob += g_imp[t] <= cfg.inverter.max_import_w + over
 
             # Einspeisebegrenzung am Netzanschluss (60/70%-Regel / §9 EEG):
             # keine Erlöse einplanen, die real abgeregelt würden.
@@ -1042,15 +1090,18 @@ class Optimizer:
         # wird leicht unattraktiv, ohne die Ökonomie umzuwerfen. Slack hold[t] >=
         # soc(Slotende) - Schwelle. Nur bei pen>0 gebaut -> sonst 0 zusätzliche
         # Variablen und exakt unverändertes Verhalten.
-        hold_pen = max(0.0, float(getattr(hb, "full_hold_penalty_ct_kwh", 0.0)))
-        if hold_pen > 0.0:
-            hold_thr = (max(0.0, min(100.0, float(getattr(
+        # Eigener Name (nicht 'hold_pen'): weiter unten wird 'hold_pen' erneut
+        # für den battery_hold_penalty (vermeidbarer Import) vergeben - gleiche
+        # lokale Variable für zwei verschiedene Strafen wäre eine stille Falle.
+        cell_hold_pen = max(0.0, float(getattr(hb, "full_hold_penalty_ct_kwh", 0.0)))
+        if cell_hold_pen > 0.0:
+            cell_hold_thr = (max(0.0, min(100.0, float(getattr(
                 hb, "full_hold_soc_threshold_percent", 95.0))))
                 / 100.0 * hb.capacity_wh)
-            hold = [pulp.LpVariable(f"hold_{t}", 0) for t in range(N)]
+            cell_hold = [pulp.LpVariable(f"hold_{t}", 0) for t in range(N)]
             for t in range(N):
-                prob += hold[t] >= soc[t + 1] - hold_thr   # Slotende-SoC
-            cost_terms.append(hold_pen * pulp.lpSum(hold) * kwh)
+                prob += cell_hold[t] >= soc[t + 1] - cell_hold_thr   # Slotende-SoC
+            cost_terms.append(cell_hold_pen * pulp.lpSum(cell_hold) * kwh)
 
         # Auto-Ziel-Verfehlung bestrafen (weiche Nebenbedingung, s.o.)
         if car_short:
@@ -1060,6 +1111,12 @@ class Optimizer:
             late_target_pen = max(0.0, float(getattr(
                 cfg.optimization, "late_target_penalty_ct_kwh", 200.0)))
             cost_terms.append(late_target_pen * pulp.lpSum(late_short) / 1000.0)
+        # Hausanschluss-Überschreitung (weiche Grenze) sehr teuer bestrafen; die
+        # Slacks sind Leistungen (W) -> mit kwh (dt/1000) in Energie umrechnen.
+        if grid_overload:
+            grid_over_pen = max(0.0, float(getattr(
+                cfg.optimization, "grid_overload_penalty_ct_kwh", 1000.0)))
+            cost_terms.append(grid_over_pen * pulp.lpSum(grid_overload) * kwh)
 
         # Wallbox-Schalt-Malus: jeder Einschaltvorgang (0 -> laden) kostet
         # car_switch_penalty_ct. Verhindert Dauer-Takten bei zappeligen
@@ -1688,6 +1745,13 @@ class Optimizer:
             log.warning("Auto-Ziel-SoC im Plan nicht erreichbar: es fehlen "
                         "%.1f kWh zur Abfahrt.", shortfall / 1000.0)
 
+        grid_over_wh = (sum(val(o) for o in grid_overload) * dt
+                        if grid_overload else 0.0)
+        if grid_over_wh > 100.0:
+            log.warning("Hausanschluss-Grenze im Plan überschritten: %.1f kWh "
+                        "über %.0f W – vermutlich unvermeidbare Lastspitze.",
+                        grid_over_wh / 1000.0, float(cfg.inverter.max_import_w))
+
         # Tages-Linien-Werte (Peak-Modus) je Slot. Ungenutzte L (Tage ohne Linie)
         # bleiben None -> als NaN behandeln.
         def _lv(L):
@@ -1844,6 +1908,7 @@ class Optimizer:
         return OptimizerResult(
             table=table, total_cost_ct=total, status=status, infeasible=infeasible,
             export_line_w=line_w, car_target_shortfall_wh=round(shortfall, 1),
+            grid_overload_wh=round(grid_over_wh, 1),
             solver_hit_limit=hit_limit, load_mqtt_map=cl_mqtt,
             solver_seconds=solve_s, solver_polish_seconds=polish_s,
             solver_slots=N, solver_variables=len(variables),

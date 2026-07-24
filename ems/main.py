@@ -1897,6 +1897,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning",
                     f"Auto erreicht Ziel-SoC nicht: es fehlen "
                     f"{result.car_target_shortfall_wh / 1000.0:.1f} kWh zur Abfahrt.")
+            if result.grid_overload_wh > 100.0:
+                publisher.publish_alert(
+                    "warning",
+                    f"Hausanschluss-Grenze überschritten: "
+                    f"{result.grid_overload_wh / 1000.0:.1f} kWh über dem Limit "
+                    f"geplant – eine Lastspitze war nicht anders deckbar.")
             if drift_mae is not None and drift_mae > config.monitoring.drift_alert_percent:
                 publisher.publish_alert(
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "

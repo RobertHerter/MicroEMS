@@ -337,6 +337,13 @@ class OptimizationConfig:
     # ist eine WEICHE Nebenbedingung: ist es unerreichbar, lädt der Plan so
     # viel wie möglich statt komplett auf 'auto' zurückzufallen.
     car_target_penalty_ct_kwh: float = 200.0
+    # Hausanschluss-Grenze (max_import_w) als WEICHE Nebenbedingung: sehr hohe
+    # Strafe je kWh über der Grenze. So bleibt der Plan auch bei einer einzelnen
+    # physikalisch unvermeidbaren Lastspitze lösbar (der betroffene Slot zahlt
+    # die Strafe und wird als Alarm gemeldet), statt den GESAMTEN Horizont auf
+    # 'auto ohne Eingriff' zu verwerfen. Muss jeden realen Preis-Spread klar
+    # übersteigen, damit die Grenze nie zur Arbitrage überschritten wird.
+    grid_overload_penalty_ct_kwh: float = 1000.0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -1138,6 +1145,8 @@ def load_config(path: str) -> Config:
         battery_hold_penalty_ct_kwh=float(o.get(
             "battery_hold_penalty_ct_kwh", o.get("battery_hold_penalty_ct", 5.0))),
         car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
+        grid_overload_penalty_ct_kwh=float(o.get(
+            "grid_overload_penalty_ct_kwh", 1000.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),

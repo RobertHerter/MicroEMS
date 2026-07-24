@@ -793,6 +793,24 @@ def test_departure_times_per_weekday():
         pass
 
 
+def test_departure_off_grid_snaps_to_earlier_slot():
+    """Abfahrt 07:50 liegt nicht auf dem 15-min-Raster: der Zielslot wird auf
+    den FRÜHEREN Slot (07:45) abgerundet, statt still zu entfallen."""
+    from datetime import time
+    cfg = make_config()
+    cfg.vehicle.departure_times = None
+    cfg.vehicle.departure_time = time(7, 50)
+    idx = _day_index("2026-01-19")               # Montag
+    slots = Optimizer(cfg)._departure_slot_indices(idx)
+    assert len(slots) == 1, "genau ein (abgerundeter) Abfahrtslot erwartet"
+    ts = idx[slots[0]]
+    assert ts.hour == 7 and ts.minute == 45
+    # exakt auf dem Raster bleibt unverändert
+    cfg.vehicle.departure_time = time(7, 45)
+    slots = Optimizer(cfg)._departure_slot_indices(idx)
+    assert len(slots) == 1 and idx[slots[0]].minute == 45
+
+
 def test_weekend_without_departures_no_forced_charging():
     """Alle Tage ohne Abfahrt: kein erzwungenes Laden zum Horizontende."""
     cfg = make_config()
@@ -912,6 +930,26 @@ def test_max_import_w_caps_grid_draw():
     assert (imp <= 3000.0 + TOL).all(), f"max Import {imp.max():.0f} W > Limit"
     assert (res.table["batt_ac_charge_w"].values > 5).any(), \
         "Szenario prüft nichts - bei -10 ct sollte netzgeladen werden"
+
+
+def test_grid_overload_limit_is_soft_not_infeasible():
+    """Eine Lastspitze, die selbst mit voller Akku-Entladung (5 kW) über der
+    Hausanschluss-Grenze (3 kW) liegt, macht den Plan NICHT infeasible (kein
+    Rückfall auf 'auto ohne Eingriff'): die Grenze ist weich, der betroffene
+    Slot zahlt die hohe Strafe, grid_overload_wh > 0, der Rest bleibt optimiert
+    und außerhalb der Spitze unter der Grenze."""
+    cfg = make_config()
+    cfg.inverter.max_import_w = 3000.0
+    idx = _day_index("2026-01-15")
+    n = len(idx)
+    load = np.full(n, 500.0)
+    load[40:44] = 12000.0                     # 1 h weit über Grenze + Entladung
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=load, price=30.0, soc=cfg.house_battery.min_soc_wh))
+    assert not res.infeasible, "weiche Grenze darf nicht auf neutral zurückfallen"
+    assert res.grid_overload_wh > 100.0, "Überschreitung muss gemeldet werden"
+    imp = res.table["grid_import_w"].values
+    assert imp[0] <= 3000.0 + TOL, "außerhalb der Spitze unter der Grenze"
 
 
 def _evening_reserve_scenario(cfg):
