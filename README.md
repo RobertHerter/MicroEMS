@@ -243,7 +243,7 @@ Alternativ zum lokalen Build gibt es ein vorgebautes Multi-Arch-Image (amd64 +
 arm64) aus GitHub Actions ([docker.yml](.github/workflows/docker.yml)) in der
 GitHub Container Registry. Dann in `docker-compose.yml` bei beiden Diensten
 `build: .` durch `image: ghcr.io/robertherter/microems:latest` ersetzen (bzw.
-einen SemVer-Tag wie `:1.3.0`) und `docker compose pull && docker compose up -d`.
+einen SemVer-Tag wie `:1.4.0`) und `docker compose pull && docker compose up -d`.
 
 Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.13-slim`, bringt
 HiGHS (via `highspy`) und CBC (`coinor-cbc`, Fallback) mit und startet
