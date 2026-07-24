@@ -1,7 +1,7 @@
 # Entwicklungs-/Test-Abhängigkeiten (nicht für den Laufzeitbetrieb nötig).
 #   pip install -r requirements-dev.txt
 pytest>=8.0
-pytest-xdist>=3.5      # parallele Testausführung (-n auto), s. pytest.ini
+pytest-xdist>=3.8.0      # parallele Testausführung (-n auto), s. pytest.ini
 ruff>=0.6             # Linter (CI: ruff check, Regelauswahl s. ruff.toml)
 # Schnellerer, in der Praxis genutzter Solver; ohne ihn fällt der Optimierer auf
 # das gebündelte CBC zurück. In CI/Test installiert, damit dieselbe Solver-Basis
