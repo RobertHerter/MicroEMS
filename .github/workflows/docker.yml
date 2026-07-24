@@ -1,0 +1,69 @@
+name: Docker
+
+# Baut das Container-Image und pusht es in die GitHub Container Registry (GHCR).
+# - Push auf main         -> Tag "main" + "latest" + Commit-SHA
+# - Git-Tag v*            -> SemVer-Tags (z.B. 1.3.0, 1.3) + "latest"
+# - Pull Request          -> nur Build (kein Push), als Validierung
+# Multi-Arch (amd64 + arm64), damit das Image auch auf dem Raspberry Pi läuft.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**.md"]
+  pull_request:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write        # Push nach GHCR mit dem GITHUB_TOKEN
+    steps:
+      - uses: actions/checkout@v5
+
+      # GHCR verlangt kleingeschriebene Image-Namen (Repo enthält Großbuchstaben).
+      - name: Image-Name (lowercase) bestimmen
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-qemu-action@v3        # arm64-Emulation für Multi-Arch
+      - uses: docker/setup-buildx-action@v3
+
+      # Nur wenn wirklich gepusht wird (nicht bei PRs aus Forks o.ä.).
+      - name: Bei GHCR anmelden
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags/Labels ableiten
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build & Push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
