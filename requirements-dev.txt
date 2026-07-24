@@ -6,4 +6,4 @@ ruff>=0.6             # Linter (CI: ruff check, Regelauswahl s. ruff.toml)
 # Schnellerer, in der Praxis genutzter Solver; ohne ihn fällt der Optimierer auf
 # das gebündelte CBC zurück. In CI/Test installiert, damit dieselbe Solver-Basis
 # wie im Betrieb getestet wird (deterministische Ergebnisse).
-highspy>=1.7
+highspy>=1.15.1
