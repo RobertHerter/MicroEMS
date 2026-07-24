@@ -309,15 +309,17 @@ class OptimizationConfig:
     # p10-Slacks + Pool-Binärvariablen) kann das Minuten dauern. Eine kleine Lücke
     # kappt diesen Beweis-Endlauf; bei Kosten von wenigen Euro sind 1 % ein paar
     # Cent und die Steuerentscheidungen praktisch identisch. 0 = exakt (kann lange
-    # dauern).
-    solver_mip_gap: float = 0.01
+    # dauern). Default eng (0,2 %): reale Läufe schließen die Lücke in ~53-67 s
+    # (weit unter dem 300-s-Limit), also garantiert der Solver die Optimalität
+    # selbst statt der handgepflegten Politur-Suspect-Liste.
+    solver_mip_gap: float = 0.002
     # Absolute Optimalitätslücke (ct): Stopp, sobald die Lösung beweisbar
     # höchstens X ct vom Optimum entfernt ist. Wichtig als Ergänzung zur
     # RELATIVEN Lücke: enthält das Ziel große konstante Terme (z.B. Komfort-
     # Malus), wären "1 %" plötzlich viele Euro. Nicht zu groß wählen: die
     # Toleranz ist auch das Budget für sinnlose Mikro-Artefakte im Plan
-    # (Abregel-Reste, Kleinst-Eingriffe). 0 = aus.
-    solver_mip_gap_abs_ct: float = 25.0
+    # (Abregel-Reste, Kleinst-Eingriffe). 0 = aus. Default eng (3 ct), s.o.
+    solver_mip_gap_abs_ct: float = 3.0
     # Malus (ct) je Einschaltvorgang der Wallbox: verhindert, dass das Auto
     # bei zappeligen Preisen ständig ein-/ausgeschaltet wird (Schützverschleiß).
     # 0 = aus.
@@ -1136,8 +1138,8 @@ def load_config(path: str) -> Config:
         solver=str(o.get("solver", "cbc")),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
-        solver_mip_gap=float(o.get("solver_mip_gap", 0.01)),
-        solver_mip_gap_abs_ct=float(o.get("solver_mip_gap_abs_ct", 25.0)),
+        solver_mip_gap=float(o.get("solver_mip_gap", 0.002)),
+        solver_mip_gap_abs_ct=float(o.get("solver_mip_gap_abs_ct", 3.0)),
         car_switch_penalty_ct=float(o.get("car_switch_penalty_ct", 5.0)),
         battery_switch_penalty_ct=float(o.get("battery_switch_penalty_ct", 1.0)),
         # Alter Schluessel bleibt als Lese-Fallback kompatibel; seine Einheit
