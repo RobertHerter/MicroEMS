@@ -369,7 +369,7 @@ def test_dashboard_renders_loads_panel(tmp_path):
     assert "klein" in html and "gross" in html                 # Pool-Lanes
     # Ereignis-Panel: Farben für Warnungen/Schaltvorgänge vorhanden, und die
     # CSS-Klasse enthält jetzt auch die Ereignisart (kind) für die Färbung.
-    assert ".event.warn span" in html and ".event.switch span" in html
+    assert ".event.warn span" in html and ".event.k-switch span" in html
     assert "+esc(e.kind)+" in html
 
 

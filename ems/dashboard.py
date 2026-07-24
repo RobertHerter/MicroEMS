@@ -461,7 +461,7 @@ def _events_block() -> str:
  function render(){
   const act=active();
   const rows=LAST.filter(e=>act.has(lvlClass(e.level)));
-  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+icon(lvlClass(e.level))+' '+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
+  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' k-'+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+icon(lvlClass(e.level))+' '+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
   listEl.scrollTop=0;   // neueste (oben) zeigen, NICHT ans Ende springen
  }
  async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';}}
@@ -1833,7 +1833,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .event time {{ color: #74808b; font-size: 11px; }}
  .event.error span {{ color: #bd302a; font-weight: 600; }}
  .event.warn span, .event.warning span {{ color: #9a6b00; }}
- .event.switch span {{ color: #2f6f9e; }}
+ .event.k-switch span {{ color: #2f6f9e; }}
  .switch {{ display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }}
  .switch input {{ position: absolute; opacity: 0; pointer-events: none; }}
  .switch span {{ width: 34px; height: 19px; border-radius: 12px; background: #b9bec5;
@@ -1924,7 +1924,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .event {{ border-color: #303e4b; }}
  html.dark .event.error span {{ color: #f1a29c; }}
  html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
- html.dark .event.switch span {{ color: #8fc0e8; }}
+ html.dark .event.k-switch span {{ color: #8fc0e8; }}
  html.dark .events-filter button {{ background: #263442; border-color: #4b5b6b; color: #aebbc8; }}
  html.dark .events-filter button.info.on {{ background: #173326; border-color: #58b879; color: #8fd7a9; }}
  html.dark .events-filter button.warn.on {{ background: #3a3219; border-color: #d9b83f; color: #e1c96b; }}
