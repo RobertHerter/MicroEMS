@@ -456,11 +456,12 @@ def _events_block() -> str:
  const listEl=document.getElementById('events-list');
  let LAST=[];
  const lvlClass=l=>{l=String(l||'info');return l.indexOf('err')===0?'error':l.indexOf('warn')===0?'warning':'info';};
+ const icon=l=>l==='error'?'⛔':l==='warning'?'⚠':'ℹ';
  const active=()=>{try{return new Set(JSON.parse(localStorage.getItem('ems-event-filter'))||['info','warning','error']);}catch(e){return new Set(['info','warning','error']);}};
  function render(){
   const act=active();
   const rows=LAST.filter(e=>act.has(lvlClass(e.level)));
-  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
+  listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' '+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span>'+icon(lvlClass(e.level))+' '+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
   listEl.scrollTop=0;   // neueste (oben) zeigen, NICHT ans Ende springen
  }
  async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';}}

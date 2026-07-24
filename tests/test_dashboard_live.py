@@ -211,6 +211,8 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "ems-event-filter" in events
     # Beim Aufklappen/Rendern nach oben (neueste) scrollen, nicht ans Ende
     assert "scrollTop=0" in events
+    # Level-Icon vor jedem Eintrag (info/warnung/fehler)
+    assert "icon(lvlClass(e.level))" in events
 
 
 def test_analysis_block_bundles_all_three_lazily():

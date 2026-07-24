@@ -156,9 +156,9 @@ def test_alert_event_sink_logs_and_dedupes(tmp_path):
     assert {"warning", "error"} <= {e["level"] for e in ev}
 
 
-def test_log_switching_events_only_on_change(tmp_path):
-    """Schalthandlungen (Ladebegrenzung, Laststufe) werden nur beim Übergang
-    geloggt - nicht je Zyklus, solange die Steueraktion gleich bleibt."""
+def test_log_switching_events_logs_limit_value_changes(tmp_path):
+    """Schalthandlungen loggen auch WERTänderungen einer laufenden Begrenzung
+    (z.B. Peak-Shaping rampt das Ladelimit) - nicht nur an/aus."""
     import pandas as pd
     from ems.local_history import read_dashboard_events
     cfg = _cfg(tmp_path)
@@ -174,16 +174,17 @@ def test_log_switching_events_only_on_change(tmp_path):
             "batt_discharge_limit_w": [5000.0], "batt_grid_charge_w": [0.0],
             "batt_grid_discharge_w": [0.0]}, index=idx)
 
-    m._log_switching_events(cfg, tbl(0), {"Pool": 0})      # Basis -> keine Events
-    m._log_switching_events(cfg, tbl(1, 0.0), {"Pool": 1})  # Laden sperren + Pool an
-    m._log_switching_events(cfg, tbl(1, 0.0), {"Pool": 1})  # unverändert -> nichts
-    m._log_switching_events(cfg, tbl(0), {"Pool": 1})       # Begrenzung aufgehoben
+    m._log_switching_events(cfg, tbl(0), {})            # nicht begrenzt -> nichts
+    m._log_switching_events(cfg, tbl(1, 3000), {})      # begrenzt -> 3000 W
+    m._log_switching_events(cfg, tbl(1, 201), {})       # Wertänderung -> 201 W
+    m._log_switching_events(cfg, tbl(1, 201), {})       # unverändert -> nichts
+    m._log_switching_events(cfg, tbl(0), {})            # aufgehoben
     ev = read_dashboard_events(cfg.e3dc_rscp.history_db_path, "Europe/Berlin", 50)
-    switch = [e for e in ev if e["kind"] == "switch"]
-    joined = " | ".join(e["message"] for e in switch)
+    switch = [e["message"] for e in ev if e["kind"] == "switch"]
+    joined = " | ".join(switch)
     assert len(switch) == 3
-    assert "Laden gesperrt" in joined
-    assert "Pool eingeschaltet" in joined
+    assert "Laden begrenzt auf 3000 W" in joined
+    assert "Laden begrenzt auf 201 W" in joined         # der zuvor fehlende Fall
     assert "Ladebegrenzung aufgehoben" in joined
 
 

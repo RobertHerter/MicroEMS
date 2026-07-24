@@ -237,6 +237,14 @@ def _make_alert_event_sink(config):
 
 # Schaltvorgänge: nur bei tatsächlicher Änderung gegenüber dem letzten Zyklus.
 _last_switch_state: dict = {"ctl": None, "loads": {}}
+# Neutraler Ausgangszustand (keine Begrenzung/kein Netzladen): so werden schon
+# beim ERSTEN Zyklus nach dem Start aktive Begrenzungen als Ereignis geloggt.
+_NEUTRAL_CTL = {"charge_lim": False, "charge_w": 0.0, "dis_lim": False,
+                "dis_w": 0.0, "grid_charge_w": 0.0, "grid_dis": False}
+# Grenzwert-Änderungen ab dieser Schwelle (W) als neues Ereignis - kleiner
+# Rampen-Jitter innerhalb einer laufenden Begrenzung erzeugt sonst je Slot einen
+# Eintrag.
+_SWITCH_THR_W = 50.0
 # Modusvergleich nur bei WECHSEL der Empfehlung loggen (sonst flutet er als
 # Jede-Zyklus-Ereignis den Verlauf und verdeckt die echten Schalthandlungen).
 _last_shadow_recommendation: dict = {"value": None}
@@ -270,30 +278,40 @@ def _log_switching_events(config, table, load_cmds) -> None:
         if table is None or len(table) == 0:
             return
         cur = _control_state(table.iloc[0])
-        prev = _last_switch_state.get("ctl")
+        prev = _last_switch_state.get("ctl") or _NEUTRAL_CTL
         _last_switch_state["ctl"] = cur
-        if prev is not None:
-            msgs = []
-            if cur["charge_lim"] and not prev["charge_lim"]:
+        msgs = []
+        # Ladebegrenzung: neu gesetzt ODER Grenzwert deutlich geändert (z.B. beim
+        # Peak-Shaping rampt der Wert -> jede spürbare Änderung ist ein Ereignis).
+        if cur["charge_lim"]:
+            if (not prev["charge_lim"]
+                    or abs(cur["charge_w"] - prev["charge_w"]) >= _SWITCH_THR_W):
                 msgs.append("Laden gesperrt (Limit 0 W)" if cur["charge_w"] < 50
                             else f"Laden begrenzt auf {cur['charge_w']:.0f} W")
-            elif not cur["charge_lim"] and prev["charge_lim"]:
-                msgs.append("Ladebegrenzung aufgehoben")
-            if cur["dis_lim"] and not prev["dis_lim"]:
+        elif prev["charge_lim"]:
+            msgs.append("Ladebegrenzung aufgehoben")
+        # Entladebegrenzung analog
+        if cur["dis_lim"]:
+            if (not prev["dis_lim"]
+                    or abs(cur["dis_w"] - prev["dis_w"]) >= _SWITCH_THR_W):
                 msgs.append("Entladen gesperrt (Akku halten)" if cur["dis_w"] < 50
                             else f"Entladen begrenzt auf {cur['dis_w']:.0f} W")
-            elif not cur["dis_lim"] and prev["dis_lim"]:
-                msgs.append("Entladebegrenzung aufgehoben")
-            if cur["grid_charge"] and not prev["grid_charge"]:
-                msgs.append(f"Netzladen gestartet ({cur['grid_charge_w']:.0f} W)")
-            elif not cur["grid_charge"] and prev["grid_charge"]:
-                msgs.append("Netzladen beendet")
-            if cur["grid_dis"] and not prev["grid_dis"]:
-                msgs.append("Netzeinspeisung aus Akku gestartet")
-            elif not cur["grid_dis"] and prev["grid_dis"]:
-                msgs.append("Netzeinspeisung aus Akku beendet")
-            for msg in msgs:
-                _record_dashboard_event(config, "switch", msg)
+        elif prev["dis_lim"]:
+            msgs.append("Entladebegrenzung aufgehoben")
+        # Netzladen (Wert)
+        gc, pgc = cur["grid_charge_w"], prev["grid_charge_w"]
+        if gc > 5.0:
+            if pgc <= 5.0 or abs(gc - pgc) >= _SWITCH_THR_W:
+                msgs.append(f"Netzladen {gc:.0f} W")
+        elif pgc > 5.0:
+            msgs.append("Netzladen beendet")
+        # Netzeinspeisung aus Akku
+        if cur["grid_dis"] and not prev["grid_dis"]:
+            msgs.append("Netzeinspeisung aus Akku gestartet")
+        elif not cur["grid_dis"] and prev["grid_dis"]:
+            msgs.append("Netzeinspeisung aus Akku beendet")
+        for msg in msgs:
+            _record_dashboard_event(config, "switch", msg)
         old = _last_switch_state.get("loads", {})
         loads = {str(k): int(bool(v)) for k, v in (load_cmds or {}).items()}
         for label, on in loads.items():
