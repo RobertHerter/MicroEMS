@@ -932,6 +932,25 @@ def test_max_import_w_caps_grid_draw():
         "Szenario prüft nichts - bei -10 ct sollte netzgeladen werden"
 
 
+def test_infeasible_diagnosis_names_probable_cause():
+    """Bei Infeasibility grenzt die Relaxations-Diagnose die Ursache ein und
+    hängt sie als infeasible_reason an (fürs Log/Ereignis-Panel). Hier wird die
+    Unlösbarkeit über min_soc > max_soc erzwungen -> Diagnose muss die
+    Akku-SoC-Grenze benennen (inkl. Eingangslage)."""
+    cfg = make_config()
+    cfg.optimization.solver = "highs"            # Live-Solver; meldet Infeasible sauber
+    cfg.house_battery.min_soc_percent = 95.0
+    cfg.house_battery.max_soc_percent = 90.0     # leeres SoC-Intervall -> infeasible
+    idx = _day_index("2026-07-15")
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=500.0, price=30.0,
+        soc=cfg.house_battery.capacity_wh * 0.5))
+    assert res.infeasible
+    assert res.infeasible_reason, "keine Ursachen-Diagnose gesetzt"
+    assert "Akku-Mindest-SoC" in res.infeasible_reason
+    assert "SoC" in res.infeasible_reason and "Slots" in res.infeasible_reason
+
+
 def test_grid_overload_limit_is_soft_not_infeasible():
     """Eine Lastspitze, die selbst mit voller Akku-Entladung (5 kW) über der
     Hausanschluss-Grenze (3 kW) liegt, macht den Plan NICHT infeasible (kein

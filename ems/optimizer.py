@@ -75,6 +75,9 @@ class OptimizerResult:
     total_cost_ct: float
     status: str
     infeasible: bool = False
+    # Bei Infeasible: kurze, eingegrenzte Ursache (Relaxations-Diagnose) fürs
+    # Log/Ereignis-Panel; None, wenn lösbar oder Diagnose deaktiviert.
+    infeasible_reason: Optional[str] = None
     export_line_w: Optional[float] = None   # Einspeise-Linie L (nur Peak-Modus)
     # Fehlmenge (Wh) zum Auto-Ziel-SoC bei Abfahrt (weiche Nebenbedingung);
     # > 0 = Ziel im Plan nicht erreichbar -> Alarm.
@@ -475,13 +478,16 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
 
 class Optimizer:
     def __init__(self, config: Config, *, stabilize_plan: bool = False,
-                 store_warm: bool = True):
+                 store_warm: bool = True, diagnose_infeasible: bool = True):
         self.cfg = config
         # Nur der fortlaufende Produktivdienst darf gegen den vorherigen Lauf
         # stabilisieren. Backtests, Debug-Replays und voneinander unabhaengige
         # Tests duerfen trotz prozessweitem Warmstart nicht gekoppelt werden.
         self.stabilize_plan = bool(stabilize_plan)
         self.store_warm = bool(store_warm)
+        # Bei Infeasible die Ursache per Relaxations-Resolves eingrenzen. In den
+        # dabei ausgelösten Diagnose-Resolves selbst AUS (keine Rekursion).
+        self.diagnose_infeasible = bool(diagnose_infeasible)
 
     def _departure_slot_indices(self, index: pd.DatetimeIndex) -> List[int]:
         """Slot-Indizes der Abfahrtzeiten im Horizont (je Wochentag; Tage ohne
@@ -554,6 +560,57 @@ class Optimizer:
             table=table, total_cost_ct=float(table["slot_cost_ct"].sum()),
             status=status, infeasible=True, export_line_w=None,
         )
+
+    def _diagnose_infeasibility(self, inp: OptimizerInputs) -> str:
+        """Bei Infeasible die wahrscheinliche Ursache eingrenzen: nacheinander
+        einzelne (harte) Bausteine relaxieren und neu lösen; der erste, der die
+        Lösbarkeit wiederherstellt, ist der Verursacher. Rückgabe: kurze,
+        menschenlesbare Beschreibung inkl. Eingangslage."""
+        import copy as _copy
+        hb = self.cfg.house_battery
+        dt = self.cfg.general.dt_hours
+        pv_kwh = float(np.nansum(np.maximum(np.asarray(inp.pv_w, float), 0.0))) * dt / 1000.0
+        load_kwh = float(np.nansum(np.maximum(np.asarray(inp.house_load_w, float), 0.0))) * dt / 1000.0
+        soc_pct = 100.0 * float(inp.initial_house_soc_wh) / max(1.0, hb.capacity_wh)
+        ctx = (f"SoC {soc_pct:.0f} %, PV Σ{pv_kwh:.1f} kWh, Last Σ{load_kwh:.1f} kWh, "
+               f"{len(inp.index)} Slots")
+
+        def _feasible(cfg2) -> bool:
+            try:
+                cfg2.optimization.solver_time_limit_s = min(
+                    30, int(getattr(cfg2.optimization, "solver_time_limit_s", 30)))
+                r = Optimizer(cfg2, store_warm=False, stabilize_plan=False,
+                              diagnose_infeasible=False)._solve(inp)
+                return (not r.infeasible) and r.status == pulp.LpStatus[pulp.LpStatusOptimal]
+            except Exception:   # pragma: no cover - Diagnose darf nie werfen
+                return False
+
+        tried = []
+        thermal = [ld for ld in getattr(self.cfg, "controllable_loads", [])
+                   if getattr(ld, "type", "") == "thermal" and ld.enabled]
+        if thermal:
+            c = _copy.deepcopy(self.cfg)
+            c.controllable_loads = [ld for ld in c.controllable_loads
+                                    if getattr(ld, "type", "") != "thermal"]
+            if _feasible(c):
+                return f"steuerbare thermische Last (Pool) nicht deckbar – {ctx}"
+            tried.append("Pool")
+            if any(getattr(ld, "no_grid_import", False) for ld in thermal):
+                c2 = _copy.deepcopy(self.cfg)
+                for ld in c2.controllable_loads:
+                    if getattr(ld, "type", "") == "thermal":
+                        ld.no_grid_import = False
+                if _feasible(c2):
+                    return ("Pool-Regel 'kein Netzbezug' (no_grid_import) mit den "
+                            f"aktuellen Werten unlösbar – {ctx}")
+                tried.append("no_grid_import")
+        c3 = _copy.deepcopy(self.cfg)
+        c3.house_battery.min_soc_percent = 0.0
+        if _feasible(c3):
+            return f"Akku-Mindest-SoC-Grenze nicht einhaltbar – {ctx}"
+        tried.append("min_soc")
+        return ("harte Nebenbedingung unklar (erfolglos relaxiert: "
+                f"{', '.join(tried) or '—'}) – {ctx}")
 
     def solve(self, inp: OptimizerInputs) -> OptimizerResult:
         """Solverlaeufe pro Prozess serialisieren.
@@ -1579,6 +1636,14 @@ class Optimizer:
             log.error("Optimierung nicht optimal gelöst (%s) – "
                       "Fallback 'auto' ohne Eingriffe.", status)
             neutral = self._neutral_result(inp, status)
+            # Ursache eingrenzen (nur bei echter Infeasibility, nicht bei
+            # Zeitlimit/anderem), damit der nächste Vorfall sofort erklärbar ist.
+            if self.diagnose_infeasible and status == pulp.LpStatus[pulp.LpStatusInfeasible]:
+                try:
+                    neutral.infeasible_reason = self._diagnose_infeasibility(inp)
+                    log.error("Infeasibility-Diagnose: %s", neutral.infeasible_reason)
+                except Exception as exc:   # pragma: no cover
+                    log.debug("Infeasibility-Diagnose fehlgeschlagen (%s).", exc)
             neutral.solver_seconds = solve_s
             neutral.solver_slots = N
             neutral.solver_variables = len(variables)
