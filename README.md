@@ -79,7 +79,8 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/weather.py` | Temperatur + Einstrahlung von Open-Meteo (kein Key) |
 | `ems/energycharts.py` + `ems/tariff.py` | Spotpreis (Energy-Charts) + Tarifmodell → Endkunden-Bezugspreis |
 | `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen) + Dispatcher der aktiven PV-Quelle |
-| `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + Open-Meteo (kein Key) |
+| `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + lernendem Open-Meteo-Mehrmodell-Ensemble |
+| `ems/pv_ensemble.py` | Horizontabhängige Rolling-Origin-Gewichte und empirische P10/P90-Bänder |
 | `ems/pv_eval.py` | pvlib vs. Solcast gegen reale Erträge bewerten, Quelle wählen, p10/p90-Band kalibrieren |
 | `ems/sanity.py` | Plausibilitäts-Grenzen für externe Eingaben (Preis/PV/Last) |
 | `ems/savings.py` + `ems/savings_validate.py` | Ersparnis-Tracking + Gegenprüfung gegen die echten E3DC-Zähler |
@@ -152,8 +153,11 @@ Netzentgelt `static`/`included`/`14a` (§14a EnWG zeitvariabel). Tiefe Historie 
   `combine: sum|mean`, Abruf-Budget `calls_per_key_per_day` über das Tageslicht
   verteilt. Tiefe Historie via `solcast_import.py`.
 - `pv_model`: **freies pvlib-Modell** (kein Key/Kontingent) aus Paneldaten
-  (kWp/Neigung/Azimut je Ausrichtung) + Open-Meteo-Einstrahlung. `shadow: true`
-  rechnet es nur zum Vergleich mit, ohne den Optimierer zu beeinflussen.
+  (kWp/Neigung/Azimut je Ausrichtung) + Open-Meteo-Einstrahlung. Das optionale
+  Mehrmodell-Ensemble rechnet Best-Match, DWD ICON und ECMWF getrennt, lernt
+  Gewichte je Vorlaufzeit ausschließlich aus Rolling-Origin-Archiven und bildet
+  P10/P90 aus Modellstreuung plus empirischen Residuen. `shadow: true` rechnet
+  es nur zum Vergleich mit, ohne den Optimierer zu beeinflussen.
 - **Autowahl** (`pv_source_selection`): sobald beide Quellen genügend gemeinsame
   Archiv-Erfahrung haben, wählt `pv_eval.select_source` die im WAPE bessere Quelle
   (nur aus echten Rolling-Origin-Archiven, nie aus dem optimistischen Cache); die
@@ -409,7 +413,7 @@ Wichtige Blöcke:
 
 | Block | Inhalt |
 |-------|--------|
-| `general` | Zeitzone, Horizont (48 h), Slot-Länge, Rechenintervall |
+| `general` | Zeitzone, Standort, Feiertagsregion, Horizont, Slot-Länge und Rechenintervall |
 | `house_battery` / `inverter` | Kapazität, Lade-/Entladeleistungen, Wirkungsgrade, SoC-Grenzen, WR-/Netzanschlussgrenzen |
 | `vehicle` | Auto-Akku, Lade-Min/-Max, Ziel-SoC, Abfahrtzeit(en), Ladekurve |
 | `optimization` | Solver, MIP-Gap, Strafterme, Ladestrategie (`auto/peak/asap/late`), **Abend-Reserve** |

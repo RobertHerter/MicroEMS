@@ -1808,6 +1808,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         pv_note = f"Quelle: {'Solcast' if pv_name == 'solcast' else 'pvlib'}"
         if pv_selection and pv_selection.get("reason"):
             pv_note += f" ({pv_selection['reason']})"
+        try:
+            from .pvforecast import status_summary as _pv_ensemble_summary
+            if config.pv_model.shadow or config.pv_model.enabled:
+                pv_note += f" · {_pv_ensemble_summary()}"
+        except Exception:
+            pass
         forecast_quality = [
             _forecast_quality_entry(
                 "Hauslast", total_slots,
@@ -2361,7 +2367,8 @@ def _refresh_weather_cache(config) -> None:
         from .weather import fetch_forecast
         from .local_history import (write_radiation, write_temperature,
                                     write_weather_forecast_archive)
-        temp_map, rad_map = fetch_forecast(w.latitude, w.longitude,
+        temp_map, rad_map = fetch_forecast(
+            config.general.latitude, config.general.longitude,
                                            w.past_days, w.forecast_days)
         issue_time = pd.Timestamp.now(tz="UTC")
         n_t = write_temperature(db, temp_map)

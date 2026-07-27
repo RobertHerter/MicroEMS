@@ -13,10 +13,10 @@ Kalibrierung (kalibrierung.py, pv_month_hour gegen reale actuals.pv_w)
 unverändert funktionieren - inkl. Optimierung gegen reale Ertrags- und
 Wetterdaten.
 
-p10/p90 sind heuristische Bänder um den Punktwert (pvlib liefert - anders als
-Solcast - keine echten Quantile): p10 = pv*(1-p10_uncertainty),
-p90 = pv*(1+p90_uncertainty). p10 dimensioniert die Peak-Einspeise-Linie
-konservativ.
+Mehrere Wettermodelle werden getrennt durch pvlib gerechnet und archiviert.
+Ihre Gewichte werden je Prognosehorizont aus echten Rolling-Origin-Fehlern
+gelernt. p10/p90 kombinieren die aktuelle Modellstreuung mit empirischen
+Ist/Prognose-Residualen; die konfigurierten Unsicherheiten bleiben nur Fallback.
 """
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ import pandas as pd
 from . import local_history
 
 log = logging.getLogger("ems.pvforecast")
+
+_ensemble_status = {
+    "updated": None, "models": [], "weights": {}, "residuals": {},
+}
 
 _SIGNAL_WHICH = {"pv_forecast": "pv", "pv_forecast_p10": "p10",
                  "pv_forecast_p90": "p90"}
@@ -47,6 +51,39 @@ def active(config) -> bool:
 def source_ids(config) -> list:
     """Quellen-IDs in der pv_forecast-Tabelle (eine je Array)."""
     return [f"pvmodel:{a.name}" for a in config.pv_model.arrays]
+
+
+def ensemble_status() -> dict:
+    """Letzte Diagnose des laufenden PV-lib-Ensembles."""
+    return dict(_ensemble_status)
+
+
+def status_summary() -> str:
+    status = _ensemble_status
+    models = status.get("models") or []
+    if not models:
+        return "PV-lib-Ensemble wartet auf den ersten Lauf"
+    parts = [f"PV-lib-Ensemble: {len(models)} Modelle"]
+    weights = status.get("weights") or {}
+    learned = sum(1 for value in weights.values() if value.get("learned"))
+    if weights:
+        parts.append(f"Gewichte {learned}/{len(weights)} Horizonte gelernt")
+        shown_name = "6-24h" if "6-24h" in weights else next(iter(weights))
+        shown = (weights.get(shown_name) or {}).get("weights") or {}
+        if shown:
+            labels = {
+                "best_match": "Best", "dwd_icon": "DWD",
+                "ecmwf_ifs": "ECMWF",
+            }
+            parts.append(
+                shown_name + " " + "/".join(
+                    f"{labels.get(model, model)} {value:.0%}"
+                    for model, value in shown.items()))
+    residuals = status.get("residuals") or {}
+    bands = sum(1 for value in residuals.values() if value.get("learned"))
+    if residuals:
+        parts.append(f"Band {bands}/{len(residuals)} Horizonte empirisch")
+    return " · ".join(parts)
 
 
 def _array_dc_watts(array, ghi, dni, dhi, temp_air, wind, solpos,
@@ -95,7 +132,7 @@ def compute(config, maps: dict) -> dict:
     wind = series("wind_speed_10m").fillna(1.0).clip(lower=0.0)
 
     solpos = pvlib.solarposition.get_solarposition(
-        idx, config.weather.latitude, config.weather.longitude,
+        idx, config.general.latitude, config.general.longitude,
         temperature=temp_air)
     dni_extra = pvlib.irradiance.get_extra_radiation(idx)
 
@@ -127,35 +164,72 @@ _last_refresh = 0.0
 
 
 def refresh(config, force: bool = False) -> int:
-    """Open-Meteo-Wetter holen, pvlib rechnen, pv_forecast schreiben (throttled,
-    höchstens ~einmal je 5 min). Deckt past_days (Historie für die Kalibrierung)
-    + forecast_days ab. Rückgabe: Anzahl geschriebener (source,ts)-Werte."""
+    """Wettermodelle holen, getrennt durch pvlib rechnen und lernend mischen."""
     global _last_refresh
     if not active(config):
         return 0
     import time as _t
     if not force and _t.time() - _last_refresh <= 300:
         return 0
-    from .weather import fetch_pv_weather
+    from .weather import fetch_pv_weather_models
+    from . import pv_ensemble
     w = config.weather
-    try:
-        maps = fetch_pv_weather(w.latitude, w.longitude, w.past_days,
-                                w.forecast_days)
-    except Exception as exc:
-        log.warning("Open-Meteo (PV-Modell) fehlgeschlagen (%s) – nutze Cache.", exc)
+    model_maps = fetch_pv_weather_models(
+        config.general.latitude, config.general.longitude,
+        min(2, w.past_days), w.forecast_days,
+        config.pv_model.weather_models)
+    model_outputs = {
+        model: output for model, maps in model_maps.items()
+        if (output := compute(config, maps))
+    }
+    if not model_outputs:
+        log.warning("Kein PV-Wettermodell verfügbar – nutze vorhandenen Cache.")
         return 0
-    per_source = compute(config, maps)
     db = config.e3dc_rscp.history_db_path
+    # Schema auch bei einer frischen Datenbank vor den lesenden Ensemble-
+    # Auswertungen sicherstellen.
+    con = local_history._con(db)
+    con.close()
     # issue_ts = jetzt: unveränderlicher Snapshot je Lauf (Rolling-Origin). So
     # kann pv_source_report.py pvlib fair gegen Solcast (das ebenso archiviert
     # wird, ems/solcast.py) und die realen actuals.pv_w messen, statt nur den
     # ständig überschriebenen Live-Cache zu sehen.
     issue = pd.Timestamp.now(tz="UTC")
+    aggregate_sources = source_ids(config)
+    model_sources = pv_ensemble.model_source_map(
+        model_outputs, aggregate_sources)
+    cfg = config.pv_model
+    weights = pv_ensemble.learn_weights(
+        db, model_sources, issue, cfg.ensemble_lookback_days,
+        cfg.ensemble_min_samples, cfg.ensemble_horizon_hours,
+        cfg.ensemble_min_weight)
+    residuals = pv_ensemble.residual_quantiles(
+        db, aggregate_sources, issue, cfg.ensemble_lookback_days,
+        cfg.ensemble_min_samples, cfg.ensemble_horizon_hours,
+        max(0.05, 1.0 - cfg.p10_uncertainty),
+        1.0 + cfg.p90_uncertainty)
+    per_source, diagnostics = pv_ensemble.combine(
+        model_outputs, weights, residuals, issue,
+        cfg.ensemble_horizon_hours)
     n = 0
+    # Wettermodell-Mitglieder separat halten: Grundlage der später gelernten
+    # Gewichte, aber niemals direkt vom Optimierer gelesen.
+    for model, outputs in model_outputs.items():
+        for aggregate_source, mapping in outputs.items():
+            src = pv_ensemble.member_source(model, aggregate_source)
+            n += local_history.write_pv_forecast(db, src, mapping)
+            local_history.write_pv_forecast_archive(db, src, issue, mapping)
+    # Kompatible Ensemble-Ausgabe unter den bisherigen pvmodel:<Array>-IDs.
     for src, m in per_source.items():
         n += local_history.write_pv_forecast(db, src, m)
         local_history.write_pv_forecast_archive(db, src, issue, m)
+    _ensemble_status.update(
+        updated=issue.isoformat(), models=list(model_outputs),
+        weights=diagnostics["weights"], residuals=diagnostics["residuals"],
+        slots_by_bucket=diagnostics["slots_by_bucket"])
     _last_refresh = _t.time()
-    log.info("PV-Modell (pvlib): %d Array-Zeitwerte aus %d Arrays aktualisiert.",
-             n, len(per_source))
+    log.info(
+        "PV-Modell (pvlib-Ensemble): %d Werte, %d Wettermodelle, %d Arrays "
+        "aktualisiert (%s).", n, len(model_outputs), len(per_source),
+        status_summary())
     return n

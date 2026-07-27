@@ -26,6 +26,11 @@ log = logging.getLogger("ems.weather")
 
 _FORECAST = "https://api.open-meteo.com/v1/forecast"
 _ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
+_PV_MODEL_ENDPOINTS = {
+    "best_match": _FORECAST,
+    "dwd_icon": "https://api.open-meteo.com/v1/dwd-icon",
+    "ecmwf_ifs": "https://api.open-meteo.com/v1/ecmwf",
+}
 
 
 def _get(url: str, params: dict, timeout: float = 20.0) -> dict:
@@ -86,16 +91,41 @@ def _pv_maps(payload):
 
 
 def fetch_pv_weather(lat: float, lon: float, past_days: int = 92,
-                     forecast_days: int = 4):
+                     forecast_days: int = 4, model: str = "best_match"):
     """GHI/DNI/DHI + Temperatur + Wind (Forecast-API, EIN Call) für pvlib.
     Rückgabe: dict {feld: {UTC-ISO-Stunde: Wert}}."""
-    d = _get(_FORECAST, {
+    if model not in _PV_MODEL_ENDPOINTS:
+        raise ValueError(f"Unbekanntes PV-Wettermodell: {model}")
+    d = _get(_PV_MODEL_ENDPOINTS[model], {
         "latitude": lat, "longitude": lon,
         "hourly": ",".join(_PV_FIELDS),
+        # pvlib.temperature.faiman erwartet Wind in m/s; Open-Meteo liefert
+        # ohne diese Angabe standardmäßig km/h.
+        "wind_speed_unit": "ms",
         "past_days": max(0, min(92, int(past_days))),
         "forecast_days": max(1, min(16, int(forecast_days))),
         "timezone": "UTC"})
     return _pv_maps(d)
+
+
+def fetch_pv_weather_models(lat: float, lon: float, past_days: int = 2,
+                            forecast_days: int = 4,
+                            models=None) -> dict:
+    """Mehrere unabhängige Wettermodell-Läufe für pvlib abrufen.
+
+    Fehler eines einzelnen Modells verwerfen nicht die übrigen Modelle. Die
+    Rückgabe ist ``{model: field_maps}``; nur erfolgreiche Modelle erscheinen.
+    """
+    result = {}
+    for model in dict.fromkeys(models or ["best_match"]):
+        try:
+            result[model] = fetch_pv_weather(
+                lat, lon, past_days=past_days, forecast_days=forecast_days,
+                model=model)
+        except Exception as exc:
+            log.warning("Open-Meteo PV-Wettermodell %s nicht verfügbar: %s",
+                        model, exc)
+    return result
 
 
 def fetch_pv_weather_archive(lat: float, lon: float, start_date: str,
@@ -105,6 +135,7 @@ def fetch_pv_weather_archive(lat: float, lon: float, start_date: str,
     d = _get(_ARCHIVE, {
         "latitude": lat, "longitude": lon,
         "hourly": ",".join(_PV_FIELDS),
+        "wind_speed_unit": "ms",
         "start_date": start_date, "end_date": end_date, "timezone": "UTC"},
         timeout=60.0)
     return _pv_maps(d)

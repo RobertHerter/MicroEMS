@@ -6,6 +6,12 @@
 
 general:
   timezone: "Europe/Berlin"
+  # Gemeinsamer Anlagenstandort für Wetter-, PV- und weitere Modelle.
+  latitude: 0.0
+  longitude: 0.0
+  # Regionaler Kalender für Lastprognose und Tagesklassifikation.
+  holiday_country: "DE"
+  holiday_subdivision: "BY"   # Bundesland (z.B. BY, BW, NW ...)
   # Länge der Steuertabelle (Optimierungshorizont)
   optimization_horizon_hours: 48
   # Optional bis zur nächsten Mitternacht erweitern. false hält Modellgröße
@@ -152,13 +158,23 @@ solcast:
 # -----------------------------------------------------------------------------
 # enabled: true = die PV-Prognose wird aus den eigenen Paneldaten (kWp, Neigung,
 # Ausrichtung) und den Open-Meteo-Einstrahlungskomponenten (GHI/DNI/DHI) mit
-# pvlib berechnet - kein API-Key, kein Kontingent. Nutzt weather.latitude/
-# longitude (weather-Block muss lat/lon haben; enabled dort optional). NICHT
+# pvlib berechnet - kein API-Key, kein Kontingent. Nutzt general.latitude/
+# longitude (weather.enabled ist dafür optional). NICHT
 # gleichzeitig mit solcast.enabled. Mehrere Ausrichtungen werden je Slot
 # summiert. Gegen reale Ertragsdaten (actuals.pv_w) kalibrierbar wie Solcast
 # (python -m kalibrierung ...). Braucht `pip install pvlib`.
 pv_model:
   enabled: false
+  shadow: false               # true = neben Solcast als Schattenmodell rechnen
+  # Unabhängige Open-Meteo-Modellläufe. Jeder wird getrennt durch pvlib
+  # gerechnet und mit Erstellungszeit archiviert.
+  weather_models: [best_match, dwd_icon, ecmwf_ifs]
+  # Automatische Gewichte je Vorlaufzeit aus echten Rolling-Origin-Fehlern.
+  # Bis genügend Daten vorliegen, werden die verfügbaren Modelle gleich gewichtet.
+  ensemble_lookback_days: 45
+  ensemble_min_samples: 48
+  ensemble_horizon_hours: [6, 24, 48]
+  ensemble_min_weight: 0.05
   # azimuth in pvlib-Konvention: 0=Nord, 90=Ost, 180=Süd, 270=West.
   # tilt = Neigung gegen die Horizontale (0=flach, 90=senkrecht).
   arrays:
@@ -166,10 +182,10 @@ pv_model:
     - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270}
   temp_coeff_per_c: -0.0035   # PVWatts-Temperaturkoeffizient der Leistung (1/°C)
   system_loss: 0.14           # pauschale Systemverluste (Verkabelung/WR/Schmutz)
-  p10_uncertainty: 0.35       # heuristisches p10-Band = pv*(1-0.35); dimensioniert
-  p90_uncertainty: 0.15       # die Peak-Einspeise-Linie konservativ (kein echtes Quantil)
-  # Aus echten Residuen kalibrierbar (statt Heuristik): python pv_source_report.py
-  # vergleicht pvlib vs. Solcast gegen die Ist-PV und empfiehlt p10/p90_uncertainty.
+  # Nur Fallback, solange das Ensemble noch nicht genügend echte Residuen hat.
+  # Danach entstehen P10/P90 aus Modellstreuung + empirischen Fehlerquantilen.
+  p10_uncertainty: 0.35
+  p90_uncertainty: 0.15
 
 # Automatische produktive Wahl zwischen Solcast und dem pvlib-Schattenmodell.
 # Es zählen ausschließlich Prognosen aus dem Erstellungszeit-Archiv; rückwirkend
@@ -431,8 +447,6 @@ optimization:
 # -----------------------------------------------------------------------------
 forecast:
   lookback_days: 730          # Historie, die betrachtet wird (2 Jahre)
-  holiday_country: "DE"
-  holiday_subdivision: "BY"   # Bundesland (z.B. BY, BW, NW ...)
   # Gewichte für die Ähnlichkeit (siehe forecast.py)
   weight_same_weekday: 3.0
   weight_same_daytype: 2.0    # Werktag/Wochenende/Feiertag
@@ -567,14 +581,12 @@ report:
 
 # -----------------------------------------------------------------------------
 # Temperatur direkt von Open-Meteo (kostenlos, kein API-Key) statt InfluxDB.
-# latitude/longitude des Standorts setzen. Der Dienst frischt je Zyklus die
+# Standort unter general.latitude/longitude setzen. Der Dienst frischt je Zyklus die
 # letzten past_days (max 92) + forecast_days auf; tiefe Historie einmalig:
 #   python weather_backfill.py --config config.yaml --days 730
 # -----------------------------------------------------------------------------
 weather:
   enabled: false
-  latitude: 0.0
-  longitude: 0.0
   past_days: 92
   forecast_days: 4
 

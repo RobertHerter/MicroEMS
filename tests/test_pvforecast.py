@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("pvlib")
 
-from ems import pvforecast
+from ems import local_history, pvforecast
 from ems.config import PvArray, PvModelConfig, WeatherConfig
 from tests.test_synthetic import make_config
 
@@ -30,7 +30,8 @@ def _maps(ghi_peak=850.0, temp=25.0):
 
 def _cfg(arrays, **pm):
     cfg = make_config()
-    cfg.weather = WeatherConfig(enabled=True, latitude=47.85, longitude=12.07)
+    cfg.weather = WeatherConfig(enabled=True)
+    cfg.general.latitude, cfg.general.longitude = 47.85, 12.07
     cfg.pv_model = PvModelConfig(enabled=True, arrays=arrays, **pm)
     return cfg
 
@@ -83,6 +84,52 @@ def test_enabled_and_source_ids():
     assert pvforecast.source_ids(cfg) == ["pvmodel:Ost", "pvmodel:West"]
     cfg.pv_model.enabled = False
     assert not pvforecast.enabled(cfg)
+
+
+def test_config_parses_weather_ensemble(tmp_path):
+    import yaml
+    from ems.config import load_config
+    base = yaml.safe_load(open("config.example.yaml"))
+    base["pv_model"]["weather_models"] = [
+        "best_match", "dwd_icon", "ecmwf_ifs"]
+    base["pv_model"]["ensemble_horizon_hours"] = [6, 24, 48]
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump(base))
+    cfg = load_config(str(p))
+    assert cfg.pv_model.weather_models == [
+        "best_match", "dwd_icon", "ecmwf_ifs"]
+    assert cfg.pv_model.ensemble_horizon_hours == [6.0, 24.0, 48.0]
+
+
+def test_refresh_writes_members_and_compatible_ensemble(tmp_path, monkeypatch):
+    """Ein Modellfehler darf die übrigen Mitglieder nicht blockieren; die
+    Ensemble-Ausgabe bleibt unter den bisherigen pvmodel:<Array>-IDs lesbar."""
+    cfg = _cfg([PvArray("Ost", 5.0, 20, 90),
+                PvArray("West", 5.0, 20, 270)])
+    cfg.pv_model.weather_models = ["best_match", "dwd_icon", "ecmwf_ifs"]
+    cfg.pv_model.ensemble_horizon_hours = [6, 24, 48]
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+
+    def fake_models(*args, **kwargs):
+        # ECMWF simuliert nicht verfügbar; zwei Mitglieder reichen weiter.
+        return {"best_match": _maps(800.0), "dwd_icon": _maps(900.0)}
+
+    from ems import weather
+    monkeypatch.setattr(weather, "fetch_pv_weather_models", fake_models)
+    monkeypatch.setattr(pvforecast, "_last_refresh", 0.0)
+    written = pvforecast.refresh(cfg, force=True)
+    assert written > 0
+
+    con = local_history._con(cfg.e3dc_rscp.history_db_path)
+    sources = {row[0] for row in con.execute(
+        "SELECT DISTINCT source FROM pv_forecast").fetchall()}
+    con.close()
+    assert {"pvmodel:Ost", "pvmodel:West"} <= sources
+    assert "pvmodel-member:best_match:Ost" in sources
+    assert "pvmodel-member:dwd_icon:West" in sources
+    assert not any("ecmwf_ifs" in source for source in sources)
+    status = pvforecast.ensemble_status()
+    assert status["models"] == ["best_match", "dwd_icon"]
 
 
 def test_read_pv_signal_dispatches_to_pvmodel(tmp_path):

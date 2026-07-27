@@ -67,9 +67,14 @@ def test_mobile_plot_has_panel_tabs_and_24_48_hour_switch():
         assert f'data-panel="{panel}"' in html
     assert 'data-hours="24"' in html and 'data-hours="48"' in html
     assert 'data-hours="all"' in html               # "Alles"-Button
-    assert "dayStart" in html and "setHours(0,0,0,0)" in html  # Start um 00:00
+    assert 'class="desktop-horizon-toolbar"' in html
+    assert "desktopRange" in html and "Plotly.relayout" in html
+    assert '"2026-07-17T00:00:00+02:00"' in html    # lokale 00:00, nicht UTC-Vortag
+    assert "toISOString()" not in html
     assert "displayModeBar:false" in html
     assert "ems-mobile-hours" in html
+    assert "ems-desktop-hours" in html
+    assert "mobileView()?'24':'all'" in html
 
 
 def test_mobile_plot_omits_optional_tabs_without_matching_panels():
@@ -195,6 +200,8 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
 
     details = _slot_detail_block()
     assert "api/data.json" in details and "plotly_click" in details
+    assert "pointerup" in details and "axis.p2d" in details
+    assert "ems-plot-ready" in details
     assert '<details class="info-panel slot-detail"' in details
     assert '<details class="info-panel slot-detail" open' not in details
 

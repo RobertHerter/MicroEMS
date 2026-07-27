@@ -36,17 +36,21 @@ def main() -> int:
 
     config = load_config(args.config)
     if not config.weather.enabled:
-        print("weather.enabled=false – bitte aktivieren und latitude/longitude setzen.")
+        print(
+            "weather.enabled=false – bitte aktivieren und "
+            "general.latitude/longitude setzen."
+        )
         return 2
     days = args.days if args.days is not None else config.forecast.lookback_days
     w = config.weather
+    g = config.general
     db = config.e3dc_rscp.history_db_path
     end = pd.Timestamp.now(tz="UTC").normalize()
     start = end - timedelta(days=days)
     # ERA5 hat ~5 Tage Verzug; die jüngsten Tage liefert die Forecast-API im Betrieb.
     arc_end = end - timedelta(days=6)
     print(f"Temperatur+Strahlungs-Backfill {start.date()} .. {arc_end.date()} "
-          f"({w.latitude},{w.longitude}) -> {db}")
+          f"({g.latitude},{g.longitude}) -> {db}")
 
     total_t, total_r = 0, 0
     block = start
@@ -54,7 +58,7 @@ def main() -> int:
         b_end = min(block + timedelta(days=365), arc_end)
         try:
             temp_map, rad_map = fetch_archive(
-                w.latitude, w.longitude,
+                g.latitude, g.longitude,
                 block.strftime("%Y-%m-%d"), b_end.strftime("%Y-%m-%d"))
         except Exception as exc:
             print(f"  {block.date()}..{b_end.date()}: FEHLER {exc}")

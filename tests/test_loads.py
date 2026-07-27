@@ -343,6 +343,32 @@ def test_empty_loads_is_noop():
     assert not any(c.startswith("load_") for c in res.table.columns)
 
 
+def test_no_grid_import_is_soft_last_resort():
+    """no_grid_import ist WEICH: lässt sich der Pool nur über Netz decken
+    (leerer Akku, keine PV) und ist Nicht-Heizen teurer als die Strafe, zieht er
+    minimal Netz (Slack) statt den ganzen Plan infeasible zu machen."""
+    cfg = make_config()
+    cfg.optimization.solver = "highs"
+    cfg.optimization.no_grid_import_penalty_ct_kwh = 1.0   # niedrig -> Grid-Heizen erlaubt
+    cfg.controllable_loads = [ControllableLoad(
+        name="pool", type="thermal", enabled=True, no_grid_import=True,
+        volume_l=7000, target_c=28.0, min_c=27.0, max_c=29.0,
+        loss_w_per_k=200.0, decision_minutes=60,
+        stages=[LoadStage("wp", 800, 3000)])]
+    idx = _day_index("2026-01-20")                          # Winter, keine PV
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=300.0, price=30.0,
+        soc=cfg.house_battery.min_soc_wh,                   # Akku leer
+        ambient_temp_c=np.full(len(idx), 5.0),
+        load_state={"pool": 20.0}))                          # weit unter Band
+    assert not res.infeasible, "weiche Regel darf nicht infeasible werden"
+    run = res.table["load_pool_wp_w"] > 1.0
+    assert run.any(), "Pool läuft gar nicht"
+    # In Heiz-Slots wird trotz 'kein Netz' Netzstrom gezogen (Slack aktiv).
+    assert "load_pool_grid_w" in res.table.columns
+    assert float(res.table.loc[run, "load_pool_grid_w"].sum()) > 1.0
+
+
 def test_dashboard_renders_loads_panel(tmp_path):
     """Dashboard rendert das Lasten-Panel; deaktivierte Last -> graue Leiste."""
     from ems.dashboard import build_dashboard

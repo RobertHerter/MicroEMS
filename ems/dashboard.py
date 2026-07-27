@@ -183,8 +183,20 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
         f'<button type="button" data-panel="{key}" data-axis="{axis}">{label}</button>'
         for key, label, axis in tabs)
     axes = _j.dumps({key: axis for key, _, axis in tabs})
-    now_iso = _j.dumps(pd.Timestamp(now).isoformat())
+    day_start = pd.Timestamp(now).normalize()
+    horizon_ranges = _j.dumps({
+        "24": [day_start.isoformat(),
+               (day_start + pd.Timedelta(hours=24)).isoformat()],
+        "48": [day_start.isoformat(),
+               (day_start + pd.Timedelta(hours=48)).isoformat()],
+    })
     return f"""
+<div class="desktop-horizon-toolbar" aria-label="Zeitraum der Plangrafik">
+ <span>Zeitraum</span>
+ <div class="horizon-switch desktop-horizon-switch">
+  <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
+ </div>
+</div>
 <section class="mobile-plot-shell" aria-label="Prognose und Steuerung">
  <div class="mobile-plot-toolbar">
   <div class="mobile-plot-tabs" role="tablist">{buttons}</div>
@@ -192,11 +204,17 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
    <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
   </div>
  </div>
- <div id="mobile-plot"></div>
+<div id="mobile-plot"></div>
 </section>
 <script>(function(){{
- var axes={axes}, now={now_iso}, current='power';
- var hours=localStorage.getItem('ems-mobile-hours')||'24'; if(hours!=='48'&&hours!=='all')hours='24';
+ var axes={axes}, ranges={horizon_ranges}, current='power';
+ function mobileView(){{return window.matchMedia('(max-width:620px)').matches;}}
+ function storedHours(){{
+  var fallback=mobileView()?'24':'all';
+  var value=localStorage.getItem(mobileView()?'ems-mobile-hours':'ems-desktop-hours')||fallback;
+  return value==='24'||value==='48'||value==='all'?value:fallback;
+ }}
+ var hours=storedHours();
  function source(){{return document.querySelector('.desktop-plot .plotly-graph-div');}}
  function colors(){{var dark=document.documentElement.classList.contains('dark');return dark?{{paper:'#18212b',plot:'#18212b',font:'#e7edf4',grid:'#354352'}}:{{paper:'#fff',plot:'#fff',font:'#20252b',grid:'#e7ebef'}};}}
  function render(){{
@@ -209,13 +227,11 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
    return n;}});
   var btn=document.querySelector('.mobile-plot-tabs button[data-panel="'+current+'"]');
   if(!traces.length){{var fallback=document.querySelector('.mobile-plot-tabs button:not([hidden])');if(fallback&&fallback!==btn){{current=fallback.dataset.panel;render();}}return;}}
-  // Wie im Desktop bei 00:00 des Tages beginnen (die Ist-Kurven reichen zurück),
-  // NICHT bei der aktuellen Uhrzeit. 'all' zeigt die volle Datenspanne.
-  var dayStart=new Date(now); dayStart.setHours(0,0,0,0);
+  // Die Grenzen kommen mit der EMS-Zeitzone vom Server. Eine UTC-Umwandlung
+  // würde lokale Mitternacht im Sommer auf 22:00 des Vortags verschieben.
   var xaxis={{gridcolor:c.grid,tickformat:'%a %H:%M'}};
   if(hours==='all'){{xaxis.autorange=true;}}
-  else{{var end=new Date(dayStart.getTime()+parseInt(hours,10)*3600000);
-   xaxis.range=[dayStart.toISOString(),end.toISOString()];}}
+  else{{xaxis.range=ranges[hours];}}
   var srcAxis=src.layout[axis==='y'?'yaxis':'yaxis'+axis.slice(1)]||{{}};
   var layout={{height:420,autosize:true,hovermode:'x unified',separators:',.',showlegend:true,
    paper_bgcolor:c.paper,plot_bgcolor:c.plot,font:{{color:c.font}},margin:{{l:48,r:12,t:18,b:85}},
@@ -224,13 +240,30 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
    yaxis:{{title:srcAxis.title||'',gridcolor:c.grid,zerolinecolor:c.grid}}}};
   if(current==='soc')layout.yaxis.range=[0,101];
   if(current==='loads')layout.yaxis.autorange='reversed';
-  Plotly.react('mobile-plot',traces,layout,{{responsive:true,displaylogo:false,displayModeBar:false,scrollZoom:false}});
+  Plotly.react('mobile-plot',traces,layout,{{responsive:true,displaylogo:false,displayModeBar:false,scrollZoom:false}})
+   .then(function(){{window.dispatchEvent(new Event('ems-plot-ready'));}});
   document.querySelectorAll('.mobile-plot-tabs button').forEach(function(b){{b.classList.toggle('on',b.dataset.panel===current);}});
   document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.classList.toggle('on',b.dataset.hours===hours);}});
  }}
+ function desktopRange(){{
+  var src=source();if(mobileView()||!src||!window.Plotly)return;
+  var update={{}};
+  Object.keys(src.layout).filter(function(k){{return /^xaxis\\d*$/.test(k);}}).forEach(function(k){{
+   if(hours==='all'){{update[k+'.autorange']=true;update[k+'.range']=null;}}
+   else{{update[k+'.autorange']=false;update[k+'.range']=ranges[hours];}}
+  }});
+  Plotly.relayout(src,update);
+ }}
+ function setHours(value){{
+  hours=value;localStorage.setItem(mobileView()?'ems-mobile-hours':'ems-desktop-hours',hours);
+  document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.classList.toggle('on',b.dataset.hours===hours);}});
+  desktopRange();render();
+ }}
  document.querySelectorAll('.mobile-plot-tabs button').forEach(function(b){{b.addEventListener('click',function(){{current=b.dataset.panel;render();}});}});
- document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.addEventListener('click',function(){{hours=b.dataset.hours;localStorage.setItem('ems-mobile-hours',hours);render();}});}});
- window.addEventListener('resize',render);window.addEventListener('ems-theme-change',render);setTimeout(render,0);
+ document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.addEventListener('click',function(){{setHours(b.dataset.hours);}});}});
+ function refresh(){{hours=storedHours();desktopRange();render();document.querySelectorAll('.horizon-switch button').forEach(function(b){{b.classList.toggle('on',b.dataset.hours===hours);}});}}
+ window.addEventListener('resize',refresh);window.addEventListener('ems-theme-change',render);
+ setTimeout(refresh,0);
 }})();</script>"""
 
 
@@ -435,9 +468,15 @@ def _slot_detail_block() -> str:
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
  async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
- function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');document.getElementById('slot-detail').open=true;}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
- function bind(){document.querySelectorAll('.plotly-graph-div').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x);});});}
- bind();setInterval(bind,2000);
+ function render(x,reveal=false){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');let panel=document.getElementById('slot-detail');panel.open=true;if(reveal)requestAnimationFrame(()=>panel.scrollIntoView({behavior:'smooth',block:'nearest'}));}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function bind(){document.querySelectorAll('.plotly-graph-div').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x,false);});
+  // Plotly erzeugt auf Touchscreens nicht zuverlässig plotly_click. Ein kurzes
+  // Antippen wird deshalb zusätzlich anhand der x-Achse in eine Zeit übersetzt;
+  // Wischen/Zoomen bleibt durch die Bewegungsgrenze unberührt.
+  let start=null;p.addEventListener('pointerdown',e=>{if(e.pointerType!=='mouse')start={x:e.clientX,y:e.clientY};},true);
+  p.addEventListener('pointerup',e=>{if(!start||e.pointerType==='mouse')return;let s=start;start=null;if(Math.hypot(e.clientX-s.x,e.clientY-s.y)>12)return;let full=p._fullLayout,size=full&&full._size,axis=full&&full.xaxis;if(!size||!axis||!axis.p2d)return;let rect=p.getBoundingClientRect(),px=e.clientX-rect.left-size.l;if(px<0||px>size.w)return;render(axis.p2d(px),true);},true);
+ });}
+ window.addEventListener('ems-plot-ready',bind);bind();setInterval(bind,2000);
 })();</script>"""
 
 
@@ -1652,6 +1691,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-dot.ok {{ background: #2ca02c; }}
  .live-dot.err {{ background: #d62728; }}
  .mobile-plot-shell {{ display: none; }}
+ .desktop-horizon-toolbar {{ display: flex; align-items: center; justify-content: flex-end;
+        gap: 9px; margin: 6px 3px 4px; color: #687582; font-size: 12px; }}
+ .horizon-switch {{ display: inline-grid; grid-template-columns: repeat(3, minmax(54px,auto)); gap: 5px; }}
+ .horizon-switch button {{ min-height: 34px; padding: 5px 11px; border: 1px solid #cbd3db;
+        border-radius: 8px; background: #f4f6f8; color: #34404c; cursor: pointer;
+        font: inherit; font-size: 12px; }}
+ .horizon-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
+ html.dark .desktop-horizon-toolbar {{ color: #aebbc8; }}
+ html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
+ html.dark .horizon-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
  .banner {{ border-radius: 8px; padding: 8px 14px; margin-bottom: 10px;
            font-size: 13px; border: 1px solid; }}
  .banner ul {{ margin: 6px 0 0; padding-left: 20px; }}
@@ -2024,6 +2073,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .live-head {{ margin-top: 0; }}
    .live-daily-panel > summary {{ min-height: 42px; align-items: center; margin-bottom: 2px; }}
    .desktop-plot {{ display: none; }}
+   .desktop-horizon-toolbar {{ display: none; }}
    .mobile-plot-shell {{ display: block; background: #fff; border: 1px solid #e0e5eb;
         border-radius: 12px; margin: 10px 0 13px; overflow: hidden;
         box-shadow: 0 3px 14px rgba(28,45,68,.07); }}

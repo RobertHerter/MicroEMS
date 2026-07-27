@@ -64,10 +64,10 @@ class LoadForecaster:
     def _build_holidays(self):
         import holidays
 
-        subdiv = self.fc.holiday_subdivision
+        subdiv = self.cfg.general.holiday_subdivision
         try:
             return holidays.country_holidays(
-                self.fc.holiday_country,
+                self.cfg.general.holiday_country,
                 subdiv=subdiv,
                 years=range(datetime.now().year - 5, datetime.now().year + 2),
             )

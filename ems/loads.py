@@ -274,18 +274,27 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             for t in range(N):
                 prob += stage_on[st.name][t] <= stage_on[st.requires][t]
 
-    # Heizen ohne Netzbezug: läuft eine Stufe im Slot, muss der Netzbezug dort
+    # Heizen ohne Netzbezug: läuft eine Stufe im Slot, soll der Netzbezug dort
     # 0 sein - PV-Überschuss UND Akku dürfen die WP decken, Netzstrom nie.
-    # Big-M-Kopplung je Stufe an g_imp; mit dem Stunden-Entscheidungsraster
-    # gilt das für JEDEN Slot des Blocks (Block sonst aus).
+    # WEICH mit sehr hoher Strafe (statt hart): eine harte Kopplung konnte den
+    # GESAMTEN Plan infeasible machen (leerer Akku pre-dawn + Pool über Band),
+    # der dann komplett auf 'auto' zurückfiel. Der Slack lässt den Pool im echten
+    # Notfall minimal Netz ziehen (teuer bestraft + als Spalte sichtbar), statt
+    # den Plan kippen zu lassen. Big-M je Stufe an g_imp; mit dem Stunden-
+    # Entscheidungsraster gilt das für JEDEN Slot des Blocks.
     if ld.no_grid_import and g_imp is not None and config is not None:
         M_imp = (float(np.max(np.maximum(inp.house_load_w, 0.0)) if N else 0.0)
                  + config.house_battery.max_ac_charge_w
                  + (config.vehicle.max_charge_w if config.vehicle.enabled else 0.0)
                  + sum(st.power_w for st in ld.stages) + 1000.0)
+        ng_slack = [pulp.LpVariable(f"clNG_{sg}_{t}", 0) for t in range(N)]
         for t in range(N):
             for st in ld.stages:
-                prob += g_imp[t] <= M_imp * (1 - stage_on[st.name][t])
+                prob += g_imp[t] <= M_imp * (1 - stage_on[st.name][t]) + ng_slack[t]
+        ng_pen = max(0.0, float(getattr(
+            config.optimization, "no_grid_import_penalty_ct_kwh", 5000.0)))
+        cost_terms.append(ng_pen * pulp.lpSum(ng_slack) * dt / 1000.0)
+        outputs[f"load_{sg}_grid_w"] = list(ng_slack)   # Netzbezug trotz "kein Netz"
 
     for t in range(N):
         heat = (pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)

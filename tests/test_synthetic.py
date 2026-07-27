@@ -30,7 +30,9 @@ from ems.dashboard import build_dashboard
 def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
     import os
     cfg = Config(
-        general=GeneralConfig(),
+        general=GeneralConfig(
+            latitude=47.85, longitude=12.07,
+            holiday_country="DE", holiday_subdivision="BY"),
         influxdb=InfluxConfig(version=2, v1={}, v2={}, signals={}, outputs={}),
         feed_in=FeedInConfig(mode="fixed", fixed_ct_kwh=8.0),
         house_battery=HouseBatteryConfig(
@@ -53,8 +55,7 @@ def make_config(tmp_html="/tmp/ems_test_dashboard.html") -> Config:
             # (1%/25ct), NICHT am Limit -> keine Verlangsamung, nur Reserve.
             terminal_soc_value="auto", cycle_penalty_ct_kwh=0.1, solver_time_limit_s=180
         ),
-        forecast=ForecastConfig(lookback_days=400, holiday_country="DE",
-                                holiday_subdivision="BY"),
+        forecast=ForecastConfig(lookback_days=400),
         mqtt=MqttConfig(enabled=False),
         dashboard=DashboardConfig(enabled=True, output_path=tmp_html),
         calibration=CalibrationConfig(enabled=False),

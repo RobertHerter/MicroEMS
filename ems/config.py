@@ -20,6 +20,12 @@ import yaml
 @dataclass
 class GeneralConfig:
     timezone: str = "Europe/Berlin"
+    # Anlagenstandort und regionaler Kalender gelten quellenübergreifend:
+    # Wetter/PV, Lastprognose und weitere Modelle nutzen dieselben Angaben.
+    latitude: float = 0.0
+    longitude: float = 0.0
+    holiday_country: str = "DE"
+    holiday_subdivision: Optional[str] = None
     optimization_horizon_hours: int = 48
     # True: Horizontende bis zur darauf folgenden Mitternacht erweitern.
     # Liegt das reguläre Ende bereits auf 00:00, wird NICHT weiter verlängert.
@@ -346,6 +352,11 @@ class OptimizationConfig:
     # 'auto ohne Eingriff' zu verwerfen. Muss jeden realen Preis-Spread klar
     # übersteigen, damit die Grenze nie zur Arbitrage überschritten wird.
     grid_overload_penalty_ct_kwh: float = 1000.0
+    # Thermische Last mit no_grid_import: sehr hohe Strafe je kWh Netzbezug, der
+    # TROTZ der "kein Netzstrom"-Regel nötig wird. Ebenfalls WEICH, damit ein
+    # leerer Akku + über Band liegender Pool nicht den ganzen Plan infeasible
+    # macht; hoch genug, dass Netzbezug für den Pool echter letzter Ausweg bleibt.
+    no_grid_import_penalty_ct_kwh: float = 5000.0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -446,8 +457,6 @@ class OptimizationConfig:
 @dataclass
 class ForecastConfig:
     lookback_days: int = 730
-    holiday_country: str = "DE"
-    holiday_subdivision: Optional[str] = None
     weight_same_weekday: float = 3.0
     weight_same_daytype: float = 2.0
     weight_same_month: float = 1.5
@@ -617,8 +626,6 @@ class MonitoringConfig:
 class WeatherConfig:
     # Temperatur direkt von Open-Meteo (kostenlos, kein Key) statt InfluxDB.
     enabled: bool = False
-    latitude: float = 0.0
-    longitude: float = 0.0
     past_days: int = 92          # Forecast-API-Fenster (max 92)
     forecast_days: int = 4
 
@@ -661,7 +668,7 @@ class PvArray:
 @dataclass
 class PvModelConfig:
     """Freie PV-Ertragsprognose mit pvlib + Open-Meteo (Alternative zu Solcast,
-    kein API-Key/Kontingent). Nutzt weather.latitude/longitude. Mehrere Arrays
+    kein API-Key/Kontingent). Nutzt general.latitude/longitude. Mehrere Arrays
     (Ausrichtungen) werden je Slot summiert - dieselbe pv_forecast-Tabelle und
     derselbe Kalibrierpfad (kalibrierung.py) wie bei Solcast."""
     enabled: bool = False
@@ -680,6 +687,16 @@ class PvModelConfig:
     # p10 dimensioniert die Einspeise-Linie an Peak-Tagen -> konservativ tief.
     p10_uncertainty: float = 0.35
     p90_uncertainty: float = 0.15
+    # Unabhängige Wettermodell-Läufe. Jeder Lauf wird separat archiviert und
+    # erst danach zu einer PV-Prognose kombiniert. "best_match" ist der bisherige
+    # Open-Meteo-Standard; dwd_icon und ecmwf_ifs nutzen eigene Modellendpunkte.
+    weather_models: list = field(default_factory=lambda: ["best_match"])
+    ensemble_lookback_days: int = 45
+    ensemble_min_samples: int = 48
+    # Gewichte werden getrennt für diese Vorlaufzeit-Grenzen gelernt.
+    ensemble_horizon_hours: list = field(default_factory=lambda: [6, 24, 48])
+    # Kein Wettermodell darf durch eine kurze schlechte Phase völlig verschwinden.
+    ensemble_min_weight: float = 0.05
 
 
 @dataclass
@@ -1051,8 +1068,22 @@ def load_config(path: str) -> Config:
         pass
 
     g = raw.get("general", {})
+    # Abwärtskompatibilität: bis v1.4 lagen Standort unter ``weather`` und
+    # Feiertage unter ``forecast``. Neue Werte in general haben Vorrang.
+    legacy_weather = raw.get("weather", {})
+    legacy_forecast = raw.get("forecast", {})
     general = GeneralConfig(
         timezone=g.get("timezone", "Europe/Berlin"),
+        latitude=float(g.get(
+            "latitude", legacy_weather.get("latitude", 0.0))),
+        longitude=float(g.get(
+            "longitude", legacy_weather.get("longitude", 0.0))),
+        holiday_country=str(g.get(
+            "holiday_country",
+            legacy_forecast.get("holiday_country", "DE"))),
+        holiday_subdivision=g.get(
+            "holiday_subdivision",
+            legacy_forecast.get("holiday_subdivision")),
         optimization_horizon_hours=int(g.get("optimization_horizon_hours", 48)),
         optimization_horizon_round_to_midnight=bool(g.get(
             "optimization_horizon_round_to_midnight", False)),
@@ -1149,6 +1180,8 @@ def load_config(path: str) -> Config:
         car_target_penalty_ct_kwh=float(o.get("car_target_penalty_ct_kwh", 200.0)),
         grid_overload_penalty_ct_kwh=float(o.get(
             "grid_overload_penalty_ct_kwh", 1000.0)),
+        no_grid_import_penalty_ct_kwh=float(o.get(
+            "no_grid_import_penalty_ct_kwh", 5000.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),
@@ -1209,11 +1242,9 @@ def load_config(path: str) -> Config:
             "feed_in.zero_at_negative_price aktiv ist – sonst wird bei "
             "Negativpreis eingespeist statt geladen/abgeregelt.")
 
-    f = raw.get("forecast", {})
+    f = legacy_forecast
     forecast = ForecastConfig(
         lookback_days=int(f.get("lookback_days", 730)),
-        holiday_country=f.get("holiday_country", "DE"),
-        holiday_subdivision=f.get("holiday_subdivision"),
         weight_same_weekday=float(f.get("weight_same_weekday", 3.0)),
         weight_same_daytype=float(f.get("weight_same_daytype", 2.0)),
         weight_same_month=float(f.get("weight_same_month", 1.5)),
@@ -1357,11 +1388,9 @@ def load_config(path: str) -> Config:
         snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
     )
 
-    w = raw.get("weather", {})
+    w = legacy_weather
     weather = WeatherConfig(
         enabled=bool(w.get("enabled", False)),
-        latitude=float(w.get("latitude", 0.0)),
-        longitude=float(w.get("longitude", 0.0)),
         past_days=int(w.get("past_days", 92)),
         forecast_days=int(w.get("forecast_days", 4)),
     )
@@ -1414,7 +1443,28 @@ def load_config(path: str) -> Config:
         system_loss=float(pm.get("system_loss", 0.14)),
         p10_uncertainty=float(pm.get("p10_uncertainty", 0.35)),
         p90_uncertainty=float(pm.get("p90_uncertainty", 0.15)),
+        weather_models=[str(v) for v in
+                        (pm.get("weather_models") or ["best_match"])],
+        ensemble_lookback_days=int(pm.get("ensemble_lookback_days", 45)),
+        ensemble_min_samples=int(pm.get("ensemble_min_samples", 48)),
+        ensemble_horizon_hours=[
+            float(v) for v in
+            (pm.get("ensemble_horizon_hours") or [6, 24, 48])],
+        ensemble_min_weight=float(pm.get("ensemble_min_weight", 0.05)),
     )
+    valid_pv_weather_models = {"best_match", "dwd_icon", "ecmwf_ifs"}
+    unknown_pv_weather_models = (
+        set(pv_model.weather_models) - valid_pv_weather_models)
+    if unknown_pv_weather_models:
+        raise ValueError(
+            "pv_model.weather_models enthält unbekannte Werte: "
+            + ", ".join(sorted(unknown_pv_weather_models)))
+    if not pv_model.weather_models:
+        raise ValueError("pv_model.weather_models darf nicht leer sein.")
+    if (not 0.0 <= pv_model.ensemble_min_weight
+            < 1.0 / len(pv_model.weather_models)):
+        raise ValueError(
+            "pv_model.ensemble_min_weight muss >= 0 und kleiner als 1/N sein.")
     ps = raw.get("pv_source_selection", {})
     pv_source_selection = PvSourceSelectionConfig(
         enabled=bool(ps.get("enabled", False)),

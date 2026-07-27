@@ -75,6 +75,56 @@ def test_load_config_merges_overlay(tmp_path):
     assert c.optimization.charge_strategy == "peak"
 
 
+def test_general_owns_location_and_holiday_settings(tmp_path):
+    """Neues Schema: quellenübergreifende Standort-/Kalenderwerte in general."""
+    import shutil
+    from ems.config import load_config
+
+    cfg = tmp_path / "config.yaml"
+    shutil.copy("config.example.yaml", cfg)
+    raw = yaml.safe_load(cfg.read_text())
+    raw["general"].update({
+        "latitude": 47.85, "longitude": 12.07,
+        "holiday_country": "DE", "holiday_subdivision": "BY",
+    })
+    cfg.write_text(yaml.safe_dump(raw))
+    loaded = load_config(str(cfg))
+    assert loaded.general.latitude == 47.85
+    assert loaded.general.longitude == 12.07
+    assert loaded.general.holiday_country == "DE"
+    assert loaded.general.holiday_subdivision == "BY"
+    assert not hasattr(loaded.weather, "latitude")
+    assert not hasattr(loaded.forecast, "holiday_country")
+
+
+def test_legacy_location_and_holidays_remain_loadable(tmp_path):
+    """Alte Dateien migrieren ohne Startfehler; general hat dabei Vorrang."""
+    import shutil
+    from ems.config import load_config
+
+    cfg = tmp_path / "config.yaml"
+    shutil.copy("config.example.yaml", cfg)
+    raw = yaml.safe_load(cfg.read_text())
+    for key in ("latitude", "longitude", "holiday_country",
+                "holiday_subdivision"):
+        raw["general"].pop(key, None)
+    raw["weather"].update({"latitude": 48.1, "longitude": 11.6})
+    raw["forecast"].update({
+        "holiday_country": "AT", "holiday_subdivision": "7"})
+    cfg.write_text(yaml.safe_dump(raw))
+    legacy = load_config(str(cfg))
+    assert (legacy.general.latitude, legacy.general.longitude) == (48.1, 11.6)
+    assert legacy.general.holiday_country == "AT"
+    assert legacy.general.holiday_subdivision == "7"
+
+    raw["general"]["latitude"] = 47.0
+    raw["general"]["holiday_country"] = "DE"
+    cfg.write_text(yaml.safe_dump(raw))
+    preferred = load_config(str(cfg))
+    assert preferred.general.latitude == 47.0
+    assert preferred.general.holiday_country == "DE"
+
+
 def test_penalty_invariant_enforced_when_zeroing_negative_price(tmp_path):
     """P2#6: bei feed_in.zero_at_negative_price muss der Einspeise-Malus größer
     als der Late-Zeitmalus sein – sonst wird bei Negativpreis eingespeist statt

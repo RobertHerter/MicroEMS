@@ -123,7 +123,7 @@ def _fake_cfg_and_window(tmp_path):
     from tests.test_synthetic import make_config
     cfg = make_config()
     cfg.weather.enabled = True
-    cfg.weather.latitude, cfg.weather.longitude = 47.85, 12.07
+    cfg.general.latitude, cfg.general.longitude = 47.85, 12.07
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "w.sqlite")
     now = pd.Timestamp("2026-07-01 12:00", tz=TZ)
     hrs = pd.date_range((now - pd.Timedelta(hours=3)).tz_convert("UTC"),
