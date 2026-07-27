@@ -475,7 +475,7 @@ def _runtime_block(controls_enabled: bool) -> str:
 
 def _slot_detail_block() -> str:
     return """
-<details class="info-panel slot-detail" id="slot-detail"><summary>⌖ Slot-Details <small>Kurve anklicken</small></summary>
+<details class="info-panel slot-detail" id="slot-detail"><summary>⌖ Slot-Details <small>Kurve anklicken, dann hier aufklappen</small></summary>
  <div id="slot-detail-body" class="detail-grid"><p>Wähle einen Zeitpunkt in einem Diagramm aus.</p></div>
 </details>
 <script>(function(){
@@ -483,18 +483,18 @@ def _slot_detail_block() -> str:
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
  async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
- function render(x,reveal=false){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');let panel=document.getElementById('slot-detail');panel.open=true;if(reveal)requestAnimationFrame(()=>panel.scrollIntoView({behavior:'smooth',block:'nearest'}));}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
  // WICHTIG: '.plotly-graph-div' vergibt nur Pythons Plotly-HTML (Desktop-Plot).
  // Der Mobil-Plot ist ein eigenes <div id="mobile-plot">, dem Plotly.react nur
  // '.js-plotly-plot' anhängt - ohne diesen Selektor blieb er ungebunden und die
  // Slot-Details funktionierten auf dem Handy gar nicht (Desktop-Plot ist dort
  // display:none).
- function bind(){document.querySelectorAll('.plotly-graph-div,.js-plotly-plot').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x,false);});
+ function bind(){document.querySelectorAll('.plotly-graph-div,.js-plotly-plot').forEach(p=>{if(p.dataset.emsSlotBound||!p.on)return;p.dataset.emsSlotBound='1';p.on('plotly_click',e=>{let pt=e&&e.points&&e.points[0];if(pt&&pt.x)render(pt.x);});
   // Plotly erzeugt auf Touchscreens nicht zuverlässig plotly_click. Ein kurzes
   // Antippen wird deshalb zusätzlich anhand der x-Achse in eine Zeit übersetzt;
   // Wischen/Zoomen bleibt durch die Bewegungsgrenze unberührt.
   let start=null;p.addEventListener('pointerdown',e=>{if(e.pointerType!=='mouse')start={x:e.clientX,y:e.clientY};},true);
-  p.addEventListener('pointerup',e=>{if(!start||e.pointerType==='mouse')return;let s=start;start=null;if(Math.hypot(e.clientX-s.x,e.clientY-s.y)>12)return;let full=p._fullLayout,size=full&&full._size,axis=full&&full.xaxis;if(!size||!axis||!axis.p2d)return;let rect=p.getBoundingClientRect(),px=e.clientX-rect.left-size.l;if(px<0||px>size.w)return;render(axis.p2d(px),true);autoUnhover();},true);
+  p.addEventListener('pointerup',e=>{if(!start||e.pointerType==='mouse')return;let s=start;start=null;if(Math.hypot(e.clientX-s.x,e.clientY-s.y)>12)return;let full=p._fullLayout,size=full&&full._size,axis=full&&full.xaxis;if(!size||!axis||!axis.p2d)return;let rect=p.getBoundingClientRect(),px=e.clientX-rect.left-size.l;if(px<0||px>size.w)return;render(axis.p2d(px));autoUnhover();},true);
  });}
  // Touch-Geraete kennen kein mouseleave: das Hover-Panel ('x unified') blieb
  // nach einem Tap dauerhaft stehen und liess sich nicht mehr wegklicken.

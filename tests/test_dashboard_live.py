@@ -222,6 +222,12 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     # (kein mouseleave auf Touchscreens) - zeitversetzt und beim Tippen daneben.
     assert "Plotly.Fx.unhover" in details
     assert "autoUnhover" in details and "unhoverAll" in details
+    # Weder Heranscrollen noch Auto-Aufklappen (beides riss die Ansicht auf
+    # Handy UND Desktop aus dem Kontext). Der Panel-Inhalt wird trotzdem
+    # aktualisiert - der Nutzer klappt selbst auf, wenn er ihn sehen will.
+    assert "scrollIntoView" not in details
+    assert "panel.open" not in details
+    assert "slot-detail-body" in details
     assert '<details class="info-panel slot-detail"' in details
     assert '<details class="info-panel slot-detail" open' not in details
 
