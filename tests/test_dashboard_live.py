@@ -215,6 +215,9 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "api/data.json" in details and "plotly_click" in details
     assert "pointerup" in details and "axis.p2d" in details
     assert "ems-plot-ready" in details
+    # Der Mobil-Plot (<div id="mobile-plot">) bekommt von Plotly.react NUR
+    # '.js-plotly-plot' - ohne diesen Selektor blieben die Slot-Details mobil tot.
+    assert ".js-plotly-plot" in details
     assert '<details class="info-panel slot-detail"' in details
     assert '<details class="info-panel slot-detail" open' not in details
 
