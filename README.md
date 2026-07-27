@@ -130,7 +130,18 @@ Alle Direktquellen sind unter `config.yaml` einzeln aktivierbar (Default aus,
   Überlappung (`history_overlap_hours`) nachgeführt.
 - **Ist-Werte lokal** (Tabelle `actuals`): jeder Zyklus protokolliert den
   E3DC-Live-Snapshot; Intraday-Korrektur, Ersparnis, Drift und Dashboard-Ist-Kurven
-  lesen dann daraus (zentrale Weiche `read_actual_signal`).
+  lesen dann daraus (zentrale Weiche `read_actual_signal`). Zusätzlich integriert
+  `live_samples` die 5-s-Werte zeitgewichtet zu belastbaren 15-min-Mitteln; damit
+  arbeitet der Last-Nowcast auch während des E3DC-Reifeverzugs.
+
+**Hauslastmodell** (`forecast`): Reale Rückmeldungen steuerbarer thermischer
+Verbraucher werden aus der historischen Hauslast entfernt und vom Optimierer nur
+mit ihrem neuen Plan wieder ergänzt. Similar-Days und ML werden je Vorlaufzeit
+parallel gegen echte, mit Erstellungszeit archivierte Prognosen bewertet. Vor
+genügend unabhängigen Tagen bleibt Similar-Days unverändert aktiv; das teure
+ML-Schattenmodell trainiert erst nach dem Solver im Hintergrund. Ein zusätzliches
+Heiz-/Kühl-Residual wird nur übernommen, wenn es den archivierten Fehler messbar
+reduziert.
 
 **Temperatur & Einstrahlung** (`weather`, Open-Meteo, kein Key): stündlicher Abruf
 (`past_days`/`forecast_days`) in Tabelle `temperature`/`radiation`, aufs Slot-Raster

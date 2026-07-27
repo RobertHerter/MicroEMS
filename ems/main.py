@@ -849,8 +849,11 @@ class _LiveExecutionMonitor:
 
     def sample(self, now=None):
         mon = self.config.monitoring
-        if (not mon.execution_audit_enabled or not mon.execution_live_enabled
-                or self.e3dc is None):
+        audit_enabled = bool(
+            mon.execution_audit_enabled and mon.execution_live_enabled)
+        nowcast_enabled = bool(
+            self.config.forecast.live_nowcast_enabled)
+        if (not audit_enabled and not nowcast_enabled) or self.e3dc is None:
             return None
         now = pd.Timestamp(now if now is not None else
                            pd.Timestamp.now(tz=self.config.general.timezone))
@@ -867,6 +870,15 @@ class _LiveExecutionMonitor:
             return None
         if not live:
             return None
+        if nowcast_enabled:
+            try:
+                from .local_history import write_live_sample
+                write_live_sample(
+                    self.config.e3dc_rscp.history_db_path, now, live)
+            except Exception as exc:
+                log.debug("E3DC-Livewert nicht archivierbar (%s).", exc)
+        if not audit_enabled:
+            return live
         from .local_history import (read_execution_plan_slot,
                                     write_execution_audit)
         slot = now.floor(f"{self.config.general.slot_minutes}min")
@@ -1472,6 +1484,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             publisher.apply_vehicle_overrides(config.vehicle)
             publisher.apply_battery_overrides(config.house_battery)
             publisher.apply_load_overrides(config.controllable_loads)
+        # Rückmeldungen vor der Lastprognose archivieren: damit können die
+        # steuerbaren Stufen bereits aus Grundlast und Live-Nowcast entfernt
+        # werden. Dieselben Werte gehen später unverändert in den Optimierer.
+        load_feedback, load_feedback_status = _read_load_feedback(
+            config, publisher, now)
         # Konfigurierten Horizont modellieren; optional kontrolliert bis zur
         # nächsten Mitternacht erweitern. Ohne Option bleiben es konstant 48 h.
         opt_index = _optimization_index(config, now)
@@ -1530,7 +1547,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         _runtime_update(phase="Prognosen erstellen", progress=30,
                         message="Last-, PV- und Preisprognosen werden aufbereitet")
         log.info("Lade Verbrauchs-Historie und erstelle Prognose ...")
-        history = load_history(repo, config, now)
+        history_raw = load_history(repo, config, now)
         forecast_end = now + timedelta(hours=config.general.forecast_horizon_hours)
         temp = _read_temp(repo, config,
                           now - timedelta(days=config.forecast.lookback_days), forecast_end)
@@ -1544,24 +1561,50 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         fut_pv = solcast.read_pv_signal(config, repo, "pv_forecast", 
                                         now, forecast_end,
                                         require_complete=config.solcast.enabled)
-        load_source_missing = history.dropna().empty
+        from . import load_models
+        history, load_evaluation_actual, load_disaggregation = (
+            load_models.disaggregate(
+                config, forecaster, history_raw, now))
+        load_source_missing = history_raw.dropna().empty
+        load_candidates = {}
+        load_base_fc = None
+        load_model_note = None
         if load_source_missing:
             load_fc = pd.Series(
                 config.forecast.fallback_load_w,
                 index=pd.date_range(now, periods=config.general.n_forecast_slots,
                                     freq=freq, tz=config.general.timezone))
+            load_base_fc = load_fc.copy()
             log.warning("Keine verwertbare Verbrauchshistorie – verwende "
                         "konservativ %.0f W.", config.forecast.fallback_load_w)
         else:
-            load_fc = forecaster.forecast(
-                history, now, config.general.n_forecast_slots,
+            load_candidates = load_models.candidate_forecasts(
+                forecaster, history, now, config.general.n_forecast_slots,
                 hist_temp=temp, fut_temp=temp, hist_pv=hist_pv, fut_pv=fut_pv)
+            load_weights, temp_residual_model, _load_analysis = (
+                load_models.analyze(config, now, load_evaluation_actual))
+            load_base_fc = load_models.combine(
+                load_candidates, load_weights, now)
+            load_fc, temp_residual_delta = (
+                load_models.apply_temperature_residual(
+                    load_base_fc, temp, temp_residual_model,
+                    config.forecast.temperature_residual_max_adjustment_percent))
+            load_model_note = load_models.status_summary()
+            if temp_residual_delta.abs().max() > 0.0:
+                log.info(
+                    "Temperatur-Residual Last: mittlere Korrektur %+.0f W, "
+                    "Maximum %+.0f W.",
+                    temp_residual_delta.mean(),
+                    temp_residual_delta.iloc[
+                        int(np.argmax(np.abs(temp_residual_delta.values)))])
+            log.info("Lastmodelle: %s.", load_model_note)
 
         # Intraday-Korrektur: Ist/Prognose-Verhältnis der letzten Stunden auf
         # die Zukunft anwenden (abklingend) - fängt Tagesabweichungen, die das
         # Ähnliche-Tage-Modell nicht sehen kann (Besuch, Wetter).
-        load_ratio, pv_ratio = _intraday_ratios(repo, config, forecaster,
-                                                history, temp, now, hist_pv=hist_pv)
+        load_ratio, pv_ratio = _intraday_ratios(
+            repo, config, forecaster, history, temp, now, hist_pv=hist_pv,
+            load_actual=load_evaluation_actual)
         if load_ratio is not None:
             load_fc = load_fc * intraday_factor_series(
                 load_ratio, load_fc.index, now,
@@ -1697,6 +1740,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             if config.e3dc_rscp.history_source:
                 try:
                     write_actuals(config.e3dc_rscp.history_db_path, now, live)
+                    if config.forecast.live_nowcast_enabled:
+                        from .local_history import (prune_live_samples,
+                                                    write_live_sample)
+                        write_live_sample(
+                            config.e3dc_rscp.history_db_path, now, live)
+                        prune_live_samples(
+                            config.e3dc_rscp.history_db_path,
+                            now - pd.Timedelta(
+                                days=max(
+                                    1, config.forecast.live_nowcast_retention_days)))
                 except Exception as exc:
                     log.warning("Ist-Wert-Protokollierung fehlgeschlagen (%s).", exc)
             try:
@@ -1711,7 +1764,25 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             slot_td = pd.Timedelta(freq)
             if (live and live.get("house_load_w") is not None
                     and np.isfinite(float(live["house_load_w"]))):
-                house_load[0] = max(0.0, float(live["house_load_w"]))
+                live_house_w = float(live["house_load_w"])
+                if config.forecast.disaggregate_controllable_loads:
+                    controlled_w = 0.0
+                    stage_power = {
+                        f"{ld.name}/{stage.name}": float(stage.power_w)
+                        for ld in config.controllable_loads
+                        if ld.enabled and ld.type == "thermal"
+                        for stage in ld.stages
+                    }
+                    for item in load_feedback_status:
+                        if not item.get("fresh") or not item.get("on"):
+                            continue
+                        measured = item.get("power_w")
+                        controlled_w += (
+                            max(0.0, float(measured))
+                            if measured is not None else
+                            stage_power.get(item.get("label"), 0.0))
+                    live_house_w -= controlled_w
+                house_load[0] = max(0.0, live_house_w)
             else:
                 m = repo.read_slots("house_consumption", now - slot_td, now,
                                     fill=False).mean()
@@ -1770,8 +1841,6 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         message=f"Solver berechnet {len(opt_index)} Zeitschritte")
         log.info("Starte MILP-Optimierung (%d Slots) ...", len(opt_index))
         load_state = _read_load_state(config, publisher)
-        load_feedback, load_feedback_status = _read_load_feedback(
-            config, publisher, now)
         if temp is not None:
             recent_temp = temp[(temp.index >= now - pd.Timedelta(hours=24))
                                & (temp.index < now)].dropna()
@@ -1821,7 +1890,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "Hauslast", total_slots,
                 total_slots if load_source_missing else n_load_fallback,
                 "konservativer Lastwert", forecast_issue,
-                "empirisches p10–p90-Band"),
+                "empirisches p10–p90-Band"
+                + (f" · {load_model_note}" if load_model_note else "")),
             _forecast_quality_entry(
                 "PV", total_slots, pv_missing_slots.get("pv_forecast", total_slots),
                 "0 W", pv_issue, pv_note),
@@ -1886,6 +1956,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "spot_price_ct_kwh": spot_price,
                 "feedin_ct_kwh": feedin,
             }
+            if load_base_fc is not None:
+                archive_series["house_load_base_w"] = (
+                    load_base_fc.reindex(opt_index))
+            for model_name, model_series in load_candidates.items():
+                archive_series[
+                    f"house_load_candidate_{model_name}_w"] = (
+                        model_series.reindex(opt_index))
             if pv10 is not None:
                 archive_series["pv10_w"] = pv10
             if ambient is not None:
@@ -2171,7 +2248,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Anzeige ab heute 00:00: Ist-Werte (bis jetzt) und Prognose (ganzer
         # Bereich) vergleichbar; Steuerung/Prognose-SoC für die Zukunft.
         if config.dashboard.enabled:
-            display = _build_display_frame(repo, config, now, history, result,
+            display = _build_display_frame(repo, config, now, history_raw, result,
                                            intraday=(load_ratio, pv_ratio),
                                            hist_pv=hist_pv, fut_pv=fut_pv,
                                            e3dc=e3dc)
@@ -2236,6 +2313,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     )
                 except Exception as exc:
                     log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
+        # Das teure ML-Schattenmodell bewusst erst nach erfolgreicher
+        # Optimierung starten. Es läuft während der Wartezeit im Hintergrund
+        # und kann dadurch weder den aktuellen Sollplan noch die Solverzeit
+        # verzögern.
+        try:
+            load_models.start_pending_ml_training()
+        except Exception as exc:
+            log.debug("ML-Lastschattenstart fehlgeschlagen (%s).", exc)
         _start_shadow_comparison(config, inputs, result, violations)
         _maybe_snapshot_forecast_accuracy(config)   # 1×/Tag Trend-Punkt sichern
         _runtime_finish(now, runtime_started)
@@ -2264,7 +2349,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             e3dc.close()
 
 
-def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None):
+def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
+                     load_actual=None):
     """Ist/Prognose-Verhältnisse der letzten Stunden (Last, PV) für die
     Intraday-Korrektur. None = keine Korrektur (zu wenig Daten, PV-Nacht, aus)."""
     fc = config.forecast
@@ -2306,11 +2392,50 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None)
                         signal, exc)
 
     try:
-        act = read_actual_signal(config, repo, "house_consumption", load_start, now)
+        act = (pd.Series(load_actual).loc[load_start:now].dropna()
+               if load_actual is not None else pd.Series(dtype="float64"))
+        if not config.forecast.live_nowcast_enabled:
+            act = read_actual_signal(
+                config, repo, "house_consumption", load_start, now)
+        else:
+            try:
+                from .local_history import (read_controllable_load_power,
+                                            read_live_slot_averages)
+                live_slots = read_live_slot_averages(
+                    config.e3dc_rscp.history_db_path, load_start, now,
+                    config.general.timezone, config.general.slot_minutes,
+                    config.forecast.live_nowcast_min_coverage_seconds,
+                    config.forecast.live_nowcast_max_gap_seconds)
+                live_house = (live_slots["house_w"].dropna()
+                              if "house_w" in live_slots else
+                              pd.Series(dtype="float64"))
+                if (config.forecast.disaggregate_controllable_loads
+                        and not live_house.empty):
+                    measured, complete, labels = read_controllable_load_power(
+                        config.e3dc_rscp.history_db_path,
+                        config.controllable_loads, load_start, now,
+                        config.general.timezone, config.general.slot_minutes)
+                    if labels:
+                        aligned = measured.reindex(live_house.index)
+                        valid = complete.reindex(
+                            live_house.index).fillna(False) & aligned.notna()
+                        live_house = (live_house - aligned).clip(
+                            lower=0.0).where(valid).dropna()
+                if not live_house.empty:
+                    act = pd.concat([act, live_house])
+                    act = act[~act.index.duplicated(keep="last")].sort_index()
+            except Exception as exc:
+                log.debug("Live-Nowcast Last nicht lesbar (%s).", exc)
+        if act.empty:
+            act = read_actual_signal(
+                config, repo, "house_consumption", load_start, now)
         # Prognose für das Fenster aus der Historie DAVOR (sonst fließen die
         # Ist-Werte des Fensters in ihre eigene Prognose ein).
         hist_before = history[history.index < load_start]
-        pred = forecaster.forecast(hist_before, load_start, len(act),
+        intraday_slots = max(1, int(np.ceil(
+            (pd.Timestamp(now) - pd.Timestamp(load_start)).total_seconds()
+            / (config.general.slot_minutes * 60.0))))
+        pred = forecaster.forecast(hist_before, load_start, intraday_slots,
                                    hist_temp=temp, fut_temp=temp,
                                    hist_pv=hist_pv, fut_pv=hist_pv)
         clipped, details = intraday_ratio(
@@ -3620,9 +3745,10 @@ def main() -> None:
             check = (max(10.0, config.recalc.check_seconds)
                      if config.recalc.enabled else None)
             live_check = None
-            if (e3dc is not None
-                    and config.monitoring.execution_audit_enabled
-                    and config.monitoring.execution_live_enabled):
+            if (e3dc is not None and (
+                    config.forecast.live_nowcast_enabled
+                    or (config.monitoring.execution_audit_enabled
+                        and config.monitoring.execution_live_enabled))):
                 live_check = max(
                     1.0, config.monitoring.execution_live_sample_seconds)
             while True:

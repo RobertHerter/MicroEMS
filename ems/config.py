@@ -509,6 +509,36 @@ class ForecastConfig:
     load_uncertainty_low_quantile: float = 0.10
     load_uncertainty_high_quantile: float = 0.90
     load_uncertainty_min_samples: int = 12
+    # Steuerbare Verbraucher (derzeit thermische Stufen mit echter
+    # Rückmeldung) aus der historischen E3DC-Hauslast herausrechnen. Der
+    # Optimierer ergänzt ihre geplante Leistung separat wieder.
+    disaggregate_controllable_loads: bool = True
+    disaggregation_lookback_days: int = 28
+    disaggregation_min_samples: int = 3
+    # Persistierte E3DC-Livewerte zu belastbaren Slot-Mittelwerten integrieren
+    # und für die Intraday-Korrektur nutzen. So hängt der Kurzfrist-Nowcast
+    # nicht von der verspätet verfügbaren 15-min-Historie ab.
+    live_nowcast_enabled: bool = True
+    live_nowcast_retention_days: int = 14
+    live_nowcast_min_coverage_seconds: float = 180.0
+    live_nowcast_max_gap_seconds: float = 30.0
+    # Temperaturabhängigen Restfehler aus echten, zeitgestempelten
+    # Produktionsprognosen lernen. Vor genügend unabhängigen Tagen neutral.
+    temperature_residual_enabled: bool = True
+    temperature_residual_min_folds: int = 6
+    temperature_residual_min_samples: int = 96
+    temperature_residual_max_adjustment_percent: float = 0.35
+    # Similar-Days und ML im Hintergrund archivieren und je Vorlaufzeit aus
+    # echten Rolling-Origin-Fehlern gewichten.
+    load_ensemble_enabled: bool = True
+    load_ensemble_lookback_days: int = 60
+    load_ensemble_min_folds: int = 6
+    load_ensemble_horizon_hours: list = field(
+        default_factory=lambda: [6, 24, 48])
+    load_ensemble_min_weight: float = 0.05
+    load_ensemble_archive_stride_hours: int = 6
+    load_ensemble_ml_lookback_days: int = 365
+    load_ensemble_ml_retrain_hours: int = 24
 
 
 @dataclass
@@ -1286,9 +1316,53 @@ def load_config(path: str) -> Config:
             f.get("load_uncertainty_high_quantile", 0.90)),
         load_uncertainty_min_samples=int(
             f.get("load_uncertainty_min_samples", 12)),
+        disaggregate_controllable_loads=bool(
+            f.get("disaggregate_controllable_loads", True)),
+        disaggregation_lookback_days=int(
+            f.get("disaggregation_lookback_days", 28)),
+        disaggregation_min_samples=int(
+            f.get("disaggregation_min_samples", 3)),
+        live_nowcast_enabled=bool(f.get("live_nowcast_enabled", True)),
+        live_nowcast_retention_days=int(
+            f.get("live_nowcast_retention_days", 14)),
+        live_nowcast_min_coverage_seconds=float(
+            f.get("live_nowcast_min_coverage_seconds", 180.0)),
+        live_nowcast_max_gap_seconds=float(
+            f.get("live_nowcast_max_gap_seconds", 30.0)),
+        temperature_residual_enabled=bool(
+            f.get("temperature_residual_enabled", True)),
+        temperature_residual_min_folds=int(
+            f.get("temperature_residual_min_folds", 6)),
+        temperature_residual_min_samples=int(
+            f.get("temperature_residual_min_samples", 96)),
+        temperature_residual_max_adjustment_percent=float(
+            f.get("temperature_residual_max_adjustment_percent", 0.35)),
+        load_ensemble_enabled=bool(f.get("load_ensemble_enabled", True)),
+        load_ensemble_lookback_days=int(
+            f.get("load_ensemble_lookback_days", 60)),
+        load_ensemble_min_folds=int(
+            f.get("load_ensemble_min_folds", 6)),
+        load_ensemble_horizon_hours=[
+            float(v) for v in
+            (f.get("load_ensemble_horizon_hours") or [6, 24, 48])],
+        load_ensemble_min_weight=float(
+            f.get("load_ensemble_min_weight", 0.05)),
+        load_ensemble_archive_stride_hours=int(
+            f.get("load_ensemble_archive_stride_hours", 6)),
+        load_ensemble_ml_lookback_days=int(
+            f.get("load_ensemble_ml_lookback_days", 365)),
+        load_ensemble_ml_retrain_hours=int(
+            f.get("load_ensemble_ml_retrain_hours", 24)),
     )
     if forecast.method not in ("similar_days", "ml"):
         raise ValueError("forecast.method muss 'similar_days' oder 'ml' sein.")
+    if (not 0.0 <= forecast.load_ensemble_min_weight < 0.5):
+        raise ValueError(
+            "forecast.load_ensemble_min_weight muss >= 0 und < 0.5 sein.")
+    if sorted(forecast.load_ensemble_horizon_hours) != (
+            forecast.load_ensemble_horizon_hours):
+        raise ValueError(
+            "forecast.load_ensemble_horizon_hours muss aufsteigend sein.")
     if not (0 <= forecast.load_uncertainty_low_quantile <
             forecast.load_uncertainty_high_quantile <= 1):
         raise ValueError("Lastprognose-Quantile müssen 0 <= low < high <= 1 sein.")

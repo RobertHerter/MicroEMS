@@ -483,6 +483,36 @@ forecast:
   load_uncertainty_low_quantile: 0.10
   load_uncertainty_high_quantile: 0.90
   load_uncertainty_min_samples: 12
+  # Historisch enthaltene, real rückgemeldete steuerbare Lasten (z.B.
+  # Pool-Wärmepumpen) aus der Grundlast entfernen. Der Optimierer ergänzt den
+  # neuen Lastplan separat; ohne genügend Rückmeldungen bleibt dies neutral.
+  disaggregate_controllable_loads: true
+  disaggregation_lookback_days: 28
+  disaggregation_min_samples: 3
+  # E3DC-Livewerte alle 5 s lokal archivieren und zeitgewichtet zu
+  # 15-min-Mittelwerten verdichten. Überbrückt die verzögerte Historie.
+  live_nowcast_enabled: true
+  live_nowcast_retention_days: 14
+  live_nowcast_min_coverage_seconds: 180
+  live_nowcast_max_gap_seconds: 30
+  # Restfehler der Lastprognose gegen Temperatur und thermische Trägheit
+  # regressieren. Aktiviert sich erst nach genügend echten Prognosetagen.
+  temperature_residual_enabled: true
+  temperature_residual_min_folds: 6
+  temperature_residual_min_samples: 96
+  temperature_residual_max_adjustment_percent: 0.35
+  # Similar-Days und ML parallel archivieren und je Vorlaufzeit gewichten.
+  # Vor load_ensemble_min_folds bleibt forecast.method unverändert maßgeblich.
+  load_ensemble_enabled: true
+  load_ensemble_lookback_days: 60
+  load_ensemble_min_folds: 6
+  load_ensemble_horizon_hours: [6, 24, 48]
+  load_ensemble_min_weight: 0.05
+  load_ensemble_archive_stride_hours: 6
+  # Das teurere ML-Schattenmodell wird mit begrenzter Historie und höchstens
+  # einmal täglich neu trainiert; Similar-Days nutzt weiterhin lookback_days.
+  load_ensemble_ml_lookback_days: 365
+  load_ensemble_ml_retrain_hours: 24
 
 # -----------------------------------------------------------------------------
 # MQTT (Ausgabe an Homey)

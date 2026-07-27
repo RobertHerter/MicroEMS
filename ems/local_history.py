@@ -26,6 +26,15 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS actuals ("
                 " ts TEXT PRIMARY KEY, pv_w REAL, house_w REAL, grid_w REAL,"
                 " battery_w REAL, soc REAL)")
+    # Hochaufgelöste E3DC-Livewerte für den Kurzfrist-Nowcast. Im Gegensatz zu
+    # ``actuals`` (ein Diagnose-Snapshot je Optimierungszyklus) werden diese
+    # Werte etwa alle fünf Sekunden geschrieben und später zeitgewichtet auf
+    # das EMS-Slotraster integriert.
+    con.execute("CREATE TABLE IF NOT EXISTS live_samples ("
+                " ts TEXT PRIMARY KEY, pv_w REAL, house_w REAL, grid_w REAL,"
+                " battery_w REAL, wallbox_w REAL)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_live_samples_ts "
+                "ON live_samples(ts)")
     # Stündliche Temperatur (Open-Meteo) für die Prognose-Gewichtung.
     con.execute("CREATE TABLE IF NOT EXISTS temperature ("
                 " ts TEXT PRIMARY KEY, temp_c REAL NOT NULL)")
@@ -575,6 +584,162 @@ def write_actuals(path: str, ts, live: dict) -> None:
          live.get("battery_w"), live.get("soc_percent")))
     con.commit()
     con.close()
+
+
+def write_live_sample(path: str, ts, live: dict) -> None:
+    """Einen hochaufgelösten E3DC-Livewert für den Nowcast sichern."""
+    if not live:
+        return
+    stamp = pd.Timestamp(ts)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    con = _con(path)
+    con.execute(
+        "INSERT OR REPLACE INTO live_samples("
+        "ts,pv_w,house_w,grid_w,battery_w,wallbox_w) VALUES(?,?,?,?,?,?)",
+        (stamp.tz_convert("UTC").isoformat(), live.get("pv_w"),
+         live.get("house_load_w"), live.get("grid_w"),
+         live.get("battery_w"), live.get("wallbox_w")))
+    con.commit()
+    con.close()
+
+
+def prune_live_samples(path: str, before) -> int:
+    """Alte 5-s-Werte begrenzen; wird nur je Optimierungszyklus aufgerufen."""
+    stamp = pd.Timestamp(before)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    con = _con(path)
+    cur = con.execute("DELETE FROM live_samples WHERE ts < ?",
+                      (stamp.tz_convert("UTC").isoformat(),))
+    con.commit()
+    count = int(cur.rowcount if cur.rowcount is not None else 0)
+    con.close()
+    return count
+
+
+def read_live_slot_averages(path: str, start, end, tz: str,
+                            slot_minutes: int, min_coverage_seconds: float = 180.0,
+                            max_gap_seconds: float = 30.0) -> pd.DataFrame:
+    """5-s-Livewerte zeitgewichtet auf EMS-Slots integrieren.
+
+    Nur tatsächlich von benachbarten Messpunkten abgedeckte Zeit zählt.
+    Lücken über ``max_gap_seconds`` werden nicht überbrückt. Ein Slot erscheint
+    erst ab ``min_coverage_seconds`` belastbarer Abdeckung.
+    """
+    begin = pd.Timestamp(start).tz_convert("UTC")
+    finish = pd.Timestamp(end).tz_convert("UTC")
+    pad = pd.Timedelta(seconds=max(1.0, float(max_gap_seconds)))
+    con = _con(path)
+    rows = con.execute(
+        "SELECT ts,pv_w,house_w,grid_w,battery_w,wallbox_w "
+        "FROM live_samples WHERE ts>=? AND ts<=? ORDER BY ts",
+        ((begin - pad).isoformat(), finish.isoformat())).fetchall()
+    con.close()
+    fields = ("pv_w", "house_w", "grid_w", "battery_w", "wallbox_w")
+    if len(rows) < 2:
+        return pd.DataFrame(columns=fields, dtype="float64")
+    points = [(pd.Timestamp(row[0]).tz_convert("UTC"), row[1:])
+              for row in rows]
+    freq = pd.Timedelta(minutes=int(slot_minutes))
+    energy: dict[tuple[pd.Timestamp, str], float] = {}
+    covered: dict[tuple[pd.Timestamp, str], float] = {}
+    for (t0, values0), (t1, values1) in zip(points, points[1:]):
+        gap = (t1 - t0).total_seconds()
+        if gap <= 0.0 or gap > float(max_gap_seconds):
+            continue
+        left, right = max(t0, begin), min(t1, finish)
+        if left >= right:
+            continue
+        cursor = left
+        while cursor < right:
+            slot = cursor.floor(freq)
+            boundary = min(slot + freq, right)
+            a = (cursor - t0).total_seconds() / gap
+            b = (boundary - t0).total_seconds() / gap
+            seconds = (boundary - cursor).total_seconds()
+            for pos, field in enumerate(fields):
+                v0, v1 = values0[pos], values1[pos]
+                if v0 is None or v1 is None:
+                    continue
+                try:
+                    start_v = float(v0) + a * (float(v1) - float(v0))
+                    end_v = float(v0) + b * (float(v1) - float(v0))
+                except (TypeError, ValueError):
+                    continue
+                key = (slot, field)
+                energy[key] = energy.get(key, 0.0) + (
+                    0.5 * (start_v + end_v) * seconds)
+                covered[key] = covered.get(key, 0.0) + seconds
+            cursor = boundary
+    data = {}
+    for field in fields:
+        values = {}
+        for (slot, name), watt_seconds in energy.items():
+            if name != field:
+                continue
+            seconds = covered.get((slot, name), 0.0)
+            if seconds >= float(min_coverage_seconds):
+                values[slot] = watt_seconds / seconds
+        data[field] = pd.Series(values, dtype="float64")
+    frame = pd.DataFrame(data)
+    if frame.empty:
+        return frame
+    frame.index = pd.DatetimeIndex(frame.index).tz_convert(tz)
+    return frame.sort_index()
+
+
+def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
+                                 slot_minutes: int):
+    """Gemessene thermische Stufenleistung auf dem Slotraster.
+
+    Rückgabe ``(power, complete, labels)``. ``complete`` ist nur dort wahr, wo
+    jede konfigurierte Rückmeldestufe einen frischen Wert geliefert hat.
+    Unbekannte Zeiten werden nie als 0 W interpretiert.
+    """
+    stages = {}
+    for load in loads or []:
+        if getattr(load, "type", None) != "thermal":
+            continue
+        for stage in getattr(load, "stages", []):
+            if stage.feedback_topic or stage.power_topic:
+                stages[(str(load.name), str(stage.name))] = float(stage.power_w)
+    begin, finish = pd.Timestamp(start), pd.Timestamp(end)
+    freq = f"{int(slot_minutes)}min"
+    grid = pd.date_range(begin.floor(freq), finish.ceil(freq),
+                         freq=freq, inclusive="left")
+    if not stages:
+        return (pd.Series(0.0, index=grid, dtype="float64"),
+                pd.Series(True, index=grid, dtype="bool"), [])
+    s_utc = begin.tz_convert("UTC").isoformat()
+    e_utc = finish.tz_convert("UTC").isoformat()
+    con = _con(path)
+    names = sorted({name for name, _ in stages})
+    marks = ",".join("?" for _ in names)
+    rows = con.execute(
+        "SELECT name,stage,ts,actual_on,power_w,fresh FROM load_feedback "
+        f"WHERE name IN ({marks}) AND ts>=? AND ts<? ORDER BY ts",
+        (*names, s_utc, e_utc)).fetchall()
+    con.close()
+    by_stage = {key: pd.Series(index=grid, dtype="float64") for key in stages}
+    for name, stage, ts, actual_on, power_w, fresh in rows:
+        key = (str(name), str(stage))
+        if key not in by_stage or not fresh:
+            continue
+        stamp = pd.Timestamp(ts).tz_convert(tz).floor(freq)
+        if stamp not in by_stage[key].index:
+            continue
+        value = power_w
+        if value is None and actual_on is not None:
+            value = stages[key] if bool(actual_on) else 0.0
+        if value is not None:
+            by_stage[key].loc[stamp] = max(0.0, float(value))
+    frame = pd.DataFrame({
+        f"{name}/{stage}": values for (name, stage), values in by_stage.items()
+    }, index=grid)
+    complete = frame.notna().all(axis=1)
+    total = frame.sum(axis=1, min_count=len(frame.columns))
+    return total.astype("float64"), complete.astype("bool"), list(frame.columns)
 
 
 def write_pv_actual(path: str, mapping: Dict[str, float]) -> int:
@@ -1356,6 +1521,40 @@ def read_optimizer_forecast_asof(path: str, issue_time, start, end, tz: str):
     except Exception:
         return None, pd.DataFrame()
     return pd.Timestamp(selected).tz_convert(tz), values.sort_index()
+
+
+def read_optimizer_forecast_snapshots(path: str, start, end, tz: str,
+                                      stride_hours: int = 6) -> list:
+    """Produktions-Snapshots in unabhängigen Origin-Blöcken lesen.
+
+    Pro ``stride_hours`` bleibt nur der letzte Lauf erhalten. Das verhindert,
+    dass 15-min-Neuberechnungen denselben Zielslot dutzendfach gewichten.
+    """
+    begin = pd.Timestamp(start).tz_convert("UTC")
+    finish = pd.Timestamp(end).tz_convert("UTC")
+    con = _con(path)
+    rows = con.execute(
+        "SELECT issue_ts,payload FROM optimizer_forecast_snapshots "
+        "WHERE issue_ts>=? AND issue_ts<? ORDER BY issue_ts",
+        (begin.isoformat(), finish.isoformat())).fetchall()
+    con.close()
+    stride = max(1, int(stride_hours))
+    selected = {}
+    for issue_text, blob in rows:
+        issue = pd.Timestamp(issue_text).tz_convert("UTC")
+        selected[issue.floor(f"{stride}h")] = (issue, blob)
+    out = []
+    for issue, blob in selected.values():
+        try:
+            payload = json.loads(zlib.decompress(blob).decode("utf-8"))
+            idx = pd.to_datetime(payload["timestamps"], utc=True,
+                                 format="ISO8601").tz_convert(tz)
+            frame = pd.DataFrame(payload["series"], index=idx,
+                                 dtype="float64").sort_index()
+        except Exception:
+            continue
+        out.append((issue.tz_convert(tz), frame))
+    return out
 
 
 def write_intraday_diagnostic(path: str, issue_time, signal: str,
