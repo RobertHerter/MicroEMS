@@ -42,7 +42,6 @@ def main() -> int:
         )
         return 2
     days = args.days if args.days is not None else config.forecast.lookback_days
-    w = config.weather
     g = config.general
     db = config.e3dc_rscp.history_db_path
     end = pd.Timestamp.now(tz="UTC").normalize()
