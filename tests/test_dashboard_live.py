@@ -99,6 +99,19 @@ def test_decision_block_shows_empty_plan_state():
     assert "<details class='decisions' open" not in html
 
 
+def test_report_block_offers_history_selection():
+    """Debug-Panel: Auswahl älterer Läufe (Verlauf) + Download mit ?ts=."""
+    from ems.dashboard import _report_block
+    cfg = SimpleNamespace(report=SimpleNamespace(enabled=True, mail_to="x@y.de"))
+    html = _report_block(cfg, pd.Timestamp("2026-07-27 08:00"), [])
+    assert 'id="ems-report-pick"' in html
+    assert "api/debug-snapshots.json" in html
+    assert "report.json" in html and "?ts=" in html
+    # deaktiviert -> leer
+    off = SimpleNamespace(report=SimpleNamespace(enabled=False, mail_to=""))
+    assert _report_block(off, pd.Timestamp("2026-07-27 08:00"), []) == ""
+
+
 def test_control_failure_has_prominent_dashboard_alarm():
     html = _control_banner({"ok": False, "message": "Limit nicht übernommen"})
     assert "E3DC-Steuer-Ausfall" in html

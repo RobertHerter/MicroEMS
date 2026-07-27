@@ -56,6 +56,7 @@ def save_snapshot(config: Config, now, inputs, result, violations,
         "generated": pd.Timestamp(now).isoformat(),
         "status": result.status,
         "infeasible": bool(result.infeasible),
+        "infeasible_reason": getattr(result, "infeasible_reason", None),
         "solver_hit_limit": bool(result.solver_hit_limit),
         "total_cost_eur": round(result.total_cost_ct / 100.0, 3),
         "car_target_shortfall_wh": round(result.car_target_shortfall_wh, 1),
@@ -102,4 +103,11 @@ def save_snapshot(config: Config, now, inputs, result, violations,
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(snap, fh, ensure_ascii=False, indent=1, default=str)
     os.replace(tmp, path)
+    # Zusätzlich in den rollierenden Verlauf (SQLite), damit auch ein ÄLTERER
+    # auffälliger Plan (infeasible/falsch) später noch versendbar ist.
+    try:
+        from .local_history import write_debug_snapshot
+        write_debug_snapshot(config.e3dc_rscp.history_db_path, snap)
+    except Exception as exc:   # pragma: no cover - Debug-Persistenz ist best effort
+        log.debug("Debug-Schnappschuss-Historie nicht speicherbar (%s).", exc)
     return path

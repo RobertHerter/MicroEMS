@@ -110,6 +110,16 @@ def _con(path: str) -> sqlite3.Connection:
                 " details_json TEXT NOT NULL DEFAULT '{}')")
     con.execute("CREATE INDEX IF NOT EXISTS idx_dashboard_event_ts "
                 "ON dashboard_event(ts DESC)")
+    # Rollierender Verlauf der Debug-Schnappschüsse (komprimiertes JSON je Lauf),
+    # damit auch ein ÄLTERER infeasibler/falscher Plan mit allen Eingaben zum
+    # Reproduzieren versendet werden kann - nicht nur der letzte. Enthält keine
+    # Zugangsdaten (die Config im Payload ist bereits bereinigt).
+    con.execute("CREATE TABLE IF NOT EXISTS debug_snapshot ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT, generated TEXT NOT NULL,"
+                " status TEXT, infeasible INTEGER DEFAULT 0, reason TEXT,"
+                " n_violations INTEGER DEFAULT 0, payload BLOB NOT NULL)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_debug_snapshot_gen "
+                "ON debug_snapshot(generated DESC)")
     # Zuletzt an den E3DC gesendeter Steuerbefehl (aktueller Slot), als JSON.
     # Beim Dienststart sofort wieder anwendbar, um die Peak-/Steuer-Lücke
     # zwischen sauberem Herunterfahren (Limits freigegeben) und dem ersten
@@ -791,6 +801,84 @@ def read_dashboard_events(path: str, tz: str, limit: int = 50) -> list[dict]:
                     "kind": row[2], "level": row[3], "message": row[4],
                     "details": details})
     return out
+
+
+def write_debug_snapshot(path: str, snap: dict, keep: int = 300) -> None:
+    """Einen Debug-Schnappschuss (komprimiertes JSON) in den rollierenden
+    Verlauf schreiben und auf die letzten ``keep`` Läufe begrenzen. So bleibt
+    auch ein älterer infeasibler/falscher Plan mit allen Eingaben versendbar."""
+    try:
+        payload = zlib.compress(
+            json.dumps(snap, ensure_ascii=False, default=str).encode("utf-8"),
+            level=6)
+        con = _con(path)
+        con.execute(
+            "INSERT INTO debug_snapshot"
+            "(generated, status, infeasible, reason, n_violations, payload) "
+            "VALUES(?,?,?,?,?,?)",
+            (str(snap.get("generated") or pd.Timestamp.now(tz="UTC").isoformat()),
+             str(snap.get("status") or ""),
+             1 if snap.get("infeasible") else 0,
+             (str(snap.get("infeasible_reason")) if snap.get("infeasible_reason")
+              else None),
+             int(len(snap.get("violations") or [])),
+             sqlite3.Binary(payload)))
+        con.execute(
+            "DELETE FROM debug_snapshot WHERE id NOT IN "
+            "(SELECT id FROM debug_snapshot ORDER BY id DESC LIMIT ?)",
+            (max(1, int(keep)),))
+        con.commit()
+        con.close()
+    except Exception:   # Debug-Persistenz darf den Lauf nie stören
+        pass
+
+
+def list_debug_snapshots(path: str, tz: str, limit: int = 60) -> list[dict]:
+    """Kopf-Metadaten der jüngsten Debug-Schnappschüsse (ohne Payload), neueste
+    zuerst - für die Auswahl im Debug-Panel."""
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT generated, status, infeasible, reason, n_violations "
+            "FROM debug_snapshot ORDER BY id DESC LIMIT ?",
+            (max(1, min(int(limit), 300)),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    out = []
+    for gen, status, infeasible, reason, nviol in rows:
+        try:
+            ts = pd.Timestamp(gen).tz_convert(tz).isoformat()
+        except Exception:
+            ts = str(gen)
+        out.append({"generated": str(gen), "ts_local": ts,
+                    "status": status or "", "infeasible": bool(infeasible),
+                    "reason": reason or "", "n_violations": int(nviol or 0)})
+    return out
+
+
+def read_debug_snapshot(path: str, generated: Optional[str] = None):
+    """Vollständigen Debug-Schnappschuss (dekomprimiertes JSON) lesen; ohne
+    ``generated`` den neuesten. None, wenn keiner vorhanden."""
+    try:
+        con = _con(path)
+        if generated:
+            row = con.execute(
+                "SELECT payload FROM debug_snapshot WHERE generated = ? "
+                "ORDER BY id DESC LIMIT 1", (str(generated),)).fetchone()
+        else:
+            row = con.execute(
+                "SELECT payload FROM debug_snapshot ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        con.close()
+    except Exception:
+        row = None
+    if not row:
+        return None
+    try:
+        return json.loads(zlib.decompress(row[0]).decode("utf-8"))
+    except Exception:
+        return None
 
 
 def read_load_cmd(path: str, name: str, start, end, tz: str) -> pd.Series:

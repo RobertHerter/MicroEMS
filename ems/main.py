@@ -1349,6 +1349,8 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         return ("version",)
     if path == "/report.json":
         return ("file", "report")
+    if path == "/api/debug-snapshots.json":
+        return ("debug_list",)
     return None
 
 
@@ -3317,7 +3319,41 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                                     "application/json; charset=utf-8",
                                     "Noch keine API-Daten vorhanden")
                     return
+                if kind == "debug_list":
+                    from .local_history import list_debug_snapshots
+                    try:
+                        items = list_debug_snapshots(
+                            config.e3dc_rscp.history_db_path,
+                            config.general.timezone)
+                    except Exception:
+                        items = []
+                    self._reply({"snapshots": items})
+                    return
                 if kind == "file" and route[1] == "report":
+                    # Ohne ?ts= den letzten Lauf (Datei, Abwärtskompatibilität);
+                    # mit ?ts=<generated> einen ÄLTEREN Lauf aus dem Verlauf.
+                    from urllib.parse import parse_qs, urlparse
+                    q = parse_qs(urlparse(self.path).query)
+                    ts = (q.get("ts") or [None])[0]
+                    if ts:
+                        from .local_history import read_debug_snapshot
+                        snap = read_debug_snapshot(
+                            config.e3dc_rscp.history_db_path, ts)
+                        if not snap:
+                            self.send_error(404, "Kein Schnappschuss zu diesem Zeitpunkt")
+                            return
+                        body = json.dumps(snap, ensure_ascii=False,
+                                          default=str).encode("utf-8")
+                        safe = re.sub(r"[^0-9T]", "-", ts)[:19]
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header(
+                            "Content-Disposition",
+                            f'attachment; filename="ems_debug_{safe}.json"')
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
                     self._send_file(snap_path, "application/json; charset=utf-8",
                                     "Noch kein Debug-Schnappschuss vorhanden",
                                     'attachment; filename="last_run_debug.json"')

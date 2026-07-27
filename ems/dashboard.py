@@ -387,9 +387,11 @@ def _ensure_plotlyjs(out_path: str) -> None:
 
 
 def _report_block(config: Config, now, violations) -> str:
-    """Debug-Button (nur wenn report.enabled): lädt den Schnappschuss und
-    öffnet das Mailprogramm vorausgefüllt. mailto kann keine Datei anhängen ->
-    Nutzer hängt die geladene last_run_debug.json manuell an."""
+    """Debug-Button (nur wenn report.enabled): lädt den gewählten Schnappschuss
+    und öffnet das Mailprogramm vorausgefüllt. Über die Auswahl lässt sich auch
+    ein ÄLTERER Lauf (z.B. der infeasible/falsche) senden - so debuggt man auch
+    Probleme anderer Anlagen. mailto kann keine Datei anhängen -> Nutzer hängt
+    die geladene .json manuell an."""
     import urllib.parse
     if not getattr(config, "report", None) or not config.report.enabled:
         return ""
@@ -398,22 +400,35 @@ def _report_block(config: Config, now, violations) -> str:
     hot = "hot" if errs else ""
     subj = f"EMS Debug-Report {now.strftime('%Y-%m-%d %H:%M')} ({errs} Fehler, {warns} Warn.)"
     body = ("Auffälligkeit im EMS.\n\n"
-            "Bitte die zuvor heruntergeladene Datei last_run_debug.json an "
-            "diese Mail anhängen (sie enthält Eingaben + Plan zum Reproduzieren, "
-            "keine Zugangsdaten).\n\nNotiz:\n")
+            "Bitte die zuvor heruntergeladene .json an diese Mail anhängen (sie "
+            "enthält Eingaben + Plan des gewählten Laufs zum Reproduzieren, keine "
+            "Zugangsdaten).\n\nNotiz:\n")
     mailto = "mailto:" + urllib.parse.quote(config.report.mail_to) + "?" + \
         urllib.parse.urlencode({"subject": subj, "body": body})
     return (
         '<div class="report">'
+        '<select id="ems-report-pick" title="Lauf für den Debug-Report wählen">'
+        '<option value="">letzter Lauf</option></select> '
         f'<button class="{hot}" onclick="emsReport()">'
         '✉ Debug-Daten herunterladen &amp; Mail öffnen</button>'
         '</div>'
-        '<script>function emsReport(){'
-        "var a=document.createElement('a');a.href='report.json';"
-        "a.download='last_run_debug.json';document.body.appendChild(a);a.click();"
-        "a.remove();"
-        f"setTimeout(function(){{window.location.href={_js_str(mailto)};}},600);"
-        '}</script>')
+        '<script>(function(){'
+        " const esc=s=>String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));"
+        " const sel=document.getElementById('ems-report-pick');"
+        " fetch('api/debug-snapshots.json?_='+Date.now(),{cache:'no-store'})"
+        "  .then(r=>r.json()).then(d=>{const a=(d.snapshots||[]);"
+        "   a.forEach(s=>{const o=document.createElement('option');o.value=s.generated;"
+        "    const t=new Date(s.ts_local).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});"
+        "    const mark=s.infeasible?'\\u26d4 ':(s.n_violations>0?'\\u26a0 ':'');"
+        "    o.textContent=mark+t+(s.status?' \\u00b7 '+s.status:'');o.title=esc(s.reason);sel.appendChild(o);});})"
+        "  .catch(()=>{});"
+        " window.emsReport=function(){const ts=sel.value;"
+        "  const href='report.json'+(ts?('?ts='+encodeURIComponent(ts)):'');"
+        "  const fn=ts?('ems_debug_'+ts.replace(/[^0-9T]/g,'-').slice(0,19)+'.json'):'last_run_debug.json';"
+        "  const a=document.createElement('a');a.href=href;a.download=fn;"
+        "  document.body.appendChild(a);a.click();a.remove();"
+        f"  setTimeout(function(){{window.location.href={_js_str(mailto)};}},600);}};"
+        '})();</script>')
 
 
 def _js_str(s: str) -> str:

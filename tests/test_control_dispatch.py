@@ -232,6 +232,36 @@ def test_resolve_post_route_gating(tmp_path):
     assert m._resolve_post_route("/api/anderes", cfg)[:2] == ("error", 404)
 
 
+def test_debug_snapshot_history_roundtrip_and_retention(tmp_path):
+    """Rollierender Debug-Verlauf: schreiben, als Liste (neueste zuerst, mit
+    infeasible/Verstoß-Markern) lesen, einen ÄLTEREN Lauf per generated-ts
+    vollständig zurückholen und die Behaltemenge begrenzen."""
+    from ems.local_history import (list_debug_snapshots, read_debug_snapshot,
+                                   write_debug_snapshot)
+    db = str(tmp_path / "h.sqlite")
+    write_debug_snapshot(db, {"generated": "2026-07-27T06:00:00+00:00",
+                              "status": "Optimal", "infeasible": False,
+                              "inputs": {"pv_w": [1.0]}})
+    write_debug_snapshot(db, {"generated": "2026-07-27T06:30:00+00:00",
+                              "status": "Infeasible", "infeasible": True,
+                              "infeasible_reason": "Pool no_grid_import",
+                              "violations": [{"rule": "solver.infeasible"}],
+                              "inputs": {"pv_w": [2.0, 3.0]}})
+    lst = list_debug_snapshots(db, "Europe/Berlin")
+    assert [s["generated"][11:16] for s in lst] == ["06:30", "06:00"]  # neueste zuerst
+    assert lst[0]["infeasible"] and lst[0]["n_violations"] == 1
+    assert lst[0]["reason"] == "Pool no_grid_import"
+    # Ein ÄLTERER Lauf ist vollständig (inkl. Eingaben) wieder abrufbar.
+    old = read_debug_snapshot(db, "2026-07-27T06:30:00+00:00")
+    assert old["infeasible"] and old["inputs"]["pv_w"] == [2.0, 3.0]
+    assert read_debug_snapshot(db)["generated"].endswith("06:30:00+00:00")  # ohne ts = neuester
+    # Retention: nur die letzten `keep` behalten.
+    for h in range(5):
+        write_debug_snapshot(db, {"generated": f"2026-07-28T0{h}:00:00+00:00",
+                                  "status": "Optimal"}, keep=3)
+    assert len(list_debug_snapshots(db, "Europe/Berlin", limit=300)) == 3
+
+
 def test_resolve_get_route_assets_live_status(tmp_path):
     cfg = _cfg(tmp_path)
     r = lambda p: m._resolve_get_route(p, cfg, has_schedule_runner=True)
@@ -242,6 +272,7 @@ def test_resolve_get_route_assets_live_status(tmp_path):
     assert r("/api/status.json") == ("status", "/api/status.json")
     assert r("/version") == ("version",)
     assert r("/report.json") == ("file", "report")
+    assert r("/api/debug-snapshots.json") == ("debug_list",)   # Verlauf-Auswahl
     assert r("/api/savings-history.json") == ("status", "/api/savings-history.json")
     assert r("/api/forecast-accuracy.json") == ("status", "/api/forecast-accuracy.json")
     assert r("/api/battery-health.json") == ("status", "/api/battery-health.json")
