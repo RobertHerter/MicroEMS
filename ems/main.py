@@ -71,6 +71,7 @@ _shadow_status = {
     "generated": None, "message": "Noch kein automatischer Vergleich",
     "result": None,
 }
+_service_restart_requested = threading.Event()
 _shadow_curves = {"generated": None, "series": None}
 # Snapshot der Eingaben des letzten Produktivlaufs für den What-if-Simulator
 # (Dashboard): so kann mit geänderten Parametern neu gerechnet werden, ohne die
@@ -1313,6 +1314,12 @@ def _resolve_post_route(path: str, config):
       ('control', action) | ('ingest', kind) | ('error', code, message).
     Gating über dashboard.controls_enabled / dashboard.ingest_enabled – so ist
     das Freigabe-Verhalten (403) ohne HTTP-Server testbar."""
+    if path in ("/api/config/validate", "/api/config/save"):
+        from .config_editor import editor_block_reason
+        reason = editor_block_reason(config)
+        if reason:
+            return ("error", 403, f"Konfigurationseditor gesperrt: {reason}")
+        return ("config", path.rsplit("/", 1)[-1])
     if path.startswith("/api/control/"):
         if not getattr(config.dashboard, "controls_enabled", False):
             return ("error", 403, "Steuerung deaktiviert (dashboard.controls_enabled)")
@@ -1337,6 +1344,12 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
       ('version',) | None (statische Datei / Index).
     Enthält das Gating für battery-schedule (controls_enabled / Runner
     vorhanden) und api_data.json (api_enabled) – ohne Socket/Datei-IO."""
+    if path in ("/config", "/config/", "/api/config.json"):
+        from .config_editor import editor_block_reason
+        reason = editor_block_reason(config)
+        if reason:
+            return ("json", {"error": f"Konfigurationseditor gesperrt: {reason}"}, 403)
+        return ("config_page",) if path != "/api/config.json" else ("config_data",)
     if path == "/manifest.webmanifest":
         return ("raw", "manifest")
     if path == "/app-icon.svg":
@@ -3306,6 +3319,59 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             if route[0] == "error":
                 self.send_error(route[1], route[2])
                 return
+            if route[0] == "config":
+                from .config_editor import MAX_CONFIG_BYTES, save_document
+                from .config_editor import validate_document
+                if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != \
+                        "application/json":
+                    self._reply({"error": "Content-Type muss application/json sein"}, 415)
+                    return
+                if self.headers.get("X-EMS-Config") != "1":
+                    self._reply({"error": "Sicherheitsheader X-EMS-Config fehlt"}, 403)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", 0) or 0)
+                except ValueError:
+                    length = 0
+                if length <= 0 or length > MAX_CONFIG_BYTES:
+                    self._reply(
+                        {"error": "Ungültige Größe (maximal 2 MiB)"}, 413)
+                    return
+                try:
+                    payload = json.loads(self.rfile.read(length))
+                    document = payload.get("config")
+                    if route[1] == "validate":
+                        result = validate_document(document)
+                    else:
+                        result = save_document(
+                            config_path, document, str(payload.get("revision", "")))
+                except RuntimeError as exc:
+                    self._reply({"error": str(exc)}, 409)
+                    return
+                except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                    self._reply({"error": str(exc)}, 400)
+                    return
+                except Exception as exc:
+                    log.exception("Konfiguration konnte nicht verarbeitet werden")
+                    self._reply({"error": f"Speichern fehlgeschlagen: {exc}"}, 500)
+                    return
+                self._reply({"status": "ok", "result": result})
+                if route[1] == "save":
+                    _record_dashboard_event(
+                        config, "config", "Konfiguration im Dashboard gespeichert",
+                        details={"backup": result.get("backup")})
+
+                    def _request_restart():
+                        log.info("Konfiguration gespeichert – geordneter "
+                                 "Dienst-Neustart wird angefordert.")
+                        _service_restart_requested.set()
+                        if solver_is_running():
+                            request_solver_cancel()
+                        if publisher is not None:
+                            publisher.recalc_event.set()
+
+                    threading.Timer(0.5, _request_restart).start()
+                return
             # What-if-Simulation: rechnet einen Solve mit geänderten Parametern,
             # ohne zu steuern/persistieren (rate-limitiert wie die Steuerung).
             if route[0] == "whatif":
@@ -3422,6 +3488,19 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     return
                 if kind == "json":
                     self._reply(route[1], route[2])
+                    return
+                if kind == "config_page":
+                    from .config_editor import editor_html
+                    self._raw_reply(
+                        editor_html(), "text/html; charset=utf-8", "no-store")
+                    return
+                if kind == "config_data":
+                    from .config_editor import editor_payload
+                    try:
+                        self._reply(editor_payload(config_path))
+                    except Exception as exc:
+                        log.exception("Konfiguration konnte nicht gelesen werden")
+                        self._reply({"error": str(exc)}, 500)
                     return
                 if kind == "schedule":
                     self._reply(schedule_runner.snapshot())
@@ -3721,6 +3800,8 @@ def main() -> None:
     _sd_notify("READY=1")
     try:
         while True:
+            if _service_restart_requested.is_set():
+                break
             try:
                 run_once(config, publisher, e3dc)
             except SolverCancelled:
@@ -3730,6 +3811,8 @@ def main() -> None:
                 log.exception("Fehler im EMS-Zyklus – fahre fort.")
                 publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
             if shutdown["requested"]:
+                break
+            if _service_restart_requested.is_set():
                 break
             # Lebenszeichen an systemd (WatchdogSec): bleibt es aus (Prozess hängt),
             # startet systemd den Dienst neu.
@@ -3762,6 +3845,8 @@ def main() -> None:
                     waits.append(live_check)
                 step = min(waits)
                 if publisher.wait_for_recalc(step):
+                    if _service_restart_requested.is_set():
+                        break
                     log.info("Neuberechnung per Dashboard/MQTT angefordert – "
                              "Zyklus startet sofort.")
                     break
@@ -3790,6 +3875,10 @@ def main() -> None:
             publisher.close()
         except Exception:  # pragma: no cover
             pass
+    if _service_restart_requested.is_set():
+        # ems.service verwendet Restart=on-failure. Ein eigener Exit-Code erlaubt
+        # dem unprivilegierten Dienst einen sauberen Neustart ohne systemctl/sudo.
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":

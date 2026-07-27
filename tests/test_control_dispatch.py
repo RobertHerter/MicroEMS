@@ -232,6 +232,28 @@ def test_resolve_post_route_gating(tmp_path):
     assert m._resolve_post_route("/api/anderes", cfg)[:2] == ("error", 404)
 
 
+def test_config_editor_routes_require_all_security_gates(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.dashboard.controls_enabled = True
+    cfg.dashboard.config_editor_enabled = True
+    cfg.dashboard.username = "admin"
+    cfg.dashboard.password = "secret"
+    assert m._resolve_post_route(
+        "/api/config/validate", cfg) == ("config", "validate")
+    assert m._resolve_post_route(
+        "/api/config/save", cfg) == ("config", "save")
+    assert m._resolve_get_route(
+        "/config", cfg, has_schedule_runner=False) == ("config_page",)
+    assert m._resolve_get_route(
+        "/api/config.json", cfg, has_schedule_runner=False) == ("config_data",)
+
+    cfg.dashboard.password = ""
+    assert m._resolve_post_route(
+        "/api/config/save", cfg)[:2] == ("error", 403)
+    assert m._resolve_get_route(
+        "/config", cfg, has_schedule_runner=False)[0] == "json"
+
+
 def test_debug_snapshot_history_roundtrip_and_retention(tmp_path):
     """Rollierender Debug-Verlauf: schreiben, als Liste (neueste zuerst, mit
     infeasible/Verstoß-Markern) lesen, einen ÄLTEREN Lauf per generated-ts

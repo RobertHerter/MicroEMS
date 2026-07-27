@@ -1589,6 +1589,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     live_html = _live_block(config)
     decision_html = _decision_block(t, now)
     mobile_plot_html = _mobile_plot_block(now, has_loads, temp_row)
+    from .config_editor import editor_allowed
+    config_link = (
+        '<a id="config-link" href="/config" title="EMS konfigurieren">'
+        '<span class="config-icon">⚙</span><span class="config-label">'
+        'Konfiguration</span></a>'
+        if editor_allowed(config) else "")
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1611,9 +1617,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         min-width: 0; }}
  h1 .ts {{ color: #888; font-weight: normal; font-size: 14px; }}
  .header-actions {{ display: flex; gap: 7px; }}
- .header-actions button {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
+ .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
         border: 1px solid #ccd4dc; border-radius: 8px; background: #f4f6f8;
-        color: #26313c; cursor: pointer; font: inherit; font-size: 13px; }}
+        color: #26313c; cursor: pointer; font: inherit; font-size: 13px;
+        text-decoration: none; display: inline-flex; align-items: center;
+        justify-content: center; gap: 5px; }}
  #install-app {{ display: none; }}
  .runtime-strip {{ display: grid; grid-template-columns: minmax(220px,1fr) minmax(120px,2fr) auto auto;
         align-items: center; gap: 12px; margin: -4px 0 12px; padding: 9px 12px;
@@ -2030,7 +2038,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .curve-box, html.dark .planner-badge {{ background: #202b36; border-color: #354352; }}
  html.dark .battery-planner {{ background: linear-gradient(150deg,#18232d,#202b36); border-color: #354352; }}
  html.dark .controls input, html.dark .controls textarea, html.dark .controls select {{ background: #111820; color: #eef3f8; border-color: #4b5b6b; }}
- html.dark .controls button, html.dark .header-actions button {{ background: #263442; color: #eef3f8; border-color: #4b5b6b; }}
+ html.dark .controls button, html.dark .header-actions button,
+ html.dark .header-actions a {{ background: #263442; color: #eef3f8; border-color: #4b5b6b; }}
  html.dark .controls button.primary, html.dark .controls button.mode.on {{ background: #287fd8; color: #fff; border-color: #4d9bea; }}
  html.dark .controls button.instant {{ background: #1c3c5c; color: #8fc8ff; border-color: #3c6f9d; }}
  html.dark .controls button.stop {{ background: #432529; color: #ffaaa4; border-color: #75454a; }}
@@ -2089,7 +2098,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .app-header {{ padding: 10px 11px; margin-bottom: 8px; position: relative; }}
    h1 {{ font-size: 17px; line-height: 1.25; }}
    h1 .ts {{ display: block; font-size: 11px; margin-top: 2px; }}
-   .header-actions button {{ min-width: 44px; min-height: 44px; font-size: 0; padding: 0; }}
+   .header-actions button, .header-actions a {{ min-width: 44px; min-height: 44px; font-size: 0; padding: 0; }}
+   #config-link .config-icon {{ font-size: 21px; }}
+   #config-link .config-label {{ display: none; }}
    #theme-toggle:after {{ content: '◐'; font-size: 21px; }}
    #install-app:after {{ content: '↓'; font-size: 22px; }}
    .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }}
@@ -2145,7 +2156,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 </style></head><body>
 <header class="app-header"><h1>E3DC EMS Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
- <div class="header-actions"><button type="button" id="install-app" title="Als App installieren">Installieren</button>
+ <div class="header-actions">{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
 {runtime_html}
 {live_html}

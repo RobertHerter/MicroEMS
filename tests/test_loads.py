@@ -374,6 +374,10 @@ def test_dashboard_renders_loads_panel(tmp_path):
     from ems.dashboard import build_dashboard
     cfg = make_config()
     cfg.dashboard.output_path = str(tmp_path / "dash.html")
+    cfg.dashboard.controls_enabled = True
+    cfg.dashboard.config_editor_enabled = True
+    cfg.dashboard.username = "admin"
+    cfg.dashboard.password = "secret"
     cfg.controllable_loads = [
         ControllableLoad(name="pool", type="thermal", enabled=True, volume_l=7000,
                          stages=[LoadStage("klein", 400, 3000),
@@ -391,6 +395,7 @@ def test_dashboard_renders_loads_panel(tmp_path):
     out = build_dashboard(cfg, t, total_cost_ct=-500.0)
     html = open(out, encoding="utf-8").read()
     assert "Steuerbare Lasten" in html
+    assert 'id="config-link"' in html and 'href="/config"' in html
     assert "Waschmaschine" in html and "deaktiviert" in html   # graue Leiste
     assert "klein" in html and "gross" in html                 # Pool-Lanes
     # Ereignis-Panel: Farben für Warnungen/Schaltvorgänge vorhanden, und die

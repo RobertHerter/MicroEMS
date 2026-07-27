@@ -554,6 +554,11 @@ wird deshalb nicht im Git-Repository gespeichert.
   freigegeben und am Gerät zurückgelesen. Direkte RSCP-Steuerung und die davon
   unabhängigen MQTT-Sollwerte sind im Panel klar getrennt, während das reine
   Live-Monitoring weiterläuft.
+- **Konfigurationseditor**: Ein Zahnrad in der Kopfzeile öffnet eine responsive,
+  nach Bereichen gruppierte Seite für alle Werte aus `config.yaml`. Hilfetexte
+  stammen aus `config.example.yaml`; steuerbare Lasten lassen sich dort anlegen
+  und entfernen. Vor dem Speichern wird die vollständige Konfiguration geprüft,
+  gesichert und der EMS-Dienst geordnet neu gestartet.
 - **Grafischer Planvergleich**: Akku-, Netz- und SoC-Verlauf des aktiven Plans
   gegen eine Vorschau mit anderem Optimierungsmodus, bevor dieser übernommen wird.
 - **Manuelle Akku-Zeitplanung**: Netzladen/Entladen auf einem 48-h-Zeitstrahl planen
@@ -576,6 +581,32 @@ Der HTTP-Server liefert das Dashboard und JSON-Endpunkte: `/api/data.json`
 (aktueller E3/DC-Snapshot, Intervall `dashboard.live_refresh_seconds`, `0` = aus).
 Die gesamte Weboberfläche lässt sich mit **Basic Auth** absichern
 (`dashboard.username`/`password`; leer = ungeschützt).
+
+### Konfiguration im Browser bearbeiten
+
+Der Editor ist bewusst nur verfügbar, wenn alle drei Schutzbedingungen erfüllt
+sind:
+
+```yaml
+dashboard:
+  controls_enabled: true
+  config_editor_enabled: true
+  username: "ems-admin"
+  password: "ein-langes-eigenes-passwort"
+```
+
+Danach erscheint im Dashboard oben der Button **Konfiguration**. **Prüfen**
+validiert den aktuellen Entwurf ohne Änderung. **Speichern & EMS neu starten**
+schreibt die Datei atomar, legt vorher eine Kopie unter `backup/config/` ab und
+startet den Prozess geordnet neu (systemd: `Restart=on-failure`; Docker Compose:
+`restart: unless-stopped`). Gleichzeitig werden vorhandene
+`config_overrides.yaml`-Werte in den sichtbaren Stand eingearbeitet und beim
+Speichern konsolidiert, damit kein unsichtbares Overlay die neue Auswahl wieder
+überschreibt.
+
+Da `config.yaml` Zugangsdaten enthält und der eingebaute Server kein TLS
+terminiert, sollte der Editor nur im vertrauenswürdigen LAN oder hinter einem
+HTTPS-Reverse-Proxy erreichbar sein.
 
 ## Ersparnis-Tracking & Validierung
 

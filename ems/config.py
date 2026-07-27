@@ -586,6 +586,9 @@ class DashboardConfig:
     # Optimierungsmodus, manuelles Laden/Entladen. Auth = username/password (Basic).
     # Standard AUS – manuelles Laden/Entladen greift real in den Akku ein.
     controls_enabled: bool = False
+    # Vollständiger Editor für config.yaml. Zusätzlich muss controls_enabled
+    # aktiv sein; Authentifizierung entspricht dem übrigen Dashboard.
+    config_editor_enabled: bool = False
     # Rate-Limit für /api/control/* (Steuerbefehle je Minute, Sliding Window).
     # Schützt den realen Steuerpfad vor versehentlichem/böswilligem Befehls-
     # sturm. 0 = unbegrenzt.
@@ -1398,6 +1401,7 @@ def load_config(path: str) -> Config:
         password=str(d.get("password", "")),
         ingest_enabled=bool(d.get("ingest_enabled", False)),
         controls_enabled=bool(d.get("controls_enabled", False)),
+        config_editor_enabled=bool(d.get("config_editor_enabled", False)),
         control_rate_limit_per_min=int(d.get("control_rate_limit_per_min", 60)),
     )
 
