@@ -218,6 +218,10 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     # Der Mobil-Plot (<div id="mobile-plot">) bekommt von Plotly.react NUR
     # '.js-plotly-plot' - ohne diesen Selektor blieben die Slot-Details mobil tot.
     assert ".js-plotly-plot" in details
+    # Touch: das 'x unified'-Hover-Panel muss nach dem Tap wieder verschwinden
+    # (kein mouseleave auf Touchscreens) - zeitversetzt und beim Tippen daneben.
+    assert "Plotly.Fx.unhover" in details
+    assert "autoUnhover" in details and "unhoverAll" in details
     assert '<details class="info-panel slot-detail"' in details
     assert '<details class="info-panel slot-detail" open' not in details
 

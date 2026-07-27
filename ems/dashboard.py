@@ -494,8 +494,16 @@ def _slot_detail_block() -> str:
   // Antippen wird deshalb zusätzlich anhand der x-Achse in eine Zeit übersetzt;
   // Wischen/Zoomen bleibt durch die Bewegungsgrenze unberührt.
   let start=null;p.addEventListener('pointerdown',e=>{if(e.pointerType!=='mouse')start={x:e.clientX,y:e.clientY};},true);
-  p.addEventListener('pointerup',e=>{if(!start||e.pointerType==='mouse')return;let s=start;start=null;if(Math.hypot(e.clientX-s.x,e.clientY-s.y)>12)return;let full=p._fullLayout,size=full&&full._size,axis=full&&full.xaxis;if(!size||!axis||!axis.p2d)return;let rect=p.getBoundingClientRect(),px=e.clientX-rect.left-size.l;if(px<0||px>size.w)return;render(axis.p2d(px),true);},true);
+  p.addEventListener('pointerup',e=>{if(!start||e.pointerType==='mouse')return;let s=start;start=null;if(Math.hypot(e.clientX-s.x,e.clientY-s.y)>12)return;let full=p._fullLayout,size=full&&full._size,axis=full&&full.xaxis;if(!size||!axis||!axis.p2d)return;let rect=p.getBoundingClientRect(),px=e.clientX-rect.left-size.l;if(px<0||px>size.w)return;render(axis.p2d(px),true);autoUnhover();},true);
  });}
+ // Touch-Geraete kennen kein mouseleave: das Hover-Panel ('x unified') blieb
+ // nach einem Tap dauerhaft stehen und liess sich nicht mehr wegklicken.
+ // Daher nach dem Tap zeitversetzt und bei jeder Beruehrung ausserhalb eines
+ // Diagramms aktiv abraeumen. Die Werte stehen ohnehin in den Slot-Details.
+ let hoverTimer=null;
+ function unhoverAll(){document.querySelectorAll('.plotly-graph-div,.js-plotly-plot').forEach(g=>{try{if(window.Plotly&&Plotly.Fx&&Plotly.Fx.unhover)Plotly.Fx.unhover(g);}catch(err){}});}
+ function autoUnhover(){clearTimeout(hoverTimer);hoverTimer=setTimeout(unhoverAll,2500);}
+ document.addEventListener('pointerdown',e=>{if(e.pointerType==='mouse')return;if(e.target&&e.target.closest&&e.target.closest('.plotly-graph-div,.js-plotly-plot'))return;clearTimeout(hoverTimer);unhoverAll();},true);
  window.addEventListener('ems-plot-ready',bind);bind();setInterval(bind,2000);
 })();</script>"""
 
