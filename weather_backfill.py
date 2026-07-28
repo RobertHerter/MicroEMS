@@ -6,9 +6,16 @@ Die Forecast-API deckt nur die letzten ~92 Tage ab; dieses Skript holt ältere
 Jahre über die Archive-API (ein Call je Jahres-Block, beide Felder zusammen).
 Idempotent (UPSERT).
 
+Mit ``--grid`` zusätzlich die DEUTSCHLANDWEITEN Wetter-Indizes (Wind, Solar,
+Temperatur über acht kapazitätsgewichtete Stützpunkte, ems/gridweather.py). Die
+sind die Lerngrundlage der Börsenpreis-Prognose (ems/priceforecast.py) und
+sollten so weit zurückreichen wie die Spotpreis-Historie – ohne sie fällt die
+Preisschätzung auf die Ähnliche-Tage-Mittelung zurück.
+
 Aufruf:
     python weather_backfill.py --config config.yaml            # forecast.lookback_days
     python weather_backfill.py --config config.yaml --days 365
+    python weather_backfill.py --config config.yaml --days 540 --grid
 """
 from __future__ import annotations
 
@@ -19,7 +26,8 @@ from datetime import timedelta
 import pandas as pd
 
 from ems.config import load_config
-from ems.local_history import write_temperature, write_radiation
+from ems.local_history import (write_grid_weather, write_radiation,
+                                write_temperature)
 from ems.weather import fetch_archive
 
 log = logging.getLogger("ems.weather_backfill")
@@ -29,6 +37,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Temperatur-Historie -> SQLite")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--days", type=int, default=None)
+    ap.add_argument("--grid", action="store_true",
+                    help="zusätzlich die deutschlandweiten Wetter-Indizes "
+                         "(Lerngrundlage der Börsenpreis-Prognose)")
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -68,6 +79,27 @@ def main() -> int:
               f"+{len(rad_map)} Strahlung (gesamt {total_t}/{total_r})", flush=True)
         block = b_end + timedelta(days=1)
     print(f"Fertig: {total_t} Temperatur- + {total_r} Strahlungs-Stundenwerte in der DB.")
+
+    if getattr(args, "grid", False):
+        from ems.gridweather import as_mapping, fetch_archive as grid_archive
+        print("\nDeutschlandweite Indizes für die Preisprognose "
+              "(8 Stützpunkte je Call):")
+        total_g = 0
+        # Kleinere Blöcke als bei einem Punkt: der Call liefert 8 Stützpunkte.
+        block = start
+        while block < arc_end:
+            b_end = min(block + timedelta(days=120), arc_end)
+            try:
+                frame = grid_archive(block.strftime("%Y-%m-%d"),
+                                     b_end.strftime("%Y-%m-%d"))
+            except Exception as exc:
+                print(f"  {block.date()}..{b_end.date()}: FEHLER {exc}")
+                return 1
+            total_g += write_grid_weather(db, as_mapping(frame))
+            print(f"  {block.date()} .. {b_end.date()}: +{len(frame)} Stunden "
+                  f"(gesamt {total_g})", flush=True)
+            block = b_end + timedelta(days=1)
+        print(f"Fertig: {total_g} deutschlandweite Index-Stundenwerte in der DB.")
     return 0
 
 

@@ -2612,6 +2612,9 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
 
 
 _last_weather_fetch = 0.0
+_last_grid_weather_fetch = 0.0
+_price_model = None
+_price_model_day = None
 
 
 def _refresh_weather_cache(config) -> None:
@@ -2643,6 +2646,69 @@ def _refresh_weather_cache(config) -> None:
                  n_t, n_r, n_a)
     except Exception as exc:
         log.warning("Open-Meteo-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+
+
+def _refresh_grid_weather(config) -> None:
+    """Deutschlandweite Wetter-Indizes (Treiber des Börsenpreises) auffrischen.
+
+    EIN Open-Meteo-Call für alle Stützpunkte, höchstens alle ~30 min - die
+    Indizes sind Stundenwerte, häufigeres Abrufen bringt nichts. Fehler sind
+    unkritisch: ohne frische Werte bleibt es bei der Ähnliche-Tage-Schätzung.
+    """
+    global _last_grid_weather_fetch
+    if not getattr(config.forecast, "price_model_enabled", True):
+        return
+    if _time.time() - _last_grid_weather_fetch <= 1800:
+        return
+    try:
+        from .gridweather import as_mapping, fetch_forecast
+        from .local_history import write_grid_weather
+        n = write_grid_weather(
+            config.e3dc_rscp.history_db_path,
+            as_mapping(fetch_forecast()))
+        _last_grid_weather_fetch = _time.time()
+        log.info("Open-Meteo: %d deutschlandweite Wetter-Indizes für die "
+                 "Preisprognose aktualisiert.", n)
+    except Exception as exc:
+        log.warning("Deutschlandweite Wetter-Indizes nicht abrufbar (%s) – "
+                    "Preisschätzung bleibt bei Ähnliche-Tage.", exc)
+
+
+def _price_model_for(config):
+    """Gelerntes Preismodell, höchstens einmal je Kalendertag neu trainiert.
+
+    Das Training kostet wenige Sekunden auf ~400 Tagen Historie - je Zyklus wäre
+    das Verschwendung, einmal täglich reicht (die Historie wächst um einen Tag).
+    None, wenn das Modell nicht einsatzbereit ist; der Aufrufer bleibt dann beim
+    bisherigen Schätzer.
+    """
+    global _price_model, _price_model_day
+    if not getattr(config.forecast, "price_model_enabled", True):
+        return None
+    today = pd.Timestamp.now(tz=config.general.timezone).date()
+    if _price_model is not None and _price_model_day == today:
+        return _price_model if _price_model.model is not None else None
+    try:
+        from .local_history import read_grid_weather, read_spot
+        from .priceforecast import PriceModel
+        db = config.e3dc_rscp.history_db_path
+        tz = config.general.timezone
+        now = pd.Timestamp.now(tz=tz)
+        start = now.normalize() - pd.Timedelta(days=540)
+        spot = read_spot(db, start, now, tz, config.general.slot_minutes)
+        weather = read_grid_weather(db, start, now, tz)
+        model = PriceModel(config)
+        model.fit(spot, weather,
+                  holdout_days=int(config.forecast.price_model_holdout_days),
+                  min_train_days=int(config.forecast.price_model_min_train_days))
+        _price_model, _price_model_day = model, today
+        log.info("Preismodell: %s", model.reason)
+        return model if model.model is not None else None
+    except Exception as exc:
+        log.warning("Preismodell nicht trainierbar (%s) – Ähnliche-Tage-"
+                    "Schätzung bleibt aktiv.", exc)
+        _price_model, _price_model_day = None, today
+        return None
 
 
 def _read_temp(repo, config, start, end):
@@ -2954,9 +3020,34 @@ def _price_series(repo, config, index, now, return_estimated=False):
     estimated = raw.isna()   # Slots ohne echten Börsenpreis -> Schätzung
     hist = pd.Series(dtype="float64")
     if estimated.any():
+        # 1) Deutschlandweites Residuallast-Modell: der Day-Ahead folgt der
+        #    Merit-Order über Last minus Wind/Solar. Nur wenn es sich gegen die
+        #    Ähnliche-Tage-Schätzung bewiesen hat (siehe ems/priceforecast.py).
+        try:
+            _refresh_grid_weather(config)
+            model = _price_model_for(config)
+            if model is not None:
+                from .local_history import read_grid_weather
+                from .tariff import read_spot_signal
+                weather = read_grid_weather(
+                    config.e3dc_rscp.history_db_path, index[0],
+                    index[-1] + slot, config.general.timezone)
+                spot_hist = read_spot_signal(
+                    config, repo, now - timedelta(days=3), now).dropna()
+                guess = model.predict(index[estimated], weather, spot_hist)
+                if guess is not None:
+                    # Das Modell schätzt den BÖRSENPREIS - für den Optimierer
+                    # muss das Tarifmodell darüber (Aufschläge, Netz, MwSt).
+                    from .tariff import apply_tariff
+                    raw = raw.fillna(apply_tariff(guess, config).reindex(index))
+                    log.info("Fehlende Folgetag-Preise per Residuallast-Modell "
+                             "ergänzt (%d Slots).", int(estimated.sum()))
+        except Exception as exc:  # pragma: no cover
+            log.warning("Residuallast-Preismodell nicht anwendbar (%s).", exc)
+        # 2) Rückfall: Ähnliche-Tage-Mittelung der eigenen Preishistorie.
         try:
             hist = read_price_signal(config, repo, now - timedelta(days=90), now).dropna()
-            if not hist.empty:
+            if raw.isna().any() and not hist.empty:
                 fc = LoadForecaster(config).forecast(
                     hist, index[0], len(index), clip_min=None, apply_correction=False)
                 raw = raw.fillna(fc.reindex(index))

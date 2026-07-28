@@ -502,6 +502,18 @@ forecast:
   # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen, damit
   # nicht auf Phantom-Preistäler spekuliert wird. 0 = aus, 1 = flach.
   price_damping: 0.3
+  # Noch unveröffentlichte Preise (Folgetag) aus DEUTSCHLANDWEITEN Wetter-Indizes
+  # schätzen statt per Ähnliche-Tage-Mittelung: der Börsenpreis folgt der
+  # Merit-Order über der Residuallast (Last minus Wind/Solar), nicht dem lokalen
+  # Wetter. Braucht die grid_weather-Historie (weather_backfill.py --grid) und
+  # scikit-learn; das Modell prüft sich vor dem Einsatz selbst gegen die
+  # Ähnliche-Tage-Schätzung und wird nur benutzt, wenn es dort gewinnt.
+  price_model_enabled: true
+  # Mindestzahl gelernter Tage, bevor das Preismodell überhaupt antritt.
+  price_model_min_train_days: 60
+  # Tage am Ende der Historie, die für den Vergleich der beiden Verfahren
+  # zurückgehalten werden (nicht mittrainiert).
+  price_model_holdout_days: 14
   # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) 
   # oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
   method: "similar_days"

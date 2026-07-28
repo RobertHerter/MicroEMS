@@ -91,6 +91,13 @@ def _con(path: str) -> sqlite3.Connection:
     # für den solaren Wärmeeintrag thermischer Lasten (Pool).
     con.execute("CREATE TABLE IF NOT EXISTS radiation ("
                 " ts TEXT PRIMARY KEY, w_m2 REAL NOT NULL)")
+    # Deutschlandweite Wetter-Indizes (ems/gridweather.py) als Treiber des
+    # Börsenpreises: gewichtete Windleistung, Globalstrahlung und Temperatur.
+    # Prognosewerte werden je Zyklus überschrieben, die Historie kommt per
+    # Backfill aus dem ERA5-Archiv und ist die Lerngrundlage des Preismodells.
+    con.execute("CREATE TABLE IF NOT EXISTS grid_weather ("
+                " ts TEXT PRIMARY KEY, wind_index REAL, solar_index REAL,"
+                " temp_index REAL)")
     # Publizierte Heiz-FREIGABE thermischer Lasten je Zyklus (1 = mindestens
     # eine Stufe freigegeben, 0 = sicher aus). Grundlage der Thermomodell-
     # Kalibrierung (ems/pool_calibration.py): nur in sicher-aus-Phasen lässt
@@ -1375,6 +1382,58 @@ def write_radiation(path: str, mapping: Dict[str, float]) -> int:
     con.commit()
     con.close()
     return len(mapping)
+
+
+def write_grid_weather(path: str, mapping: Dict[str, tuple]) -> int:
+    """UPSERT der deutschlandweiten Indizes {UTC-ISO -> (wind, solar, temp)}."""
+    if not mapping:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO grid_weather(ts, wind_index, solar_index, temp_index) "
+        "VALUES(?,?,?,?) ON CONFLICT(ts) DO UPDATE SET "
+        "wind_index=excluded.wind_index, solar_index=excluded.solar_index, "
+        "temp_index=excluded.temp_index",
+        [(k, float(v[0]), float(v[1]), float(v[2]))
+         for k, v in mapping.items()])
+    con.commit()
+    con.close()
+    return len(mapping)
+
+
+def read_grid_weather(path: str, start, end, tz: str,
+                      freq: Optional[str] = None) -> pd.DataFrame:
+    """Deutschlandweite Indizes [start, end). Ohne ``freq`` als Stundenwerte
+    (UTC-Index, so wie gespeichert - das Preismodell rundet selbst auf die
+    Stunde); mit ``freq`` zeitlich auf das Slot-Raster interpoliert."""
+    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    e_utc = (pd.Timestamp(end) + pd.Timedelta(hours=2)).tz_convert("UTC").isoformat()
+    cols = ["wind_index", "solar_index", "temp_index"]
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, wind_index, solar_index, temp_index FROM grid_weather "
+            "WHERE ts >= ? AND ts < ? ORDER BY ts", (s_utc, e_utc)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
+    frame = pd.DataFrame([r[1:] for r in rows], index=idx, columns=cols,
+                         dtype="float64")
+    if freq is None:
+        return frame
+    local = frame.tz_convert(tz)
+    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
+                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
+                         inclusive="left")
+    if len(grid) == 0:
+        return local
+    step_min = max(1.0, pd.Timedelta(freq).total_seconds() / 60.0)
+    limit = max(1, int(120.0 / step_min))
+    return (local.reindex(local.index.union(grid)).interpolate(
+            method="time", limit=limit, limit_area="inside").reindex(grid))
 
 
 def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:

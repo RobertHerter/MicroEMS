@@ -89,6 +89,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
+| `ems/gridweather.py` + `ems/priceforecast.py` | Deutschlandweite Wetter-Indizes (Residuallast) + gelernte Börsenpreis-Prognose mit Selbstprüfung |
 | `ems/ingest.py` | Externe Einspeisung (REST) von Live-/Historienwerten → Betrieb ohne RSCP/InfluxDB |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard + JSON-API |
 | `tests/` | pytest-Suite (E2E, Optimierer-Randfälle, Prognose, Ersparnis, Diagnose …) |
@@ -709,6 +710,62 @@ Damit ist die Frage „was hat der Optimierer damals eigentlich erwartet?"
 nachträglich beantwortbar – etwa bei einem infeasiblen Plan oder einer
 unerwarteten Akku-Entladung. Endpoints: `/api/archive-runs.json` (Liste),
 `/api/archive-run.json?ts=<generated>` (ein Lauf mit Plan, Ist und Abweichung).
+
+## Börsenpreis-Prognose aus deutschlandweitem Wetter
+
+Der Day-Ahead-Preis für morgen erscheint erst gegen 13:00. Bis dahin braucht der
+Optimierer Schätzwerte – und die entscheiden auf Anlagen mit **Mehrtages-Speicher**
+mit, ob heute Nacht aus dem Netz geladen und wann entladen wird. Eine
+Ähnliche-Tage-Mittelung der eigenen Preishistorie greift dafür zu kurz: der
+Börsenpreis folgt der **Merit-Order über der Residuallast** (deutsche Last minus
+Wind- und Solareinspeisung), also dem deutschlandweiten Wetter – nicht dem am
+Standort der Anlage.
+
+`ems/gridweather.py` verdichtet deshalb acht **kapazitätsgewichtete Stützpunkte**
+(Wind im Norden/Osten, PV eher im Süden, Last nach Bevölkerung) zu drei Zahlen je
+Stunde – alle in **einem** Open-Meteo-Aufruf, derselben kostenlosen API ohne Key,
+die schon für die lokale Temperatur läuft:
+
+| Index | Bedeutung |
+| --- | --- |
+| `wind_index` | 0..1, gewichtete **Windleistung** – nicht -geschwindigkeit: die Turbinenkennlinie ist ~v³ bis Nennwind, dann Plateau, im Sturm Abschaltung |
+| `solar_index` | W/m², gewichtete Globalstrahlung |
+| `temp_index` | °C, bevölkerungsgewichtete Temperatur (Treiber der Last) |
+
+`ems/priceforecast.py` lernt daraus den Börsenpreis (`HistGradientBoostingRegressor`
+auf der **eigenen** Spotpreis-Historie, keine externen Modelldateien). Merkmale
+sind die drei Indizes, Tageszeit, Wochentag, Feiertag und ein **Preisanker** –
+Mittelwert und Spanne des letzten vollständig veröffentlichten Tages. Ohne den
+könnte das Modell einer Gaspreis-Verschiebung oder dem Jahresgang nicht folgen,
+weil das Wetter darüber nichts sagt.
+
+**Das Modell prüft sich selbst, bevor es benutzt wird.** Die letzten
+`price_model_holdout_days` (14) werden nicht mittrainiert; auf ihnen treten Modell
+und Ähnliche-Tage-Schätzung gegeneinander an. Gewinnt die alte Methode, bleibt sie
+aktiv – dasselbe Prinzip wie die PV-Quellenwahl in `ems/pv_eval.py`. Gemessen auf
+dieser Anlage (418 Tage Historie, 60 Tage rollierende Validierung):
+
+```
+Modell (Residuallast):  MAE 2,51 ct/kWh
+Ähnliche Tage (vorher): MAE 3,40 ct/kWh   -> 26 % besser, an 50 von 60 Tagen
+```
+
+Trainiert wird **einmal je Kalendertag** (wenige Sekunden auf ~400 Tagen), die
+Indizes werden höchstens alle 30 min aufgefrischt. Fällt irgendetwas aus – kein
+Netz, keine Historie, kein scikit-learn –, greift ohne Zyklusfehler die
+Ähnliche-Tage-Schätzung; die Unsicherheits-Dämpfung (`price_damping`) bleibt in
+beiden Fällen darüber. Der Log nennt je Tag die Entscheidung, z. B.
+`Preismodell: aktiv: MAE 2.64 ct gegen 3.33 ct (Ähnliche Tage), 417 Tage gelernt`.
+
+Für eine neue Installation muss die Lernhistorie einmal geholt werden (ERA5, ein
+Aufruf je 120-Tage-Block):
+
+```bash
+python weather_backfill.py --config config.yaml --days 540 --grid
+```
+
+Schalter unter `forecast`: `price_model_enabled` (Standard `true`),
+`price_model_min_train_days` (60), `price_model_holdout_days` (14).
 
 ## Entscheidungsgüte: war die Prognose gut genug für die richtigen Zeitpunkte?
 

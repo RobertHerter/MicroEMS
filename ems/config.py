@@ -526,6 +526,18 @@ class ForecastConfig:
     # p' = m + (p - m) * (1 - price_damping). Verhindert, dass auf
     # prognostizierte Preistäler/-spitzen spekuliert wird. 0 = aus, 1 = flach.
     price_damping: float = 0.3
+    # Noch unveröffentlichte Preise (Folgetag) aus deutschlandweiten
+    # Wetter-Indizes schätzen statt per Ähnliche-Tage-Mittelung: der Day-Ahead
+    # folgt der Merit-Order über der Residuallast (Last minus Wind/Solar), nicht
+    # dem lokalen Wetter. Das Modell prüft sich vor dem Einsatz selbst gegen die
+    # Ähnliche-Tage-Schätzung und wird nur benutzt, wenn es dort gewinnt; sonst
+    # (oder ohne Historie/scikit-learn) bleibt es beim alten Verfahren.
+    price_model_enabled: bool = True
+    # Mindestzahl gelernter Tage, bevor das Modell überhaupt antritt.
+    price_model_min_train_days: int = 60
+    # Tage am Ende der Historie, die für den Vergleich der beiden Verfahren
+    # zurückgehalten werden (nicht mittrainiert).
+    price_model_holdout_days: int = 14
     # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
     method: str = "similar_days"
     # Empirisches Lastband aus der Streuung vergleichbarer historischer Slots.
@@ -1349,6 +1361,10 @@ def load_config(path: str) -> Config:
         intraday_pv_max_step=float(f.get("intraday_pv_max_step", 0.10)),
         intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
         price_damping=float(f.get("price_damping", 0.3)),
+        price_model_enabled=bool(f.get("price_model_enabled", True)),
+        price_model_min_train_days=int(
+            f.get("price_model_min_train_days", 60)),
+        price_model_holdout_days=int(f.get("price_model_holdout_days", 14)),
         method=str(f.get("method", "similar_days")),
         load_uncertainty_enabled=bool(
             f.get("load_uncertainty_enabled", True)),
