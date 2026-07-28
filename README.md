@@ -762,12 +762,26 @@ Restlücke   = abgerechnet - hellsicht   = Prognose - Nachplanen + Ausführung
 `davon Preis` rechnet **denselben** 00:00-Plan ein zweites Mal, nur mit den
 inzwischen veröffentlichten Preisen statt der Schätzung – PV- und Lastprognose
 bleiben unverändert. Die Kostendifferenz ist damit ausschließlich der Preis der
-Preisschätzung. Gemessen im Sommer 2026: **0,00 €/Tag** bei 1,8–2,6 ct/kWh
-Schätzfehler – die geschätzten Slots liegen am Folgetag, und solange die PV den
-Akku täglich voll macht, ändern sie die heutigen Entscheidungen nicht. Der
-gesamte Prognose-Regret von ~1,1 €/Tag steckt also in PV und Last. Im Winter,
-wenn der Akku die knappe Ressource ist, kann sich das umkehren – die Kennzahl
-sagt es dann.
+Preisschätzung.
+
+Gemessen auf dieser Anlage (22 kWh Speicher, ~23 kWh Winter-Tagesverbrauch):
+**0,00 €/Tag**, im Sommer wie im Winter – auch an Tagen mit 48 ct Tagesspanne,
+5 kWh PV-Ertrag und 7,7 ct/kWh Schätzfehler. Der Plan des bewerteten Tages
+änderte sich dabei um höchstens 0,10 kWh. Der Grund ist die Reichweite: die
+Schätzung betrifft nur den Folgetag, Netzladen und Entladesperren von *heute*
+richten sich nach der heute exakt bekannten Preiskurve. Morgens Preis könnte
+heute nur bewirken, Energie über Mitternacht aufzusparen – und dafür müsste der
+Speicher mehr als einen Tagesverbrauch halten. Der gesamte Prognose-Regret von
+~1,1 €/Tag steckt hier also in PV und Last.
+
+> **Nicht verallgemeinern:** das Ergebnis hängt am Verhältnis Speicher zu
+> Tagesverbrauch. Fängt der Akku **mehrere Tage** Verbrauch ab, wird
+> Mehrtages-Arbitrage möglich, und dann entscheidet die Preisschätzung für D+1/D+2
+> tatsächlich mit. Auf solchen Anlagen lohnt ein wetterbasiertes Preismodell
+> (deutschlandweite Residuallast aus Wind-, Solar- und Lastproxys – der Day-Ahead
+> folgt der Merit-Order, nicht dem lokalen Wetter). Ob es sich lohnt, sagt genau
+> diese Kennzahl: wird `davon Preis` dauerhaft deutlich positiv, ist das Modell
+> fällig.
 
 Alles in Euro pro Tag und damit direkt interpretierbar – anders als ein WAPE.
 Der jüngste bewertbare Tag ist der Vortag: der Optimierer braucht den Folgetag
