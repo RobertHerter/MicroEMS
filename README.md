@@ -570,11 +570,19 @@ wird deshalb nicht im Git-Repository gespeichert.
 
 Die Beispielausgabe (**synthetische Daten**) liegt als
 [dashboard_beispiel.html](dashboard_beispiel.html) bei – regenerierbar mit
-`python beispiel_dashboard.py`. Screenshot erneuern:
+`python beispiel_dashboard.py`. Sie enthält Beispielwerte für die Live- und
+Tageskacheln: da eine eigenständige Datei keinen Server hat, ersetzt das Skript
+`fetch` durch eine Attrappe mit synthetischer Antwort – die Panels rendern also
+über ihren echten Code-Pfad. Screenshot erneuern (Dunkelmodus; die ausgelieferte
+HTML bleibt themenneutral und folgt der Einstellung des Betrachters):
 
 ```bash
-chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,1110 \
-  --screenshot=dashboard_beispiel.png dashboard_beispiel.html
+python beispiel_dashboard.py
+# Dunkelmodus nur für das Bild erzwingen (temporäre Kopie)
+sed "s/var dark=saved==='dark'||(!saved&&matchMedia('(prefers-color-scheme:dark)').matches);/var dark=true;/" \
+  dashboard_beispiel.html > /tmp/dash_dark.html
+chromium --headless --no-sandbox --hide-scrollbars --window-size=1500,2560 \
+  --virtual-time-budget=6000 --screenshot=dashboard_beispiel.png /tmp/dash_dark.html
 ```
 
 ### Webserver & API (Basic Auth)

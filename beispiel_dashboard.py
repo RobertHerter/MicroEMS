@@ -17,6 +17,67 @@ from ems.forecast import LoadForecaster
 OUT = "dashboard_beispiel.html"
 
 
+def _with_demo_api(html: str, now: pd.Timestamp) -> str:
+    """Live- und Heute-Kacheln mit Beispielwerten befüllen.
+
+    Die Panels holen ihre Werte per fetch von /api/... - in der eigenständigen
+    Beispieldatei gibt es keinen Server, deshalb blieben sie leer ("–"). Statt
+    die Werte ins HTML zu schreiben, wird `fetch` durch eine Attrappe ersetzt:
+    so läuft die ECHTE Render-Logik der Panels, das Beispiel bleibt also ein
+    ehrliches Abbild. Alle Zahlen sind frei erfunden (synthetisch).
+    """
+    import json as _json
+
+    live = {
+        "updated": now.isoformat(),
+        "pv_w": 7420.0, "house_load_w": 1310.0, "grid_w": -2870.0,
+        "battery_w": 3240.0, "soc_percent": 68.0, "wallbox_w": 0.0,
+        "pool_temp_c": 27.6, "outdoor_temp_c": 24.3,
+        "current_price_ct_kwh": 28.4,
+        "e3dc_control_enabled": True,
+        # Tageszähler (Heute-Bereich)
+        "daily_energy_updated": now.isoformat(),
+        "pv_forecast_today_kwh": 58.7, "pv_yield_today_kwh": 41.2,
+        "pv_forecast_until_now_kwh": 39.8,
+        "pv_deviation_today_kwh": 1.4, "pv_deviation_today_percent": 3.5,
+        "grid_import_today_kwh": 2.1, "grid_export_today_kwh": 18.6,
+        "battery_charge_today_kwh": 12.4, "battery_discharge_today_kwh": 6.9,
+        "house_consumption_today_kwh": 15.3,
+        "energy_balance_residual_kwh": 0.08, "energy_balance_ok": True,
+    }
+    status = {
+        "state": "ready", "phase": "Bereit", "progress": 100,
+        "message": "Plan aktuell – nächster Lauf in 12 min",
+        "duration_seconds": 6.2, "sequence": 1,
+        "plan_generated": now.isoformat(), "pending_recalc": False,
+    }
+    events = {"events": [
+        {"ts": (now - pd.Timedelta(minutes=3)).isoformat(), "kind": "recalc",
+         "level": "info", "message": "Plan neu berechnet · Modus peak", "details": {}},
+        {"ts": (now - pd.Timedelta(minutes=41)).isoformat(), "kind": "switch",
+         "level": "info", "message": "Laden begrenzt auf 3.892 W", "details": {}},
+        {"ts": (now - pd.Timedelta(hours=2)).isoformat(), "kind": "alarm",
+         "level": "warning",
+         "message": "Pool-Rückmeldung wieder aktuell: Pool/WP klein", "details": {}},
+    ]}
+    stub = (
+        "<script>(function(){\n"
+        " const DEMO={'api/live.json':" + _json.dumps(live, ensure_ascii=False)
+        + ",'api/status.json':" + _json.dumps(status, ensure_ascii=False)
+        + ",'api/events.json':" + _json.dumps(events, ensure_ascii=False) + "};\n"
+        " const real=window.fetch;\n"
+        " window.fetch=function(url,opts){\n"
+        "  const key=Object.keys(DEMO).find(k=>String(url).indexOf(k)>=0);\n"
+        "  if(key)return Promise.resolve({ok:true,status:200,\n"
+        "    json:()=>Promise.resolve(DEMO[key]),text:()=>Promise.resolve('')});\n"
+        "  return real?real.apply(window,arguments):Promise.reject(new Error('offline'));\n"
+        " };\n"
+        "})();</script>")
+    # VOR den Panel-Skripten einhängen, damit schon der erste Abruf greift.
+    marker = "</head>"
+    return html.replace(marker, stub + "\n" + marker, 1)
+
+
 def main() -> None:
     cfg = make_config(tmp_html=OUT)
     # Steuerbare Last (Pool-WP, wie im echten Betrieb) + interaktives
@@ -39,6 +100,14 @@ def main() -> None:
     ]
     cfg.dashboard.controls_enabled = True
     cfg.weather.enabled = True     # zeigt die Außentemperatur-Live-Kachel
+    # Debug-Report und Konfigurationseditor sind dokumentierte Funktionen -
+    # im Beispielbild sollen sie deshalb sichtbar sein. Die Zugangsdaten sind
+    # reine Platzhalter, nur damit editor_allowed() das Zahnrad einblendet;
+    # dieses Skript erzeugt ausschliesslich synthetische Beispielausgaben.
+    cfg.report.enabled = True
+    cfg.dashboard.config_editor_enabled = True
+    cfg.dashboard.username = "demo"
+    cfg.dashboard.password = "demo"
     tz = cfg.general.timezone
     rng = np.random.default_rng(7)
 
@@ -115,10 +184,54 @@ def main() -> None:
         planned = t.loc[past, "load_Pool_temp_c"]
         load_temp_actual["Pool"] = (planned + rng.normal(0, 0.15, len(planned))).dropna()
 
+    # Diagnose-Panels brauchen Statusdaten, sonst rendern sie gar nicht - das
+    # Beispielbild soll aber den im README beschriebenen Umfang zeigen. Alle
+    # Werte sind synthetisch.
+    solver_status = {
+        "seconds": 6.2, "polish_seconds": 0.4, "slow": False,
+        "median_seconds": 5.8, "variables": 6353, "binaries": 2126,
+        "constraints": 10023, "warm_start": True, "mip_gap": 0.0,
+    }
+    execution_status = {
+        "ok": True, "state": "ok", "cause": "none", "message": "Soll erfüllt.",
+        "planned": {"issued_at": (now - pd.Timedelta(minutes=15)).isoformat(),
+                    "grid_w": -2870.0, "battery_w": 3240.0, "soc": 66.0},
+        "actual": {"grid_w": -2812.0, "battery_w": 3195.0, "soc": 66.0},
+        "deviations": {"battery_energy_kwh": -0.011},
+        "export_limit_ok": True,
+        "battery_action": {"planned": "laden", "actual": "laden", "ok": True},
+    }
+    forecast_quality = [
+        {"name": "Hauslast", "level": "current", "state": "aktuell",
+         "detail": "288 von 288 Slots aus der Prognosequelle"},
+        {"name": "PV", "level": "current", "state": "aktuell",
+         "detail": "Solcast, p10–p90-Band kalibriert",
+         "issued_at": (now - pd.Timedelta(minutes=25)).isoformat()},
+        {"name": "Strompreis", "level": "partial",
+         "state": "teilweise ergänzt",
+         "detail": "96 von 288 Slots per Ähnliche-Tage-Schätzung (Folgetag)"},
+    ]
+    load_feedback_status = [
+        {"label": "Pool/WP Pinguin", "configured": True, "fresh": True,
+         "on": True, "power_w": 664.0, "age_seconds": 12.0, "required": True},
+        {"label": "Pool/WP klein", "configured": True, "fresh": True,
+         "on": False, "power_w": 0.0, "age_seconds": 12.0, "required": True},
+    ]
+    thermal_calibration = [
+        {"name": "Pool", "status": "applied", "n_windows": 441, "r2": 0.74,
+         "applied": {"loss_w_per_k": 163.7, "solar_absorption": 0.52},
+         "message": "reale Stufenrückmeldung verwendet"},
+    ]
+
     out = build_dashboard(cfg, t, res.total_cost_ct,
                           export_line_w=res.export_line_w, savings_eur=42.17,
                           load_temp_actual=load_temp_actual,
-                          ambient_temp_c=ambient_full)
+                          ambient_temp_c=ambient_full,
+                          solver_status=solver_status,
+                          execution_status=execution_status,
+                          forecast_quality=forecast_quality,
+                          load_feedback_status=load_feedback_status,
+                          thermal_calibration=thermal_calibration)
 
     # Fürs Repo eigenständig lauffähig: Plotly vom CDN statt lokaler Datei
     # (Version der JS-Bibliothek, nicht des Python-Pakets!)
@@ -128,6 +241,7 @@ def main() -> None:
         '<script src="plotly.min.js"></script>',
         f'<script src="https://cdn.plot.ly/plotly-{get_plotlyjs_version()}.min.js">'
         f'</script>')
+    html = _with_demo_api(html, now)
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(html)
     print(f"Beispiel-Dashboard geschrieben: {out}")
