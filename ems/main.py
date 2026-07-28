@@ -3034,6 +3034,13 @@ def _build_display_frame(repo, config, now, history, result,
         price, estimated = _price_series(repo, config, full, now, return_estimated=True)
         df["price_ct_kwh"] = price
         df["price_estimated"] = estimated.astype(float)  # 1 = Schätzung, 0 = Börsenpreis
+        # Zusätzlich der ECHTE veröffentlichte Preis - ohne Prognose-Auffüllung
+        # und ohne die Unsicherheits-Dämpfung, die _price_series auf geschätzte
+        # Slots legt. Nur so ist im Dashboard sichtbar, wie weit die Schätzung
+        # neben dem inzwischen bekannten Börsenpreis lag; wo noch nichts
+        # veröffentlicht ist, endet die Kurve (keine erfundenen Werte).
+        df["actual_price_ct_kwh"] = read_price_signal(
+            config, repo, full[0], full[-1] + slot).reindex(full)
     except Exception:
         pass
 

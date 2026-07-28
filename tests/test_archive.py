@@ -11,7 +11,8 @@ import pytest
 
 from ems import main as m
 from ems.archive import archive_html, list_runs, run_detail
-from ems.local_history import write_actuals, write_debug_snapshot
+from ems.local_history import (write_actuals, write_debug_snapshot,
+                               write_spot)
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
@@ -104,6 +105,33 @@ def test_run_detail_signs_match_the_actual_convention(tmp_path):
     assert d["actual"]["grid_w"][0] == pytest.approx(-200.0)
 
 
+def test_run_detail_splits_price_into_estimate_and_published(tmp_path):
+    """Der Plan nutzt fuer noch nicht veroeffentlichte Slots eine (gedaempfte)
+    Schaetzung. Beides muss getrennt sichtbar sein: was der Lauf annahm und was
+    der Boersenpreis wirklich wurde."""
+    cfg, index, gen = _seed(tmp_path)
+    # Echte Spotpreise fuer die erste Haelfte - Plan nutzte durchweg 27.5 ct.
+    write_spot(cfg.e3dc_rscp.history_db_path,
+               {ts.tz_convert("UTC").isoformat(): 10.0 for ts in index[:16]})
+    d = run_detail(cfg, gen.isoformat())
+    real = d["actual"]["price_ct_kwh"]
+    assert real is not None
+    # Wo ein Boersenpreis vorliegt, steht er da (durch das Tarifmodell) ...
+    assert real[0] is not None and real[0] != pytest.approx(27.5)
+    # ... danach bleibt die Kurve leer statt fortgeschrieben zu werden.
+    assert real[20] is None
+    assert d["deviation"]["price_mae_ct"] is not None
+
+
+def test_run_detail_price_estimate_mask_is_optional(tmp_path):
+    """Ohne Prognose-Archiv gibt es keine Schaetz-Maske - das darf die
+    Aufbereitung nicht stoeren (aeltere Laeufe, frische Installation)."""
+    cfg, index, gen = _seed(tmp_path)
+    d = run_detail(cfg, gen.isoformat())
+    assert d["plan"]["price_estimated"] is None
+    assert "price_estimated_mae_ct" not in d["deviation"]
+
+
 def test_run_detail_reports_deviation_only_where_actuals_exist(tmp_path):
     cfg, index, gen = _seed(tmp_path)
     d = run_detail(cfg, gen.isoformat())
@@ -150,6 +178,9 @@ def test_archive_page_is_self_contained(tmp_path):
     assert "api/archive-runs.json" in html and "api/archive-run.json" in html
     assert 'id="run"' in html and 'id="chart"' in html
     assert 'id="day"' in html            # Tagesfilter (10 Tage Vorhaltung)
+    # Preis: Plan, geschaetzter Anteil und veroeffentlichter Preis getrennt.
+    assert "'Preis Plan'" in html and "'Preis Ist'" in html
+    assert "Preis Plan (Sch" in html and "price_estimated" in html
     # Plotly lokal (kein Internet), Rueckweg zum Dashboard, Theme-Umschalter.
     assert '<script src="plotly.min.js">' in html
     assert "ems-theme" in html

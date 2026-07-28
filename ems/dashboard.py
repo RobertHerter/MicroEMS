@@ -1394,6 +1394,23 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 legendgrouptitle_text=_GROUPS["progb"], hovertemplate=HOVER_CT,
                 line=dict(color="#8c564b", width=2, shape="hv", dash="dash")),
                 row=3, col=1)
+        # Der inzwischen VERÖFFENTLICHTE Preis - nur dort, wo er von dem
+        # abweicht, was der Plan benutzt (geschätzte Slots werden zusätzlich
+        # gedämpft). So ist die Güte der Preisschätzung ablesbar, statt sie nur
+        # als "Schätzung" zu markieren.
+        if "actual_price_ct_kwh" in t.columns:
+            real = pd.to_numeric(t["actual_price_ct_kwh"], errors="coerce")
+            differs = (real - price).abs() > 0.05
+            if real.notna().any() and bool((differs & real.notna()).any()):
+                fig.add_trace(go.Scatter(
+                    x=x, y=real.where(real.notna()), name="Börsenpreis (Ist)",
+                    mode="lines", legendgroup="progb",
+                    legendrank=_GROUP_RANK["progb"],
+                    legendgrouptitle_text=_GROUPS["progb"],
+                    hovertemplate=HOVER_CT,
+                    line=dict(color="#5c3a34", width=1.4, shape="hv",
+                              dash="dot")),
+                    row=3, col=1)
     line("feedin_ct_kwh", "Einspeisevergütung", "#2ca02c", 3, "progb",
          width=1.2, shape="hv", hover=HOVER_CT)
 

@@ -63,7 +63,9 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
     bei einem alten Lauf also ueber den ganzen Horizont, bei einem frischen nur
     am linken Rand. None, wenn zu diesem Zeitpunkt kein Lauf archiviert ist.
     """
-    from .local_history import read_actual, read_debug_snapshot
+    from .local_history import (read_actual, read_debug_snapshot,
+                                read_optimizer_forecast_asof, read_spot)
+    from .tariff import apply_tariff
 
     db = config.e3dc_rscp.history_db_path
     tz = config.general.timezone
@@ -118,12 +120,32 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
         m = min(len(i), len(e), n)
         grid = i[:m] - e[:m]
 
+    # War der Preis eines Slots zur Laufzeit nur geschaetzt? Steht im
+    # Prognose-Archiv desselben Laufs (Folgetagspreise sind erst ab ~13:00 da).
+    price_estimated = None
+    try:
+        _, frame = read_optimizer_forecast_asof(
+            db, pd.Timestamp(snap.get("generated")) + pd.Timedelta(minutes=1),
+            index[0], index[-1] + step, tz)
+        cols = [] if frame is None else list(frame.columns)
+        # Das Prognose-Archiv fuehrt die Maske je Signal als
+        # "<signal>_estimated"; der aeltere Name bleibt als Fallback drin.
+        name = next((c for c in ("price_ct_kwh_estimated", "price_estimated")
+                     if c in cols), None)
+        if name:
+            col = frame[name].reindex(index)
+            price_estimated = [None if pd.isna(v) else int(float(v) > 0.5)
+                               for v in col]
+    except Exception as exc:                                # pragma: no cover
+        log.debug("Schaetz-Maske des Preises nicht lesbar (%s).", exc)
+
     plan_out = {
         "pv_w": _series(inputs.get("pv_w") or [], index),
         "pv10_w": (_series(inputs.get("pv10_w"), index)
                    if inputs.get("pv10_w") else None),
         "house_w": _series(inputs.get("house_load_w") or [], index),
         "price_ct_kwh": _series(inputs.get("price_ct_kwh") or [], index),
+        "price_estimated": price_estimated,
         "battery_w": None if battery is None else _series(battery, index),
         "grid_w": None if grid is None else _series(grid, index),
         "soc_percent": (None if plan_col("house_soc_percent") is None
@@ -146,6 +168,20 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
         coverage = max(coverage, int(aligned.notna().sum()))
         actual_out[key] = _series(aligned.to_numpy(dtype="float64"), index)
 
+    # Ist-Preis: der inzwischen veroeffentlichte Boersenpreis, durch dasselbe
+    # Tarifmodell gerechnet wie im Lauf. Ohne Auffuellen - wo (noch) nichts
+    # veroeffentlicht ist, bleibt die Kurve leer.
+    try:
+        spot = read_spot(db, start, end, tz, config.general.slot_minutes)
+        real_price = (apply_tariff(spot, config).reindex(index)
+                      if spot is not None and not spot.empty else None)
+    except Exception as exc:                                # pragma: no cover
+        log.debug("Ist-Preis nicht lesbar (%s).", exc)
+        real_price = None
+    actual_out["price_ct_kwh"] = (
+        None if real_price is None
+        else _series(real_price.to_numpy(dtype="float64"), index))
+
     deviation = {
         "pv_mae_w": _mae(plan_out["pv_w"], actual_out.get("pv_w") or []),
         "house_mae_w": _mae(plan_out["house_w"], actual_out.get("house_w") or []),
@@ -153,7 +189,17 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
                            actual_out.get("soc_percent") or []),
         "battery_mae_w": _mae(plan_out["battery_w"] or [],
                               actual_out.get("battery_w") or []),
+        "price_mae_ct": _mae(plan_out["price_ct_kwh"],
+                             actual_out.get("price_ct_kwh") or []),
     }
+    # Nur der geschaetzte Teil ist fuer die Preisguete interessant - bei den
+    # bereits veroeffentlichten Slots muessen Plan und Ist ohnehin gleich sein.
+    if price_estimated and actual_out.get("price_ct_kwh"):
+        pe = [i for i, v in enumerate(price_estimated) if v]
+        deviation["price_estimated_slots"] = len(pe)
+        deviation["price_estimated_mae_ct"] = _mae(
+            [plan_out["price_ct_kwh"][i] for i in pe],
+            [actual_out["price_ct_kwh"][i] for i in pe])
     return {
         "generated": str(snap.get("generated") or ""),
         "ts_local": str(pd.Timestamp(snap.get("generated")).tz_convert(tz))
@@ -322,6 +368,12 @@ frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezu
    +tile(num(dv.battery_mae_w)+' W','Akku-Abweichung','MAE Plan gegen Ist')
    +tile(num(dv.soc_mae_pp,1)+' %','SoC-Abweichung','MAE in Prozentpunkten',
          (typeof dv.soc_mae_pp==='number'&&dv.soc_mae_pp>5?'warn':''))
+   +tile((typeof dv.price_mae_ct==='number'?num(dv.price_mae_ct,2)+' ct':'–'),
+         'Preis-Abweichung',
+         (dv.price_estimated_slots
+          ? 'geschätzter Teil: '+num(dv.price_estimated_mae_ct,2)+' ct in '
+            +dv.price_estimated_slots+' Slots'
+          : 'Plan gegen veröffentlichten Preis'))
    +tile(cov+' %','Ist-Abdeckung',d.actual_slots+' von '+d.slots+' Slots');
  }
  function draw(d){
@@ -340,7 +392,14 @@ frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezu
   add(P.battery_w,'Akku Plan','#2f8f4e',1,null,'W'); add(A.battery_w,'Akku Ist','#2f8f4e',1,'dot','W');
   add(P.grid_w,'Netz Plan','#6c7a89',1,null,'W');    add(A.grid_w,'Netz Ist','#6c7a89',1,'dot','W');
   add(P.soc_percent,'SoC Plan','#1769c2',2,null,'%');add(A.soc_percent,'SoC Ist','#1769c2',2,'dot','%');
-  add(P.price_ct_kwh,'Preis','#7d5ba6',3,null,'ct/kWh');
+  add(P.price_ct_kwh,'Preis Plan','#7d5ba6',3,null,'ct/kWh');
+  // Der Plan benutzt fuer noch nicht veroeffentlichte Slots eine (gedaempfte)
+  // Schaetzung. Die wird eigens hervorgehoben und dem inzwischen bekannten
+  // Boersenpreis gegenuebergestellt.
+  const est=P.price_estimated;
+  if(est&&est.some(v=>v))
+   add(P.price_ct_kwh.map((v,i)=>est[i]?v:null),'Preis Plan (Schätzung)','#b58fd6',3,'dash','ct/kWh');
+  add(A.price_ct_kwh,'Preis Ist','#7d5ba6',3,'dot','ct/kWh');
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im
   // Dark-Mode weiss auf weiss (Plotly-Standard ist hell).

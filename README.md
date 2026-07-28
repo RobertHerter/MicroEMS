@@ -681,7 +681,15 @@ beschlossene Plan.
   die seit dem Lauf vergangene Zeit; bei einem frischen Lauf also nur am linken
   Rand (die Kachel *Ist-Abdeckung* zeigt, wie viel).
 - Kennzahlen je Lauf: Solver-Status (inkl. Grund bei `Infeasible`), Plankosten,
-  und die Abweichung Plan↔Ist als MAE für PV, Last, Akku und SoC.
+  und die Abweichung Plan↔Ist als MAE für PV, Last, Akku, SoC und Preis.
+- **Preis dreigeteilt**: *Preis Plan* (was der Lauf benutzt hat), *Preis Plan
+  (Schätzung)* für die Slots, deren Börsenpreis zur Laufzeit noch nicht
+  veröffentlicht war (Folgetag erst ab ~13:00, zusätzlich gedämpft), und *Preis
+  Ist* – der inzwischen veröffentlichte Preis durch dasselbe Tarifmodell. Die
+  Kachel nennt die Abweichung separat für den geschätzten Teil; dort steckt die
+  eigentliche Preisunsicherheit (gemessen 5 ct/kWh MAE an einem 00:00-Lauf).
+  Dieselbe Trennung zeigt jetzt auch das Dashboard im Preis-Panel
+  (*Börsenpreis* / *Preis (Schätzung)* / *Börsenpreis (Ist)*).
 - Vorzeichen wie in den Ist-Signalen: Akku positiv = laden, Netz positiv = Bezug.
 - Vorausgewählt ist der Lauf von **heute 00:00** – der Tagesplan, an dem sich
   die Prognosegüte des Morgens zeigt (der aktuellste Lauf steht ja im

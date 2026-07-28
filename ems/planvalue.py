@@ -35,6 +35,23 @@ import pulp
 
 log = logging.getLogger("ems.planvalue")
 
+_LP_SOLVER = None
+
+
+def _lp_solver():
+    """Solver fuer die kleinen Hilfs-LPs.
+
+    Bevorzugt das System-CBC (COIN_CMD, Paket coinor-cbc) - wie
+    ``optimizer.make_solver``: PULP_CBC_CMD ist ab PuLP 3.3 deprecated und
+    entfaellt in 4.0. Einmal ermittelt und gemerkt, damit nicht je LP-Aufruf
+    die Verfuegbarkeit geprueft wird.
+    """
+    global _LP_SOLVER
+    if _LP_SOLVER is None:
+        coin = pulp.COIN_CMD(msg=0)
+        _LP_SOLVER = coin if coin.available() else pulp.PULP_CBC_CMD(msg=0)
+    return _LP_SOLVER
+
 
 # --------------------------------------------------------------------------- #
 # Ist-Daten und Preise
@@ -126,7 +143,7 @@ def _best_allocation(price, cap_kwh, total_kwh, headroom_kwh, cheapest: bool):
         for t in range(n):
             running.append(x[t])
             prob += pulp.lpSum(running) <= float(max(0.0, headroom_kwh[t]))
-    prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    prob.solve(_lp_solver())
     if prob.status != pulp.LpStatusOptimal:
         return None
     values = np.array([float(v.value() or 0.0) for v in x])
