@@ -92,6 +92,50 @@ def test_validate_rejects_invalid_configuration(tmp_path):
         validate_document(document)
 
 
+def test_every_editable_field_has_a_description(tmp_path):
+    """Jedes im Editor sichtbare Eingabefeld braucht einen Erklärtext - sonst
+    stehen dort nackte Schlüssel, die man nur raten kann. Geprüft wird gegen die
+    Beispiel-Config (vollständiger Feldsatz, unabhängig von der Live-Anlage).
+
+    Die Pfadbildung entspricht dem Editor-JS: Objekt-Kind `pfad.key`,
+    Listenpunkt `pfad[i]`, Nachschlag über `pfad` bzw. `pfad` mit `[i]` -> `[]`.
+    """
+    import pathlib
+    import re
+    import shutil
+    from ems.config_editor import editor_payload
+
+    example = pathlib.Path(__file__).resolve().parents[1] / "config.example.yaml"
+    # In ein eigenes Verzeichnis kopieren: so wirkt kein lokales Overlay mit und
+    # die Beschreibungen kommen reproduzierbar aus der Beispiel-Config.
+    shutil.copy(example, tmp_path / "config.yaml")
+    shutil.copy(example, tmp_path / "config.example.yaml")
+    payload = editor_payload(str(tmp_path / "config.yaml"))
+    doc, desc = payload["config"], payload["descriptions"]
+
+    def described(path):
+        return bool(desc.get(path) or desc.get(re.sub(r"\[\d+\]", "[]", path)))
+
+    missing = []
+
+    def walk(value, path):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}" if path else key)
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                walk(item, f"{path}[{i}]")
+        elif not described(path):                 # Skalar = eigenes Eingabefeld
+            missing.append(re.sub(r"\[\d+\]", "[]", path))
+
+    for key, value in doc.items():
+        walk(value, key)
+        assert desc.get(key), f"Panel '{key}' ohne Beschreibung"
+
+    assert not sorted(set(missing)), (
+        "Felder ohne Beschreibung im Editor: " + ", ".join(sorted(set(missing))))
+
+
 def test_new_safety_options_are_documented_in_the_editor():
     """Neue Konfigurationswerte müssen im Editor erklärt sein - sonst stehen sie
     dort unkommentiert und werden falsch gesetzt. thermostat_cutoff_c gehört

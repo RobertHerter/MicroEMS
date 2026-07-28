@@ -105,6 +105,190 @@ LOAD_DESCRIPTIONS = {
     "controllable_loads[].stages[].feedback_on_threshold_w": "Ab dieser Leistung gilt die Stufe als aktiv.",
 }
 
+# Die Signal-Bloecke unter influxdb.signals sind gleich aufgebaut, heissen aber
+# je Anlage anders. Die Beschreibungen werden daher je vorhandenem Signal
+# expandiert (siehe editor_payload) statt einzeln gepflegt.
+SIGNAL_FIELD_DESCRIPTIONS = {
+    "measurement": "InfluxDB-Measurement, aus dem dieses Signal gelesen wird.",
+    "field": "Feldname innerhalb des Measurements.",
+    "tags.topic": "Tag-Filter, meist das MQTT-Topic der Quelle.",
+    "aggregation": "Verdichtung je Slot: mean für Leistungen/Preise, last für Zustände wie den Ladestand.",
+    "fill_method": "Lücken füllen: interpolate für glatte Verläufe, hold für stufige Werte wie Preise.",
+    "retention_policy": "InfluxDB-1-Retention-Policy, falls nicht die Standard-Policy.",
+    "optional": "Fehlt das Signal, läuft das EMS trotzdem weiter.",
+    "scale": "Faktor zur Umrechnung in die interne Einheit (W, Wh, ct/kWh, %).",
+    "offset": "Konstanter Versatz nach der Skalierung.",
+}
+
+# Alle uebrigen Felder, die nicht schon durch einen Kommentar in der
+# Beispiel-Config beschrieben sind. Gruppenkommentare dort decken jeweils nur
+# den unmittelbar folgenden Schluessel ab - die Geschwister brauchen einen
+# eigenen Text, sonst stehen sie im Editor unerklaert.
+FIELD_DESCRIPTIONS = {
+    # -- allgemein / Standort ------------------------------------------------
+    "general.timezone": "Zeitzone für Slots, Fahrpläne und Auswertungen (IANA-Name).",
+    "general.longitude": "Längengrad des Standorts für Sonnenstand und Wetterabruf.",
+    # -- InfluxDB-Zugang -----------------------------------------------------
+    "influxdb.v1.port": "Port der InfluxDB-1-Instanz.",
+    "influxdb.v1.username": "Benutzername für InfluxDB 1 (leer, wenn nicht nötig).",
+    "influxdb.v1.password": "Passwort für InfluxDB 1.",
+    "influxdb.v1.database": "Datenbankname in InfluxDB 1.",
+    "influxdb.v1.ssl": "Verbindung über HTTPS aufbauen.",
+    "influxdb.v1.verify_ssl": "Zertifikat prüfen; bei selbstsigniertem Zertifikat abschalten.",
+    "influxdb.v2.url": "Basis-URL der InfluxDB-2-Instanz.",
+    "influxdb.v2.token": "API-Token mit Lese- und Schreibrecht.",
+    "influxdb.v2.org": "Organisation in InfluxDB 2.",
+    "influxdb.v2.bucket": "Bucket, in dem die Messwerte liegen.",
+    # -- Akku / Fahrzeug -----------------------------------------------------
+    "house_battery.min_soc_percent": "Untere Entladegrenze des Hausakkus in Prozent.",
+    "house_battery.max_soc_percent": "Obere Ladegrenze des Hausakkus in Prozent.",
+    "vehicle.capacity_wh": "Nutzbare Kapazität der Fahrzeugbatterie in Wh.",
+    "vehicle.max_charge_w": "Maximale Ladeleistung der Wallbox in Watt.",
+    "vehicle.min_soc_percent": "Ladezustand, der im Fahrzeug nicht unterschritten wird.",
+    "vehicle.target_soc_percent": "Ziel-Ladezustand, der bis zur Abfahrt erreicht sein soll.",
+    # -- Optimierung ---------------------------------------------------------
+    "optimization.auto_peak_soc_reserve_percent": "Zusätzlich freigehaltene Kapazität als Reserve bei der automatischen Peak-Entscheidung.",
+    "optimization.auto_peak_expected_override_percent": "Ein deutlich höherer Erwartungsüberschuss darf ein sehr breites p10-Band überstimmen.",
+    "optimization.auto_peak_threshold_winter_percent": "Peak-Schwelle am 21. Dezember; dazwischen wird glatt interpoliert.",
+    "optimization.auto_peak_threshold_summer_percent": "Peak-Schwelle am 21. Juni; dazwischen wird glatt interpoliert.",
+    "optimization.peak_charge_ramp_penalty_winter_ct_kw": "Malus auf Ladesprünge im Winter; glättet das Laden entlang der Einspeise-Linie.",
+    "optimization.peak_charge_ramp_penalty_summer_ct_kw": "Malus auf Ladesprünge im Sommer; glättet das Laden entlang der Einspeise-Linie.",
+    "optimization.late_charge_delay_ct_kwh": "Zeitgewichteter Malus auf frühes Laden im Modus „Spät laden“. 0 = keine Verschiebung.",
+    "optimization.plan_stability_hours": "So viele Stunden des bisherigen Fahrplans werden gegen kleine Umplanungen geschützt. 0 = aus.",
+    # -- Prognose ------------------------------------------------------------
+    "forecast.weight_same_month": "Gewicht für historische Tage aus demselben Monat bei der Ähnlichkeitssuche.",
+    "forecast.weight_same_season": "Gewicht für historische Tage aus derselben Jahreszeit.",
+    "forecast.temp_sigma": "Breite des Temperatur-Ähnlichkeitskerns in Kelvin. 0 = Temperatur ignorieren.",
+    "forecast.load_uncertainty_low_quantile": "Unteres Quantil des empirischen Lastbands (Dashboard-Fläche).",
+    "forecast.load_uncertainty_high_quantile": "Oberes Quantil des empirischen Lastbands.",
+    "forecast.load_uncertainty_min_samples": "So viele vergleichbare Slots müssen vorliegen, bevor das Band gezeigt wird.",
+    "forecast.intraday_load_window_hours": "Zeitfenster, über das die Ist-Abweichung der Hauslast gemittelt wird.",
+    "forecast.intraday_load_deadband": "Kleine Abweichungen darunter werden ignoriert (Rauschunterdrückung).",
+    "forecast.intraday_load_max_factor": "Obergrenze des Korrekturfaktors für die Hauslast.",
+    "forecast.intraday_load_max_step": "Maximale Änderung des Korrekturfaktors je 15-min-Lauf.",
+    "forecast.intraday_load_decay_hours": "Zeitkonstante, über die die Korrektur wieder abklingt.",
+    "forecast.intraday_pv_window_hours": "Zeitfenster, über das die Ist-Abweichung der PV gemittelt wird.",
+    "forecast.intraday_pv_deadband": "Kleine PV-Abweichungen darunter werden ignoriert.",
+    "forecast.intraday_pv_max_factor": "Obergrenze des Korrekturfaktors für die PV.",
+    "forecast.intraday_pv_max_step": "Maximale Änderung des PV-Korrekturfaktors je Lauf.",
+    "forecast.intraday_pv_decay_hours": "Zeitkonstante, über die die PV-Korrektur abklingt.",
+    "forecast.disaggregation_lookback_days": "Rückblick, aus dem die reale Laufzeit steuerbarer Lasten herausgerechnet wird.",
+    "forecast.disaggregation_min_samples": "Mindestzahl echter Rückmeldungen, bevor herausgerechnet wird.",
+    "forecast.live_nowcast_retention_days": "Aufbewahrung der 5-Sekunden-Livewerte in der lokalen Historie.",
+    "forecast.live_nowcast_min_coverage_seconds": "Mindestabdeckung je 15-min-Slot, damit der Livewert als belastbar gilt.",
+    "forecast.live_nowcast_max_gap_seconds": "Größere Lücken beenden die Verdichtung eines Slots.",
+    "forecast.load_ensemble_lookback_days": "Rückblick für die Bewertung der Prognoseverfahren gegeneinander.",
+    "forecast.load_ensemble_min_folds": "So viele unabhängige Vergleichstage sind nötig, bevor das Ensemble greift.",
+    "forecast.load_ensemble_horizon_hours[]": "Vorlaufzeit-Grenzen, für die getrennte Gewichte gelernt werden.",
+    "forecast.load_ensemble_min_weight": "Mindestgewicht je Verfahren, damit keines ganz verschwindet.",
+    "forecast.load_ensemble_archive_stride_hours": "Abstand, in dem Prognosen zum späteren Vergleich archiviert werden.",
+    "forecast.load_ensemble_ml_retrain_hours": "Mindestabstand zwischen zwei Trainings des ML-Schattenmodells.",
+    "forecast.temperature_residual_min_folds": "Nötige Vergleichstage, bevor die Temperatur-Restkorrektur genutzt wird.",
+    "forecast.temperature_residual_min_samples": "Nötige Einzelwerte für die Temperatur-Restkorrektur.",
+    "forecast.temperature_residual_max_adjustment_percent": "Obergrenze der Korrektur aus dem Heiz-/Kühl-Residual.",
+    # -- PV-Modell / Quellenwahl --------------------------------------------
+    "pv_model.enabled": "Freie PV-Prognose mit pvlib aktivieren (Alternative oder Ergänzung zu Solcast).",
+    "pv_model.arrays[].name": "Bezeichnung des Teilgenerators, z. B. „Ost“ oder „West“.",
+    "pv_model.arrays[].kwp": "Installierte Leistung dieses Teilgenerators in kWp.",
+    "pv_model.arrays[].tilt": "Neigung der Module in Grad (0 = waagerecht).",
+    "pv_model.arrays[].azimuth": "Ausrichtung in Grad (180 = Süden).",
+    "pv_model.weather_models[]": "Wettermodelle, die unabhängig gerechnet und danach gewichtet kombiniert werden.",
+    "pv_model.ensemble_min_samples": "Nötige Vergleichswerte, bevor die Modellgewichte angepasst werden.",
+    "pv_model.ensemble_horizon_hours[]": "Vorlaufzeit-Grenzen für getrennt gelernte Modellgewichte.",
+    "pv_model.ensemble_min_weight": "Mindestgewicht je Wettermodell, damit keines ganz verschwindet.",
+    "pv_source_selection.enabled": "pvlib und Solcast laufend gegen die echten Erträge bewerten und die bessere Quelle wählen.",
+    "pv_source_selection.lookback_days": "Zeitraum, über den die Quellen verglichen werden.",
+    "pv_source_selection.min_samples": "Nötige Vergleichswerte, bevor gewechselt wird.",
+    "pv_source_selection.min_improvement_percent": "So viel besser muss die andere Quelle sein, damit gewechselt wird.",
+    # -- Solcast / Wetter ----------------------------------------------------
+    "solcast.enabled": "PV-Prognose von Solcast abrufen (API-Schlüssel nötig).",
+    "solcast.calls_per_key_per_day": "Abrufbudget je API-Schlüssel und Tag (Free-Tier meist 10).",
+    "solcast.window_end_hour": "Ende des Zeitfensters, über das die Abrufe verteilt werden.",
+    "solcast.sources[].api_key": "Solcast-API-Schlüssel.",
+    "solcast.sources[].resource_id": "Kennung der Solcast-Anlage (rooftop site).",
+    "weather.enabled": "Temperatur und Einstrahlung von Open-Meteo abrufen (ohne Schlüssel).",
+    "weather.forecast_days": "Wie viele Tage Wettervorhersage geladen werden.",
+    "weather.past_days": "Wie viele vergangene Tage mitgeladen werden.",
+    # -- Tarif ---------------------------------------------------------------
+    "tariff.enabled": "Bezugspreis aus Spotpreis und Tarifmodell berechnen statt aus der InfluxDB lesen.",
+    "tariff.history_backfill_days": "Wie weit die Preishistorie beim ersten Lauf nachgeladen wird.",
+    "tariff.grid_fee_windows[].ct_kwh": "Netzentgelt in diesem Zeitfenster (netto ct/kWh).",
+    "tariff.grid_fee_windows[].hours[]": "Stunden, für die dieses Fenster gilt (Ende ausschließlich).",
+    "tariff.grid_fee_windows[].months[]": "Monate, für die dieses Fenster gilt.",
+    # -- E3DC / MQTT ---------------------------------------------------------
+    "e3dc_rscp.password": "RSCP-Passwort des E3DC (im Gerät unter Benutzerprofil gesetzt).",
+    "e3dc_rscp.read_live": "Aktuelle Messwerte direkt vom Gerät lesen statt über die Datenbank.",
+    "e3dc_rscp.history_db_path": "Pfad der lokalen SQLite-Historie (Messwerte, Archive, Ereignisse).",
+    "e3dc_rscp.history_backfill_days": "Wie viele Tage Gerätehistorie beim Start nachgeladen werden.",
+    "mqtt.enabled": "Sollwerte per MQTT ausgeben.",
+    "mqtt.host": "Adresse des MQTT-Brokers.",
+    "mqtt.port": "Port des MQTT-Brokers (meist 1883, mit TLS 8883).",
+    "mqtt.username": "Benutzername am Broker.",
+    "mqtt.password": "Passwort am Broker.",
+    "mqtt.base_topic": "Präfix aller vom EMS veröffentlichten Topics.",
+    "mqtt.qos": "MQTT-Dienstgüte: 0 = einmal senden, 1 = bestätigt, 2 = genau einmal.",
+    "mqtt.schedule_fields[]": "Spalten der Steuertabelle, die als Zeitplan veröffentlicht werden.",
+    # -- Dashboard / Berichte / Sonstiges ------------------------------------
+    "dashboard.enabled": "HTML-Dashboard erzeugen.",
+    "dashboard.output_path": "Dateipfad der erzeugten Dashboard-Seite.",
+    "dashboard.host": "Adresse, auf der der Dashboard-Server lauscht (0.0.0.0 = alle).",
+    "dashboard.port": "Port des Dashboard-Servers.",
+    "monitoring.drift_enabled": "Abweichung zwischen prognostiziertem und echtem Ladestand überwachen.",
+    "monitoring.drift_window_hours": "Zeitfenster, über das die Drift gemittelt wird.",
+    "monitoring.drift_alert_percent": "Ab dieser mittleren Abweichung in Prozentpunkten wird gewarnt.",
+    "monitoring.execution_soc_tolerance_percent": "Zulässige Abweichung des Ladestands bei der Ausführungsprüfung.",
+    "monitoring.execution_battery_tolerance_w": "Zulässige Abweichung der Akkuleistung bei der Ausführungsprüfung.",
+    "monitoring.execution_grid_tolerance_w": "Zulässige Abweichung der Netzleistung bei der Ausführungsprüfung.",
+    "monitoring.execution_alert_consecutive": "So viele Prüfungen müssen nacheinander scheitern, bevor Alarm ausgelöst wird.",
+    "monitoring.solver_runtime_baseline_runs": "Zahl der Läufe, aus denen die typische Solver-Laufzeit gebildet wird.",
+    "monitoring.solver_runtime_factor": "Ab diesem Vielfachen der typischen Laufzeit gilt der Solver als langsam.",
+    "calibration.enabled": "Wöchentlich kalibriertes Korrekturprofil für PV und Hauslast anwenden.",
+    "calibration.pv_profile": "Pfad des Korrekturprofils (wird von der Kalibrierung geschrieben).",
+    "recalc.enabled": "Bei großer Abweichung zwischen Plan und Ist sofort neu rechnen, statt auf den nächsten Zyklus zu warten.",
+    "report.enabled": "Debug-Schnappschüsse speichern und den Versand-Knopf im Dashboard zeigen.",
+    "report.mail_to": "Vorbelegte Empfängeradresse beim Öffnen des Mailprogramms.",
+    "report.snapshot_path": "Dateipfad des jeweils letzten Debug-Schnappschusses.",
+    "savings.enabled": "Ersparnis gegen eine „Ohne-EMS“-Baseline mitschreiben.",
+    "savings.state_path": "Datei, in der der Ersparnis-Stand fortgeschrieben wird.",
+    # -- weitere Felder aus der Beispiel-Config ------------------------------
+    "house_battery.capacity_wh": "Nennkapazität des Hausakkus in Wh (Basis der SoC-Prozentwerte).",
+    "house_battery.full_hold_soc_threshold_percent": "Ab diesem Ladestand zählt der Akku als „voll gehalten“ (Zellschonung).",
+    "vehicle.enabled": "Fahrzeug in der Optimierung berücksichtigen.",
+    "influxdb.v1.host": "Adresse der InfluxDB-1-Instanz.",
+    "dashboard.password": "Passwort der Dashboard-Anmeldung (Basic Auth).",
+    "e3dc_rscp.enabled": "Direkte Verbindung zum E3DC per RSCP aufbauen.",
+    "e3dc_rscp.control_enabled": "Den Speicher wirklich steuern (greift real ein), nicht nur lesen.",
+    "e3dc_rscp.batt_sign": "Vorzeichen der Akkuleistung umdrehen, falls das Gerät Entladen positiv meldet.",
+    "e3dc_rscp.grid_sign": "Vorzeichen der Netzleistung umdrehen, falls das Gerät Einspeisung positiv meldet.",
+    "e3dc_rscp.curtailment_normal_percent": "Normalwert der PV-Leistungsbegrenzung, auf den nach einem Eingriff zurückgestellt wird.",
+    "e3dc_rscp.curtailment_verify_tolerance_percent": "Zulässige Abweichung beim Zurücklesen der eingestellten Begrenzung.",
+    "monitoring.execution_live_sample_seconds": "Abtastrate der schnellen Ausführungsprüfung aus E3DC-Livewerten.",
+    "monitoring.execution_live_window_seconds": "Zeitfenster, über das der robuste Median dieser Prüfung gebildet wird.",
+    "monitoring.execution_live_max_gap_seconds": "Größere Messlücken werden nicht mehr interpoliert.",
+    "monitoring.execution_live_settle_seconds": "Einpendelzeit nach einem Steuereingriff, bevor bewertet wird.",
+    "monitoring.execution_live_consecutive": "So viele Abweichungen nacheinander lösen den vorläufigen Alarm aus.",
+    "optimization.auto_peak_threshold_percent": "Ab diesem Anteil der nutzbaren Kapazität gilt ein Tag als Peak-Tag.",
+    "optimization.auto_peak_p10_floor_percent": "Mindestanteil, den das pessimistische p10 der Schwelle erreichen muss, damit ein starker Erwartungswert sie plausibilisieren darf.",
+    "optimization.evening_reserve_start": "Beginn des Abendfensters, in dem die Reserve gehalten wird.",
+    "optimization.evening_reserve_end": "Ende des Fensters; danach darf der Akku gezielt in die Spitze entladen.",
+    "optimization.evening_reserve_hold_from_hour": "Ab dieser Stunde wird die automatisch bestimmte Abend-Reserve gehalten.",
+    "optimization.evening_reserve_price_factor": "Reserve nur, wenn das Abend-Preismaximum mindestens dieses Vielfache des Tagesmedians erreicht.",
+    "pv_model.p90_uncertainty": "Breite des oberen PV-Bandes; wird aus echten Residuen kalibriert.",
+    "solcast.combine": "Mehrere Solcast-Quellen verrechnen: sum für getrennte Teilgeneratoren, mean für dieselbe Anlage.",
+    "sanity.enabled": "Externe Eingangswerte auf Plausibilität prüfen und Ausreißer ersetzen.",
+    "sanity.price_max_ct": "Obergrenze für plausible Strompreise; darüber wird der Median eingesetzt.",
+    "tariff.grid_fee_ct_kwh": "Konstantes Netzentgelt bei grid_fee_mode „static“ (netto ct/kWh).",
+    "tariff.grid_fee_windows[].date_from": "Beginn des Zeitraums als MM-DD (Jahreswechsel wird unterstützt).",
+    "tariff.grid_fee_windows[].date_to": "Ende des Zeitraums als MM-DD.",
+    # -- steuerbare Lasten: Restfelder ---------------------------------------
+    "controllable_loads[].window.from": "Früheste lokale Startstunde.",
+    "controllable_loads[].window.to": "Späteste lokale Endstunde.",
+    "controllable_loads[].power_profile_w[]": "Leistungswert eines 15-min-Schritts der Startkurve.",
+    "controllable_loads[].feedback_required": "Alarm auslösen, wenn die echte Rückmeldung der Last fehlt.",
+    "controllable_loads[].feedback_max_age_minutes": "Ab diesem Alter gilt eine Rückmeldung als veraltet.",
+    "controllable_loads[].feedback_hold_while_connected": "Für Sensoren, die nur bei Änderung senden: letzter Wert gilt, solange die MQTT-Verbindung steht.",
+}
+
 LOAD_TEMPLATES = {
     "deferrable": {
         "name": "Neue verschiebbare Last",
@@ -271,15 +455,34 @@ def _description_payload(config_path: str) -> dict:
             pass
     descriptions.update(TOP_DESCRIPTIONS)
     descriptions.update(LOAD_DESCRIPTIONS)
+    descriptions.update(FIELD_DESCRIPTIONS)
     return descriptions
+
+
+def _expand_signal_descriptions(document, descriptions) -> None:
+    """influxdb.signals.<name>.<feld> je vorhandenem Signal beschreiben.
+
+    Die Bloecke sind gleich aufgebaut, heissen aber je Anlage anders - ohne
+    diese Expansion staenden alle Signalfelder unerklaert im Editor."""
+    signals = (document.get("influxdb") or {}).get("signals")
+    if not isinstance(signals, dict):
+        return
+    for name, block in signals.items():
+        if not isinstance(block, dict):
+            continue
+        for leaf, text in SIGNAL_FIELD_DESCRIPTIONS.items():
+            key = f"influxdb.signals.{name}.{leaf}"
+            descriptions.setdefault(key, text)   # eigener Kommentar gewinnt
 
 
 def editor_payload(config_path: str) -> dict:
     document, had_overrides = _effective_document(config_path)
+    descriptions = _description_payload(config_path)
+    _expand_signal_descriptions(document, descriptions)
     return {
         "config": document,
         "revision": _revision(config_path),
-        "descriptions": _description_payload(config_path),
+        "descriptions": descriptions,
         "labels": TOP_LABELS,
         "enums": ENUMS,
         "load_templates": LOAD_TEMPLATES,
