@@ -365,6 +365,23 @@ optimization:
   # Peak-Shaving. Ein starkes Erwartungssignal darf ein extrem breites
   # Solcast-p10-Band plausibilisieren, bleibt aber durch den p10-Boden abgesichert.
   charge_strategy: "auto"
+  # Vorladen in den Modi "peak" und "late": beide schieben das Laden bewusst
+  # nach hinten - bei leerem Akku bleibt er dadurch den ganzen Vormittag fast
+  # leer, während die PV ins Netz geht. Bis zu diesem SoC (% der Kapazität) wird
+  # deshalb zuerst geladen, so schnell die PV es zulässt; erst danach greift die
+  # Modus-Formung. Der Boden wird NICHT gehalten - abends darf normal darunter
+  # entladen werden. Netzladen kann daraus nie entstehen (peak/late: ac == 0).
+  # 0 = aus.
+  mode_prefill_soc_percent: 30.0
+  mode_prefill_penalty_ct_kwh: 20.0   # muss die Einspeisevergütung übersteigen
+  # Sehr hohe Strafe je kWh Netzbezug einer thermischen Last mit
+  # no_grid_import. Weich statt hart, damit ein leerer Akku den Plan nicht
+  # unlösbar macht - aber hoch genug, dass Netzstrom letzter Ausweg bleibt.
+  no_grid_import_penalty_ct_kwh: 5000.0
+  # Sehr hohe Strafe je kWh über der Hausanschluss-Grenze (inverter.max_import_w).
+  # Ebenfalls weich: eine unvermeidbare Lastspitze soll nicht den ganzen
+  # Horizont verwerfen, sondern nur diesen Slot verteuern und Alarm auslösen.
+  grid_overload_penalty_ct_kwh: 1000.0
   auto_peak_threshold_percent: 85.0
   # Glatte automatische Abstimmung zwischen Winter- und Sommer-Sonnenstand.
   seasonal_peak_tuning: true

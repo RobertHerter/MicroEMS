@@ -92,6 +92,41 @@ def test_validate_rejects_invalid_configuration(tmp_path):
         validate_document(document)
 
 
+def test_new_safety_options_are_documented_in_the_editor():
+    """Neue Konfigurationswerte müssen im Editor erklärt sein - sonst stehen sie
+    dort unkommentiert und werden falsch gesetzt. thermostat_cutoff_c gehört
+    zusätzlich in die Vorlage für neue thermische Lasten."""
+    from ems.config_editor import LOAD_DESCRIPTIONS, LOAD_TEMPLATES
+    assert "controllable_loads[].thermostat_cutoff_c" in LOAD_DESCRIPTIONS
+    assert "thermostat_cutoff_c" in LOAD_TEMPLATES["thermal"]
+    # Die Optimierer-Optionen werden über die Kommentare der Beispiel-Config
+    # beschrieben - dort müssen sie also stehen.
+    import pathlib
+    example = pathlib.Path(__file__).resolve().parents[1] / "config.example.yaml"
+    text = example.read_text(encoding="utf-8")
+    for key in ("mode_prefill_soc_percent", "mode_prefill_penalty_ct_kwh",
+                "no_grid_import_penalty_ct_kwh", "grid_overload_penalty_ct_kwh"):
+        assert f"{key}:" in text, f"{key} fehlt in config.example.yaml"
+
+
+def test_thermostat_cutoff_zero_means_unset(tmp_path):
+    """Die Editor-Vorlage setzt 0. Das darf NICHT als Cutoff 0 °C ankommen -
+    sonst bliebe die Heiz-Freigabe immer stehen (Ursache des Akku-Leerlaufs)."""
+    from ems.config import parse_controllable_loads
+    loads = parse_controllable_loads([{
+        "name": "Pool", "type": "thermal", "enabled": True, "volume_l": 7000,
+        "target_c": 28.0, "thermostat": True, "thermostat_cutoff_c": 0,
+        "stages": [{"name": "s1", "power_w": 400, "heat_w": 3000}],
+    }])
+    assert loads[0].thermostat_cutoff_c is None       # -> faellt auf target_c
+    loads = parse_controllable_loads([{
+        "name": "Pool", "type": "thermal", "enabled": True, "volume_l": 7000,
+        "target_c": 28.0, "thermostat": True, "thermostat_cutoff_c": 28.5,
+        "stages": [{"name": "s1", "power_w": 400, "heat_w": 3000}],
+    }])
+    assert loads[0].thermostat_cutoff_c == 28.5
+
+
 def test_editor_html_is_responsive_and_supports_load_management():
     html = editor_html().decode()
     assert "EMS-Konfiguration" in html

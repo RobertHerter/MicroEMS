@@ -88,6 +88,7 @@ LOAD_DESCRIPTIONS = {
     "controllable_loads[].surface_m2": "Wirksame Oberfläche für solaren Wärmeeintrag.",
     "controllable_loads[].solar_absorption": "Absorptionsfaktor der Oberfläche von 0 bis 1.",
     "controllable_loads[].thermostat": "EMS gibt Heizen frei; das Gerät regelt den tatsächlichen Lauf selbst.",
+    "controllable_loads[].thermostat_cutoff_c": "Temperatur, ab der das Gerät SELBST abschaltet - oft höher als die Zieltemperatur. Darunter heizt es weiter, dort schaltet das EMS die Freigabe ab. 0 = Zieltemperatur verwenden.",
     "controllable_loads[].no_grid_import": "Netzstrom für diese thermische Last stark vermeiden.",
     "controllable_loads[].temp_signal": "MQTT-Topic der gemessenen Temperatur.",
     "controllable_loads[].decision_minutes": "Zeitabstand thermischer Schaltentscheidungen.",
@@ -128,6 +129,8 @@ LOAD_TEMPLATES = {
         "surface_m2": 0.0,
         "solar_absorption": 0.75,
         "thermostat": False,
+        # Abschaltpunkt des Geraets; 0 = wie target_c (siehe Beschreibung).
+        "thermostat_cutoff_c": 0.0,
         "no_grid_import": False,
         "decision_minutes": 60,
         "binary_horizon_hours": 12,

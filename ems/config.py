@@ -363,6 +363,18 @@ class OptimizationConfig:
     # leerer Akku + über Band liegender Pool nicht den ganzen Plan infeasible
     # macht; hoch genug, dass Netzbezug für den Pool echter letzter Ausweg bleibt.
     no_grid_import_penalty_ct_kwh: float = 5000.0
+    # Vorladen in den Modi "peak" und "late": beide schieben das Laden bewusst
+    # nach hinten, wodurch der Akku bei leerem Start den ganzen Vormittag fast
+    # leer blieb (gemessen: 30 % erst um 12:15 bzw. 15:45 Uhr), waehrend die PV
+    # ins Netz ging. Bis zu diesem SoC (% der Kapazitaet) wird deshalb zuerst
+    # geladen, so schnell die PV es zulaesst; erst danach greift die
+    # Modus-Formung. Der Boden wird NICHT gehalten - abends darf normal darunter
+    # entladen werden. 0 = aus (bisheriges Verhalten).
+    mode_prefill_soc_percent: float = 0.0
+    # Strafe je fehlender kWh unter dem Vorlade-Boden. Muss die Einspeise-
+    # verguetung klar uebersteigen, damit Laden dem Export vorgezogen wird;
+    # Netzladen kann daraus nie entstehen (in peak/late gilt ac == 0).
+    mode_prefill_penalty_ct_kwh: float = 20.0
     # Eigenverbrauchs-Priorität: Opportunitätskosten (ct/kWh) für Netzeinspeisung.
     # Da die Einspeisevergütung meist deutlich unter dem Wert gespeicherter Energie
     # liegt, wird der Akku aus PV-Überschuss zuerst gefüllt; erst der Überlauf
@@ -1009,8 +1021,11 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             surface_m2=float(w.get("surface_m2", 0.0)),
             solar_absorption=float(w.get("solar_absorption", 0.75)),
             thermostat=bool(w.get("thermostat", False)),
+            # 0/leer = nicht gesetzt -> target_c. Ein echter Cutoff von 0 °C
+            # ergibt fuer diese Lasten keinen Sinn, waere aber fatal: die
+            # Heiz-Freigabe bliebe dann IMMER stehen (T >= 0 °C).
             thermostat_cutoff_c=(float(w["thermostat_cutoff_c"])
-                                 if w.get("thermostat_cutoff_c") is not None
+                                 if w.get("thermostat_cutoff_c")
                                  else None),
             no_grid_import=bool(w.get("no_grid_import",
                                       w.get("pv_surplus_only", False))),
@@ -1224,6 +1239,9 @@ def load_config(path: str) -> Config:
             "grid_overload_penalty_ct_kwh", 1000.0)),
         no_grid_import_penalty_ct_kwh=float(o.get(
             "no_grid_import_penalty_ct_kwh", 5000.0)),
+        mode_prefill_soc_percent=float(o.get("mode_prefill_soc_percent", 0.0)),
+        mode_prefill_penalty_ct_kwh=float(o.get(
+            "mode_prefill_penalty_ct_kwh", 20.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
         allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
         charge_strategy=str(o.get("charge_strategy", "auto")),

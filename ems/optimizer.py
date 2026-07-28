@@ -1543,6 +1543,41 @@ class Optimizer:
                              >= target - hb.charge_efficiency * suffix[aj] * dt)
                     cost_terms.append(P10_PEN_CT_KWH * slack / 1000.0)
 
+        # ---- Vorladen in "peak"/"late": erst Mindest-SoC, dann formen ------ #
+        # Beide Modi verschieben das Laden bewusst nach hinten (Peak: PV-Spitze
+        # ueber der Einspeise-Linie; Late: Zeitmalus auf fruehes Laden). Bei
+        # leerem Akku stand er dadurch den ganzen Vormittag fast leer, waehrend
+        # die PV ins Netz ging (gemessen: 30 % erst um 12:15 bzw. 15:45 Uhr).
+        # Deshalb zuerst auf einen einstellbaren Mindest-SoC laden - so schnell
+        # es die PV zulaesst - und erst danach greift die Modus-Formung.
+        # Weich (Slack): an truben Tagen ist der Boden schlicht nicht erreichbar.
+        # Da in peak/late ohnehin ac==0 gilt, kann das NIE Netzladen ausloesen.
+        prefill_pct = max(0.0, float(getattr(
+            cfg.optimization, "mode_prefill_soc_percent", 0.0) or 0.0))
+        if prefill_pct > 0.0:
+            prefill_pen = max(0.0, float(getattr(
+                cfg.optimization, "mode_prefill_penalty_ct_kwh", 20.0)))
+            floor_wh = min(hb.max_soc_wh, prefill_pct / 100.0 * hb.capacity_wh)
+            _loads = np.maximum(np.asarray(inp.house_load_w, dtype=float), 0.0)
+            _surplus = np.maximum(np.asarray(inp.pv_w, dtype=float) - _loads, 0.0)
+            for d in range(len(_uniq)):
+                if day_mode[d] not in ("peak", "late"):
+                    continue
+                day_slots = [t for t in range(N) if slot_day[t] == d]
+                if not day_slots:
+                    continue
+                # Startwert: am ersten Tag der echte Anfangs-SoC, sonst
+                # konservativ der Mindest-SoC (erzwingt fruehes Nachladen).
+                reachable = (float(inp.initial_house_soc_wh)
+                             if day_slots[0] == 0 else hb.min_soc_wh)
+                for t in day_slots:
+                    if reachable >= floor_wh:
+                        break          # Boden erreichbar -> Kette endet hier
+                    reachable += hb.charge_efficiency * float(_surplus[t]) * dt
+                    slack = pulp.LpVariable(f"prefill_{t}", 0)
+                    prob += soc[t + 1] + slack >= min(reachable, floor_wh)
+                    cost_terms.append(prefill_pen * slack / 1000.0)
+
         # Kurzfristige Planstabilitaet: Bei wirtschaftlich nahezu identischen
         # Loesungen den bereits publizierten Fahrplan beibehalten. Das ist kein
         # harter Lock: echte Preis-/Prognoseaenderungen duerfen den kleinen

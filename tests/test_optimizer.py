@@ -951,6 +951,37 @@ def test_infeasible_diagnosis_names_probable_cause():
     assert "SoC" in res.infeasible_reason and "Slots" in res.infeasible_reason
 
 
+def test_mode_prefill_charges_minimum_soc_before_shaping():
+    """peak/late schieben das Laden bewusst nach hinten - bei leerem Akku blieb
+    er dadurch den ganzen Vormittag fast leer, waehrend die PV ins Netz ging.
+    Mit mode_prefill_soc_percent wird der Boden zuerst geladen; danach greift
+    die Modus-Formung wieder. Der Boden wird NICHT gehalten (kein Entladeverbot)."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "late"
+    idx = _day_index("2026-07-15")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 8000.0), load=400.0, price=30.0,
+                  soc=cfg.house_battery.min_soc_wh)          # Akku leer
+
+    def first_at_30(res):
+        soc = res.table["house_soc_percent"].values
+        hit = np.where(soc >= 30.0)[0]
+        return int(hit[0]) if len(hit) else 10**6
+
+    off = Optimizer(cfg).solve(inp)
+    cfg.optimization.mode_prefill_soc_percent = 30.0
+    on = Optimizer(cfg).solve(inp)
+    assert not off.infeasible and not on.infeasible
+    assert first_at_30(on) < first_at_30(off), \
+        "Vorladen erreicht den Mindest-SoC nicht frueher"
+    # Wirtschaftlich darf das kaum kosten (PV waere sonst exportiert worden).
+    assert on.total_cost_ct <= off.total_cost_ct + 100.0
+    # Kein Netzladen: in peak/late gilt ac == 0, der Boden darf das nicht kippen.
+    assert float(on.table["batt_ac_charge_w"].max()) < 1.0
+    # 0 % (Default) laesst das Verhalten unveraendert.
+    cfg.optimization.mode_prefill_soc_percent = 0.0
+    assert first_at_30(Optimizer(cfg).solve(inp)) == first_at_30(off)
+
+
 def test_grid_overload_limit_is_soft_not_infeasible():
     """Eine Lastspitze, die selbst mit voller Akku-Entladung (5 kW) über der
     Hausanschluss-Grenze (3 kW) liegt, macht den Plan NICHT infeasible (kein
