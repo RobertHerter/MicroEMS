@@ -37,27 +37,33 @@ def test_optimization_horizon_is_exact_and_not_rounded_to_midnight():
         assert index[-1] == now + pd.Timedelta(hours=47, minutes=45)
 
 
-def test_optimization_horizon_can_round_to_midnight_without_extra_day():
+def test_optimization_horizon_ends_at_the_same_midnight_all_day():
+    """Mit round_to_midnight endet JEDER Lauf eines Tages am selben Zeitpunkt.
+
+    Vorher wurde ein bereits auf Mitternacht fallendes Ende nicht aufgerundet.
+    Dann sah der 00:00-Lauf nur 48 h, der Lauf 15 Minuten später aber 71,75 h -
+    der 00:00-Plan kannte den Tag, fuer den er den Akku einteilen soll, gar
+    nicht. Die Solverlast ist dieselbe, die 00:15 ohnehin schon traegt.
+    """
     cfg = make_config()
     cfg.general.optimization_horizon_hours = 48
     cfg.general.optimization_horizon_round_to_midnight = True
 
-    # Reguläres Ende 23:45 -> einen Slot bis 00:00 ergänzen.
-    late = _optimization_index(cfg, pd.Timestamp("2026-07-20 23:45", tz=TZ))
-    assert len(late) == 193
-    assert late[-1] == pd.Timestamp("2026-07-22 23:45", tz=TZ)
+    ends = {}
+    for value, slots in (("2026-07-21 00:00", 288),      # genau Mitternacht
+                         ("2026-07-21 00:15", 287),
+                         ("2026-07-21 08:00", 256),
+                         ("2026-07-21 23:45", 193)):
+        index = _optimization_index(cfg, pd.Timestamp(value, tz=TZ))
+        assert len(index) == slots, value
+        assert index[0] == pd.Timestamp(value, tz=TZ)
+        ends[value] = index[-1] + pd.Timedelta(minutes=15)
+    assert set(ends.values()) == {pd.Timestamp("2026-07-24 00:00", tz=TZ)}
 
-    # Reguläres Ende bereits 00:00: niemals einen dritten Tag anhängen.
-    midnight = _optimization_index(
-        cfg, pd.Timestamp("2026-07-21 00:00", tz=TZ))
-    assert len(midnight) == 192
-    assert midnight[-1] == pd.Timestamp("2026-07-22 23:45", tz=TZ)
-
-    # Morgens wird bewusst bis zur übernächsten Mitternacht erweitert.
-    morning = _optimization_index(
-        cfg, pd.Timestamp("2026-07-21 08:00", tz=TZ))
-    assert len(morning) == 256
-    assert morning[-1] == pd.Timestamp("2026-07-23 23:45", tz=TZ)
+    # Ohne die Rundung bleibt es beim reinen Stundenhorizont.
+    cfg.general.optimization_horizon_round_to_midnight = False
+    plain = _optimization_index(cfg, pd.Timestamp("2026-07-21 00:00", tz=TZ))
+    assert len(plain) == 192
 
 
 def _history(days: int, old_w: float, new_w: float, split_days: int) -> pd.Series:

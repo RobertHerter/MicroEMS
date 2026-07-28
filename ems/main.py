@@ -1539,9 +1539,12 @@ def _optimization_index(config: Config, now) -> pd.DatetimeIndex:
     raw_end = start + pd.Timedelta(
         hours=config.general.optimization_horizon_hours)
     rounded_end = raw_end.normalize()
-    # Nur ein NICHT bereits auf Mitternacht liegendes Ende aufrunden. Das alte
-    # <= machte aus 48 h genau um 00:00 versehentlich 72 h.
-    if rounded_end < raw_end:
+    # Immer auf die Mitternacht NACH dem regulären Ende. Damit endet jeder Lauf
+    # eines Tages am selben Zeitpunkt - auch der um 00:00. Vorher wurde ein
+    # bereits auf Mitternacht fallendes Ende nicht aufgerundet; dann sah der
+    # 00:00-Lauf mit 48 h einen ganzen Tag WENIGER als der Lauf 15 Minuten
+    # später (71,75 h) - genau der Tag, für den er den Akku einteilen soll.
+    if rounded_end <= raw_end:
         rounded_end += pd.DateOffset(days=1)
     return pd.date_range(start, rounded_end, freq=freq,
                          tz=config.general.timezone, inclusive="left")

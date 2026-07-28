@@ -14,8 +14,10 @@ general:
   holiday_subdivision: "BY"   # Bundesland (z.B. BY, BW, NW ...)
   # Länge der Steuertabelle (Optimierungshorizont)
   optimization_horizon_hours: 48
-  # Optional bis zur nächsten Mitternacht erweitern. false hält Modellgröße
-  # und Laufzeit konstant; true kann bei 48 h bis fast 72 h ergeben.
+  # Optional bis zur Mitternacht NACH dem Horizontende erweitern, damit jeder
+  # Lauf eines Tages denselben Endzeitpunkt hat. false hält Modellgröße und
+  # Laufzeit konstant; true ergibt bei 48 h zwischen 48,25 h (23:45) und 72 h
+  # (00:00).
   optimization_horizon_round_to_midnight: false
   # Länge der Verbrauchsprognose, die in die DB geschrieben wird
   forecast_horizon_hours: 72
