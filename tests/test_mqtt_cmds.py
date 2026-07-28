@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import time as dtime
 
+import pandas as pd
+
 from ems.config import ControllableLoad, LoadStage
 from ems.homey_mqtt import HomeyMqttPublisher
 from tests.test_synthetic import make_config
@@ -257,21 +259,25 @@ def test_load_lanes_includes_disabled_loads():
 
 
 def test_thermostat_permission_keeps_on_when_warm():
-    """WP mit eigenem Thermostat (thermostat: true): Freigabe bleibt AN, wenn
-    die Ist-Temperatur >= target_c ist (Thermostat hält die WP ohnehin aus);
-    "aus" nur, wenn Heizen aktiv verhindert werden muss (T < target_c)."""
+    """WP mit eigenem Thermostat (thermostat: true): die Freigabe darf nur
+    gehalten werden, solange der geräteeigene Thermostat das Heizen wirklich
+    verhindert - also im Bereich target_c <= T < max_c UND ohne reale
+    Leistungsmeldung."""
     from ems.config import ControllableLoad, LoadStage
     cfg = make_config()
     cfg.controllable_loads = [ControllableLoad(
         name="Pool", type="thermal", enabled=True, volume_l=8000, target_c=28.0,
+        min_c=27.0, max_c=29.0,
         thermostat=True, temp_signal="homie/pool/temp",
         stages=[LoadStage("klein", 400, 3000)])]
     pub = HomeyMqttPublisher(cfg)
     lane = pub._load_lanes()[0]
     assert lane["thermostat"] is True and lane["target_c"] == 28.0
+    assert lane["max_c"] == 29.0
 
-    # Kein Heiz-Slot geplant, Wasser WARM (29.5 >= 28) -> Freigabe AN
-    pub.load_temps["homie/pool/temp"] = 29.5
+    # Kein Heiz-Slot geplant, Wasser im Halteband (28.5: >= target, < max_c)
+    # und keine Leistungsmeldung -> Freigabe AN (weniger Schaltspiele)
+    pub.load_temps["homie/pool/temp"] = 28.5
     assert pub._lane_command(lane, planned_on=False) == 1
     # Kein Heiz-Slot geplant, Wasser KALT (27 < 28) -> aktiv AUS (EMS blockt)
     pub.load_temps["homie/pool/temp"] = 27.0
@@ -281,6 +287,69 @@ def test_thermostat_permission_keeps_on_when_warm():
     # Keine Ist-Temperatur empfangen -> konservativ dem Plan folgen
     pub.load_temps.clear()
     assert pub._lane_command(lane, planned_on=False) == 0
+
+
+def test_thermostat_permission_never_above_band_or_while_running():
+    """Regression (Akku 97 %->5 % über Nacht): die Freigabe blieb AN, weil
+    T >= target_c war - der geräteeigene Thermostat hielt die WP aber NICHT aus,
+    sie heizte 14 h aus dem Akku. Zwei Nachweise sind jetzt nötig."""
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=8000,
+        target_c=28.0, min_c=27.0, max_c=28.0,      # realer Fall: target == max
+        thermostat=True, temp_signal="homie/pool/temp",
+        stages=[LoadStage("klein", 400, 3000)])]
+    pub = HomeyMqttPublisher(cfg)
+    lane = pub._load_lanes()[0]
+
+    # 1) Über dem Bandmaximum ist Heizen NIE gewollt -> aus (der Nachtfall).
+    pub.load_temps["homie/pool/temp"] = 28.4
+    assert pub._lane_command(lane, planned_on=False) == 0
+
+    # 2) Innerhalb des Bandes, aber die Stufe meldet reale Leistung: der
+    #    Thermostat hält sie offensichtlich nicht aus -> abschalten.
+    lane_wide = dict(lane, max_c=33.0)
+    pub.load_feedback[lane["label"]] = {
+        "on": True, "power_w": 663.0, "threshold_w": 50.0,
+        "power_updated": pd.Timestamp.now(tz="UTC"),
+        "state_updated": pd.Timestamp.now(tz="UTC")}
+    assert pub._lane_command(lane_wide, planned_on=False) == 0
+    # ... meldet sie AUS, bleibt die Freigabe erhalten (Anti-Takt-Zweck).
+    pub.load_feedback[lane["label"]]["on"] = False
+    pub.load_feedback[lane["label"]]["power_w"] = 0.0
+    assert pub._lane_command(lane_wide, planned_on=False) == 1
+
+
+def test_thermostat_cutoff_is_the_device_setpoint_not_target_c():
+    """Der Abschaltpunkt des GERAETS kann ueber target_c liegen: die reale
+    Pool-WP heizt bis 28,5 °C und startet erst bei 27,0 °C wieder. Zwischen
+    target_c (28,0) und 28,5 heizt sie also weiter - dort darf die Freigabe
+    NICHT gehalten werden (genau dieser Bereich lief eine Nacht durch)."""
+    from ems.config import ControllableLoad, LoadStage
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=8000,
+        target_c=28.0, min_c=26.0, max_c=33.0,
+        thermostat=True, thermostat_cutoff_c=28.5,
+        temp_signal="homie/pool/temp",
+        stages=[LoadStage("klein", 400, 3000)])]
+    pub = HomeyMqttPublisher(cfg)
+    lane = pub._load_lanes()[0]
+    assert lane["cutoff_c"] == 28.5           # Geraet, nicht target_c
+
+    # 28,2 °C: ueber target_c, aber UNTER dem Geraete-Abschaltpunkt -> die WP
+    # wuerde weiterheizen -> Freigabe aus (der reale Nachtfall).
+    pub.load_temps["homie/pool/temp"] = 28.2
+    assert pub._lane_command(lane, planned_on=False) == 0
+    # 28,6 °C: Geraet hat selbst abgeschaltet -> Freigabe darf stehen bleiben.
+    pub.load_temps["homie/pool/temp"] = 28.6
+    assert pub._lane_command(lane, planned_on=False) == 1
+
+    # Ohne konfigurierten Abschaltpunkt gilt weiter target_c (altes Verhalten).
+    cfg.controllable_loads[0].thermostat_cutoff_c = None
+    lane_old = HomeyMqttPublisher(cfg)._load_lanes()[0]
+    assert lane_old["cutoff_c"] == 28.0
 
 
 def test_no_thermostat_follows_plan():

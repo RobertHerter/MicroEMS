@@ -252,10 +252,15 @@ controllable_loads: []
   #   # (weniger Binärvariablen -> Solver deutlich schneller); Default 60.
   #   decision_minutes: 60
   #   binary_horizon_hours: 12  # fernere Thermik als Duty-Cycle (0 = alles binär)
-  #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE - bei
-  #   # Ist-Temperatur >= target_c bleibt sie AN (die WP hält per eigenem
-  #   # Thermostat), "aus" nur, wenn Heizen aktiv verhindert werden soll.
+  #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE. Sie bleibt
+  #   # nur AN, solange die WP per eigenem Thermostat wirklich aus hält.
   #   thermostat: true
+  #   # WICHTIG: Abschalttemperatur des GERÄTS - oft NICHT target_c! Eine Pool-WP
+  #   # heizt z.B. bis 28.5 °C und startet erst bei 27.0 °C wieder. Zwischen
+  #   # target_c und diesem Wert heizt sie weiter, die Freigabe muss dort also
+  #   # abgeschaltet werden. Fehlt der Wert, gilt target_c (kann zu Dauerlauf
+  #   # führen, wenn das Gerät erst später abschaltet). Am Gerät ablesen.
+  #   thermostat_cutoff_c: 28.5
   #   # Kein Netzbezug durch die WP: läuft eine Stufe, muss der Netzbezug im
   #   # Slot 0 sein - PV-Überschuss UND Akku dürfen decken, Netzstrom nie.
   #   # (Alter Name pv_surplus_only wird weiter als Alias gelesen.)

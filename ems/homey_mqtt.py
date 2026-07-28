@@ -235,7 +235,13 @@ class HomeyMqttPublisher:
                                   "enabled": ld.enabled, "topic": st.control_topic,
                                   "thermostat": bool(ld.thermostat),
                                   "temp_signal": ld.temp_signal,
-                                  "target_c": float(ld.target_c)})
+                                  "target_c": float(ld.target_c),
+                                  "max_c": float(ld.max_c),
+                                  # Abschaltpunkt des GERAETS (nicht target_c!)
+                                  "cutoff_c": float(
+                                      ld.thermostat_cutoff_c
+                                      if ld.thermostat_cutoff_c is not None
+                                      else ld.target_c)})
             else:
                 lanes.append({"label": ld.name,
                               "column": f"load_{_col(ld.name)}_w",
@@ -253,11 +259,33 @@ class HomeyMqttPublisher:
         UND T unter target_c, d.h. der Thermostat WÜRDE sonst heizen)."""
         if planned_on:
             return 1
-        if lane.get("thermostat") and lane.get("temp_signal"):
-            t_ist = self.get_load_temp(lane["temp_signal"])
-            if t_ist is not None and float(t_ist) >= lane.get("target_c", 1e9):
-                return 1
-        return 0
+        if not (lane.get("thermostat") and lane.get("temp_signal")):
+            return 0
+        t_ist = self.get_load_temp(lane["temp_signal"])
+        # Massgeblich ist der Abschaltpunkt des GERAETS, nicht unser target_c:
+        # eine Pool-WP heizt z.B. bis 28,5 °C und startet erst bei 27,0 °C
+        # wieder. Unterhalb davon wuerde sie also weiterheizen -> Freigabe darf
+        # dort NICHT gehalten werden (genau das lief eine Nacht durch).
+        cutoff = lane.get("cutoff_c", lane.get("target_c", 1e9))
+        if t_ist is None or float(t_ist) < cutoff:
+            return 0
+        t_ist = float(t_ist)
+        # Die Freigabe darf NUR gehalten werden, solange der geraeteeigene
+        # Thermostat das Heizen wirklich verhindert. Zwei Nachweise dafuer -
+        # ohne sie lief die Pool-WP eine ganze Nacht durch und zog den Akku von
+        # 97 % auf 5 %, obwohl der Plan 0 W vorsah:
+        #   1) oberhalb des Bandes (max_c) ist Heizen nie gewollt -> hart aus.
+        if t_ist >= lane.get("max_c", float("inf")):
+            return 0
+        #   2) meldet die Stufe real LEISTUNG, heizt sie trotz T >= target_c ->
+        #      die Annahme ist fuer dieses Geraet falsch -> abschalten.
+        try:
+            fb = self.get_load_feedback(lane["label"], hold_while_connected=True)
+        except Exception:      # pragma: no cover - Rueckmeldung ist optional
+            fb = None
+        if fb and fb.get("fresh") and fb.get("on"):
+            return 0
+        return 1
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).

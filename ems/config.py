@@ -267,9 +267,15 @@ class ControllableLoad:
     # die Freigabe AN (der Thermostat hält die WP ohnehin aus) - weniger Schalt-
     # spiele, und bei unerwartetem Temperaturabfall heizt die WP sofort. "Aus"
     # wird nur gesendet, wenn Heizen aktiv verhindert werden soll (T < target_c
-    # und kein Heiz-Slot geplant). target_c sollte dem WP-eigenen Sollwert
-    # entsprechen. false = Signal folgt 1:1 dem Heizplan (wie bisher).
+    # und kein Heiz-Slot geplant). false = Signal folgt 1:1 dem Heizplan.
     thermostat: bool = False
+    # Temperatur, ab der das GERAET selbst abschaltet. Das ist NICHT zwingend
+    # target_c: eine Pool-WP heizt z.B. bis 28,5 °C und startet erst bei 27,0 °C
+    # wieder. Wird hier der falsche (zu niedrige) Wert angenommen, haelt die EMS
+    # die Freigabe an, obwohl das Geraet weiterheizt - real lief die WP so eine
+    # ganze Nacht und zog den Akku von 97 % auf 5 %. None = target_c (altes
+    # Verhalten). Den am Geraet abgelesenen Abschaltwert eintragen.
+    thermostat_cutoff_c: Optional[float] = None
     temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
@@ -1003,6 +1009,9 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             surface_m2=float(w.get("surface_m2", 0.0)),
             solar_absorption=float(w.get("solar_absorption", 0.75)),
             thermostat=bool(w.get("thermostat", False)),
+            thermostat_cutoff_c=(float(w["thermostat_cutoff_c"])
+                                 if w.get("thermostat_cutoff_c") is not None
+                                 else None),
             no_grid_import=bool(w.get("no_grid_import",
                                       w.get("pv_surplus_only", False))),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
