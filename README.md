@@ -682,14 +682,21 @@ beschlossene Plan.
   Rand (die Kachel *Ist-Abdeckung* zeigt, wie viel).
 - Kennzahlen je Lauf: Solver-Status (inkl. Grund bei `Infeasible`), Plankosten,
   und die Abweichung Plan↔Ist als MAE für PV, Last, Akku, SoC und Preis.
-- **Preis dreigeteilt**: *Preis Plan* (was der Lauf benutzt hat), *Preis Plan
-  (Schätzung)* für die Slots, deren Börsenpreis zur Laufzeit noch nicht
-  veröffentlicht war (Folgetag erst ab ~13:00, zusätzlich gedämpft), und *Preis
-  Ist* – der inzwischen veröffentlichte Preis durch dasselbe Tarifmodell. Die
-  Kachel nennt die Abweichung separat für den geschätzten Teil; dort steckt die
-  eigentliche Preisunsicherheit (gemessen 5 ct/kWh MAE an einem 00:00-Lauf).
-  Dieselbe Trennung zeigt jetzt auch das Dashboard im Preis-Panel
-  (*Börsenpreis* / *Preis (Schätzung)* / *Börsenpreis (Ist)*).
+- **Preis**: durchgezogen der tatsächliche *Börsenpreis*. Wo er zur Planung
+  schon veröffentlicht war, ist das der Planpreis selbst – dort genügt eine
+  Linie. Wo der Plan schätzen musste (Folgetag vor ~13:00, zusätzlich
+  gedämpft), zeigt die durchgezogene Linie den inzwischen bekannten Preis und
+  gestrichelt *Preis (Schätzung)* die Annahme des Laufs; der Abstand **ist** der
+  Schätzfehler. Die Kachel nennt ihn separat für den geschätzten Teil – dort
+  steckt die eigentliche Preisunsicherheit (gemessen 5,1 ct/kWh MAE in 96 von
+  192 Slots eines 00:00-Laufs).
+  Im **Dashboard** ist der Vergleich anders gelagert: dort sind die geschätzten
+  Slots zwangsläufig genau die *ohne* Börsenpreis – ein „Ist" dazu gibt es im
+  selben Lauf nie. Das Preis-Panel zeigt deshalb *Börsenpreis*, *Preis
+  (Schätzung)* für den noch unveröffentlichten Rest und zusätzlich *Preis
+  (Schätzung 00:00)*: was der Morgenplan für die inzwischen veröffentlichten
+  Slots angenommen hatte. Der Abstand zur durchgezogenen Linie **ist** der
+  Schätzfehler (live gemessen 5,1 ct/kWh).
 - Vorzeichen wie in den Ist-Signalen: Akku positiv = laden, Netz positiv = Bezug.
 - Vorausgewählt ist der Lauf von **heute 00:00** – der Tagesplan, an dem sich
   die Prognosegüte des Morgens zeigt (der aktuellste Lauf steht ja im

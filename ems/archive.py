@@ -282,7 +282,10 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
 <div class="card"><div id="chart" class="chart"></div>
 <div class="hint">Durchgezogen = <b>Plan</b> dieses Laufs, gestrichelt = <b>Ist</b>.
 Ist-Werte gibt es nur für die Zeit, die seit dem Lauf vergangen ist – bei einem
-frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezug.</div></div>
+frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezug.
+<br>Beim <b>Preis</b> umgekehrt: durchgezogen ist der tatsächliche Börsenpreis;
+gestrichelt erscheint nur dort etwas, wo er zur Planung noch nicht
+veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></div>
 </main>
 <script src="plotly.min.js"></script>
 <script>(function(){
@@ -379,11 +382,12 @@ frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezu
  function draw(d){
   const x=d.index,T=[];
   const fg=css('--text')||'#20252b',mut=css('--muted')||'#697785',line=css('--line')||'#dce4eb';
-  function add(y,name,color,row,dash,unit){
+  function add(y,name,color,row,dash,unit,noLegend){
    if(!y||!y.some(v=>v!==null))return;
    T.push({x:x,y:y,name:name,type:'scatter',mode:'lines',
      line:{color:color,width:dash?1.6:2,dash:dash||'solid',shape:'hv'},
      yaxis:row===1?'y':'y'+row,legendgroup:name.replace(/ (Plan|Ist)$/,''),
+     showlegend:!noLegend,
      hovertemplate:name+': %{y:,.'+(unit==='%'?1:0)+'f} '+unit+'<extra></extra>'});
   }
   const P=d.plan||{},A=d.actual||{};
@@ -392,14 +396,17 @@ frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezu
   add(P.battery_w,'Akku Plan','#2f8f4e',1,null,'W'); add(A.battery_w,'Akku Ist','#2f8f4e',1,'dot','W');
   add(P.grid_w,'Netz Plan','#6c7a89',1,null,'W');    add(A.grid_w,'Netz Ist','#6c7a89',1,'dot','W');
   add(P.soc_percent,'SoC Plan','#1769c2',2,null,'%');add(A.soc_percent,'SoC Ist','#1769c2',2,'dot','%');
-  add(P.price_ct_kwh,'Preis Plan','#7d5ba6',3,null,'ct/kWh');
-  // Der Plan benutzt fuer noch nicht veroeffentlichte Slots eine (gedaempfte)
-  // Schaetzung. Die wird eigens hervorgehoben und dem inzwischen bekannten
-  // Boersenpreis gegenuebergestellt.
-  const est=P.price_estimated;
-  if(est&&est.some(v=>v))
-   add(P.price_ct_kwh.map((v,i)=>est[i]?v:null),'Preis Plan (Schätzung)','#b58fd6',3,'dash','ct/kWh');
-  add(A.price_ct_kwh,'Preis Ist','#7d5ba6',3,'dot','ct/kWh');
+  // Preis wie im Dashboard: EINE durchgezogene Linie mit dem tatsaechlichen
+  // Boersenpreis. Wo er zur Planung schon veroeffentlicht war, ist das der
+  // Planpreis selbst (Plan und Ist doppelt zu zeichnen zeigte denselben Wert
+  // zweimal); wo der Plan schaetzen musste, der inzwischen bekannte Preis -
+  // und dazu gestrichelt, was der Plan dort angenommen hatte.
+  const est=P.price_estimated||[],pp=P.price_ct_kwh,ap=A.price_ct_kwh;
+  add(pp.map((v,i)=>(est[i]?(ap?ap[i]:null):v)),'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
+  if(est.some(v=>v))
+   // Der Uebergangsslot gehoert mit dazu, sonst klafft eine Luecke.
+   add(pp.map((v,i)=>(est[i]||(i+1<est.length&&est[i+1]))?v:null),
+       'Preis (Schätzung)','#b58fd6',3,'dash','ct/kWh');
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im
   // Dark-Mode weiss auf weiss (Plotly-Standard ist hell).

@@ -3034,15 +3034,31 @@ def _build_display_frame(repo, config, now, history, result,
         price, estimated = _price_series(repo, config, full, now, return_estimated=True)
         df["price_ct_kwh"] = price
         df["price_estimated"] = estimated.astype(float)  # 1 = Schätzung, 0 = Börsenpreis
-        # Zusätzlich der ECHTE veröffentlichte Preis - ohne Prognose-Auffüllung
-        # und ohne die Unsicherheits-Dämpfung, die _price_series auf geschätzte
-        # Slots legt. Nur so ist im Dashboard sichtbar, wie weit die Schätzung
-        # neben dem inzwischen bekannten Börsenpreis lag; wo noch nichts
-        # veröffentlicht ist, endet die Kurve (keine erfundenen Werte).
-        df["actual_price_ct_kwh"] = read_price_signal(
-            config, repo, full[0], full[-1] + slot).reindex(full)
     except Exception:
         pass
+    # Was der 00:00-Plan für die inzwischen VERÖFFENTLICHTEN Slots nur geschätzt
+    # hatte. Nur dieser Vergleich macht die Preisunsicherheit im Dashboard
+    # sichtbar: im laufenden Plan sind die geschätzten Slots zwangsläufig genau
+    # die ohne Börsenpreis - ein "Ist" dazu gibt es im selben Lauf nie. Der
+    # Folgetagspreis erscheint erst ab ~13:00, dann wird die Morgen-Schätzung
+    # nachträglich bewertbar.
+    try:
+        from .local_history import read_optimizer_forecast_asof
+        _, first = read_optimizer_forecast_asof(
+            config.e3dc_rscp.history_db_path,
+            day_start + timedelta(minutes=20), day_start, end + slot, tz)
+        if first is not None and "price_ct_kwh" in first.columns:
+            est_col = next((c for c in ("price_ct_kwh_estimated",
+                                        "price_estimated")
+                            if c in first.columns), None)
+            guess = first["price_ct_kwh"].reindex(full)
+            if est_col is not None:      # nur der geschätzte Teil ist relevant
+                guess = guess.where(
+                    first[est_col].reindex(full).fillna(0.0) > 0.5)
+            if guess.notna().any():
+                df["plan0_price_ct_kwh"] = guess
+    except Exception as exc:            # pragma: no cover - nur Anzeige
+        log.debug("Preis-Schätzung des 00:00-Plans nicht lesbar (%s).", exc)
 
     # Intraday-Korrektur nur auf den ZUKUNFTS-Teil anwenden (konsistent mit
     # der Optimierung); im Vergangenheits-Teil bleibt die rohe Modellprognose

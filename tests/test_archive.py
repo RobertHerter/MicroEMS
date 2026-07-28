@@ -178,9 +178,10 @@ def test_archive_page_is_self_contained(tmp_path):
     assert "api/archive-runs.json" in html and "api/archive-run.json" in html
     assert 'id="run"' in html and 'id="chart"' in html
     assert 'id="day"' in html            # Tagesfilter (10 Tage Vorhaltung)
-    # Preis: Plan, geschaetzter Anteil und veroeffentlichter Preis getrennt.
-    assert "'Preis Plan'" in html and "'Preis Ist'" in html
-    assert "Preis Plan (Sch" in html and "price_estimated" in html
+    # Preis wie im Dashboard: durchgezogen der tatsaechliche Boersenpreis,
+    # gestrichelt NUR die Schaetzung des Laufs (nicht beides doppelt).
+    assert "'Börsenpreis'" in html and "'Preis (Schätzung)'" in html
+    assert "'Preis Ist'" not in html and "price_estimated" in html
     # Plotly lokal (kein Internet), Rueckweg zum Dashboard, Theme-Umschalter.
     assert '<script src="plotly.min.js">' in html
     assert "ems-theme" in html
@@ -224,6 +225,46 @@ def test_get_routes_for_archive(tmp_path):
     assert r("/archive") == ("archive_page",)
     assert r("/api/archive-runs.json") == ("archive_list",)
     assert r("/api/archive-run.json") == ("archive_run",)
+
+
+def _display_table(index, **extra):
+    n = len(index)
+    cols = {
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.full(n, 800.0), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+    }
+    cols.update(extra)
+    return pd.DataFrame(cols, index=index)
+
+
+def test_dashboard_shows_the_morning_price_estimate_against_the_published_price():
+    """Im laufenden Plan sind geschaetzte Slots genau die OHNE Boersenpreis -
+    ein Ist dazu gibt es nie. Sichtbar wird der Schaetzfehler erst, wenn man die
+    Schaetzung des 00:00-Plans gegen den inzwischen veroeffentlichten Preis legt.
+    """
+    from ems.dashboard import build_dashboard
+    cfg = make_config()
+    index = pd.date_range(pd.Timestamp("2026-07-20 06:00", tz=TZ),
+                          periods=8, freq="15min")
+    table = _display_table(
+        index,
+        price_estimated=np.zeros(8),              # inzwischen veroeffentlicht
+        plan0_price_ct_kwh=np.full(8, 31.0))      # 00:00 hatte 31 statt 25 ct
+    html = pathlib.Path(
+        build_dashboard(cfg, table, total_cost_ct=0.0)).read_text(encoding="utf-8")
+    assert "Sch\\u00e4tzung 00:00" in html or "Schätzung 00:00" in html
+
+    # Ohne Abweichung bleibt die Kurve weg (keine doppelte Linie auf der Ist-Linie).
+    plain = _display_table(index, price_estimated=np.zeros(8),
+                           plan0_price_ct_kwh=np.full(8, 25.0))
+    html2 = pathlib.Path(
+        build_dashboard(cfg, plain, total_cost_ct=0.0)).read_text(encoding="utf-8")
+    assert "Sch\\u00e4tzung 00:00" not in html2 and "Schätzung 00:00" not in html2
 
 
 def test_dashboard_links_to_the_archive_page():
