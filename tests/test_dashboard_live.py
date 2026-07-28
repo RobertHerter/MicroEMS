@@ -99,6 +99,29 @@ def test_decision_block_shows_empty_plan_state():
     assert "<details class='decisions' open" not in html
 
 
+def test_operations_block_shows_which_slot_was_checked():
+    """Die bestätigte Ausführungsprüfung hängt ~1 h nach (E3DC-Zählerenergie).
+    Ohne Zeitbezug wirkt eine gelbe Betriebsdiagnose wie ein AKTUELLES Problem,
+    obwohl sie einen länger vergangenen Slot bewertet."""
+    from ems.dashboard import _operations_block
+    execution = {
+        "ok": False, "state": "device_error", "cause": "device",
+        "message": "Geräteabweichung: Akku 848 W statt geplant 4.402 W.",
+        "planned": {"issued_at": "2026-07-28T06:45:00+00:00", "grid_w": -230.8,
+                    "battery_w": 4401.5, "soc": 7.0},
+        "actual": {"grid_w": -3839.0, "battery_w": 848.0, "soc": 7.0},
+        "deviations": {"battery_energy_kwh": -0.888},
+    }
+    html = _operations_block({"seconds": 4.0, "polish_seconds": 0.4},
+                             execution, "Europe/Berlin")
+    assert "Slot 28.07. 08:45" in html          # UTC 06:45 -> lokal 08:45
+    assert "Geräteabweichung: Akku 848 W" in html
+    assert "quality-item partial" in html       # gelb, nicht rot
+    # Ohne Zeitstempel bleibt das Panel funktionsfähig.
+    execution["planned"].pop("issued_at")
+    assert "Slot " not in _operations_block({}, execution, "Europe/Berlin")
+
+
 def test_report_block_offers_history_selection():
     """Debug-Panel: Auswahl älterer Läufe (Verlauf) + Download mit ?ts=."""
     from ems.dashboard import _report_block

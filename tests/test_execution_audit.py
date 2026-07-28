@@ -133,6 +133,28 @@ def test_completed_slot_uses_meter_energy_and_classifies_device_error(tmp_path):
     assert "soc" not in audit["deviations"]
 
 
+def test_device_error_message_names_the_deviating_quantity(tmp_path):
+    """Die Betriebsdiagnose im Dashboard zeigte nur „Geräteabweichung." - daraus
+    war nicht ableitbar, WAS abwich. Die Meldung nennt jetzt Ist- und Sollwert
+    und den häufigsten Fall (Überschuss ging ins Netz statt in den Akku)."""
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    # Geplant 2000 W laden (= 500 Wh). Real nur 100 Wh geladen, der Rest
+    # (400 Wh) ging ins Netz - genau der reale Fall vom 28.07.
+    link = _EnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                        "bat_in_wh": 100.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 400.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 50.0}, e3dc=link)
+    assert audit["ok"] is False and audit["cause"] == "device"
+    message = audit["message"]
+    assert message.startswith("Geräteabweichung")
+    assert "Akku" in message and "statt geplant" in message
+    assert "Netz" in message           # Überschuss-Hinweis
+    # Zahlen statt nur Label: Ist- und Sollwert müssen erkennbar sein.
+    assert any(ch.isdigit() for ch in message)
+
+
 def test_completed_slot_separates_forecast_deviation(tmp_path):
     cfg = _cfg(tmp_path)
     _completed_plan(cfg)

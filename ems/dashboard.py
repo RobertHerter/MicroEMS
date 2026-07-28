@@ -1057,7 +1057,7 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
             f"</summary><div class='quality-grid'>{''.join(items)}</div></details>")
 
 
-def _operations_block(solver, execution) -> str:
+def _operations_block(solver, execution, timezone="Europe/Berlin") -> str:
     """Kompakte, standardmaessig eingeklappte Betriebsdiagnose."""
     if not solver and not execution:
         return ""
@@ -1086,7 +1086,22 @@ def _operations_block(solver, execution) -> str:
         planned, actual = execution.get("planned", {}), execution.get("actual", {})
         def _w(value):
             return "–" if value is None else f"{value:,.0f} W".replace(",", ".")
-        detail = (f"Netz {_w(planned.get('grid_w'))} → {_w(actual.get('grid_w'))} · "
+        # Welcher Slot wurde geprüft? Die bestätigte Prüfung braucht die
+        # E3DC-Zählerenergie und hängt darum rund eine Stunde nach - ohne den
+        # Zeitbezug wirkt eine gelbe Diagnose wie ein AKTUELLES Problem, obwohl
+        # sie einen länger vergangenen Slot bewertet.
+        slot_hint = ""
+        _slot = planned.get("issued_at") or execution.get("slot")
+        if _slot:
+            try:
+                _ts = pd.Timestamp(_slot)
+                if _ts.tzinfo is not None:
+                    _ts = _ts.tz_convert(timezone)
+                slot_hint = f"Slot {_ts.strftime('%d.%m. %H:%M')} · "
+            except Exception:
+                slot_hint = ""
+        detail = (slot_hint
+                  + f"Netz {_w(planned.get('grid_w'))} → {_w(actual.get('grid_w'))} · "
                   f"Akku {_w(planned.get('battery_w'))} → {_w(actual.get('battery_w'))} · "
                   f"SoC {planned.get('soc', '–')} → {actual.get('soc', '–')} %")
         deviations = execution.get("deviations", {})
@@ -2169,7 +2184,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {mobile_plot_html}
 {_slot_detail_block()}
 {decision_html}
-{_operations_block(solver_status, execution_status)}
+{_operations_block(solver_status, execution_status, config.general.timezone)}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
 {_forecast_quality_block(forecast_quality, config.general.timezone)}
 {_analysis_block(analysis_headline)}

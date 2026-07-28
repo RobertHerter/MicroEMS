@@ -737,8 +737,36 @@ def _audit_execution(config, now, live, e3dc=None):
         labels = {"device": "Geräteabweichung", "forecast": "Prognoseabweichung",
                   "model": "nicht ausführbare Modellannahme", "none": "Soll erfüllt"}
         message = labels[cause]
+
+        # Das nackte Label sagt nicht, WAS abwich - dann ist die gelbe
+        # Betriebsdiagnose nicht deutbar. Deshalb die auslösenden Groessen mit
+        # Ist- und Sollwert in die Meldung schreiben.
+        def _w(value):
+            return f"{float(value or 0.0):.0f} W"
+
+        why = []
+        if batt_bad:
+            why.append(f"Akku {_w(actual.get('battery_w'))} statt geplant "
+                       f"{_w(planned.get('battery_w'))}")
+        if soc_bad:
+            why.append(f"SoC {float(actual.get('soc') or 0.0):.1f} % statt "
+                       f"{float(planned.get('soc') or 0.0):.1f} %")
         if export_bad:
-            message += "; Einspeisegrenze wurde überschritten"
+            why.append(f"Einspeisung {_w(actual.get('grid_export_w'))} über der "
+                       f"Grenze von {_w(limit)}")
+        if cause == "forecast":
+            why.append(f"PV {deviations.get('pv_w', 0.0):+.0f} W, Hauslast "
+                       f"{deviations.get('load_w', 0.0):+.0f} W gegenüber der Prognose")
+        # Haeufigster Fall: der Akku sollte laden, der Ueberschuss ging aber ins
+        # Netz. Das ist die eigentlich interessante Information.
+        if (batt_bad
+                and float(planned.get("battery_w") or 0.0)
+                > float(actual.get("battery_w") or 0.0) + 50.0
+                and float(actual.get("grid_export_w") or 0.0)
+                > float(planned.get("grid_export_w") or 0.0) + 50.0):
+            why.append("der Überschuss ging stattdessen ins Netz")
+        if why:
+            message += ": " + "; ".join(why)
         audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
                  "ok": ok, "state": state, "cause": cause, "message": message + ".",
                  "planned": planned, "actual": actual, "deviations": deviations,
