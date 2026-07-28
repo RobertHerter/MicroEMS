@@ -1700,6 +1700,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         '<span class="config-icon">⚙</span><span class="config-label">'
         'Konfiguration</span></a>'
         if editor_allowed(config) else "")
+    # Eigene Seite: archivierten Lauf wählen und gegen die Ist-Werte legen.
+    archive_link = (
+        '<a id="archive-link" href="/archiv" '
+        'title="Archivierten Optimierer-Lauf gegen die Ist-Werte legen">'
+        '<span class="config-icon">🕘</span><span class="config-label">'
+        'Lauf-Archiv</span></a>')
     html = f"""<!DOCTYPE html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -2204,8 +2210,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    h1 {{ font-size: 17px; line-height: 1.25; }}
    h1 .ts {{ display: block; font-size: 11px; margin-top: 2px; }}
    .header-actions button, .header-actions a {{ min-width: 44px; min-height: 44px; font-size: 0; padding: 0; }}
-   #config-link .config-icon {{ font-size: 21px; }}
-   #config-link .config-label {{ display: none; }}
+   #config-link .config-icon, #archive-link .config-icon {{ font-size: 21px; }}
+   #config-link .config-label, #archive-link .config-label {{ display: none; }}
    #theme-toggle:after {{ content: '◐'; font-size: 21px; }}
    #install-app:after {{ content: '↓'; font-size: 22px; }}
    .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }}
@@ -2261,7 +2267,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 </style></head><body>
 <header class="app-header"><h1>E3DC EMS Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
- <div class="header-actions">{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
+ <div class="header-actions">{archive_link}{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
 {runtime_html}
 {live_html}

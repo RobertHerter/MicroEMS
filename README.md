@@ -88,6 +88,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/explain.py` | Klartext-Begründung der Steuerentscheidungen (Dashboard-Tooltips) |
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
+| `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
 | `ems/ingest.py` | Externe Einspeisung (REST) von Live-/Historienwerten → Betrieb ohne RSCP/InfluxDB |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard + JSON-API |
 | `tests/` | pytest-Suite (E2E, Optimierer-Randfälle, Prognose, Ersparnis, Diagnose …) |
@@ -664,6 +665,35 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   archivierte Prognosestand verwendet (kein nachträglich bekannter Ist-Verlauf).
   Schreibt nichts in die DB; als Regressions-Sweep nach jeder Modelländerung
   laufen lassen (erwartet: 0 Fehler, 0 negative Ersparnis-Tage).
+
+## Lauf-Archiv: alten Plan gegen die eingetretenen Werte legen
+
+Das Dashboard zeigt Plan **und** Ist nur für den *aktuellen* Lauf. Die eigene
+Seite **`/archiv`** (Kopfzeilen-Link 🕘 *Lauf-Archiv*) macht das für jeden
+archivierten Lauf: Lauf aus der Liste wählen (oder mit ◀ älter / neuer ▶
+durchblättern), die Kurven werden mit den seither gemessenen Ist-Werten
+überlagert. Grundlage sind die Debug-Schnappschüsse, die jeder Zyklus ohnehin
+ablegt (`debug_snapshot`, rollierend die letzten 1000 Läufe ≈ 10 Tage) – dort
+stehen die Eingaben (PV-/Last-Prognose, Preis, Start-SoC) *und* der
+beschlossene Plan.
+
+- Durchgezogen = Plan dieses Laufs, gestrichelt = Ist. Ist-Werte gibt es nur für
+  die seit dem Lauf vergangene Zeit; bei einem frischen Lauf also nur am linken
+  Rand (die Kachel *Ist-Abdeckung* zeigt, wie viel).
+- Kennzahlen je Lauf: Solver-Status (inkl. Grund bei `Infeasible`), Plankosten,
+  und die Abweichung Plan↔Ist als MAE für PV, Last, Akku und SoC.
+- Vorzeichen wie in den Ist-Signalen: Akku positiv = laden, Netz positiv = Bezug.
+- Vorausgewählt ist der Lauf von **heute 00:00** – der Tagesplan, an dem sich
+  die Prognosegüte des Morgens zeigt (der aktuellste Lauf steht ja im
+  Dashboard). Über das Datumsfeld wird der Tag gewechselt, die Liste zeigt dann
+  nur dessen Läufe; ◀ älter / neuer ▶ blättert auch über Tagesgrenzen.
+- Der ausgewählte Lauf steht in der URL (`/archiv?ts=…`) – so ist eine
+  konkrete Ansicht verlinkbar, z. B. für eine Fehlermeldung.
+
+Damit ist die Frage „was hat der Optimierer damals eigentlich erwartet?"
+nachträglich beantwortbar – etwa bei einem infeasiblen Plan oder einer
+unerwarteten Akku-Entladung. Endpoints: `/api/archive-runs.json` (Liste),
+`/api/archive-run.json?ts=<generated>` (ein Lauf mit Plan, Ist und Abweichung).
 
 ## Entscheidungsgüte: war die Prognose gut genug für die richtigen Zeitpunkte?
 

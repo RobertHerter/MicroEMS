@@ -1,0 +1,215 @@
+"""Tests der Archiv-Ansicht: archivierten Optimierer-Lauf gegen die Ist-Werte
+legen (ems/archive.py + Routing in ems/main.py).
+"""
+from __future__ import annotations
+
+import pathlib
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from ems import main as m
+from ems.archive import archive_html, list_runs, run_detail
+from ems.local_history import write_actuals, write_debug_snapshot
+from tests.test_synthetic import make_config
+
+TZ = "Europe/Berlin"
+
+
+def _cfg(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    return cfg
+
+
+def _snapshot(index, *, generated, status="Optimal", infeasible=False):
+    """Debug-Schnappschuss in der Form, die ems/debugdump.py schreibt."""
+    n = len(index)
+    pv = np.linspace(0.0, 4000.0, n)
+    house = np.full(n, 900.0)
+    return {
+        "generated": pd.Timestamp(generated).isoformat(),
+        "status": status,
+        "infeasible": infeasible,
+        "infeasible_reason": "Pool-Kopplung" if infeasible else None,
+        "solver_hit_limit": False,
+        "total_cost_eur": -1.75,
+        "violations": [],
+        "inputs": {
+            "index": [ts.isoformat() for ts in index],
+            "house_load_w": list(house),
+            "pv_w": list(pv),
+            "pv10_w": list(pv * 0.6),
+            "price_ct_kwh": list(np.full(n, 27.5)),
+            "feedin_ct_kwh": list(np.full(n, 8.0)),
+            "initial_house_soc_wh": 5000.0,
+        },
+        "plan": {
+            "batt_dc_charge_w": list(np.full(n, 1200.0)),
+            "batt_ac_charge_w": list(np.zeros(n)),
+            "batt_discharge_w": list(np.zeros(n)),
+            "grid_import_w": list(np.full(n, 100.0)),
+            "grid_export_w": list(np.zeros(n)),
+            "house_soc_percent": list(np.linspace(50.0, 80.0, n)),
+        },
+        "plan_mode": ["peak"] * n,
+    }
+
+
+def _seed(tmp_path, *, actual_slots=8, n=32):
+    cfg = _cfg(tmp_path)
+    index = pd.date_range(pd.Timestamp("2026-07-20 06:00", tz=TZ),
+                          periods=n, freq="15min")
+    gen = index[0]
+    write_debug_snapshot(cfg.e3dc_rscp.history_db_path,
+                         _snapshot(index, generated=gen))
+    # Ist-Werte nur fuer die ersten Slots - wie bei einem noch laufenden Tag.
+    for k in range(actual_slots):
+        write_actuals(cfg.e3dc_rscp.history_db_path, index[k], {
+            "pv_w": 300.0 * k, "house_load_w": 1100.0, "grid_w": -200.0,
+            "battery_w": 1000.0, "soc_percent": 50.0 + k})
+    return cfg, index, gen
+
+
+# --------------------------------------------------------------------------- #
+# Aufbereitung
+# --------------------------------------------------------------------------- #
+def test_run_detail_puts_plan_and_actual_on_the_same_grid(tmp_path):
+    cfg, index, gen = _seed(tmp_path)
+    d = run_detail(cfg, gen.isoformat())
+    assert d is not None
+    assert d["slots"] == len(index) and d["status"] == "Optimal"
+    assert d["mode"] == "peak" and d["total_cost_eur"] == -1.75
+    # Beide Seiten haben genau ein Element je Slot -> im Browser deckungsgleich.
+    for key in ("pv_w", "house_w", "battery_w", "soc_percent"):
+        assert len(d["plan"][key]) == len(index)
+        assert len(d["actual"][key]) == len(index)
+    # Ist nur am linken Rand vorhanden, danach None (keine erfundenen Werte).
+    assert d["actual_slots"] == 8
+    assert d["actual"]["pv_w"][7] is not None
+    assert d["actual"]["pv_w"][8] is None
+
+
+def test_run_detail_signs_match_the_actual_convention(tmp_path):
+    """Akku positiv = laden, Netz positiv = Bezug - sonst laufen die Kurven
+    der beiden Seiten gegeneinander."""
+    cfg, index, gen = _seed(tmp_path)
+    d = run_detail(cfg, gen.isoformat())
+    # Plan: 1200 W DC-Laden, 0 entladen -> +1200; Ist: +1000 (laden).
+    assert d["plan"]["battery_w"][0] == pytest.approx(1200.0)
+    assert d["actual"]["battery_w"][0] == pytest.approx(1000.0)
+    # Plan: 100 W Bezug -> +100; Ist: -200 (Einspeisung).
+    assert d["plan"]["grid_w"][0] == pytest.approx(100.0)
+    assert d["actual"]["grid_w"][0] == pytest.approx(-200.0)
+
+
+def test_run_detail_reports_deviation_only_where_actuals_exist(tmp_path):
+    cfg, index, gen = _seed(tmp_path)
+    d = run_detail(cfg, gen.isoformat())
+    dev = d["deviation"]
+    # Last: Plan 900 W gegen Ist 1100 W in den 8 gemessenen Slots -> genau 200.
+    assert dev["house_mae_w"] == pytest.approx(200.0, abs=0.5)
+    assert dev["pv_mae_w"] is not None and dev["soc_mae_pp"] is not None
+
+
+def test_run_detail_tolerates_an_unencoded_timestamp(tmp_path):
+    """In einem Query-String wird '+' als Leerzeichen dekodiert."""
+    cfg, index, gen = _seed(tmp_path)
+    mangled = gen.isoformat().replace("+", " ")
+    assert mangled != gen.isoformat()
+    assert run_detail(cfg, mangled) is not None
+
+
+def test_run_detail_without_snapshot_is_none(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert run_detail(cfg) is None
+    assert run_detail(cfg, "2026-01-01T00:00:00+01:00") is None
+    assert list_runs(cfg) == []
+
+
+def test_list_runs_marks_infeasible_runs(tmp_path):
+    cfg, index, gen = _seed(tmp_path)
+    later = index[0] + pd.Timedelta(minutes=15)
+    write_debug_snapshot(cfg.e3dc_rscp.history_db_path,
+                         _snapshot(index, generated=later,
+                                   status="Infeasible", infeasible=True))
+    runs = list_runs(cfg)
+    assert len(runs) == 2
+    assert runs[0]["infeasible"] is True          # neueste zuerst
+    assert runs[1]["infeasible"] is False
+    d = run_detail(cfg, runs[0]["generated"])
+    assert d["infeasible"] is True and d["infeasible_reason"] == "Pool-Kopplung"
+
+
+# --------------------------------------------------------------------------- #
+# Seite und Routing
+# --------------------------------------------------------------------------- #
+def test_archive_page_is_self_contained(tmp_path):
+    html = archive_html().decode("utf-8")
+    assert "api/archive-runs.json" in html and "api/archive-run.json" in html
+    assert 'id="run"' in html and 'id="chart"' in html
+    assert 'id="day"' in html            # Tagesfilter (10 Tage Vorhaltung)
+    # Plotly lokal (kein Internet), Rueckweg zum Dashboard, Theme-Umschalter.
+    assert '<script src="plotly.min.js">' in html
+    assert "ems-theme" in html
+    # Kopfzeile wie im Dashboard, Dashboard-Rueckweg als Button VOR Darstellung.
+    assert 'class="app-header"' in html and 'class="header-actions"' in html
+    assert html.index('href="/"') < html.index('id="theme"')
+
+
+def test_archive_page_themes_the_plotly_overlays():
+    """Hover-Box und Werkzeugleiste muessen mitgefaerbt werden - Plotly ist
+    per Default hell und damit im Dark-Mode weiss auf weiss."""
+    html = archive_html().decode("utf-8")
+    assert "hoverlabel:hoverlabel" in html and "modebar:modebar" in html
+    assert "--card" in html and "activecolor" in html
+
+
+def test_snapshot_history_keeps_more_than_three_days(tmp_path):
+    """Fuer den Tagesvergleich im Archiv muessen mehrere Tage vorgehalten und
+    auch ausgeliefert werden (frueher 300 Laeufe bzw. 120 in der Liste)."""
+    cfg = _cfg(tmp_path)
+    index = pd.date_range(pd.Timestamp("2026-07-20 00:00", tz=TZ),
+                          periods=2, freq="15min")
+    base = pd.Timestamp("2026-07-14 00:00", tz=TZ)
+    for k in range(420):                 # gut 4 Tage im 15-min-Raster
+        write_debug_snapshot(cfg.e3dc_rscp.history_db_path,
+                             _snapshot(index,
+                                       generated=base + pd.Timedelta(minutes=15 * k)))
+    runs = list_runs(cfg)
+    assert len(runs) == 420
+    assert len({r["ts_local"][:10] for r in runs}) >= 4    # mehrere Tage waehlbar
+
+
+def test_get_routes_for_archive(tmp_path):
+    cfg = _cfg(tmp_path)
+
+    def r(path):
+        return m._resolve_get_route(path, cfg, has_schedule_runner=False)
+
+    assert r("/archiv") == ("archive_page",)
+    assert r("/archiv/") == ("archive_page",)
+    assert r("/archive") == ("archive_page",)
+    assert r("/api/archive-runs.json") == ("archive_list",)
+    assert r("/api/archive-run.json") == ("archive_run",)
+
+
+def test_dashboard_links_to_the_archive_page():
+    from ems.dashboard import build_dashboard
+    cfg = make_config()
+    index = pd.date_range(pd.Timestamp("2026-07-20 06:00", tz=TZ),
+                          periods=8, freq="15min")
+    table = pd.DataFrame({
+        "house_load_w": np.full(8, 800.0), "pv_w": np.zeros(8),
+        "price_ct_kwh": np.full(8, 25.0), "feedin_ct_kwh": np.full(8, 8.0),
+        "batt_dc_charge_w": np.zeros(8), "batt_ac_charge_w": np.zeros(8),
+        "batt_discharge_w": np.full(8, 800.0), "grid_import_w": np.zeros(8),
+        "grid_export_w": np.zeros(8), "house_soc_percent": np.full(8, 60.0),
+        "mode": ["auto"] * 8, "car_charge_w": np.zeros(8),
+        "slot_cost_ct": np.zeros(8),
+    }, index=index)
+    # build_dashboard gibt den Pfad der geschriebenen HTML zurueck.
+    out = build_dashboard(cfg, table, total_cost_ct=0.0)
+    html = pathlib.Path(out).read_text(encoding="utf-8")
+    assert 'href="/archiv"' in html and 'id="archive-link"' in html

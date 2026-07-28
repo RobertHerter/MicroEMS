@@ -1385,6 +1385,12 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         if reason:
             return ("json", {"error": f"Konfigurationseditor gesperrt: {reason}"}, 403)
         return ("config_page",) if path != "/api/config.json" else ("config_data",)
+    if path in ("/archiv", "/archiv/", "/archive"):
+        return ("archive_page",)
+    if path == "/api/archive-runs.json":
+        return ("archive_list",)
+    if path == "/api/archive-run.json":
+        return ("archive_run",)
     if path == "/manifest.webmanifest":
         return ("raw", "manifest")
     if path == "/app-icon.svg":
@@ -3725,6 +3731,36 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     from .config_editor import editor_html
                     self._raw_reply(
                         editor_html(), "text/html; charset=utf-8", "no-store")
+                    return
+                if kind == "archive_page":
+                    from .archive import archive_html
+                    self._raw_reply(
+                        archive_html(), "text/html; charset=utf-8", "no-store")
+                    return
+                if kind == "archive_list":
+                    from .archive import list_runs
+                    try:
+                        items = list_runs(config)
+                    except Exception:
+                        items = []
+                    self._reply({"snapshots": items})
+                    return
+                if kind == "archive_run":
+                    from urllib.parse import parse_qs, urlparse
+
+                    from .archive import run_detail
+                    q = parse_qs(urlparse(self.path).query)
+                    ts = (q.get("ts") or [None])[0]
+                    try:
+                        detail = run_detail(config, ts)
+                    except Exception as exc:
+                        log.exception("Archivlauf nicht aufbereitbar")
+                        self._reply({"error": str(exc)}, 500)
+                        return
+                    if detail is None:
+                        self._reply({"error": "Kein Lauf zu diesem Zeitpunkt"}, 404)
+                        return
+                    self._reply(detail)
                     return
                 if kind == "config_data":
                     from .config_editor import editor_payload

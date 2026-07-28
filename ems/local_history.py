@@ -1178,10 +1178,14 @@ def read_dashboard_events(path: str, tz: str, limit: int = 50) -> list[dict]:
     return out
 
 
-def write_debug_snapshot(path: str, snap: dict, keep: int = 300) -> None:
+def write_debug_snapshot(path: str, snap: dict, keep: int = 1000) -> None:
     """Einen Debug-Schnappschuss (komprimiertes JSON) in den rollierenden
     Verlauf schreiben und auf die letzten ``keep`` Läufe begrenzen. So bleibt
-    auch ein älterer infeasibler/falscher Plan mit allen Eingaben versendbar."""
+    auch ein älterer infeasibler/falscher Plan mit allen Eingaben versendbar.
+
+    1000 Läufe sind bei ~11 kB je Schnappschuss rund 11 MB und reichen für etwa
+    zehn Tage – genug, um im Lauf-Archiv (``/archiv``) mehrere Tage zu
+    vergleichen."""
     try:
         payload = zlib.compress(
             json.dumps(snap, ensure_ascii=False, default=str).encode("utf-8"),
@@ -1216,7 +1220,7 @@ def list_debug_snapshots(path: str, tz: str, limit: int = 60) -> list[dict]:
         rows = con.execute(
             "SELECT generated, status, infeasible, reason, n_violations "
             "FROM debug_snapshot ORDER BY id DESC LIMIT ?",
-            (max(1, min(int(limit), 300)),)).fetchall()
+            (max(1, min(int(limit), 1200)),)).fetchall()
         con.close()
     except Exception:
         rows = []
