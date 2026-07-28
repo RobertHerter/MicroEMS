@@ -1274,6 +1274,23 @@ class Optimizer:
                     deficit_end[k] = e
                 s = e
 
+            def _unavoidable_import_w(k: int) -> float:
+                """Netzbezug, den der Akku im Slot k physisch nicht abnehmen kann.
+
+                Nach oben begrenzt die Maximalleistung, nach unten die
+                Mindest-Entladeleistung: eine Restlast unter min_dis kann der
+                Akku nur ganz oder gar nicht bedienen (dis = 0 oder >= min_dis),
+                sie muss also aus dem Netz kommen duerfen. Ohne diese Ausnahme
+                wird der komplette Plan unloesbar, sobald ein einziger Slot eine
+                winzige positive Restlast hat (PV ~ Last, z.B. 53 W) - der
+                Suffizienz-Block verbietet dort den Bezug, die Mindestentladung
+                verbietet die Deckung aus dem Akku.
+                """
+                residual = float(inp.house_load_w[k]) - float(inp.pv_w[k])
+                if 0.0 < residual < min_dis:
+                    return residual
+                return max(0.0, residual - max_dis)
+
             enforce_sufficiency = not bool(
                 getattr(cfg.optimization, "allow_grid_discharge", False))
             for seg_no, (start, end) in enumerate(
@@ -1292,9 +1309,7 @@ class Optimizer:
                          <= usable_wh * sufficient)
                 for k in range(start, end):
                     local_import = g_imp[k] - ac[k]
-                    unavoidable_base = max(
-                        0.0, float(inp.house_load_w[k])
-                        - float(inp.pv_w[k]) - max_dis)
+                    unavoidable_base = _unavoidable_import_w(k)
                     prob += (local_import <= unavoidable_base + standby_w
                              + car[k] + cl_power[k]
                              + BIGG * (1 - sufficient))
@@ -1320,9 +1335,7 @@ class Optimizer:
                                if len(future_prices) else float("-inf"))
                 if (enforce_sufficiency
                         and future_high < float(inp.price_ct_kwh[t]) + hold_pen):
-                    unavoidable_base = max(
-                        0.0, float(inp.house_load_w[t])
-                        - float(inp.pv_w[t]) - max_dis)
+                    unavoidable_base = _unavoidable_import_w(t)
                     prob += (local_import <= unavoidable_base + standby_w + car[t]
                              + cl_power[t] + BIGG * (1 - has_energy))
                 avoidable_import.append(avoidable)

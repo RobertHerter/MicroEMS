@@ -298,6 +298,7 @@ def test_resolve_get_route_assets_live_status(tmp_path):
     assert r("/api/savings-history.json") == ("status", "/api/savings-history.json")
     assert r("/api/forecast-accuracy.json") == ("status", "/api/forecast-accuracy.json")
     assert r("/api/battery-health.json") == ("status", "/api/battery-health.json")
+    assert r("/api/plan-value.json") == ("status", "/api/plan-value.json")
     assert r("/index.html") is None                       # -> statische Datei
 
 
@@ -311,6 +312,10 @@ def test_status_api_payload_observability(tmp_path):
     assert obj["trend"] == []          # #3: Trend-Reihe (leer auf frischer DB)
     obj, code = m._status_api_payload("/api/battery-health.json", cfg)
     assert code == 200 and obj["n"] == 0 and "cycles_equiv" in obj
+    # Entscheidungsguete: auf frischer DB ohne Ist-Daten leer, aber nie ein Fehler.
+    obj, code = m._status_api_payload("/api/plan-value.json", cfg)
+    assert code == 200 and obj["timing"] == [] and obj["regret"] == []
+    assert obj["regret_days"] == 0 and obj["discharge_score_percent"] is None
 
 
 def test_resolve_get_route_battery_schedule_and_data_gating(tmp_path):

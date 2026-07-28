@@ -87,6 +87,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/validate.py` + `ems/drift.py` | Invarianten-Prüfung eines Plans + Predicted-vs-Actual-Drift |
 | `ems/explain.py` | Klartext-Begründung der Steuerentscheidungen (Dashboard-Tooltips) |
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
+| `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/ingest.py` | Externe Einspeisung (REST) von Live-/Historienwerten → Betrieb ohne RSCP/InfluxDB |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard + JSON-API |
 | `tests/` | pytest-Suite (E2E, Optimierer-Randfälle, Prognose, Ersparnis, Diagnose …) |
@@ -663,6 +664,69 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   archivierte Prognosestand verwendet (kein nachträglich bekannter Ist-Verlauf).
   Schreibt nichts in die DB; als Regressions-Sweep nach jeder Modelländerung
   laufen lassen (erwartet: 0 Fehler, 0 negative Ersparnis-Tage).
+
+## Entscheidungsgüte: war die Prognose gut genug für die richtigen Zeitpunkte?
+
+Die Delta-Anzeigen im Dashboard messen den Prognose**fehler** und werden alle
+15 min gegen die dann aktuelle Prognose neu gerechnet. Sie beantworten nicht,
+ob der Plan **zu Tagesbeginn** die besten Zeitpunkte für Entladen, Laden und
+Netzladen getroffen hat: ein großer PV-Fehler mittags kostet nichts, wenn der
+Akku ohnehin voll ist, ein kleiner Fehler in der Abendspitze kann teuer sein.
+
+`ems/planvalue.py` + `plan_value.py` liefern dafür zwei Sichten, beide rein
+lesend (lokale SQLite, kein RSCP, keine Schreibvorgänge):
+
+```bash
+python plan_value.py --config config.yaml --days 7
+python plan_value.py --config config.yaml --day 2026-07-25 --json
+python plan_value.py --config config.yaml --days 7 --timing-only   # ohne Solver
+```
+
+**1. Timing-Güte** (ohne Solver, Millisekunden) – lagen die real entladenen kWh
+in den teuersten und die netzgeladenen in den günstigsten Slots? Die Bestmarke
+ist ein kleines LP über **dieselbe** Energiemenge unter den echten Schranken:
+Entladen darf nur die Restlast decken (Akku→Netz ist gesperrt), Leistungsgrenzen
+und der real verfügbare SoC-Verlauf gelten kumulativ. Ohne diese Schranken wäre
+die Marke unerreichbar und die Note wertlos. Zusätzlich wird der **Spielraum**
+ausgegeben: deckte der Akku ohnehin fast die ganze Restlast des Tages, gab es
+beim Zeitpunkt gar keine Wahl – dann ist die Note zwangsläufig ~100 % und wird
+als `(fix)` statt als Prozentwert gezeigt (im Hochsommer der Normalfall).
+
+**2. Regret gegen Hellsicht** (zwei Solverläufe je Tag, ~3 s) – vier Kosten
+desselben Tages, alle mit **demselben** Simulator auf den Ist-Daten bewertet und
+auf den Ist-Endladestand normiert (sonst wäre ein Plan, der den Akku leerfährt,
+scheinbar günstiger und die Hellsicht keine untere Schranke):
+
+| Variante | Bedeutung |
+| --- | --- |
+| `hellsicht` | Optimierer kannte die tatsächlich eingetretenen Werte (48 h) |
+| `fix` | Plan aus der 00:00-Prognose, danach **nie** angepasst |
+| `rollierend` | die je Slot wirklich publizierten Sollwerte |
+| `abgerechnet` | aus den Ist-Zählerflüssen (Quervergleich) |
+
+Daraus die Zerlegung, die sich exakt auf die Gesamtlücke addiert:
+
+```
+Prognose   = fix        - hellsicht    was die 00:00-Prognose kostet
+Nachplanen = fix        - rollierend   was das 15-min-Neurechnen zurückholt
+Ausführung = abgerechnet - rollierend  Anlage/Messung gegen die Sollwerte
+Restlücke  = abgerechnet - hellsicht   = Prognose - Nachplanen + Ausführung
+```
+
+Alles in Euro pro Tag und damit direkt interpretierbar – anders als ein WAPE.
+Der jüngste bewertbare Tag ist der Vortag: der Optimierer braucht den Folgetag
+als Horizont, sonst würde er den Akku am Tagesende leerfahren.
+
+Der Ausführungs-Term ist bewusst als *Kennzeichen*, nicht als Verlust zu lesen:
+er ist typischerweise **negativ** (real günstiger als der nachgespielte
+Sollwert-Fahrplan), weil die Sollwerte als E3/DC-**Grenzen** wirken und die
+Anlage innerhalb dieser Grenzen feiner regelt als das 15-min-Raster – dazu
+kommen Messinkonsistenzen der Ist-Signale. Ein plötzlicher Sprung in diesem Term
+ist dagegen ein echtes Warnsignal (Regelung greift nicht wie geplant).
+
+Im Dashboard steht die Kurzform als Kachelzeile **Entscheidungsgüte** im
+Analyse-Panel (Endpoint `/api/plan-value.json`, 6 h Prozess-Cache, wird erst
+beim Aufklappen berechnet).
 
 ## Test
 

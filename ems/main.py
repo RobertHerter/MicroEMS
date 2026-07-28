@@ -1333,6 +1333,11 @@ def _status_api_payload(path: str, config):
     if path == "/api/battery-health.json":
         from .observability import battery_health
         return battery_health(config, days=30), 200
+    if path == "/api/plan-value.json":
+        # Timing-Güte ist reines Nachrechnen; der Regret kostet je Tag zwei
+        # Solverläufe (~2-3 s), deshalb nur zwei Tage und 6 h Prozess-Cache.
+        from .planvalue import plan_value_summary
+        return plan_value_summary(config, timing_days=7, regret_days=2), 200
     return None
 
 
@@ -1388,7 +1393,7 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         return ("live",)
     if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json",
                 "/api/savings-history.json", "/api/forecast-accuracy.json",
-                "/api/battery-health.json"):
+                "/api/battery-health.json", "/api/plan-value.json"):
         return ("status", path)
     if path == "/api/battery-schedule.json":
         if not getattr(config.dashboard, "controls_enabled", False):

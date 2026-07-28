@@ -285,6 +285,7 @@ def test_analysis_block_bundles_all_three_lazily():
     assert "api/forecast-accuracy.json" in an
     assert "api/savings-history.json" in an
     assert "api/battery-health.json" in an
+    assert "api/plan-value.json" in an and 'id="an-pvalue"' in an
     assert 'class="tiles"' in an and "toggle" in an   # Kachel-Look, lazy
     assert 'id="an-spark"' in an and 'id="an-drivers"' in an  # Sparkline + Treiber
     assert 'id="an-facc-trend"' in an and "trendSvg" in an     # #3 Prognosegüte-Trend

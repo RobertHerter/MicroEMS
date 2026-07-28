@@ -553,6 +553,8 @@ def _analysis_block(headline=None) -> str:
  <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
  <div class="tiles" id="an-facc"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
  <div class="facc-trend" id="an-facc-trend"></div>
+ <h4>Entscheidungsgüte <small>was die Unsicherheit kostet · Ø je Tag</small></h4>
+ <div class="tiles" id="an-pvalue"><span class="an-hint">wird geladen …</span></div>
  <h4>Ersparnis-Verlauf <small>validiert gegen die Zähler</small></h4>
  <div class="tiles" id="an-savings"><span class="an-hint">wird geladen …</span></div>
  <div class="sparkline" id="an-spark"></div>
@@ -597,8 +599,15 @@ def _analysis_block(headline=None) -> str:
    +tile(num(d.time_empty_pct)+' %','Zeit ~min-SoC',num(d.empty_hours)+' h')
    +tile(num(d.soc_avg_pct)+' %','SoC Ø','min '+num(d.soc_min_pct)+' / max '+num(d.soc_max_pct)+' %');
  }catch(e){fail('an-bhealth','Akku-Gesundheit nicht erreichbar.');}}
+ async function pvalue(){try{g('an-pvalue').innerHTML='<span class="an-hint">wird gerechnet (zwei Solverläufe je Tag) …</span>';let r=await fetch('api/plan-value.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();
+  var rd=d.regret_days||0,td=d.timing_days||0,sd=d.discharge_scored_days||0;
+  g('an-pvalue').innerHTML=tile(rd?eur(d.avg_forecast_regret_eur)+' €':'–','Prognose kostet',rd?('gegen Hellsicht · Ø '+rd+' Tag(e)'):'braucht abgeschlossene Tage')
+   +tile(rd?eur(d.avg_replanning_gain_eur)+' €':'–','Nachplanen holt zurück','durch die 15-min-Neuberechnung')
+   +tile(rd?eur(d.avg_total_gap_eur)+' €':'–','Restlücke','abgerechnet gegen Hellsicht')
+   +tile(sd?num(d.discharge_score_percent)+' %':'–','Entlade-Timing',sd?('bewertbar an '+sd+' von '+td+' Tagen'):'kein Spielraum an '+td+' Tagen');
+ }catch(e){fail('an-pvalue','Entscheidungsgüte nicht erreichbar.');}}
  let done=false;
- g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;facc();savings();bhealth();}});
+ g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;facc();pvalue();savings();bhealth();}});
 })();</script>"""
     return ('<details class="info-panel analysis-panel" id="analysis-panel">'
             + summary + body)

@@ -60,10 +60,22 @@ def _with_demo_api(html: str, now: pd.Timestamp) -> str:
          "level": "warning",
          "message": "Pool-Rückmeldung wieder aktuell: Pool/WP klein", "details": {}},
     ]}
+    # Entscheidungsguete (ems/planvalue.py): Beispielwerte in der Groessenordnung
+    # echter Sommertage - Prognose kostet ~1 EUR/Tag, das Nachplanen holt einen
+    # Teil zurueck, das Entlade-Timing hat im Sommer kaum Spielraum.
+    plan_value = {"regret_days": 2, "timing_days": 7, "discharge_scored_days": 3,
+                  "avg_forecast_regret_eur": 0.93,
+                  "avg_replanning_gain_eur": 0.21,
+                  "avg_execution_and_metering_eur": -0.34,
+                  "avg_total_gap_eur": 0.38,
+                  "discharge_score_percent": 94.2,
+                  "grid_charge_score_percent": None,
+                  "timing": [], "regret": []}
     stub = (
         "<script>(function(){\n"
         " const DEMO={'api/live.json':" + _json.dumps(live, ensure_ascii=False)
         + ",'api/status.json':" + _json.dumps(status, ensure_ascii=False)
+        + ",'api/plan-value.json':" + _json.dumps(plan_value, ensure_ascii=False)
         + ",'api/events.json':" + _json.dumps(events, ensure_ascii=False) + "};\n"
         " const real=window.fetch;\n"
         " window.fetch=function(url,opts){\n"
