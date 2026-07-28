@@ -1335,9 +1335,11 @@ def _status_api_payload(path: str, config):
         return battery_health(config, days=30), 200
     if path == "/api/plan-value.json":
         # Timing-Güte ist reines Nachrechnen; der Regret kostet je Tag zwei
-        # Solverläufe (~2-3 s), deshalb nur zwei Tage und 6 h Prozess-Cache.
+        # Solverläufe (~2-3 s), deshalb nur wenige Tage und 6 h Prozess-Cache.
+        # Drei Tage, weil der jüngste (gestern) noch keinen abgeschlossenen
+        # Folgetag als Solver-Horizont hat und deshalb entfällt.
         from .planvalue import plan_value_summary
-        return plan_value_summary(config, timing_days=7, regret_days=2), 200
+        return plan_value_summary(config, timing_days=7, regret_days=3), 200
     return None
 
 

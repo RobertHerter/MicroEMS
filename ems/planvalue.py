@@ -360,6 +360,12 @@ def regret_analysis(config, day) -> Optional[dict]:
     tz = config.general.timezone
     hb = config.house_battery
     start, end = _day_bounds(config, day)
+    # Der Folgetag muss abgeschlossen sein: an einem laufenden Tag wuerde
+    # load_range die fehlenden Stunden per ffill fortschreiben und der Optimierer
+    # bekaeme erfundene Werte als "Ist-Daten".
+    if end + pd.Timedelta(days=1) > pd.Timestamp.now(tz=tz):
+        return {"day": str(start.date()),
+                "reason": "Folgetag noch nicht abgeschlossen"}
     day_data = load_range(config, start, end)
     long_data = load_range(config, start, end + pd.Timedelta(days=1))
     if day_data is None:
