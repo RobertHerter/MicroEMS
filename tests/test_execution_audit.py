@@ -12,9 +12,12 @@ import pandas as pd
 import pytest
 
 import ems.main as _m
-from ems.local_history import (read_execution_audits, write_actuals,
-                               write_execution_audit, write_execution_plan)
-from ems.main import _audit_execution
+from ems.local_history import (read_execution_audits, read_execution_plan_range,
+                               read_optimizer_forecast_origins, write_actuals,
+                               write_execution_audit, write_execution_plan,
+                               write_optimizer_forecast_archive)
+from ems.main import (_audit_execution, _overlay_live_slot_actuals,
+                      _signed_plan_total)
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
@@ -78,6 +81,130 @@ def _completed_plan(cfg, export_limit=None, execution_path="rscp"):
     table = pd.DataFrame(rows, index=[TS, TS + pd.Timedelta(minutes=15)])
     write_execution_plan(cfg.e3dc_rscp.history_db_path, TS, table,
                          initial_soc_percent=50.0)
+
+
+def test_execution_plan_range_keeps_historic_dashboard_commands(tmp_path):
+    cfg = _cfg(tmp_path)
+    table = pd.DataFrame([{
+        "house_load_w": 500.0, "pv_w": 2500.0,
+        "grid_import_w": 0.0, "grid_export_w": 0.0,
+        "batt_dc_charge_w": 2000.0, "batt_ac_charge_w": 0.0,
+        "batt_discharge_w": 0.0, "mode": "peak",
+        "batt_charge_limit_w": 4500.0, "batt_discharge_limit_w": 0.0,
+        "batt_grid_charge_w": 0.0, "house_soc_percent": 52.0,
+        "decision_reason": "PV-Spitze glätten",
+    }], index=[TS])
+    write_execution_plan(
+        cfg.e3dc_rscp.history_db_path, TS, table,
+        initial_soc_percent=50.0,
+        dashboard_series={
+            "house_load_p10_w": pd.Series([400.0], index=[TS]),
+            "house_load_p90_w": pd.Series([700.0], index=[TS]),
+        })
+
+    frame = read_execution_plan_range(
+        cfg.e3dc_rscp.history_db_path, TS, TS + pd.Timedelta(minutes=15), TZ)
+    row = frame.loc[TS]
+    assert row["house_load_w"] == 500.0
+    assert row["house_load_p10_w"] == 400.0
+    assert row["batt_dc_charge_w"] == 2000.0
+    assert row["planned_battery_w"] == 2000.0
+    assert row["planned_grid_w"] == 0.0
+    assert row["mode"] == "peak"
+    assert row["decision_reason"] == "PV-Spitze glätten"
+
+
+def test_execution_plan_does_not_rewrite_started_slot(tmp_path):
+    cfg = _cfg(tmp_path)
+    index = pd.date_range(TS, periods=2, freq="15min")
+
+    def plan(current_w, future_w):
+        return pd.DataFrame({
+            "batt_dc_charge_w": [current_w, future_w],
+            "batt_ac_charge_w": 0.0,
+            "batt_discharge_w": 0.0,
+            "grid_import_w": 0.0,
+            "grid_export_w": 0.0,
+            "mode": "peak",
+        }, index=index)
+
+    # Vor dem Zielslot ist TS noch Zukunft und darf aktualisiert werden.
+    write_execution_plan(
+        cfg.e3dc_rscp.history_db_path, TS - pd.Timedelta(minutes=15),
+        plan(100.0, 110.0))
+    # Erster tatsächlich im Slot publizierter Plan wird historisches Soll.
+    write_execution_plan(
+        cfg.e3dc_rscp.history_db_path, TS, plan(200.0, 210.0))
+    # Recalc/Restart innerhalb desselben Slots darf TS nicht rückwirkend
+    # verändern; der weiterhin zukünftige Folgeslot wird aber aktualisiert.
+    write_execution_plan(
+        cfg.e3dc_rscp.history_db_path, TS, plan(300.0, 310.0))
+
+    frame = read_execution_plan_range(
+        cfg.e3dc_rscp.history_db_path, TS, TS + pd.Timedelta(minutes=30), TZ)
+    assert frame.loc[TS, "planned_battery_w"] == 200.0
+    assert frame.loc[TS + pd.Timedelta(minutes=15),
+                     "planned_battery_w"] == 310.0
+
+
+def test_historic_forecast_uses_final_origin_within_slot(tmp_path):
+    cfg = _cfg(tmp_path)
+    index = pd.date_range(TS, periods=2, freq="15min")
+    for minute, value in ((1, 450.0), (8, 575.0)):
+        write_optimizer_forecast_archive(
+            cfg.e3dc_rscp.history_db_path,
+            TS + pd.Timedelta(minutes=minute),
+            {"house_load_w": pd.Series([value, value + 10], index=index),
+             "pv_w": pd.Series([2500.0, 2200.0], index=index)})
+
+    frame = read_optimizer_forecast_origins(
+        cfg.e3dc_rscp.history_db_path, TS, TS + pd.Timedelta(minutes=15),
+        TZ, 15)
+    assert list(frame.index) == [TS]
+    assert frame.loc[TS, "house_load_w"] == 575.0
+    assert frame.loc[TS, "pv_w"] == 2500.0
+
+
+def test_missing_battery_plan_stays_unknown_instead_of_zero():
+    index = pd.date_range(TS, periods=3, freq="15min")
+    frame = pd.DataFrame({
+        "batt_dc_charge_w": [None, 800.0, 0.0],
+        "batt_ac_charge_w": [None, None, 0.0],
+        "batt_discharge_w": [None, 0.0, 500.0],
+    }, index=index)
+    result = _signed_plan_total(
+        frame, ("batt_dc_charge_w", "batt_ac_charge_w"),
+        ("batt_discharge_w",))
+    assert pd.isna(result.iloc[0])
+    assert result.iloc[1] == 800.0
+    assert result.iloc[2] == -500.0
+
+
+def test_live_slot_averages_replace_shifted_boundary_snapshots():
+    index = pd.date_range(
+        "2026-07-28 09:15", periods=3, freq="15min", tz="Europe/Berlin")
+    frame = pd.DataFrame({
+        # Momentan-Snapshots am Slotanfang: Wirkung jeweils erst eine Zeile
+        # später sichtbar.
+        "actual_pv_w": [6100.0, 6600.0, 7200.0],
+        "actual_battery_w": [4950.0, 5750.0, 5660.0],
+        "actual_soc_percent": [22.0, 24.0, 27.0],
+    }, index=index)
+    live = pd.DataFrame({
+        "pv_w": [6658.0, 7171.0, 7633.0],
+        "battery_w": [5755.0, 5662.0, 1143.0],
+    }, index=index)
+
+    corrected = _overlay_live_slot_actuals(
+        frame, live, [True, True, False])
+
+    assert corrected.loc[index[0], "actual_pv_w"] == 6658.0
+    assert corrected.loc[index[0], "actual_battery_w"] == 5755.0
+    assert corrected.loc[index[1], "actual_battery_w"] == 5662.0
+    # Zukunft/unvollständiger Bereich wird nicht mit Livewerten gefüllt.
+    assert pd.isna(corrected.loc[index[2], "actual_battery_w"])
+    # Zustandswerte sind Slotanfangswerte und werden nicht verschoben.
+    assert corrected.loc[index[0], "actual_soc_percent"] == 22.0
 
 
 def test_grid_surplus_export_is_not_an_execution_failure(tmp_path):

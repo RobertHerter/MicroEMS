@@ -178,6 +178,27 @@ def test_pool_stage_feedback_uses_real_power_as_running_state():
     assert feedback["power_w"] == 612.5
 
 
+def test_pool_stage_newer_relay_state_does_not_override_real_power():
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", volume_l=7000,
+        feedback_required=True,
+        stages=[LoadStage("WP klein", 400, 3000,
+                          feedback_topic="pool/wp-small/on",
+                          power_topic="pool/wp/total-power",
+                          feedback_on_threshold_w=700)])]
+    pub = HomeyMqttPublisher(cfg)
+
+    pub._on_message(None, None, Msg("pool/wp/total-power", "3.2"))
+    # Relais/Freigabe kommt danach und ist damit neuer, die gemessene Leistung
+    # beweist aber weiterhin, dass die WP nicht tatsächlich läuft.
+    pub._on_message(None, None, Msg("pool/wp-small/on", "on"))
+    feedback = pub.get_load_feedback("Pool/WP klein")
+
+    assert feedback["power_w"] == 3.2
+    assert feedback["on"] is False
+
+
 def test_shared_power_topic_derives_multiple_pool_stages():
     cfg = make_config()
     shared = "pool/wp/total-power"
@@ -197,6 +218,24 @@ def test_shared_power_topic_derives_multiple_pool_stages():
     pub._on_message(None, None, Msg(shared, "1040"))
     assert pub.get_load_feedback("Pool/Grundstufe")["on"] is True
     assert pub.get_load_feedback("Pool/Zusatzstufe")["on"] is True
+
+
+def test_deferrable_load_uses_power_feedback():
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Waschmaschine", type="deferrable", enabled=True,
+        power_w=2000, runtime_minutes=120,
+        power_topic="washer/power", feedback_on_threshold_w=10,
+        feedback_required=True)]
+    pub = HomeyMqttPublisher(cfg)
+
+    assert "washer/power" in pub._feedback_topics
+    pub._on_message(None, None, Msg("washer/power", "4.5"))
+    assert pub.get_load_feedback("Waschmaschine")["on"] is False
+    pub._on_message(None, None, Msg("washer/power", "1842"))
+    feedback = pub.get_load_feedback("Waschmaschine")
+    assert feedback["fresh"] and feedback["on"] is True
+    assert feedback["power_w"] == 1842.0
 
 
 def test_feedback_hold_while_connected_keeps_retained_value_fresh():

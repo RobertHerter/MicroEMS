@@ -110,16 +110,22 @@ class HomeyMqttPublisher:
         # Gesamtleistung >10 W = Grundstufe und >700 W = zweite Stufe.
         self._feedback_topics: Dict[str, list[tuple]] = {}
         for ld in self.loads:
-            if ld.type != "thermal":
-                continue
-            for st in ld.stages:
-                label = f"{ld.name}/{st.name}"
-                if st.feedback_topic:
-                    self._feedback_topics.setdefault(st.feedback_topic, []).append(
-                        (label, "state", st.feedback_on_threshold_w))
-                if st.power_topic:
-                    self._feedback_topics.setdefault(st.power_topic, []).append(
-                        (label, "power", st.feedback_on_threshold_w))
+            if ld.type == "thermal":
+                feedback_lanes = [
+                    (f"{ld.name}/{st.name}", st.feedback_topic, st.power_topic,
+                     st.feedback_on_threshold_w)
+                    for st in ld.stages]
+            else:
+                feedback_lanes = [
+                    (ld.name, ld.feedback_topic, ld.power_topic,
+                     ld.feedback_on_threshold_w)]
+            for label, state_topic, power_topic, threshold in feedback_lanes:
+                if state_topic:
+                    self._feedback_topics.setdefault(state_topic, []).append(
+                        (label, "state", threshold))
+                if power_topic:
+                    self._feedback_topics.setdefault(power_topic, []).append(
+                        (label, "power", threshold))
         # Enable/Disable je Last per ems/cmd/load/<slug>; leer = Konfigwert.
         self.load_overrides: Dict[str, bool] = {}
         self._load_defaults = {_slug(ld.name): ld.enabled for ld in self.loads}
@@ -183,15 +189,17 @@ class HomeyMqttPublisher:
                      else float("inf"))
         state_age = ((now - state_ts).total_seconds() if state_ts is not None
                      else float("inf"))
-        # on-Zustand aus der jüngeren Quelle: bevorzugt Leistung, sonst Status.
-        if out.get("power_w") is not None and power_age <= state_age:
+        # Sobald eine Leistungsmessung vorhanden ist, entscheidet ausschließlich
+        # deren Schwellenwert. Das On/Off-Topic kann nur die Relaisfreigabe
+        # melden (z.B. "ein", obwohl ein Thermostat die WP nicht laufen lässt)
+        # und darf einen gemessenen Standby-Verbrauch nicht zu "läuft" machen.
+        # Nur solange noch nie ein Leistungswert empfangen wurde, dient der
+        # Schaltzustand als Fallback.
+        if out.get("power_w") is not None:
             out["on"] = bool(float(out["power_w"]) >= out.get("threshold_w", 50.0))
             age_s = power_age
         elif out.get("on") is not None:
             age_s = state_age
-        elif out.get("power_w") is not None:
-            out["on"] = bool(float(out["power_w"]) >= out.get("threshold_w", 50.0))
-            age_s = power_age
         else:
             age_s = float("inf")
         connected = False
@@ -210,10 +218,9 @@ class HomeyMqttPublisher:
     def all_load_feedback(self) -> dict:
         out = {}
         for ld in self.loads:
-            if ld.type != "thermal":
-                continue
-            for st in ld.stages:
-                label = f"{ld.name}/{st.name}"
+            labels = ([f"{ld.name}/{st.name}" for st in ld.stages]
+                      if ld.type == "thermal" else [ld.name])
+            for label in labels:
                 item = self.get_load_feedback(
                     label, ld.feedback_max_age_minutes,
                     getattr(ld, "feedback_hold_while_connected", False))

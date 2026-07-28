@@ -241,7 +241,7 @@ betreiben. Das fertige Multi-Arch-Image unterstützt `linux/amd64` und
 `linux/arm64` (Raspberry Pi):
 
 ```bash
-ghcr.io/robertherter/microems:1.4.0
+ghcr.io/robertherter/microems:2.2.0
 ```
 
 Voraussetzung sind Docker Engine mit Compose-Plugin sowie Netzwerkzugriff des
@@ -255,7 +255,7 @@ Host-IP oder ein gemeinsames Docker-Netz verwenden.
 mkdir -p ~/microems/config ~/microems/data
 cd ~/microems
 curl -fsSL \
-  https://raw.githubusercontent.com/RobertHerter/MicroEMS/v1.4.0/config.example.yaml \
+  https://raw.githubusercontent.com/RobertHerter/MicroEMS/v2.2.0/config.example.yaml \
   -o config/config.yaml
 chmod 600 config/config.yaml
 ```
@@ -298,7 +298,7 @@ Als `compose.yaml` speichern:
 name: microems
 
 x-microems: &microems
-  image: ghcr.io/robertherter/microems:${MICROEMS_TAG:-1.4.0}
+  image: ghcr.io/robertherter/microems:${MICROEMS_TAG:-2.2.0}
   restart: unless-stopped
   environment:
     TZ: Europe/Berlin
@@ -461,7 +461,10 @@ Optionale Liste zusätzlicher Lasten, die der Optimierer mitplant und in die
 günstigsten/PV-reichsten Slots legt. Zwei Typen (`ems/loads.py`):
 
 - **`deferrable`** – muss `runtime_minutes` im Fenster laufen; Leistung konstant
-  (`power_w`) oder als 15-min-Kurve (`power_profile_w`).
+  (`power_w`) oder als 15-min-Kurve (`power_profile_w`). Über `power_topic`
+  (optional zusätzlich `feedback_topic`) wird die reale Ausführung archiviert
+  und im Dashboard als eigene Soll-/Ist-Zeile und Leistungskurve geprüft;
+  `feedback_on_threshold_w` trennt Standby von einem echten Lauf.
 - **`thermal`** – thermischer Speicher (Pool): Temperatur ist ein **MILP-Zustand**
   im Band `[min_c, max_c]`, geheizt über `stages` (ein/aus-Wärmepumpen, per
   `requires` koppelbar); Verlust `~ loss_w_per_k·(T−T_außen)`, optionaler solarer

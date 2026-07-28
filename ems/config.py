@@ -233,6 +233,12 @@ class ControllableLoad:
     enabled: bool = True
     switch_penalty_ct: float = 5.0       # Malus je Einschaltvorgang (Anti-Takten)
     control_topic: Optional[str] = None  # ausgehender Schaltbefehl/Start-Topic
+    # Reale Rückmeldung, besonders für verschiebbare Lasten. Sobald ein
+    # power_topic einen Wert geliefert hat, entscheidet die Leistung über den
+    # Ist-Zustand; feedback_topic ist dann nur noch Relais-/Fallback-Status.
+    feedback_topic: Optional[str] = None
+    power_topic: Optional[str] = None
+    feedback_on_threshold_w: float = 10.0
     # -- deferrable --
     power_w: float = 0.0
     power_profile_w: Optional[list] = None   # 15-min-Kurve (überschreibt power_w)
@@ -1006,6 +1012,12 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             control_topic=(str(w.get("control_topic") or w.get("mqtt_topic"))
                            if (w.get("control_topic") or w.get("mqtt_topic"))
                            else None),
+            feedback_topic=(str(w["feedback_topic"])
+                            if w.get("feedback_topic") else None),
+            power_topic=(str(w["power_topic"])
+                         if w.get("power_topic") else None),
+            feedback_on_threshold_w=float(
+                w.get("feedback_on_threshold_w", 10.0)),
             power_w=float(w.get("power_w", 0.0)),
             power_profile_w=([float(x) for x in prof] if prof else None),
             runtime_minutes=float(w.get("runtime_minutes", 0.0)),

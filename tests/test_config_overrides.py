@@ -63,6 +63,22 @@ def test_parse_controllable_loads_applies_power_profile_override():
     assert load.deadline_hours == 8.0
 
 
+def test_parse_deferrable_load_power_feedback():
+    load = parse_controllable_loads([{
+        "name": "Waschmaschine", "type": "deferrable",
+        "power_w": 1800, "runtime_minutes": 120,
+        "feedback_topic": "washer/on",
+        "power_topic": "washer/power",
+        "feedback_on_threshold_w": 12.5,
+        "feedback_required": True,
+    }])[0]
+
+    assert load.feedback_topic == "washer/on"
+    assert load.power_topic == "washer/power"
+    assert load.feedback_on_threshold_w == 12.5
+    assert load.feedback_required is True
+
+
 def test_load_config_merges_overlay(tmp_path):
     """End-to-end: reale config.yaml + Overlay -> gemergter Wert."""
     import shutil

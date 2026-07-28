@@ -251,6 +251,11 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "scrollIntoView" not in details
     assert "panel.open" not in details
     assert "slot-detail-body" in details
+    assert "Hauslast Ist / Soll / Δ" in details
+    assert "PV Ist / Soll / Δ" in details
+    assert "Akku Ist / Soll / Δ" in details
+    assert "battery_deviation_w" in details
+    assert "maximumFractionDigits:d" in details
     assert '<details class="info-panel slot-detail"' in details
     assert '<details class="info-panel slot-detail" open' not in details
 

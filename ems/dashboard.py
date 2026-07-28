@@ -483,7 +483,7 @@ def _slot_detail_block() -> str:
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
  async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
- function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp);let items=[['Hauslast',num(best.house_load_w)+' W'],['PV',num(best.pv_w)+' W'],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku-SoC',num(best.house_soc_percent,1)+' %'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp),cmp=(actual,planned,delta,unit='W',digits=0)=>num(actual,digits)+' / '+num(planned,digits)+' / '+num(delta,digits)+' '+unit;let items=[['Hauslast Ist / Soll / Δ',cmp(best.actual_load_w,best.house_load_w,best.load_deviation_w)],['PV Ist / Soll / Δ',cmp(best.actual_pv_w,best.pv_w,best.pv_deviation_w)],['Netz Ist / Soll / Δ',cmp(best.actual_grid_w,best.planned_grid_w,best.grid_deviation_w)],['Akku Ist / Soll / Δ',cmp(best.actual_battery_w,best.planned_battery_w,best.battery_deviation_w)],['SoC Ist / Soll / Δ',cmp(best.actual_soc_percent,best.house_soc_percent,best.soc_deviation_percent,'%',0)],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
  // WICHTIG: '.plotly-graph-div' vergibt nur Pythons Plotly-HTML (Desktop-Plot).
  // Der Mobil-Plot ist ein eigenes <div id="mobile-plot">, dem Plotly.react nur
  // '.js-plotly-plot' anhängt - ohne diesen Selektor blieb er ungebunden und die
@@ -1171,8 +1171,8 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
             f"<div class='quality-state'>{state}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
     return (f'<details class="info-panel"><summary>'
-            f'<span class="an-dot {_panel_dot(levels)}"></span>♨ Pool-Rückkopplung '
-            "<small>reale Wärmepumpen und Thermomodell</small>"
+            f'<span class="an-dot {_panel_dot(levels)}"></span>♨ Last-Rückkopplung '
+            "<small>reale Verbraucher, Wärmepumpen und Thermomodell</small>"
             f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
@@ -1241,13 +1241,33 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     HOVER_CT = "%{y:.1f} ct/kWh"
 
     def line(col, name, color, row, group, dash=None, width=2, shape=None,
-             hover=HOVER_W):
+             hover=HOVER_W, compare_col=None, compare_unit="W",
+             compare_decimals=0):
         if col in t.columns and t[col].notna().any():
+            values = pd.to_numeric(t[col], errors="coerce")
+            # Istwerte dürfen nie rechts vom Jetzt-Marker erscheinen. Diese
+            # zusätzliche UI-Grenze schützt auch gegen vorgefüllte/stale API-
+            # Frames und vermeidet scheinbare Messwerte in Zukunftsslots.
+            if col.startswith("actual_"):
+                values = values.where(x <= now)
+            customdata = None
+            hovertemplate = f"{name}: {hover}"
+            if compare_col in t.columns:
+                actual = values
+                planned = pd.to_numeric(t[compare_col], errors="coerce")
+                customdata = (actual - planned).to_list()
+                fmt = f",.{int(compare_decimals)}f"
+                base_name = name.replace(" (Ist)", "")
+                hovertemplate += (
+                    f"<br>{base_name} (Δ): "
+                    f"%{{customdata:{fmt}}} {compare_unit}")
+            hovertemplate += "<extra></extra>"
             fig.add_trace(go.Scatter(
-                x=x, y=t[col], name=name, mode="lines",
+                x=x, y=values, name=name, mode="lines",
                 line=dict(color=color, width=width, dash=dash,
                           shape=shape or "linear"),
-                hovertemplate=hover, legendrank=_GROUP_RANK.get(group, 1000),
+                customdata=customdata, hovertemplate=hovertemplate,
+                legendrank=_GROUP_RANK.get(group, 1000),
                 legendgroup=group, legendgrouptitle_text=_GROUPS[group]),
                 row=row, col=1)
 
@@ -1263,7 +1283,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                  fillcolor="rgba(255,127,14,0.14)",
                                  name="PV (80%)", legendgroup="prog",
                                  hoverinfo="skip"), row=1, col=1)
-    line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist")
+    line("actual_pv_w", "PV (Ist)", "#ff7f0e", 1, "ist",
+         compare_col="pv_w")
     line("pv_w", "PV (Prog.)", "#ff7f0e", 1, "prog", dash="dash")
     # Vergleichs-Overlay: pvlib-Modell (shadow) neben der aktiven Prognose,
     # zum Bewerten Solcast vs. pv_model. Nur wenn Vergleichsdaten vorliegen.
@@ -1275,7 +1296,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 line=dict(color="#8c564b", width=2, dash="dot"),
                 hovertemplate=HOVER_W, legendgroup="prog",
                 legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
-    line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist")
+    line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist",
+         compare_col="house_load_w")
     if ({"house_load_p10_w", "house_load_p90_w"} <= set(t.columns)
             and t["house_load_p10_w"].notna().any()):
         fig.add_trace(go.Scatter(
@@ -1290,6 +1312,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     line("house_load_w", "Verbrauch (Prog.)", "#d62728", 1, "prog", dash="dash")
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
     if has_loads:
+        from .loads import _slug as _lslug
         _cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
         if _cl_cols:
             cl_sum = t[_cl_cols].sum(axis=1)
@@ -1299,7 +1322,22 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     line=dict(color="#9467bd", width=1.6, dash="dot"),
                     hovertemplate=HOVER_W, legendgroup="prog",
                     legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
-    line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8)
+        # Verschiebbare Lasten mit Leistungsmessung einzeln als Soll/Ist
+        # darstellen. Das Summensignal oben bleibt für die Gesamtwirkung
+        # erhalten, die Einzelkurven erlauben die Ausführungskontrolle.
+        for ld in loads_cfg:
+            if ld.type != "deferrable":
+                continue
+            sg = _lslug(ld.name)
+            planned_col = f"load_{sg}_w"
+            actual_col = f"actual_load_{sg}_power_w"
+            if actual_col in t.columns and t[actual_col].notna().any():
+                line(planned_col, f"{ld.name} (Soll)", "#9467bd", 1, "prog",
+                     dash="dash", width=1.4)
+                line(actual_col, f"{ld.name} (Ist)", "#6f42c1", 1, "ist",
+                     width=1.8, compare_col=planned_col)
+    line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8,
+         compare_col="planned_grid_w")
     if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
         net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
         net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
@@ -1320,7 +1358,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 
     # ---------- Panel 2: SoC (eigenes Panel, keine Doppelachse) ----------
     line("actual_soc_percent", "Haus-SoC (Ist)", "#111111", 2, "soc", width=3,
-         hover=HOVER_PCT)
+         hover=HOVER_PCT, compare_col="house_soc_percent", compare_unit="%",
+         compare_decimals=0)
     line("house_soc_percent", "Haus-SoC (Prog.)", "#111111", 2, "soc",
          dash="dash", width=2.5, hover=HOVER_PCT)
     line("car_soc_percent", "Auto-SoC", "#9467bd", 2, "soc", dash="dot",
@@ -1353,7 +1392,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     def bar(col, name, color, sign=1):
         if col in t.columns and t[col].abs().max() > 1:
             fig.add_trace(go.Bar(x=x, y=sign * t[col], name=name,
-                                 marker_color=color, hovertemplate=HOVER_W,
+                                 marker_color=color,
+                                 hovertemplate=(
+                                     f"{name}: {HOVER_W}<extra></extra>"),
                                  legendgroup="ctrl",
                                  legendgrouptitle_text=_GROUPS["ctrl"]),
                           row=4, col=1)
@@ -1364,12 +1405,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     bar("batt_grid_discharge_w", "Akku Netz-Entladen", "#9400d3", sign=-1)
     bar("car_charge_w", "Auto-Laden", "#9467bd")
     bar("pv_curtail_w", "PV-Abregelung", "#7f7f7f", sign=-1)
+    line("planned_battery_w", "Akku-Leistung (Soll)", "#2ca02c", 4, "ctrl",
+         dash="dash", width=2)
     if "actual_battery_w" in t.columns:
-        fig.add_trace(go.Scatter(x=x, y=t["actual_battery_w"],
-                                 name="Akku-Leistung (Ist)", mode="lines",
-                                 line=dict(color="#111111", width=1.8),
-                                 hovertemplate=HOVER_W,
-                                 legendgroup="ctrl"), row=4, col=1)
+        line("actual_battery_w", "Akku-Leistung (Ist)", "#111111", 4, "ctrl",
+             width=1.8, compare_col="planned_battery_w")
 
     # ---------- Panel 5: Modus-Zeitleiste ----------
     n_eingriffe = 0
@@ -1406,31 +1446,49 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 6: Steuerbare Lasten (on/off je Slot) ----------
     if has_loads:
         from .loads import _slug as _lslug
-        lanes = []   # (label, column, enabled)
+        lanes = []   # (label, column, enabled, actual)
         for ld in loads_cfg:
             if ld.type == "thermal":
                 sg = _lslug(ld.name)
                 for st in ld.stages:
-                    lanes.append((f"{ld.name} / {st.name}",
-                                  f"load_{sg}_{_lslug(st.name)}_w", ld.enabled))
+                    stage_slug = _lslug(st.name)
+                    lanes.append((f"{ld.name} / {st.name} (Soll)",
+                                  f"load_{sg}_{stage_slug}_w",
+                                  ld.enabled, False))
+                    if st.feedback_topic or st.power_topic:
+                        lanes.append((f"{ld.name} / {st.name} (Ist)",
+                                      f"actual_load_{sg}_{stage_slug}_on",
+                                      ld.enabled, True))
             else:
-                lanes.append((ld.name, f"load_{_lslug(ld.name)}_w", ld.enabled))
+                lanes.append((f"{ld.name} (Soll)",
+                              f"load_{_lslug(ld.name)}_w", ld.enabled, False))
+                if ld.feedback_topic or ld.power_topic:
+                    lanes.append((f"{ld.name} (Ist)",
+                                  f"actual_load_{_lslug(ld.name)}_on",
+                                  ld.enabled, True))
         ylabels, z = [], []
-        for label, col, enabled in lanes:
+        for label, col, enabled, actual in lanes:
             ylabels.append(label)
-            if enabled and col in t.columns:
+            if actual:
+                values = (pd.to_numeric(t[col], errors="coerce")
+                          if col in t.columns else
+                          pd.Series(float("nan"), index=x))
+                z.append([3 if pd.isna(v) else (1 if float(v) > 0.5 else 0)
+                          for v in values])
+            elif enabled and col in t.columns:
                 z.append([1 if float(v) > 5.0 else 0 for v in t[col].fillna(0.0)])
             else:                                   # deaktiviert -> graue Leiste
                 z.append([2] * len(x))
-        _lab = {0: "aus", 1: "AN", 2: "deaktiviert"}
+        _lab = {0: "aus", 1: "AN", 2: "deaktiviert", 3: "unbekannt"}
         fig.add_trace(go.Heatmap(
-            x=x, y=ylabels, z=z, zmin=-0.5, zmax=2.5, showscale=False,
+            x=x, y=ylabels, z=z, zmin=-0.5, zmax=3.5, showscale=False,
             meta="load_timeline",
-            colorscale=[[0.0, "#e9ecef"], [0.33, "#e9ecef"],      # 0 = aus
-                        [0.34, "#2ca02c"], [0.66, "#2ca02c"],     # 1 = AN
-                        [0.67, "#adb5bd"], [1.0, "#adb5bd"]],     # 2 = deaktiviert
+            colorscale=[[0.0, "#e9ecef"], [0.249, "#e9ecef"],    # 0 = aus
+                        [0.25, "#2ca02c"], [0.499, "#2ca02c"],    # 1 = AN
+                        [0.50, "#adb5bd"], [0.749, "#adb5bd"],    # 2 = deaktiviert
+                        [0.75, "#d8a52a"], [1.0, "#d8a52a"]],     # 3 = unbekannt
             customdata=[[_lab[v] for v in row] for row in z],
-            hovertemplate="%{y}  %{x|%H:%M} – %{customdata}<extra></extra>"),
+            hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
 
     # ---------- Panel 7: Temperaturen (Pool erwartet/echt, Außentemperatur) ---
@@ -1444,18 +1502,33 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             fig.add_hrect(y0=ld.min_c, y1=ld.max_c, line_width=0,
                           fillcolor="rgba(44,160,44,0.10)", row=temp_row, col=1)
             col = f"load_{sg}_temp_c"
+            act = load_temp_actual.get(ld.name)
+            actual_aligned = (
+                pd.to_numeric(pd.Series(act).reindex(x), errors="coerce")
+                if act is not None and len(act) > 0 else
+                pd.Series(float("nan"), index=x))
+            planned = (pd.to_numeric(t[col], errors="coerce")
+                       if col in t.columns else
+                       pd.Series(float("nan"), index=x))
             if col in t.columns and t[col].notna().any():
                 fig.add_trace(go.Scatter(
-                    x=x, y=t[col], name=f"{ld.name} erwartet", mode="lines",
+                    x=x, y=planned, name=f"{ld.name} (Soll)", mode="lines",
                     line=dict(color=c, width=2, dash="dash"),
-                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    hovertemplate=(
+                        f"{ld.name} Soll: %{{y:.1f}} °C"
+                        "<extra></extra>"),
+                    legendgroup="temp",
                     legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
-            act = load_temp_actual.get(ld.name)
             if act is not None and len(act) > 0:
                 fig.add_trace(go.Scatter(
-                    x=act.index, y=act.values, name=f"{ld.name} echt", mode="lines",
+                    x=x, y=actual_aligned, name=f"{ld.name} (Ist)", mode="lines",
                     line=dict(color=c, width=2),
-                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    customdata=(actual_aligned - planned).to_list(),
+                    hovertemplate=(
+                        f"{ld.name} Ist: %{{y:.1f}} °C"
+                        "<br>Abweichung Δ: "
+                        "%{customdata:+.1f} °C<extra></extra>"),
+                    legendgroup="temp",
                     legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
         # Außentemperatur (Open-Meteo, Ist+Prognose) als Referenz - erklärt
         # Wärmeverlust/-eintrag der Pooltemperatur mit.
@@ -1465,7 +1538,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 fig.add_trace(go.Scatter(
                     x=amb.index, y=amb.values, name="Außentemperatur", mode="lines",
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
-                    hovertemplate="%{y:.1f} °C", legendgroup="temp",
+                    hovertemplate="Außentemperatur: %{y:.1f} °C<extra></extra>",
+                    legendgroup="temp",
                     legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
 
     # ---------- Orientierung: Vergangenheit, Jetzt, Tagesgrenzen ----------
@@ -1519,7 +1593,14 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_layout(
         height=(1120 if has_loads else 980) + (180 if temp_row else 0),
         autosize=True, template="plotly_white",
-        hovermode="x unified", barmode="relative", bargap=0,
+        hovermode="x unified",
+        # Ohne harte Distanzgrenze nimmt Plotly im Unified-Hover für eine
+        # Zukunftsprognose noch den letzten Istpunkt links vom Jetzt-Marker
+        # hinzu. Dann trägt der Kasten z.B. 11:45, enthält aber Istwerte von
+        # 11:15. Ein Pixel bleibt gut bedienbar, ist aber kleiner als der
+        # Abstand benachbarter 15-min-Punkte im sichtbaren Zeitbereich.
+        hoverdistance=1,
+        barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
         # Großer Fußbereich: die (im Quermodus mehrzeilig umbrechende) Legende und
@@ -2195,7 +2276,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.33,'#263442'],[.34,'#329b4c'],[.66,'#329b4c'],[.67,'#596979'],[1,'#596979']]:[[0,'#e9ecef'],[.33,'#e9ecef'],[.34,'#2ca02c'],[.66,'#2ca02c'],[.67,'#adb5bd'],[1,'#adb5bd']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});

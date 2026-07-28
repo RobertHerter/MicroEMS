@@ -385,8 +385,16 @@ def read_solver_runs(path: str, limit: int = 24) -> list[dict]:
 
 def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
                          initial_soc_percent: float | None = None,
-                         static_export_limit_w: float | None = None) -> int:
-    """Publizierten Sollfahrplan fuer den spaeteren Ist-Vergleich sichern."""
+                         static_export_limit_w: float | None = None,
+                         dashboard_series: Optional[Dict[str, pd.Series]] = None) -> int:
+    """Publizierten Sollfahrplan fuer den spaeteren Ist-Vergleich sichern.
+
+    Zukunftsslots werden bei jeder Neuberechnung aktualisiert. Ein bereits
+    begonnener Slot wird dagegen nur beim ersten Lauf innerhalb dieses Slots
+    festgeschrieben. Sonst würde ein Restart/Recalc kurz vor Slotende den
+    ursprünglichen, fast den ganzen Slot wirksamen Plan rückwirkend ersetzen
+    und im Dashboard wie ein Soll/Ist-Versatz aussehen.
+    """
     if table is None or table.empty:
         return 0
     issue = pd.Timestamp(issued_at).tz_convert("UTC").isoformat()
@@ -394,6 +402,36 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
     rows = []
     load_cols = [name for name in table.columns
                  if name.startswith("load_") and name.endswith("_w")]
+    dashboard_cols = {
+        "house_load_w", "house_load_p10_w", "house_load_p90_w",
+        "pv_w", "pv10_w", "pv90_w", "price_ct_kwh", "price_estimated",
+        "feedin_ct_kwh", "spot_price_ct_kwh", "house_soc_percent",
+        "batt_dc_charge_w", "batt_ac_charge_w", "batt_discharge_w",
+        "batt_grid_discharge_w", "batt_charge_limit_w",
+        "batt_discharge_limit_w", "batt_grid_charge_w", "car_charge_w",
+        "grid_import_w", "grid_export_w", "export_line_w", "pv_curtail_w",
+        "mode", "decision_reason", "execution_path", "execution_label",
+        "execution_detail", "decision_energy_kwh", "decision_value_ct",
+        "decision_reference_time",
+    }
+    dashboard_cols.update(name for name in table.columns
+                          if name.startswith("load_"))
+    extra = {str(name): pd.Series(values).reindex(table.index)
+             for name, values in (dashboard_series or {}).items()}
+
+    def _json_value(value):
+        if value is None or (not isinstance(value, (str, bool))
+                             and pd.isna(value)):
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return value
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
     for ts, row in table.iterrows():
         key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
         grid = float(row.get("grid_import_w", 0.0) or 0.0) - float(
@@ -416,6 +454,18 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
             "execution_path": row.get("execution_path"),
             "execution_label": row.get("execution_label"),
         }
+        dashboard = {
+            name: _json_value(row.get(name))
+            for name in dashboard_cols if name in row.index
+        }
+        for name, values in extra.items():
+            value = values.get(ts)
+            if value is not None and not pd.isna(value):
+                dashboard[name] = _json_value(value)
+        details["dashboard"] = {
+            name: value for name, value in dashboard.items()
+            if value is not None
+        }
         rows.append((key, issue, grid, battery, previous_soc,
                      str(row.get("mode", "auto")),
                      row.get("batt_charge_limit_w"),
@@ -426,14 +476,31 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
         if value is not None and pd.notna(value):
             previous_soc = float(value)
     con = _con(path)
+    replace_rows = []
+    for values in rows:
+        target = pd.Timestamp(values[0])
+        issued = pd.Timestamp(values[1])
+        if target <= issued:
+            existing = con.execute(
+                "SELECT issued_at FROM execution_plan WHERE ts=?",
+                (values[0],)).fetchone()
+            # Ein Eintrag aus einem früheren Slot war nur eine Zukunftsplanung
+            # und darf beim tatsächlichen Slotbeginn einmal ersetzt werden.
+            # Ein Plan, der bereits innerhalb des Zielslots publiziert wurde,
+            # bleibt dagegen als historisches Soll unverändert.
+            if existing:
+                previous_issue = pd.Timestamp(existing[0])
+                if previous_issue >= target:
+                    continue
+        replace_rows.append(values)
     con.executemany(
         "INSERT OR REPLACE INTO execution_plan("
         "ts,issued_at,grid_w,battery_w,soc,mode,charge_limit_w,"
         "discharge_limit_w,grid_charge_w,details_json) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?)", rows)
+        "VALUES(?,?,?,?,?,?,?,?,?,?)", replace_rows)
     con.commit()
     con.close()
-    return len(rows)
+    return len(replace_rows)
 
 
 def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
@@ -457,6 +524,120 @@ def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
     details = json.loads(out.pop("details_json") or "{}")
     out.update(details)
     return out
+
+
+def read_execution_plan_range(path: str, start, end, tz: str) -> pd.DataFrame:
+    """Je Zielslot den zuletzt publizierten Sollfahrplan fürs Dashboard lesen.
+
+    Neuere Einträge enthalten die vollständigen Prognose-/Steuerspalten im
+    ``dashboard``-Teil von details_json. Ältere Einträge werden aus den schon
+    vorhandenen aggregierten Werten bestmöglich rekonstruiert.
+    """
+    begin = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    finish = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts,issued_at,grid_w,battery_w,soc,mode,charge_limit_w,"
+            "discharge_limit_w,grid_charge_w,details_json "
+            "FROM execution_plan WHERE ts>=? AND ts<? ORDER BY ts",
+            (begin, finish)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    records = []
+    for row in rows:
+        (ts, issued, grid, battery, soc, mode, charge_limit,
+         discharge_limit, grid_charge, details_text) = row
+        try:
+            details = json.loads(details_text or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        dashboard = details.get("dashboard")
+        record = dict(dashboard) if isinstance(dashboard, dict) else {}
+        record["issued_at"] = issued
+        record.setdefault("mode", mode)
+        record.setdefault("house_soc_percent", soc)
+        record.setdefault("planned_grid_w", grid)
+        record.setdefault("planned_battery_w", battery)
+        record.setdefault("batt_charge_limit_w", charge_limit)
+        record.setdefault("batt_discharge_limit_w", discharge_limit)
+        record.setdefault("batt_grid_charge_w", grid_charge)
+        record.setdefault("pv_w", details.get("pv_w"))
+        record.setdefault("pv_curtail_w", details.get("pv_curtail_w"))
+        record.setdefault("export_line_w", details.get("export_limit_w"))
+        record.setdefault("execution_path", details.get("execution_path"))
+        record.setdefault("execution_label", details.get("execution_label"))
+        export = record.get("grid_export_w", details.get("grid_export_w"))
+        if export is not None:
+            record.setdefault("grid_export_w", export)
+            if grid is not None:
+                record.setdefault("grid_import_w", float(grid) + float(export))
+        # Kompatibilität für alte Datensätze: die aggregierte Akkuleistung
+        # reicht für eine ehrliche Sollkurve und eine grobe Balkenzerlegung.
+        if battery is not None:
+            value = float(battery)
+            ac = max(0.0, min(value, float(grid_charge or 0.0)))
+            record.setdefault("batt_ac_charge_w", ac)
+            record.setdefault("batt_dc_charge_w", max(0.0, value - ac))
+            record.setdefault("batt_discharge_w", max(0.0, -value))
+        record["_timestamp"] = pd.Timestamp(ts).tz_convert(tz)
+        records.append(record)
+    if not records:
+        return pd.DataFrame()
+    frame = pd.DataFrame(records).set_index("_timestamp").sort_index()
+    frame.index.name = None
+    return frame
+
+
+def read_optimizer_forecast_origins(path: str, start, end, tz: str,
+                                    slot_minutes: int) -> pd.DataFrame:
+    """Den finalen Prognosesnapshot jedes vergangenen Planungsslots lesen.
+
+    Bei mehreren Intraday-Neuberechnungen innerhalb eines Slots gewinnt der
+    jüngste Snapshot. Für den Zielslot wird damit genau die Prognose sichtbar,
+    die unmittelbar vor dessen zuletzt publiziertem Plan verwendet wurde.
+    """
+    begin = pd.Timestamp(start).tz_convert("UTC")
+    finish = pd.Timestamp(end).tz_convert("UTC")
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT issue_ts,payload FROM optimizer_forecast_snapshots "
+            "WHERE issue_ts>=? AND issue_ts<? ORDER BY issue_ts",
+            (begin.isoformat(), finish.isoformat())).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    freq = f"{max(1, int(slot_minutes))}min"
+    selected = {}
+    for issue_text, blob in rows:
+        issue = pd.Timestamp(issue_text).tz_convert(tz)
+        selected[issue.floor(freq)] = blob
+    records = []
+    for target, blob in selected.items():
+        try:
+            payload = json.loads(zlib.decompress(blob).decode("utf-8"))
+            idx = pd.to_datetime(payload["timestamps"], utc=True,
+                                 format="ISO8601").tz_convert(tz)
+            pos = idx.get_indexer([target])[0]
+            if pos < 0:
+                continue
+            record = {"_timestamp": target}
+            for name, values in payload.get("series", {}).items():
+                value = values[pos]
+                if value is not None:
+                    record[name] = float(value)
+            for name, values in payload.get("estimated", {}).items():
+                record[f"{name}_estimated"] = bool(values[pos])
+            records.append(record)
+        except Exception:
+            continue
+    if not records:
+        return pd.DataFrame()
+    frame = pd.DataFrame(records).set_index("_timestamp").sort_index()
+    frame.index.name = None
+    return frame
 
 
 def write_execution_audit(path: str, ts, audit: dict) -> None:
@@ -854,6 +1035,35 @@ def read_load_stage_on(path: str, name: str, stages: list[str], start, end,
             f"SELECT ts,stage,actual_on FROM load_feedback WHERE name=? "
             f"AND stage IN ({marks}) AND ts>=? AND ts<=? AND fresh=1 "
             f"AND actual_on IS NOT NULL ORDER BY ts", (name, *stages, s, e)
+        ).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    out = {}
+    for stage in stages:
+        selected = [(r[0], r[2]) for r in rows if r[1] == stage]
+        if selected:
+            idx = pd.to_datetime([r[0] for r in selected], utc=True,
+                                 format="ISO8601")
+            out[stage] = pd.Series([r[1] for r in selected], index=idx,
+                                   dtype="float64").tz_convert(tz)
+    return out
+
+
+def read_load_stage_power(path: str, name: str, stages: list[str], start, end,
+                          tz: str) -> dict[str, pd.Series]:
+    """Gemessene elektrische Leistung je rückgekoppelter Last/Stufe."""
+    if not stages:
+        return {}
+    s = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    e = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        marks = ",".join("?" for _ in stages)
+        rows = con.execute(
+            f"SELECT ts,stage,power_w FROM load_feedback WHERE name=? "
+            f"AND stage IN ({marks}) AND ts>=? AND ts<=? AND fresh=1 "
+            f"AND power_w IS NOT NULL ORDER BY ts", (name, *stages, s, e)
         ).fetchall()
         con.close()
     except Exception:

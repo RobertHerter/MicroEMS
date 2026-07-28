@@ -5,8 +5,8 @@ import pytest
 from ems import load_models
 from ems.config import ControllableLoad, LoadStage
 from ems.forecast import LoadForecaster
-from ems.local_history import (read_live_slot_averages, write_live_sample,
-                               write_load_feedback)
+from ems.local_history import (read_live_slot_averages, read_load_stage_power,
+                               write_live_sample, write_load_feedback)
 from tests.test_synthetic import make_config
 
 
@@ -42,6 +42,20 @@ def test_live_samples_do_not_bridge_large_gaps(tmp_path):
         path, start, start + pd.Timedelta(minutes=15), TZ, 15,
         min_coverage_seconds=30, max_gap_seconds=10)
     assert frame.empty or frame["house_w"].dropna().empty
+
+
+def test_deferrable_power_feedback_is_read_for_dashboard(tmp_path):
+    path = str(tmp_path / "history.sqlite")
+    ts = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    write_load_feedback(path, ts, "Waschmaschine", "__load__", {
+        "on": True, "power_w": 1842.0, "fresh": True, "age_seconds": 1.0,
+    })
+
+    power = read_load_stage_power(
+        path, "Waschmaschine", ["__load__"], ts,
+        ts + pd.Timedelta(minutes=15), TZ)
+
+    assert power["__load__"].loc[ts] == 1842.0
 
 
 def test_controllable_feedback_is_removed_from_base_history(tmp_path):

@@ -380,24 +380,55 @@ def test_dashboard_renders_loads_panel(tmp_path):
     cfg.dashboard.password = "secret"
     cfg.controllable_loads = [
         ControllableLoad(name="pool", type="thermal", enabled=True, volume_l=7000,
-                         stages=[LoadStage("klein", 400, 3000),
-                                 LoadStage("gross", 650, 4000, requires="klein")]),
+                         stages=[LoadStage(
+                             "klein", 400, 3000, feedback_topic="pool/klein"),
+                                 LoadStage(
+                                     "gross", 650, 4000, requires="klein",
+                                     feedback_topic="pool/gross")]),
         ControllableLoad(name="Waschmaschine", type="deferrable", enabled=False,
-                         power_w=2000)]
+                         power_w=2000, power_topic="washer/power",
+                         feedback_on_threshold_w=10)]
     idx = pd.date_range("2026-07-09 00:00", periods=96, freq="15min", tz="Europe/Berlin")
     t = pd.DataFrame(index=idx)
     t["house_load_w"] = 500.0
     t["pv_w"] = 1000.0
     t["price_ct_kwh"] = 30.0
     t["mode"] = "auto"
+    t["planned_battery_w"] = 500.0
+    t["actual_battery_w"] = 350.0
     t["load_pool_klein_w"] = np.where((idx.hour >= 11) & (idx.hour < 14), 400.0, 0.0)
     t["load_pool_gross_w"] = 0.0
-    out = build_dashboard(cfg, t, total_cost_ct=-500.0)
+    t["actual_load_pool_klein_on"] = np.where(
+        (idx.hour >= 12) & (idx.hour < 14), 1.0, 0.0)
+    t["actual_load_pool_gross_on"] = np.nan
+    t["actual_load_Waschmaschine_on"] = np.where(
+        (idx.hour >= 12) & (idx.hour < 13), 1.0, 0.0)
+    t["actual_load_Waschmaschine_power_w"] = np.where(
+        (idx.hour >= 12) & (idx.hour < 13), 1842.0, 4.0)
+    t["load_pool_temp_c"] = np.linspace(26.0, 28.0, len(idx))
+    actual_temp = pd.Series(
+        np.linspace(25.8, 27.7, len(idx)), index=idx)
+    out = build_dashboard(
+        cfg, t, total_cost_ct=-500.0,
+        load_temp_actual={"pool": actual_temp})
     html = open(out, encoding="utf-8").read()
     assert "Steuerbare Lasten" in html
     assert 'id="config-link"' in html and 'href="/config"' in html
+    assert "Akku-Leistung (Soll)" in html
+    assert "Abweichung" in html
+    assert html.count("Akku-Leistung (Soll):") == 1
     assert "Waschmaschine" in html and "deaktiviert" in html   # graue Leiste
+    assert "Waschmaschine (Soll)" in html and "Waschmaschine (Ist)" in html
     assert "klein" in html and "gross" in html                 # Pool-Lanes
+    assert "pool \\u002f klein (Soll)" in html
+    assert "pool \\u002f klein (Ist)" in html
+    assert "unbekannt" in html
+    assert "pool (Soll)" in html and "pool (Ist)" in html
+    assert "Abweichung \\u0394" in html
+    assert html.count("Abweichung \\u0394") == 1
+    # Unified-Hover darf den letzten Istwert nicht an einen späteren
+    # Prognosezeitpunkt ziehen.
+    assert '"hoverdistance":1' in html
     # Ereignis-Panel: Farben für Warnungen/Schaltvorgänge vorhanden, und die
     # CSS-Klasse enthält jetzt auch die Ereignisart (kind) für die Färbung.
     assert ".event.warn span" in html and ".event.k-switch span" in html

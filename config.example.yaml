@@ -292,6 +292,10 @@ controllable_loads: []
   #   # Maschine für Minimal-Ersparnis auf übermorgen rutscht). Default 24.
   #   deadline_hours: 24
   #   control_topic: "waschmaschine/start"
+  #   power_topic: "homie/homey/waschmaschine/measure-power"
+  #   feedback_on_threshold_w: 10
+  #   feedback_required: true
+  #   feedback_hold_while_connected: true
 
 # -----------------------------------------------------------------------------
 # Haus-Batteriespeicher

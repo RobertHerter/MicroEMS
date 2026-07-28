@@ -1066,9 +1066,9 @@ def _publish_load_feedback_alarm(publisher, statuses) -> None:
     old = set(_load_feedback_alarm["failed"])
     for label in sorted(bad - old):
         publisher.publish_alert(
-            "warning", f"Pool-Rückmeldung fehlt oder ist veraltet: {label}.")
+            "warning", f"Last-Rückmeldung fehlt oder ist veraltet: {label}.")
     for label in sorted(old - bad):
-        publisher.publish_alert("info", f"Pool-Rückmeldung wieder aktuell: {label}.")
+        publisher.publish_alert("info", f"Last-Rückmeldung wieder aktuell: {label}.")
     _load_feedback_alarm["failed"] = bad
 
 
@@ -1456,6 +1456,53 @@ def _complete_operational_series(series, index, fallback,
         else:
             out = out.fillna(float(fallback))
     return out, int(missing.sum())
+
+
+def _signed_plan_total(frame: pd.DataFrame, positive: tuple[str, ...],
+                       negative: tuple[str, ...]) -> pd.Series:
+    """Plan-Komponenten vorzeichenrichtig summieren, ohne Lücken zu 0 zu machen."""
+    parts = []
+    for column in positive + negative:
+        values = (pd.to_numeric(frame[column], errors="coerce")
+                  if column in frame.columns else
+                  pd.Series(float("nan"), index=frame.index))
+        parts.append(-values if column in negative else values)
+    return pd.concat(parts, axis=1).sum(axis=1, min_count=1)
+
+
+def _overlay_live_slot_actuals(frame: pd.DataFrame,
+                               live_slots: pd.DataFrame,
+                               past_mask) -> pd.DataFrame:
+    """Leistungs-Istwerte durch echte Mittelwerte ihres Slots ersetzen.
+
+    ``actuals`` enthält einen Momentanwert am Beginn eines Rechenlaufs. Direkt
+    an einer Slotgrenze beschreibt dieser Messpunkt häufig noch die Wirkung des
+    vorherigen Steuer-Slots. Die 5-s-Livehistorie wird dagegen innerhalb jedes
+    Slots zeitgewichtet integriert und hat damit die richtige Zeitbedeutung.
+    Zustandswerte wie SoC oder Temperatur werden absichtlich nicht verändert.
+    """
+    if live_slots is None or live_slots.empty:
+        return frame
+    mapping = {
+        "pv_w": "actual_pv_w",
+        "house_w": "actual_load_w",
+        "grid_w": "actual_grid_w",
+        "battery_w": "actual_battery_w",
+    }
+    mask = pd.Series(past_mask, index=frame.index, dtype=bool)
+    for source, target in mapping.items():
+        if source not in live_slots.columns:
+            continue
+        averaged = pd.to_numeric(
+            live_slots[source], errors="coerce").reindex(frame.index)
+        averaged = averaged.where(mask)
+        previous = (pd.to_numeric(frame[target], errors="coerce")
+                    if target in frame.columns else
+                    pd.Series(float("nan"), index=frame.index))
+        frame[target] = averaged.combine_first(previous).where(mask)
+    return frame
+
+
 PREDICTION_COLS = [
     "house_soc_wh", "house_soc_percent", "car_soc_wh", "car_soc_percent",
     "slot_cost_ct", "price_ct_kwh", "feedin_ct_kwh", "pv_w", "house_load_w",
@@ -1728,6 +1775,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Einspeise-Linie an Peak-Tagen wolken-robust.
         pv10 = (_pv_series("pv_forecast_p10", required=False)
                 if solcast.available(config, repo, "pv_forecast_p10") else None)
+        # Oberes Band wird nicht für die Optimierung benötigt, aber zusammen
+        # mit p10 archiviert, damit das Dashboard die damals bekannte
+        # Prognoseunsicherheit auch rückblickend unverändert zeigen kann.
+        pv90 = (_pv_series("pv_forecast_p90", required=False)
+                if solcast.available(config, repo, "pv_forecast_p90") else None)
         price, price_estimated = _price_series(
             repo, config, opt_index, now, return_estimated=True)
         from .tariff import read_spot_signal
@@ -1814,6 +1866,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         if ld.enabled and ld.type == "thermal"
                         for stage in ld.stages
                     }
+                    stage_power.update({
+                        ld.name: float(ld.power_w)
+                        for ld in config.controllable_loads
+                        if ld.enabled and ld.type == "deferrable"
+                    })
                     for item in load_feedback_status:
                         if not item.get("fresh") or not item.get("on"):
                             continue
@@ -2006,6 +2063,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         model_series.reindex(opt_index))
             if pv10 is not None:
                 archive_series["pv10_w"] = pv10
+            if pv90 is not None:
+                archive_series["pv90_w"] = pv90
             if ambient is not None:
                 archive_series["ambient_temp_c"] = ambient
             if solar_safe is not None:
@@ -2263,7 +2322,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 write_execution_plan(
                     config.e3dc_rscp.history_db_path, now, result.table,
                     initial_soc_percent=float(soc_pct),
-                    static_export_limit_w=config.inverter.max_export_w)
+                    static_export_limit_w=config.inverter.max_export_w,
+                    dashboard_series={name: values for name, values in {
+                        "house_load_p10_w": load_p10_opt,
+                        "house_load_p90_w": load_p90_opt,
+                        "pv10_w": pv10,
+                        "pv90_w": pv90,
+                        "price_estimated": price_estimated,
+                    }.items() if values is not None})
             except Exception as exc:
                 log.warning("Sollfahrplan-Audit nicht speicherbar (%s).", exc)
 
@@ -2297,6 +2363,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             load_temp_actual = {}
             try:
                 from .local_history import read_load_temp
+                from .loads import _slug as _load_slug
                 tz = config.general.timezone
                 for ld in getattr(config, "controllable_loads", []):
                     if ld.type == "thermal":
@@ -2304,6 +2371,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                            display.index[0], display.index[-1], tz)
                         if not s.empty:
                             load_temp_actual[ld.name] = s
+                            slug = _load_slug(ld.name)
+                            actual_col = f"actual_load_{slug}_temp_c"
+                            planned_col = f"load_{slug}_temp_c"
+                            display[actual_col] = s.reindex(display.index)
+                            if planned_col in display.columns:
+                                display[f"load_{slug}_temp_deviation_c"] = (
+                                    pd.to_numeric(
+                                        display[actual_col], errors="coerce")
+                                    - pd.to_numeric(
+                                        display[planned_col], errors="coerce")
+                                ).round(1)
             except Exception as exc:  # pragma: no cover
                 log.debug("Ist-Temp-Verlauf fürs Dashboard nicht verfügbar: %s", exc)
             # Außentemperatur auf den Anzeigezeitraum zuschneiden (temp deckt den
@@ -2808,22 +2886,27 @@ def _reload_calibration_overrides(config) -> None:
 
 
 def _read_load_feedback(config, publisher, now):
-    """Echte thermische Stufenzustände lesen, archivieren und verdichten."""
+    """Echte Zustände aller rückgekoppelten Lasten lesen und archivieren."""
     state, statuses = {}, []
     if publisher is None:
         return None, statuses
     from .local_history import write_load_feedback
     for ld in getattr(config, "controllable_loads", []):
-        if ld.type != "thermal":
-            continue
-        for stage in ld.stages:
-            label = f"{ld.name}/{stage.name}"
-            configured = bool(stage.feedback_topic or stage.power_topic)
+        feedback_lanes = (
+            [(stage.name, f"{ld.name}/{stage.name}",
+              stage.feedback_topic, stage.power_topic)
+             for stage in ld.stages]
+            if ld.type == "thermal" else
+            [("__load__", ld.name, ld.feedback_topic, ld.power_topic)])
+        for stage_name, label, state_topic, power_topic in feedback_lanes:
+            configured = bool(state_topic or power_topic)
+            if not configured and not ld.feedback_required:
+                continue
             feedback = publisher.get_load_feedback(
                 label, ld.feedback_max_age_minutes,
                 getattr(ld, "feedback_hold_while_connected", False)
             ) if configured else None
-            item = {"label": label, "name": ld.name, "stage": stage.name,
+            item = {"label": label, "name": ld.name, "stage": stage_name,
                     "configured": configured,
                     "required": bool(ld.feedback_required),
                     "fresh": bool(feedback and feedback.get("fresh")),
@@ -2836,7 +2919,7 @@ def _read_load_feedback(config, publisher, now):
             if feedback is not None:
                 try:
                     write_load_feedback(config.e3dc_rscp.history_db_path, now,
-                                        ld.name, stage.name, feedback)
+                                        ld.name, stage_name, feedback)
                 except Exception as exc:
                     log.debug("Last-Rückmeldung nicht speicherbar (%s).", exc)
             if item["fresh"] and item["on"] is not None:
@@ -2961,7 +3044,8 @@ def _build_display_frame(repo, config, now, history, result,
     ot = result.table
     for c in ["house_soc_percent", "car_soc_percent", "batt_dc_charge_w",
               "batt_ac_charge_w", "batt_discharge_w", "batt_charge_limit_w",
-              "batt_discharge_limit_w", "batt_grid_discharge_w", "car_charge_w",
+              "batt_discharge_limit_w", "batt_grid_charge_w",
+              "batt_grid_discharge_w", "car_charge_w",
               "grid_import_w", "grid_export_w", "export_line_w", "mode",
               "feedin_ct_kwh", "spot_price_ct_kwh", "pv_curtail_w", "decision_reason",
               "execution_path", "execution_label", "execution_detail",
@@ -2972,6 +3056,89 @@ def _build_display_frame(repo, config, now, history, result,
     for c in ot.columns:                    # steuerbare Lasten (load_*_w / _temp_c)
         if c.startswith("load_"):
             df[c] = ot[c].reindex(full)
+
+    # ---- Historischer, damals tatsächlich publizierter Sollstand ----
+    # Der aktuelle Optimierungslauf beginnt bei ``now``. Ohne den lokalen
+    # Verlauf wären alle Steuerkurven davor NaN und die Prognose würde mit dem
+    # heutigen Wissensstand nachträglich neu gerechnet. Stattdessen je
+    # vergangenem Slot den finalen Forecast-Origin und den zuletzt publizierten
+    # Ausführungsplan einblenden.
+    try:
+        from .local_history import (read_execution_plan_range,
+                                    read_optimizer_forecast_origins)
+        history_end = now + slot
+        forecast_history = read_optimizer_forecast_origins(
+            config.e3dc_rscp.history_db_path, day_start, history_end, tz,
+            config.general.slot_minutes)
+        plan_history = read_execution_plan_range(
+            config.e3dc_rscp.history_db_path, day_start, history_end, tz)
+        historical_mask = full <= now
+        for archived in (forecast_history, plan_history):
+            if archived.empty:
+                continue
+            aligned = archived.reindex(full)
+            for c in aligned.columns:
+                values = aligned[c]
+                valid = historical_mask & values.notna().to_numpy()
+                if not valid.any():
+                    continue
+                if c not in df.columns:
+                    df[c] = pd.NA
+                df.loc[valid, c] = values.loc[valid]
+
+        # Reale Ein/Aus- und Leistungsrückmeldungen getrennt vom Sollplan.
+        # Fehlende/veraltete Rückmeldung bleibt NaN ("unbekannt"), niemals "aus".
+        from .loads import _slug as _load_slug
+        from .local_history import (read_load_stage_on,
+                                    read_load_stage_power)
+        for load in getattr(config, "controllable_loads", []) or []:
+            stage_names = ([stage.name for stage in load.stages]
+                           if load.type == "thermal" else ["__load__"])
+            actual_stages = read_load_stage_on(
+                config.e3dc_rscp.history_db_path, load.name, stage_names,
+                day_start, history_end, tz)
+            actual_power = read_load_stage_power(
+                config.e3dc_rscp.history_db_path, load.name, stage_names,
+                day_start, history_end, tz)
+            display_stages = (
+                [(stage.name, _load_slug(stage.name)) for stage in load.stages]
+                if load.type == "thermal" else
+                [("__load__", None)])
+            for stage_name, stage_slug in display_stages:
+                suffix = f"_{stage_slug}" if stage_slug else ""
+                series = actual_stages.get(stage_name)
+                if series is not None and not series.empty:
+                    col = f"actual_load_{_load_slug(load.name)}{suffix}_on"
+                    df[col] = series.reindex(full).where(historical_mask)
+                power = actual_power.get(stage_name)
+                if power is not None and not power.empty:
+                    col = (f"actual_load_{_load_slug(load.name)}"
+                           f"{suffix}_power_w")
+                    df[col] = power.reindex(full).where(historical_mask)
+    except Exception as exc:  # Verlauf ist Diagnose, nie Lauf-kritisch
+        log.warning("Historischer Sollfahrplan fürs Dashboard nicht lesbar: %s",
+                    exc)
+
+    # Einheitliche Sollkurven für den direkten Vergleich mit den Istwerten.
+    # Historische Werte kommen aus execution_plan, Zukunftswerte aus dem
+    # aktuellen Optimierungsergebnis.
+    # min_count=1: nur fehlende Einzelkomponenten als 0 behandeln. Fehlen ALLE
+    # Planwerte eines Slots, bleibt die Sollkurve NaN statt fälschlich 0 W.
+    planned_battery = _signed_plan_total(
+        df, ("batt_dc_charge_w", "batt_ac_charge_w"),
+        ("batt_discharge_w",))
+    planned_grid = _signed_plan_total(
+        df, ("grid_import_w",), ("grid_export_w",))
+    if "planned_battery_w" in df.columns:
+        df["planned_battery_w"] = pd.to_numeric(
+            df["planned_battery_w"], errors="coerce").combine_first(planned_battery)
+    else:
+        df["planned_battery_w"] = planned_battery
+    if "planned_grid_w" in df.columns:
+        df["planned_grid_w"] = pd.to_numeric(
+            df["planned_grid_w"], errors="coerce").combine_first(planned_grid)
+    else:
+        df["planned_grid_w"] = planned_grid
     if "mode" in df.columns:
         df["mode"] = df["mode"].fillna("auto")
     else:
@@ -3021,6 +3188,22 @@ def _build_display_frame(repo, config, now, history, result,
         except Exception:  # pragma: no cover
             pass
 
+    # Leistungswerte sind Intervallgrößen. Die zu Beginn eines Rechenlaufs
+    # gespeicherten Momentanwerte können noch den vorherigen Slot abbilden und
+    # erzeugen dann eine scheinbare Soll/Ist-Verschiebung um 15 Minuten.
+    # Zeitgewichtete 5-s-Mittel ersetzen sie bei ausreichender Abdeckung;
+    # Snapshots bleiben nur als Lücken-Fallback.
+    try:
+        from .local_history import read_live_slot_averages
+        live_slots = read_live_slot_averages(
+            config.e3dc_rscp.history_db_path, day_start, now + slot,
+            config.general.timezone, config.general.slot_minutes,
+            config.forecast.live_nowcast_min_coverage_seconds,
+            config.forecast.live_nowcast_max_gap_seconds)
+        _overlay_live_slot_actuals(df, live_slots, past_mask)
+    except Exception as exc:  # Diagnose darf das Dashboard nie verhindern
+        log.debug("Live-Slotmittel fürs Dashboard nicht lesbar (%s).", exc)
+
     # Ist-Hauslast bevorzugt aus dem 15-min-MITTEL (house_load, Energiebilanz)
     # statt aus dem MOMENTAN-Snapshot (actuals.house_w). Der Snapshot ist ein
     # Spot-Messwert je Zyklus und schwankt stark; bei einem Neustart mitten im
@@ -3062,6 +3245,20 @@ def _build_display_frame(repo, config, now, history, result,
                                    .where(past_mask).ffill().where(past_mask))
         except Exception:  # pragma: no cover
             pass
+    # Explizite Soll-Ist-Differenzen für API, Slot-Details und weitere
+    # Auswertungen. Positiv bedeutet: Istwert liegt über der damaligen Prognose.
+    for actual_col, planned_col, deviation_col in (
+            ("actual_load_w", "house_load_w", "load_deviation_w"),
+            ("actual_pv_w", "pv_w", "pv_deviation_w"),
+            ("actual_grid_w", "planned_grid_w", "grid_deviation_w"),
+            ("actual_battery_w", "planned_battery_w", "battery_deviation_w"),
+            ("actual_soc_percent", "house_soc_percent", "soc_deviation_percent")):
+        if actual_col in df.columns and planned_col in df.columns:
+            actual = pd.to_numeric(df[actual_col], errors="coerce")
+            planned = pd.to_numeric(df[planned_col], errors="coerce")
+            decimals = 1 if deviation_col == "soc_deviation_percent" else 0
+            df[deviation_col] = (actual - planned).where(
+                actual.notna() & planned.notna()).round(decimals)
     return df
 
 
