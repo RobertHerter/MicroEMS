@@ -752,11 +752,22 @@ scheinbar günstiger und die Hellsicht keine untere Schranke):
 Daraus die Zerlegung, die sich exakt auf die Gesamtlücke addiert:
 
 ```
-Prognose   = fix        - hellsicht    was die 00:00-Prognose kostet
-Nachplanen = fix        - rollierend   was das 15-min-Neurechnen zurückholt
-Ausführung = abgerechnet - rollierend  Anlage/Messung gegen die Sollwerte
-Restlücke  = abgerechnet - hellsicht   = Prognose - Nachplanen + Ausführung
+Prognose    = fix        - hellsicht    was die 00:00-Prognose kostet
+davon Preis = fix        - fix(echte Preise)   Anteil der PREISschätzung
+Nachplanen  = fix        - rollierend   was das 15-min-Neurechnen zurückholt
+Ausführung  = abgerechnet - rollierend  Anlage/Messung gegen die Sollwerte
+Restlücke   = abgerechnet - hellsicht   = Prognose - Nachplanen + Ausführung
 ```
+
+`davon Preis` rechnet **denselben** 00:00-Plan ein zweites Mal, nur mit den
+inzwischen veröffentlichten Preisen statt der Schätzung – PV- und Lastprognose
+bleiben unverändert. Die Kostendifferenz ist damit ausschließlich der Preis der
+Preisschätzung. Gemessen im Sommer 2026: **0,00 €/Tag** bei 1,8–2,6 ct/kWh
+Schätzfehler – die geschätzten Slots liegen am Folgetag, und solange die PV den
+Akku täglich voll macht, ändern sie die heutigen Entscheidungen nicht. Der
+gesamte Prognose-Regret von ~1,1 €/Tag steckt also in PV und Last. Im Winter,
+wenn der Akku die knappe Ressource ist, kann sich das umkehren – die Kennzahl
+sagt es dann.
 
 Alles in Euro pro Tag und damit direkt interpretierbar – anders als ein WAPE.
 Der jüngste bewertbare Tag ist der Vortag: der Optimierer braucht den Folgetag

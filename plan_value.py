@@ -87,10 +87,11 @@ def _print_regret(rows: list[dict]) -> None:
     print("\nRegret gegen Hellsicht (€, negativ = Erlös; alle auf den "
           "Ist-Endladestand normiert)\n")
     print(f"{'Tag':11s} {'hellsicht':>10s} {'fix':>8s} {'rollierend':>11s} "
-          f"{'abgerechnet':>12s} | {'Prognose':>9s} {'Nachplanen':>11s} "
-          f"{'Ausführung':>11s} {'Rest':>7s}")
-    print("-" * 106)
-    tot = {"forecast_regret_eur": 0.0, "replanning_gain_eur": 0.0,
+          f"{'abgerechnet':>12s} | {'Prognose':>9s} {'davon Preis':>12s} "
+          f"{'Nachplanen':>11s} {'Ausführung':>11s} {'Rest':>7s}")
+    print("-" * 119)
+    tot = {"forecast_regret_eur": 0.0, "price_regret_eur": 0.0,
+           "replanning_gain_eur": 0.0,
            "execution_and_metering_eur": 0.0, "total_gap_eur": 0.0}
     counted = 0
     for r in rows:
@@ -111,7 +112,8 @@ def _print_regret(rows: list[dict]) -> None:
 
         print(f"{r['day']:11s} {c('oracle'):>10s} {c('frozen'):>8s} "
               f"{c('rolling'):>11s} {c('metered'):>12s} | "
-              f"{dv('forecast_regret_eur', 9)} {dv('replanning_gain_eur', 11)} "
+              f"{dv('forecast_regret_eur', 9)} {dv('price_regret_eur', 12)} "
+              f"{dv('replanning_gain_eur', 11)} "
               f"{dv('execution_and_metering_eur', 11)} "
               f"{dv('total_gap_eur', 7)}")
         if all(d.get(k) is not None for k in tot):
@@ -119,13 +121,16 @@ def _print_regret(rows: list[dict]) -> None:
             for k in tot:
                 tot[k] += float(d[k])
     if counted > 1:
-        print("-" * 106)
+        print("-" * 119)
         print(f"{'Summe':11s} {'':>10s} {'':>8s} {'':>11s} {'':>12s} | "
               f"{tot['forecast_regret_eur']:9.2f} "
+              f"{tot['price_regret_eur']:12.2f} "
               f"{tot['replanning_gain_eur']:11.2f} "
               f"{tot['execution_and_metering_eur']:11.2f} "
               f"{tot['total_gap_eur']:7.2f}")
-    print("\nPrognose   = was die 00:00-Prognose gegenüber Hellsicht kostet\n"
+    print("\nPrognose    = was die 00:00-Prognose gegenüber Hellsicht kostet\n"
+          "davon Preis = Anteil der PREISschätzung daran (derselbe Plan mit den\n"
+          "              echten Preisen gerechnet); der Rest steckt in PV und Last\n"
           "Nachplanen = was das 15-min-Neurechnen davon zurückholt (>0 = Gewinn)\n"
           "Ausführung = Abweichung Anlage/Messung gegenüber den Sollwerten\n"
           "Rest       = abgerechnet minus hellsicht (Prognose - Nachplanen "

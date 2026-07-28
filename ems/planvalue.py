@@ -412,7 +412,7 @@ def regret_analysis(config, day) -> Optional[dict]:
     out["oracle"] = sim(oracle_plan)
 
     # 2) Fixierter Plan aus der 00:00-Prognose
-    frozen = None
+    frozen = frozen_true_price = None
     try:
         issue, frame = read_optimizer_forecast_asof(
             config.e3dc_rscp.history_db_path, start + pd.Timedelta(minutes=20),
@@ -421,14 +421,36 @@ def regret_analysis(config, day) -> Optional[dict]:
             frame = frame.sort_index()
             need = ("house_load_w", "pv_w", "price_ct_kwh")
             if all(c in frame.columns for c in need) and len(frame) >= n_day:
+                pv10 = frame["pv10_w"] if "pv10_w" in frame else None
                 frozen = _solve_battery_plan(
                     config, frame.index, frame["pv_w"], frame["house_load_w"],
-                    frame["price_ct_kwh"], soc0_wh,
-                    pv10_w=(frame["pv10_w"] if "pv10_w" in frame else None))
+                    frame["price_ct_kwh"], soc0_wh, pv10_w=pv10)
                 out["forecast_issued_at"] = str(issue)
+                # 2b) DERSELBE Plan, nur mit den echten Preisen. Alles andere
+                # (PV- und Lastprognose, Start-SoC) bleibt unveraendert - die
+                # Kostendifferenz ist damit ausschliesslich der Preis der
+                # Preisschaetzung. Der Folgetagspreis ist um 00:00 noch nicht
+                # veroeffentlicht und wird bis dahin geschaetzt und gedaempft.
+                true_price = (long_data["price_ct_kwh"].reindex(frame.index)
+                              .fillna(frame["price_ct_kwh"]))
+                gap = (true_price - frame["price_ct_kwh"]).abs()
+                differs = gap.gt(0.05)
+                est_slots = int(differs.sum())
+                out["price_estimate_slots"] = est_slots
+                if est_slots:
+                    frozen_true_price = _solve_battery_plan(
+                        config, frame.index, frame["pv_w"],
+                        frame["house_load_w"], true_price, soc0_wh,
+                        pv10_w=pv10)
+                    # Nur ueber die geschaetzten Slots - sonst verwaessern die
+                    # bereits veroeffentlichten den Wert (und er waere nicht mit
+                    # der Kennzahl im Lauf-Archiv vergleichbar).
+                    out["price_estimate_mae_ct"] = round(
+                        float(gap[differs].mean()), 2)
     except Exception as exc:                                # pragma: no cover
         log.debug("00:00-Prognose nicht rekonstruierbar (%s).", exc)
     out["frozen"] = sim(frozen)
+    out["frozen_true_price"] = sim(frozen_true_price)
 
     # 3) Rollierend: die je Slot publizierten Sollwerte
     rolling = None
@@ -473,7 +495,12 @@ def regret_analysis(config, day) -> Optional[dict]:
 
     c_or, c_fr, c_ro, c_me = (cost("oracle"), cost("frozen"),
                               cost("rolling"), cost("metered"))
+    c_fp = cost("frozen_true_price")
     delta = {}
+    if c_fr is not None and c_fp is not None:
+        # Anteil der PREISschaetzung am Prognose-Regret: >0 = die Schaetzung hat
+        # Geld gekostet. Der Rest des Regrets steckt in PV und Last.
+        delta["price_regret_eur"] = round(c_fr - c_fp, 3)
     if c_fr is not None and c_or is not None:
         delta["forecast_regret_eur"] = round(c_fr - c_or, 3)
     if c_fr is not None and c_ro is not None:
@@ -557,7 +584,7 @@ def plan_value_summary(config, timing_days: int = 7, regret_days: int = 3,
                                         if gc else None)
     out["grid_charge_scored_days"] = len(gc)
 
-    keys = ("forecast_regret_eur", "replanning_gain_eur",
+    keys = ("forecast_regret_eur", "price_regret_eur", "replanning_gain_eur",
             "execution_and_metering_eur", "total_gap_eur")
     full = [r for r in out["regret"]
             if all(r.get("delta", {}).get(k) is not None for k in keys)]
