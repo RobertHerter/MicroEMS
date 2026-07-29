@@ -645,11 +645,17 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   Energiebilanz, kein gleichzeitiges Laden/Entladen, DC-Laden nur aus PV,
   Einspeisebegrenzung, Ausführbarkeit) plus ökonomische Plausibilität (nie teurer
   als die Baseline). Läuft in Tests, im Backtest und live (Banner + `ems/alert`).
-- **`ems/drift.py`** – Predicted-vs-Actual-SoC-Drift (MAE, Measurement `ems_drift`),
-  Warnung über der Schwelle. Sieht bewusst nur EINEN Slot voraus; ein
-  systematischer Wirkungsgrad-Bias kann sich dort nicht aufsummieren (der Plan
-  startet alle 15 min neu beim gemessenen SoC) – dafür ist die
-  Akku-Kalibrierung unten bzw. das Lauf-Archiv da.
+- **`ems/drift.py`** – zwei Prüfungen mit unterschiedlicher Reichweite:
+  1. *SoC-Kurve* – Predicted-vs-Actual-MAE (Measurement `ems_drift`), Warnung
+     über der Schwelle. Findet akute Ausreißer.
+  2. *Energiebilanz* – wie viel SoC eine ans Haus gelieferte kWh real kostet,
+     gegen `discharge_efficiency`. **Nötig, weil die Kurve allein systematische
+     Modellfehler nicht findet:** jeder Zyklus rechnet neu ab dem gemessenen
+     SoC, der Fehler summiert sich dort nie auf. Ein Entladewirkungsgrad von
+     0,93 statt real 0,79 erzeugte 0,7 pp MAE – und lag über eine Nacht um
+     zweistellige Prozentpunkte daneben. Die Bilanzprüfung meldet denselben Fall
+     mit −16 % und schlägt binnen ein, zwei Tagen an (`efficiency_window_days`,
+     `efficiency_alert_percent`; stündlich, reine SQLite-Reads).
 - **`ems/battery_calibration.py`** – misst den **Entladewirkungsgrad** aus den
   Ist-Werten und führt ihn wöchentlich nach. Gemessen wird über
   *zusammenhängende Entladephasen*, nicht je Slot: der SoC kommt nur in ganzen

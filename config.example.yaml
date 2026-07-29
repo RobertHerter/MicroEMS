@@ -598,6 +598,15 @@ monitoring:
   drift_enabled: true
   drift_window_hours: 12
   drift_alert_percent: 8
+  # Zusaetzliche BILANZ-Pruefung: wie viel SoC eine ans Haus gelieferte kWh
+  # real kostet, verglichen mit house_battery.discharge_efficiency. Die
+  # SoC-Kurve allein findet einen systematischen Modellfehler NICHT - jeder
+  # Zyklus rechnet neu ab dem gemessenen SoC, der Fehler summiert sich dort
+  # nie auf. Fenster in Tagen und Warnschwelle als relative Abweichung.
+  efficiency_window_days: 7.0
+  # Warnschwelle als RELATIVE Abweichung (%) zwischen gemessenem und
+  # konfiguriertem Entladewirkungsgrad.
+  efficiency_alert_percent: 6.0
   # Solver-Laufzeit warnen, wenn absolut oder relativ zur Historie auffaellig
   # (Median der letzten Laeufe); eine Erholungsmeldung beendet den Alarmzustand.
   solver_runtime_alert_seconds: 60

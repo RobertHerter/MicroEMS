@@ -652,6 +652,12 @@ class MonitoringConfig:
     drift_enabled: bool = True
     drift_window_hours: float = 12.0
     drift_alert_percent: float = 8.0     # Warnung ab dieser MAE (Prozentpunkte)
+    # Zusätzliche Bilanzprüfung: wie viel SoC eine gelieferte kWh real kostet,
+    # verglichen mit house_battery.discharge_efficiency. Die SoC-Kurve allein
+    # findet einen systematischen Modellfehler NICHT - jeder Zyklus rechnet neu
+    # ab dem gemessenen SoC, der Fehler summiert sich dort nie auf.
+    efficiency_window_days: float = 7.0
+    efficiency_alert_percent: float = 6.0   # Warnung ab dieser rel. Abweichung
     solver_runtime_alert_seconds: float = 60.0
     solver_runtime_factor: float = 3.0
     solver_runtime_baseline_runs: int = 12
@@ -1477,6 +1483,9 @@ def load_config(path: str) -> Config:
         drift_enabled=bool(mon.get("drift_enabled", True)),
         drift_window_hours=float(mon.get("drift_window_hours", 12.0)),
         drift_alert_percent=float(mon.get("drift_alert_percent", 8.0)),
+        efficiency_window_days=float(mon.get("efficiency_window_days", 7.0)),
+        efficiency_alert_percent=float(
+            mon.get("efficiency_alert_percent", 6.0)),
         solver_runtime_alert_seconds=float(
             mon.get("solver_runtime_alert_seconds", 60.0)),
         solver_runtime_factor=float(mon.get("solver_runtime_factor", 3.0)),

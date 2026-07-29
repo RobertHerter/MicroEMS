@@ -128,3 +128,57 @@ def test_apply_refuses_implausible_values(tmp_path, monkeypatch):
     for bad in (EFF_BOUNDS[0] - 0.01, EFF_BOUNDS[1] + 0.01, 1.5):
         assert maybe_apply(_fit_with(bad), cfg,
                            str(tmp_path / "config.yaml")) is None
+
+
+# --------------------------------------------------------------------------- #
+# Drift-Monitor: Bilanzpruefung statt SoC-Kurve
+# --------------------------------------------------------------------------- #
+def _seed_actuals(db, phases=8, efficiency=0.78):
+    """Mehrere Naechte echter Entladephasen in die actuals-Tabelle schreiben."""
+    from ems.local_history import write_actuals
+    for k in range(phases):
+        frame = _phase(pd.Timestamp("2026-01-06 20:00", tz=TZ)
+                       + pd.Timedelta(days=k), 11.0, 1100.0, efficiency)
+        for ts, row in frame.iterrows():
+            write_actuals(db, ts, {"battery_w": float(row["battery_w"]),
+                                   "soc_percent": float(row["soc"]),
+                                   "pv_w": 0.0, "house_load_w": 1100.0,
+                                   "grid_w": 0.0})
+
+
+def test_energy_model_check_flags_a_wrong_efficiency(tmp_path, monkeypatch):
+    """Der Fall, der monatelang unbemerkt blieb: Modell 0.93, real 0.78."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.house_battery.capacity_wh = CAP
+    cfg.house_battery.discharge_efficiency = 0.93
+    _seed_actuals(cfg.e3dc_rscp.history_db_path, efficiency=0.78)
+    now = pd.Timestamp("2026-01-14 12:00", tz=TZ)
+    out = DriftMonitor(cfg).check_energy_model(now)
+    assert out is not None, "Stichprobe sollte reichen"
+    assert out["measured"] == pytest.approx(0.78, abs=0.03)
+    assert out["deviation_percent"] < -10.0
+    assert out["alert"] is True
+
+
+def test_energy_model_check_is_quiet_when_the_model_fits(tmp_path):
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.house_battery.capacity_wh = CAP
+    cfg.house_battery.discharge_efficiency = 0.78
+    _seed_actuals(cfg.e3dc_rscp.history_db_path, efficiency=0.78)
+    out = DriftMonitor(cfg).check_energy_model(
+        pd.Timestamp("2026-01-14 12:00", tz=TZ))
+    assert out is not None and out["alert"] is False
+    assert abs(out["deviation_percent"]) < 6.0
+
+
+def test_energy_model_check_stays_silent_without_data(tmp_path):
+    """Lieber nichts melden als aus zwei Fenstern einen Alarm bauen."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "leer.sqlite")
+    assert DriftMonitor(cfg).check_energy_model(
+        pd.Timestamp("2026-01-14 12:00", tz=TZ)) is None

@@ -2186,10 +2186,20 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
 
         # --- 3c) SoC-Drift (Modell gegen Realität) ---------------------- #
         drift_mae = None
+        efficiency_drift = None
         if config.monitoring.drift_enabled:
             try:
                 from .drift import DriftMonitor
-                drift_mae = DriftMonitor(config).check(repo, now)
+                monitor = DriftMonitor(config)
+                drift_mae = monitor.check(repo, now)
+                # Bilanzprüfung zusätzlich zur SoC-Kurve: die findet einen
+                # systematischen Modellfehler nicht (jeder Zyklus startet neu
+                # beim gemessenen SoC). Höchstens stündlich - reine SQLite-Reads,
+                # aber je Zyklus wäre es unnötig.
+                global _last_efficiency_check
+                if _time.time() - _last_efficiency_check > 3600:
+                    efficiency_drift = monitor.check_energy_model(now)
+                    _last_efficiency_check = _time.time()
             except Exception as exc:
                 log.warning("Drift-Check fehlgeschlagen (%s).", exc)
 
@@ -2238,6 +2248,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
+            if efficiency_drift and efficiency_drift.get("alert"):
+                publisher.publish_alert(
+                    "warning",
+                    f"Entladewirkungsgrad {efficiency_drift['measured']:.2f} "
+                    f"gemessen gegen {efficiency_drift['model']:.2f} im Modell "
+                    f"({efficiency_drift['deviation_percent']:+.0f} %) – der "
+                    f"geplante SoC-Verlauf läuft systematisch weg.")
             _publish_solver_alarm(publisher, solver_status)
             _publish_execution_alarm(publisher, config, execution_status)
             _publish_load_feedback_alarm(publisher, load_feedback_status)
@@ -2613,6 +2630,7 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
 
 _last_weather_fetch = 0.0
 _last_grid_weather_fetch = 0.0
+_last_efficiency_check = 0.0
 _price_model = None
 _price_model_day = None
 
