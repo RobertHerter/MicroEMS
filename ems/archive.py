@@ -402,10 +402,20 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
   // zweimal); wo der Plan schaetzen musste, der inzwischen bekannte Preis -
   // und dazu gestrichelt, was der Plan dort angenommen hatte.
   const est=P.price_estimated||[],pp=P.price_ct_kwh,ap=A.price_ct_kwh;
-  add(pp.map((v,i)=>(est[i]?(ap?ap[i]:null):v)),'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
-  if(est.some(v=>v))
+  const real=i=>(ap&&ap[i]!==null&&ap[i]!==undefined)?ap[i]:null;
+  // Die Maske deckt nur den archivierten Prognosebereich ab; darueber hinaus
+  // ist sie null. NULL heisst 'unbekannt', NICHT 'war veroeffentlicht' - sonst
+  // wird der uebermorgige Schaetzwert als Boersenpreis ausgegeben, den es zur
+  // Laufzeit gar nicht geben konnte. Ohne Maske entscheidet, ob heute ein
+  // echter Preis vorliegt.
+  const guessed=i=>((est[i]===0||est[i]===1)?!!est[i]:real(i)===null);
+  // Durchgezogen NUR echter Boersenpreis: bekannt zur Laufzeit (dann ist der
+  // Planwert genau dieser Preis) oder inzwischen veroeffentlicht.
+  add(pp.map((v,i)=>real(i)!==null?real(i):(guessed(i)?null:v)),
+      'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
+  if(pp.some((v,i)=>guessed(i)))
    // Der Uebergangsslot gehoert mit dazu, sonst klafft eine Luecke.
-   add(pp.map((v,i)=>(est[i]||(i+1<est.length&&est[i+1]))?v:null),
+   add(pp.map((v,i)=>(guessed(i)||(i+1<pp.length&&guessed(i+1)))?v:null),
        'Preis (Schätzung)','#b58fd6',3,'dash','ct/kWh');
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im

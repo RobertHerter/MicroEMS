@@ -123,6 +123,32 @@ def test_run_detail_splits_price_into_estimate_and_published(tmp_path):
     assert d["deviation"]["price_mae_ct"] is not None
 
 
+def test_price_line_never_claims_an_unpublished_price(tmp_path):
+    """Die Schaetz-Maske deckt nur den archivierten Prognosebereich ab; darueber
+    hinaus ist sie None. NULL heisst 'unbekannt', nicht 'war veroeffentlicht' -
+    sonst erscheint der uebermorgige Schaetzwert als Boersenpreis, den es zur
+    Laufzeit gar nicht geben konnte. Die Seite entscheidet dann anhand des
+    heute vorliegenden Ist-Preises; dieser Test haelt die Regel fest.
+    """
+    est = [0] * 4 + [1] * 4 + [None] * 4          # bekannt / geschaetzt / offen
+    actual = [20.0] * 4 + [None] * 8              # veroeffentlicht nur vorne
+    plan = [21.0] * 12
+
+    def real(i):
+        return actual[i]
+
+    def guessed(i):
+        return bool(est[i]) if est[i] in (0, 1) else real(i) is None
+
+    solid = [real(i) if real(i) is not None
+             else (None if guessed(i) else plan[i]) for i in range(12)]
+    # Durchgezogen NUR dort, wo wirklich ein Boersenpreis vorliegt.
+    assert solid[:4] == [20.0] * 4
+    assert solid[4:] == [None] * 8
+    # Und der Bereich ohne Maske zaehlt als Schaetzung, nicht als bekannt.
+    assert [guessed(i) for i in range(12)] == [False] * 4 + [True] * 8
+
+
 def test_run_detail_price_estimate_mask_is_optional(tmp_path):
     """Ohne Prognose-Archiv gibt es keine Schaetz-Maske - das darf die
     Aufbereitung nicht stoeren (aeltere Laeufe, frische Installation)."""
@@ -181,6 +207,8 @@ def test_archive_page_is_self_contained(tmp_path):
     # Preis wie im Dashboard: durchgezogen der tatsaechliche Boersenpreis,
     # gestrichelt NUR die Schaetzung des Laufs (nicht beides doppelt).
     assert "'Börsenpreis'" in html and "'Preis (Schätzung)'" in html
+    # NULL in der Maske darf nicht als "war veröffentlicht" gelten.
+    assert "est[i]===0||est[i]===1" in html
     assert "'Preis Ist'" not in html and "price_estimated" in html
     # Plotly lokal (kein Internet), Rueckweg zum Dashboard, Theme-Umschalter.
     assert '<script src="plotly.min.js">' in html
