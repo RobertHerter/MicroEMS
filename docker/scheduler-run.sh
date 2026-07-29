@@ -20,6 +20,7 @@ case "${1:-}" in
     python -m kalibrierung --config "$CFG" --lookback-days 730 --test-days 365
     python -m ems.pool_calibration --config "$CFG" --apply
     python -m ems.battery_calibration --config "$CFG" --apply
+    python -m ems.load_learning --config "$CFG" --apply
     ;;
   *)
     echo "usage: scheduler-run.sh {savings|kalibrierung}" >&2

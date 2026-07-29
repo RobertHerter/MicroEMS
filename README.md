@@ -88,6 +88,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/explain.py` | Klartext-Begründung der Steuerentscheidungen (Dashboard-Tooltips) |
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
 | `ems/battery_calibration.py` | Entladewirkungsgrad des Speichers aus Entladephasen messen und nachführen |
+| `ems/load_learning.py` | Lastprofil verschiebbarer Lasten aus der Verbrauchsrückmeldung anlernen |
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
 | `ems/gridweather.py` + `ems/priceforecast.py` | Deutschlandweite Wetter-Indizes (Residuallast) + gelernte Börsenpreis-Prognose mit Selbstprüfung |
@@ -679,6 +680,20 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   ```bash
   python -m ems.battery_calibration --config config.yaml --days 30
   python -m ems.battery_calibration --config config.yaml --days 30 --apply
+  ```
+- **`ems/load_learning.py`** – lernt das **Lastprofil** einer verschiebbaren Last
+  (Waschmaschine, Spülmaschine) aus der Verbrauchsrückmeldung, statt sie mit
+  konstanter Leistung zu planen. Der Optimierer kann das längst fahren
+  (`power_profile_w` = Leistung je Slot ab dem Startslot) – eingetragen werden
+  musste es bisher von Hand. Läufe werden über einer Einschaltschwelle erkannt,
+  kurze Einbrüche (Pause vor dem Schleudern) überbrückt; je Slotposition zählt
+  der **Median** über die Läufe, damit ein Fehlstart das Profil nicht verzieht.
+  Übernahme ins Overlay erst ab drei Läufen und nur in plausiblen Grenzen für
+  Dauer und Energie. Voraussetzung: `power_topic` für die Last konfiguriert.
+
+  ```bash
+  python -m ems.load_learning --config config.yaml --days 30
+  python -m ems.load_learning --config config.yaml --days 30 --apply
   ```
 - **Sanity-Grenzen** (`sanity`) – begrenzen Preis-Spikes, negative/überhöhte PV und
   negative Last vor dem Solve; ein einzelner API-Ausreißer verzerrt keinen Zyklus.
