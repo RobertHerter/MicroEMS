@@ -998,6 +998,54 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
         f"</div></details><script>{js}</script>")
 
 
+
+def _load_profile_block(config) -> str:
+    """Gelernte Lastprofile verschiebbarer Lasten (unter der Steuerung).
+
+    Rein informativ: das Anlernen laeuft passiv aus der Verbrauchsrueckmeldung,
+    es gibt nichts zu starten. Gezeigt wird, was gelernt wurde und ob es schon
+    in der Planung steckt.
+    """
+    loads = [ld for ld in (getattr(config, "controllable_loads", []) or [])
+             if ld.type == "deferrable"]
+    if not loads:
+        return ""
+    return """<details class="info-panel" id="profile-panel">
+<summary><span class="panel-title">Gelernte Lastprofile</span>
+ <small>aus der Verbrauchsrückmeldung</small></summary>
+<div class="tiles" id="lp-tiles"><span class="an-hint">wird geladen …</span></div>
+<div class="hint" id="lp-hint"></div>
+<script>(function(){
+ const g=id=>document.getElementById(id);
+ const num=(v,d)=>(typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d==null?0:d}):'–');
+ function bars(p){
+  if(!p||!p.length)return '';
+  const mx=Math.max.apply(null,p)||1;
+  return '<div class="lp-bars">'+p.map(v=>'<span style="height:'+Math.max(3,Math.round(100*v/mx))+'%" title="'+num(v)+' W"></span>').join('')+'</div>';
+ }
+ async function load(){
+  try{
+   const r=await fetch('api/load-profiles.json?_='+Date.now(),{cache:'no-store'});
+   if(!r.ok)throw Error(r.status);
+   const d=await r.json();
+   const rows=d.loads||[];
+   if(!rows.length){g('lp-tiles').innerHTML='<span class="an-hint">Keine verschiebbare Last konfiguriert.</span>';return;}
+   g('lp-tiles').innerHTML=rows.map(function(x){
+    const learned=x.learned;
+    if(!learned)return '<div class="tile"><div class="v">–</div><div class="l">'+x.name+'</div><div class="s">'+(x.reason||'noch nichts gelernt')+'</div></div>';
+    return '<div class="tile'+(x.in_use?'':' warn')+'"><div class="v">'+num(learned.runtime_minutes)+' min</div>'
+      +'<div class="l">'+x.name+'</div>'
+      +'<div class="s">'+learned.n_runs+' Läufe · '+num(learned.energy_kwh,2)+' kWh · Spitze '+num(learned.peak_w)+' W'
+      +(x.in_use?' · in der Planung':' · noch nicht übernommen')+'</div>'
+      +bars(learned.power_w)+'</div>';
+   }).join('');
+   g('lp-hint').textContent='Übernommen wird ab '+(d.min_runs||3)+' Läufen; die wöchentliche Kalibrierung trägt das Profil ein. Ohne Rückmeldung (power_topic) bleibt die Last bei konstanter Leistung.';
+  }catch(e){g('lp-tiles').innerHTML='<span class="an-hint">Lastprofile nicht erreichbar.</span>';}
+ }
+ let done=false;
+ g('profile-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;load();}});
+})();</script></details>"""
+
 def _sources_block(source_status) -> str:
     """Frische-Chips der externen Datenquellen (Spotpreis/Wetter/Solcast):
     grün = frisch, gelb = älter als erwartet, rot = veraltet/fehlend -
@@ -1707,6 +1755,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                                         "hoverCompareCartesian"]})
     report_html = _report_block(config, now, violations)
     controls_html = _controls_block(config)
+    load_profile_html = _load_profile_block(config)
     runtime_html = _runtime_block(bool(getattr(config.dashboard, "controls_enabled", False)))
     live_html = _live_block(config)
     decision_html = _decision_block(t, now)
@@ -1745,6 +1794,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         min-width: 0; }}
  h1 .ts {{ color: #888; font-weight: normal; font-size: 14px; }}
  .header-actions {{ display: flex; gap: 7px; }}
+ .lp-bars {{ display: flex; align-items: flex-end; gap: 1px; height: 34px;
+        margin-top: 6px; }}
+ .lp-bars span {{ flex: 1; background: #3a86c8; border-radius: 1px 1px 0 0;
+        min-width: 2px; }}
+ .tile.warn {{ border-color: #e1b74a; }}
  .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
         border: 1px solid #ccd4dc; border-radius: 8px; background: #f4f6f8;
         color: #26313c; cursor: pointer; font: inherit; font-size: 13px;
@@ -2293,6 +2347,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_control_banner(control_status)}
 {_alert_banner(violations)}
 {controls_html}
+{load_profile_html}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {_slot_detail_block()}

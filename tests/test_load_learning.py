@@ -116,3 +116,36 @@ def test_apply_refuses_a_single_run(tmp_path, monkeypatch):
     profile = learn_profile(_series([30]), DT)
     assert profile.n_runs < APPLY_MIN_RUNS
     assert maybe_apply(profile, _load(), str(tmp_path / "config.yaml")) is None
+
+
+# --------------------------------------------------------------------------- #
+# Bedienelement: Panel und Endpoint
+# --------------------------------------------------------------------------- #
+def test_dashboard_panel_shows_learned_profiles():
+    from ems.config import ControllableLoad
+    from ems.dashboard import _load_profile_block
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Waschmaschine", type="deferrable", enabled=True,
+        power_w=2000.0, runtime_minutes=120.0)]
+    html = _load_profile_block(cfg)
+    assert 'id="profile-panel"' in html and 'id="lp-tiles"' in html
+    assert "api/load-profiles.json" in html
+    assert "toggle" in html                     # laedt erst beim Aufklappen
+    # Ohne verschiebbare Last gibt es nichts anzuzeigen.
+    cfg.controllable_loads = []
+    assert _load_profile_block(cfg) == ""
+
+
+def test_load_profiles_endpoint(tmp_path):
+    from ems import main as m
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    assert m._resolve_get_route("/api/load-profiles.json", cfg,
+                                has_schedule_runner=False) == (
+        "status", "/api/load-profiles.json")
+    obj, code = m._status_api_payload("/api/load-profiles.json", cfg)
+    assert code == 200 and obj["min_runs"] == APPLY_MIN_RUNS
+    # Ohne Rueckmeldung: die Last erscheint, aber ohne erfundenes Profil.
+    for row in obj["loads"]:
+        assert row["learned"] is None and row.get("reason")

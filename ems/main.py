@@ -1333,6 +1333,40 @@ def _status_api_payload(path: str, config):
     if path == "/api/battery-health.json":
         from .observability import battery_health
         return battery_health(config, days=30), 200
+    if path == "/api/load-profiles.json":
+        from .load_learning import APPLY_MIN_RUNS, learn_profile
+        from .load_learning import _feedback_series as _fb
+        tz = config.general.timezone
+        now = pd.Timestamp.now(tz=tz)
+        rows = []
+        for ld in (getattr(config, "controllable_loads", []) or []):
+            if ld.type != "deferrable":
+                continue
+            item = {"name": ld.name, "learned": None,
+                    "configured_slots": len(ld.power_profile_w or []),
+                    "in_use": bool(ld.power_profile_w)}
+            try:
+                power = _fb(config, ld, now - pd.Timedelta(days=30), now)
+                profile = learn_profile(power, config.general.dt_hours) \
+                    if power is not None and not power.empty else None
+            except Exception as exc:            # pragma: no cover
+                log.debug("Lastprofil %s nicht lesbar (%s).", ld.name, exc)
+                profile = None
+            if profile is None:
+                item["reason"] = ("keine Rückmeldung (power_topic?)"
+                                  if not ld.power_topic else "noch kein Lauf")
+            else:
+                item["learned"] = {
+                    "power_w": profile.power_w,
+                    "runtime_minutes": profile.runtime_minutes,
+                    "n_runs": profile.n_runs,
+                    "energy_kwh": profile.energy_kwh,
+                    "peak_w": profile.peak_w,
+                    "usable": profile.usable}
+                if not profile.usable:
+                    item["reason"] = f"erst ab {APPLY_MIN_RUNS} Läufen"
+            rows.append(item)
+        return {"loads": rows, "min_runs": APPLY_MIN_RUNS}, 200
     if path == "/api/plan-value.json":
         # Timing-Güte ist reines Nachrechnen; der Regret kostet je Tag zwei
         # Solverläufe (~2-3 s), deshalb nur wenige Tage und 6 h Prozess-Cache.
@@ -1401,7 +1435,8 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         return ("live",)
     if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json",
                 "/api/savings-history.json", "/api/forecast-accuracy.json",
-                "/api/battery-health.json", "/api/plan-value.json"):
+                "/api/battery-health.json", "/api/plan-value.json",
+                "/api/load-profiles.json"):
         return ("status", path)
     if path == "/api/battery-schedule.json":
         if not getattr(config.dashboard, "controls_enabled", False):

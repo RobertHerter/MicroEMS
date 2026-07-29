@@ -695,6 +695,12 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   python -m ems.load_learning --config config.yaml --days 30
   python -m ems.load_learning --config config.yaml --days 30 --apply
   ```
+
+  Im Dashboard zeigt das Panel **Gelernte Lastprofile** unter der Steuerung, was
+  bisher erkannt wurde (Läufe, Dauer, Energie, Spitze, Profil als Balken) und ob
+  es schon in der Planung steckt – Endpoint `/api/load-profiles.json`, lädt erst
+  beim Aufklappen. Zu bedienen gibt es nichts: das Anlernen läuft passiv aus der
+  Rückmeldung mit.
 - **Sanity-Grenzen** (`sanity`) – begrenzen Preis-Spikes, negative/überhöhte PV und
   negative Last vor dem Solve; ein einzelner API-Ausreißer verzerrt keinen Zyklus.
 - **Ausführungs-Audit + Auto-Recalc** – vergleicht Soll/Ist des laufenden Slots
