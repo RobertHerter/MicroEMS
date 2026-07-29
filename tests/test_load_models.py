@@ -135,3 +135,40 @@ def test_temperature_residual_requires_and_improves_real_folds():
         point, temp, model, 0.35)
     assert corrected.iloc[-1] > point.iloc[-1]
     assert delta.max() <= 350.0 + 1e-9
+
+
+def test_measurement_beats_the_projected_profile(monkeypatch):
+    """Wo die Last GEMESSEN wurde, muss die Messung abgezogen werden - nicht das
+    Erwartungsprofil. Vorher wurde ueberall das Profil abgezogen, auch auf
+    Slots mit exakter Rueckmeldung, an denen die Last nachweislich stillstand:
+    die Nachtprognose lag dadurch bei 400 W statt real 1200 W.
+    """
+    import pandas as pd
+
+    from ems import load_models as lm
+    from ems.config import ControllableLoad, LoadStage
+    from ems.forecast import LoadForecaster
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.forecast.disaggregate_controllable_loads = True
+    cfg.forecast.disaggregation_project_unmeasured = False
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        stages=[LoadStage("klein", 400, 1000,
+                          power_topic="homie/pool/power")])]
+    idx = pd.date_range("2026-07-20", periods=96, freq="15min",
+                        tz=cfg.general.timezone)
+    total = pd.Series(1200.0, index=idx)          # echte Hauslast
+    measured = pd.Series(0.0, index=idx)          # Pumpe stand still
+    complete = pd.Series(True, index=idx)
+
+    monkeypatch.setattr(lm, "read_controllable_load_power",
+                        lambda *a, **k: (measured, complete, ["Pool/klein"]))
+    # Profil, das faelschlich 800 W erwartet - darf hier nichts abziehen.
+    monkeypatch.setattr(lm, "_embedded_profile",
+                        lambda *a, **k: pd.Series(800.0, index=idx))
+    training, evaluation, diag = lm.disaggregate(
+        cfg, LoadForecaster(cfg), total, idx[-1])
+    assert training.median() == pytest.approx(1200.0)
+    assert diag["coverage_percent"] == pytest.approx(100.0)

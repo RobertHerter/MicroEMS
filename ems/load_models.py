@@ -138,9 +138,19 @@ def disaggregate(config, forecaster, history: pd.Series, now):
     profile = _embedded_profile(
         measured, complete, base.index, forecaster, loads,
         max(1, fc.disaggregation_min_samples))
-    training = (base - profile.reindex(base.index).fillna(0.0)).clip(lower=0.0)
     exact_power = measured.reindex(base.index)
     exact_mask = complete.reindex(base.index).fillna(False) & exact_power.notna()
+    # Wo GEMESSEN wurde, zaehlt die Messung - nicht das Erwartungsprofil. Vorher
+    # wurde ueberall das Profil abgezogen, auch auf Slots mit exakter
+    # Rueckmeldung, an denen die Last nachweislich stillstand.
+    removal = exact_power.where(exact_mask)
+    if fc.disaggregation_project_unmeasured:
+        removal = removal.combine_first(profile.reindex(base.index))
+    # Ohne Projektion bleibt die Energie unbekannter Slots in der Grundlast:
+    # die Prognose faellt dann eher zu HOCH aus. Das ist die sichere Richtung -
+    # ein zu tief bereinigter Sockel liess den Optimierer nachts mit 400 W
+    # statt real 1200 W planen (Bias -374 W, 3,7 kWh in einer Nacht).
+    training = (base - removal.fillna(0.0)).clip(lower=0.0)
     evaluation = (base - exact_power).clip(lower=0.0).where(exact_mask)
     recent_slots = int((base.index >= start).sum())
     coverage = 100.0 * float(exact_mask.sum()) / max(1, recent_slots)
@@ -148,7 +158,8 @@ def disaggregate(config, forecaster, history: pd.Series, now):
         "enabled": True, "sources": labels,
         "coverage_percent": coverage,
         "evaluation_slots": int(exact_mask.sum()),
-        "mean_removed_w": float(profile.mean()) if len(profile) else 0.0,
+        "mean_removed_w": float(removal.fillna(0.0).mean()) if len(removal) else 0.0,
+        "projected_unmeasured": bool(fc.disaggregation_project_unmeasured),
     }
     _STATUS["disaggregation"] = diag
     return training, evaluation, diag

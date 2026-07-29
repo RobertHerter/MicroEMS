@@ -532,6 +532,12 @@ class ForecastConfig:
     # dem lokalen Wetter. Das Modell prüft sich vor dem Einsatz selbst gegen die
     # Ähnliche-Tage-Schätzung und wird nur benutzt, wenn es dort gewinnt; sonst
     # (oder ohne Historie/scikit-learn) bleibt es beim alten Verfahren.
+    # Erwartungsprofil steuerbarer Lasten auch auf Slots OHNE Rueckmeldung
+    # projizieren. Standard aus: mit nur 25 % Abdeckung wurde nachts ein Sockel
+    # abgezogen, den es nicht gab (Prognose 400 W statt real 1200 W). Ohne
+    # Projektion bleibt die Energie unbekannter Slots in der Grundlast - die
+    # Prognose faellt eher zu hoch aus, was die sichere Richtung ist.
+    disaggregation_project_unmeasured: bool = False
     price_model_enabled: bool = True
     # Mindestzahl gelernter Tage, bevor das Modell überhaupt antritt.
     price_model_min_train_days: int = 60
@@ -1371,6 +1377,8 @@ def load_config(path: str) -> Config:
         intraday_pv_max_step=float(f.get("intraday_pv_max_step", 0.10)),
         intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
         price_damping=float(f.get("price_damping", 0.3)),
+        disaggregation_project_unmeasured=bool(
+            f.get("disaggregation_project_unmeasured", False)),
         price_model_enabled=bool(f.get("price_model_enabled", True)),
         price_model_min_train_days=int(
             f.get("price_model_min_train_days", 60)),

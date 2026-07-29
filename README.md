@@ -822,6 +822,17 @@ python weather_backfill.py --config config.yaml --days 540 --grid
 Schalter unter `forecast`: `price_model_enabled` (Standard `true`),
 `price_model_min_train_days` (60), `price_model_holdout_days` (14).
 
+> **Grundlast-Zerlegung:** gemessene steuerbare Lasten werden vor dem Lernen aus
+> der Hauslast herausgerechnet, damit der Optimierer sie getrennt einplanen kann.
+> Maßgeblich ist dabei die **Messung** – wo eine Rückmeldung vorliegt, wird genau
+> sie abgezogen. Für Slots ohne Rückmeldung projiziert
+> `disaggregation_project_unmeasured` (Standard `false`) optional ein
+> Erwartungsprofil. Der Standard ist bewusst aus: bei geringer Abdeckung wurde
+> sonst nachts ein Sockel abgezogen, den es nie gab – die Prognose lag bei 400 W
+> statt real 1200 W (Bias −374 W, 3,7 kWh je Nacht). Ohne Projektion bleibt die
+> Energie unbekannter Slots in der Grundlast; die Prognose fällt eher zu hoch aus,
+> und das ist die sichere Richtung.
+
 ## Entscheidungsgüte: war die Prognose gut genug für die richtigen Zeitpunkte?
 
 Die Delta-Anzeigen im Dashboard messen den Prognose**fehler** und werden alle

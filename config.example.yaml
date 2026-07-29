@@ -514,6 +514,11 @@ forecast:
   # Tage am Ende der Historie, die für den Vergleich der beiden Verfahren
   # zurückgehalten werden (nicht mittrainiert).
   price_model_holdout_days: 14
+  # Erwartungsprofil steuerbarer Lasten auch auf Slots OHNE Rückmeldung
+  # projizieren. Standard aus: bei geringer Abdeckung wird sonst ein Sockel
+  # abgezogen, den es nie gab, und die Lastprognose fällt systematisch zu
+  # niedrig aus. Ohne Projektion bleibt die Energie in der Grundlast.
+  disaggregation_project_unmeasured: false
   # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) 
   # oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
   method: "similar_days"
