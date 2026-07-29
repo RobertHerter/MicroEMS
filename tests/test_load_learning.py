@@ -132,7 +132,8 @@ def test_dashboard_panel_shows_learned_profiles():
     assert 'id="profile-panel"' in html and 'id="lp-tiles"' in html
     assert "▥ Gelernte Lastprofile" in html
     assert 'id="lp-dot"' in html and 'id="lp-summary"' in html
-    assert "0/1 Profile in der Planung" in html
+    # "In der Planung" heisst aktiv UND Profil - hier fehlt das Profil.
+    assert "0/1 in der Planung" in html
     assert "learned+'/'+rows.length+' gelernt" in html
     assert "api/load-profiles.json" in html
     assert "toggle" in html                     # laedt erst beim Aufklappen
@@ -153,3 +154,27 @@ def test_load_profiles_endpoint(tmp_path):
     # Ohne Rueckmeldung: die Last erscheint, aber ohne erfundenes Profil.
     for row in obj["loads"]:
         assert row["learned"] is None and row.get("reason")
+
+
+def test_a_long_pause_inside_a_run_is_bridged():
+    """Ein Lauf ist nicht beendet, sobald die Leistung auf 0 faellt: Waschpause,
+    Abpumpen und die Trocknungsphase der Spuelmaschine ziehen minutenlang fast
+    nichts. Erst anhaltende Null beendet den Lauf."""
+    idx = pd.date_range("2026-07-01", periods=40, freq="15min", tz=TZ)
+    v = np.zeros(40)
+    v[0:4] = 2000.0          # Heizphase
+    v[4:8] = 0.0             # 1 h fast nichts (Trocknung/Pause)
+    v[8:10] = 600.0          # Schleudern
+    runs = detect_runs(pd.Series(v, index=idx))
+    assert len(runs) == 1, [r.slots for r in runs]
+    assert runs[0].slots == 10          # Pause gehoert zum Lauf
+
+
+def test_a_gap_beyond_the_tolerance_splits_the_run():
+    """Zwei Waschgaenge duerfen nicht zu einem verschmelzen."""
+    idx = pd.date_range("2026-07-01", periods=48, freq="15min", tz=TZ)
+    v = np.zeros(48)
+    v[0:4] = 2000.0
+    v[12:16] = 2000.0        # 2 h spaeter -> eigener Lauf
+    runs = detect_runs(pd.Series(v, index=idx))
+    assert len(runs) == 2, [r.slots for r in runs]

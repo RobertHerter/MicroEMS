@@ -35,8 +35,13 @@ log = logging.getLogger("ems.load_learning")
 # Ein Lauf zaehlt ab dieser Leistung als "an". Absolut, damit auch Standby-
 # Verbraucher (Uhr, Display) nicht als Lauf gelten.
 ON_THRESHOLD_W = 50.0
-# Kurze Einbrueche innerhalb eines Laufs ueberbruecken (Waschpause, Abpumpen).
-MAX_GAP_SLOTS = 2
+# Ein Lauf ist NICHT beendet, sobald die Leistung auf 0 faellt - Waschpause,
+# Abpumpen, Trocknungsphase der Spuelmaschine ziehen minutenlang fast nichts.
+# Beendet ist er erst, wenn die Leistung eine WEILE unter der Schwelle bleibt.
+# Vier Slots = 1 h: laenger als jede geraeteinterne Pause, kuerzer als der
+# typische Abstand zwischen zwei Waschgaengen (sonst wuerden zwei Laeufe zu
+# einem verschmelzen).
+MAX_GAP_SLOTS = 4
 MIN_RUN_SLOTS = 2
 
 # Auto-Uebernahme: erst ab mehreren Laeufen, und nur in plausiblen Grenzen.
@@ -103,6 +108,8 @@ def detect_runs(power: pd.Series,
                     break
             k += 1
         if j - i + 1 >= MIN_RUN_SLOTS:
+            # j zeigt auf den letzten Slot UEBER der Schwelle - die Pausen
+            # dazwischen gehoeren zum Lauf, ein Nachlauf aus Nullen nicht.
             runs.append(Run(series.index[i],
                             [float(max(0.0, v)) for v in values[i:j + 1]]))
         i = j + 1

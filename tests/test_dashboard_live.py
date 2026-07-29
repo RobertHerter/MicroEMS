@@ -589,3 +589,151 @@ def test_learned_profile_headline_does_not_overclaim():
     html = _load_profile_block(cfg)
     assert "1/2 in der Planung" in html
     assert "1 im Anlernen" in html
+
+
+def _timeline_row(table, cfg, row=0):
+    import json
+    import pathlib
+    import re
+
+    from ems.dashboard import build_dashboard
+    html = pathlib.Path(
+        build_dashboard(cfg, table, total_cost_ct=0.0)).read_text(
+            encoding="utf-8")
+    match = re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*(\[.*?\]),\s*\{',
+                      html, re.S)
+    traces = [x for x in json.loads(match.group(1))
+              if x.get("meta") == "load_timeline"]
+    assert traces, "Lastenleiste fehlt"
+    return traces[0]["z"][row], traces[0]["y"], html
+
+
+def test_timeline_merges_soll_and_ist_into_one_row():
+    """Eine Zeile je Stufe, und die vier Soll/Ist-Kombinationen sind eigene
+    Zustaende. Vorher belegte jede Stufe zwei Zeilen und der Konflikt zwischen
+    Plan und Realitaet war nur durch Augenvergleich zu sehen.
+
+    Codes: 0 aus · 1 laeuft wie geplant · 2 deaktiviert · 3 Ist unbekannt
+           4 freigegeben, heizt nicht · 5 geplant, laeuft nicht
+           6 laeuft ungeplant
+    """
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0, thermostat=False,
+        stages=[LoadStage("klein", 400, 1000,
+                          power_topic="homie/pool/power")])]
+    now = pd.Timestamp.now(tz=cfg.general.timezone).floor("15min")
+    index = pd.date_range(now - pd.Timedelta(hours=1), periods=8,
+                          freq="15min", tz=cfg.general.timezone)
+    n = len(index)
+    # Vier Kombinationen in der Vergangenheit, danach Zukunft.
+    plan = np.array([1000.0, 1000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    ist = np.array([1.0, 0.0, 1.0, 0.0, np.nan, np.nan, np.nan, np.nan])
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": plan,
+        "actual_load_Pool_klein_on": ist,
+    }, index=index)
+    row, labels, html = _timeline_row(table, cfg)
+    assert labels == ["Pool / klein"], labels        # EINE Zeile je Stufe
+    assert row[0] == 1, "Soll AN + Ist laeuft -> wie geplant"
+    assert row[1] == 5, "Soll AN + Ist aus -> geplant, laeuft nicht"
+    assert row[2] == 6, "Soll aus + Ist laeuft -> laeuft ungeplant"
+    assert row[3] == 0, "Soll aus + Ist aus -> aus"
+    # Vergangenheit ohne Rueckmeldung -> unbekannt, Zukunft -> nur Soll.
+    assert row[4] == 3
+    assert set(row[5:]) <= {0}
+    # Plotly schreibt Nicht-ASCII escaped (l\u00e4uft) - auf den ASCII-Teil
+    # pruefen, sonst schlaegt der Test aus dem falschen Grund fehl.
+    for text in ("geplant, l", "nicht geplant", "Soll AN"):
+        assert text in html, text
+
+
+def test_timeline_row_count_halves():
+    """Zeilenzahl = Zahl der Stufen, nicht deren Doppel."""
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [
+        ControllableLoad(name="Pool", type="thermal", enabled=True,
+                         target_c=28.0, min_c=26.0, max_c=32.0,
+                         stages=[LoadStage("a", 400, 1000,
+                                           power_topic="x/a"),
+                                 LoadStage("b", 400, 1000,
+                                           power_topic="x/b")]),
+        ControllableLoad(name="Trockner", type="deferrable", enabled=False,
+                         power_profile_w=[1000.0] * 4, runtime_minutes=60.0,
+                         power_topic="x/t"),
+    ]
+    index = pd.date_range("2026-07-29 12:00", periods=4, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_a_w": np.zeros(n), "load_Pool_b_w": np.zeros(n),
+        "load_Trockner_w": np.zeros(n),
+    }, index=index)
+    _row, labels, _html = _timeline_row(table, cfg)
+    assert labels == ["Pool / a", "Pool / b", "Trockner"], labels
+
+
+def test_disabled_load_still_shows_that_it_runs():
+    """Deaktiviert heisst nicht unsichtbar: eine Last kann laufen, ohne dass
+    wir sie steuern (Anlern-Phase, Handbetrieb). Pauschal grau zu malen hat
+    genau diese Information vernichtet - der laufende Trockner war weg."""
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Trockner", type="deferrable", enabled=False,
+        power_profile_w=[1000.0] * 4, runtime_minutes=60.0,
+        power_topic="homie/homey/strom-trockner/measure-power")]
+    now = pd.Timestamp.now(tz=cfg.general.timezone).floor("15min")
+    index = pd.date_range(now - pd.Timedelta(minutes=45), periods=6,
+                          freq="15min", tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Trockner_w": np.zeros(n),
+        "actual_load_Trockner_on": np.array([1.0, 1.0, 0.0, np.nan,
+                                             np.nan, np.nan]),
+    }, index=index)
+    row, labels, html = _timeline_row(table, cfg)
+    assert labels == ["Trockner"]
+    assert row[0] == 6 and row[1] == 6, "laufend, obwohl nicht gesteuert"
+    assert row[2] == 2, "aus -> grau"
+    assert row[3] == 3, "Vergangenheit ohne Rueckmeldung -> unbekannt"
+    assert "nicht gesteuert" in html

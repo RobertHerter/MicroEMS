@@ -1659,18 +1659,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # Die Lastenleiste muss mit der Spurenzahl wachsen. Bei fester Hoehe
         # blieben von 12 Spuren nur ~8 px je Zeile - Plotly liess dann jedes
         # zweite Tick-Label weg und es sah aus, als fehlten Lasten.
-        lane_count = 0
-        for _ld in loads_cfg:
-            if _ld.type == "thermal":
-                for _st in _ld.stages:
-                    lane_count += 1
-                    if _st.feedback_topic or _st.power_topic:
-                        lane_count += 1
-            else:
-                lane_count += 1
-                if _ld.feedback_topic or _ld.power_topic:
-                    lane_count += 1
-        lane_share = min(0.30, max(0.105, 0.026 * lane_count))
+        # Eine Zeile je Stufe (Soll und Ist sind zusammengefasst).
+        lane_count = sum(len(_ld.stages) if _ld.type == "thermal" else 1
+                         for _ld in loads_cfg)
+        lane_share = min(0.30, max(0.105, 0.032 * lane_count))
         rest = 1.0 - lane_share - 0.045
         row_heights = [0.33 * rest / 0.85, 0.14 * rest / 0.85,
                        0.14 * rest / 0.85, 0.24 * rest / 0.85,
@@ -1918,86 +1910,134 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 6: Steuerbare Lasten (on/off je Slot) ----------
     if has_loads:
         from .loads import _slug as _lslug
-        lanes = []   # (label, column, enabled, actual)
+        # EINE Zeile je Stufe: der Zustand kodiert das PAAR aus Soll und Ist.
+        # Vorher belegte jede Stufe zwei Zeilen, und die eigentlich
+        # interessante Frage - stimmt Ist mit Soll ueberein? - musste man mit
+        # dem Auge aus zwei Zeilen zusammenreimen. Jetzt sind genau die beiden
+        # Konfliktfaelle eigene Farben: "geplant, laeuft nicht" ist ein
+        # Ausfuehrungsproblem, "laeuft ungeplant" Fremdbedienung oder ein
+        # haengender Schalter. Nebeneffekt: halbe Zeilenzahl.
+        lanes = []   # (label, plan_col, actual_col|None, enabled, owner)
         for ld in loads_cfg:
             if ld.type == "thermal":
                 sg = _lslug(ld.name)
                 for st in ld.stages:
                     stage_slug = _lslug(st.name)
-                    lanes.append((f"{ld.name} / {st.name} (Soll)",
-                                  f"load_{sg}_{stage_slug}_w",
-                                  ld.enabled, False, ld))
-                    if st.feedback_topic or st.power_topic:
-                        lanes.append((f"{ld.name} / {st.name} (Ist)",
-                                      f"actual_load_{sg}_{stage_slug}_on",
-                                      ld.enabled, True, None))
+                    lanes.append((
+                        f"{ld.name} / {st.name}",
+                        f"load_{sg}_{stage_slug}_w",
+                        (f"actual_load_{sg}_{stage_slug}_on"
+                         if (st.feedback_topic or st.power_topic) else None),
+                        ld.enabled, ld))
             else:
-                lanes.append((f"{ld.name} (Soll)",
-                              f"load_{_lslug(ld.name)}_w", ld.enabled, False,
-                              None))
-                if ld.feedback_topic or ld.power_topic:
-                    lanes.append((f"{ld.name} (Ist)",
-                                  f"actual_load_{_lslug(ld.name)}_on",
-                                  ld.enabled, True, None))
-        ylabels, z = [], []
-        temp_col = {}
-        for _lbl, _c, _en, _act, _ld in lanes:
-            if _ld is not None:
-                temp_col[id(_ld)] = f"load_{_lslug(_ld.name)}_temp_c"
-        for label, col, enabled, actual, owner in lanes:
+                sg = _lslug(ld.name)
+                lanes.append((
+                    ld.name, f"load_{sg}_w",
+                    (f"actual_load_{sg}_on"
+                     if (ld.feedback_topic or ld.power_topic) else None),
+                    ld.enabled, ld))
+
+        # Zustandscodes. Reihenfolge = Reihenfolge der Farbstufen unten UND in
+        # paint() fuer den Dunkelmodus - beide muessen dieselbe Zahl an Stufen
+        # haben, sonst verschieben sich die Farben gegen die Codes.
+        OFF, RUN, DISABLED, UNKNOWN, ARMED, MISSING, UNPLANNED = range(7)
+        _lab = {OFF: "aus", RUN: "läuft wie geplant",
+                DISABLED: "deaktiviert", UNKNOWN: "Ist unbekannt",
+                ARMED: "freigegeben, heizt nicht",
+                MISSING: "geplant, läuft nicht",
+                UNPLANNED: "läuft, nicht geplant"}
+
+        ylabels, z, hover = [], [], []
+        for label, plan_col, actual_col, enabled, owner in lanes:
             ylabels.append(label)
-            if actual:
-                values = (pd.to_numeric(t[col], errors="coerce")
-                          if col in t.columns else
-                          pd.Series(float("nan"), index=x))
-                # Zukunft bleibt LEER, nicht "unbekannt": rechts vom Jetzt-
-                # Marker kann es keine Istwerte geben, und ein 229 Slots langes
-                # goldenes Band uebertoente die eigentlichen Soll-Blocke voellig
-                # (gemeldet als "Pumpen stehen auf unbekannt"). Dieselbe Regel
-                # gilt fuer die Ist-KURVEN schon lange.
-                z.append([None if stamp > now
-                          else (3 if pd.isna(v) else (1 if float(v) > 0.5 else 0))
-                          for stamp, v in zip(x, values)])
-            elif enabled and col in t.columns:
-                power = t[col].fillna(0.0)
-                # "Freigabe steht, aber es wird nicht geheizt" ist ein EIGENER
-                # Zustand: bei T >= Geraete-Abschaltpunkt bleibt die Freigabe an
-                # (weniger Schaltspiele), obwohl der Plan 0 W vorsieht. Als "aus"
-                # dargestellt war genau das getarnt - und genau dieser Zustand
-                # hat einmal 21 kWh ueber Nacht gekostet, weil das Geraet trotz
-                # gehaltener Freigabe lief.
-                hold = pd.Series(False, index=x)
-                if owner is not None and getattr(owner, "thermostat", False):
-                    tcol = temp_col.get(id(owner))
-                    cutoff = getattr(owner, "thermostat_cutoff_c", None)
-                    if cutoff is None:
-                        cutoff = getattr(owner, "target_c", None)
-                    limit = getattr(owner, "max_c", None)
-                    if tcol in t.columns and cutoff is not None:
-                        temps = pd.to_numeric(t[tcol], errors="coerce")
-                        hold = temps.ge(float(cutoff)) & temps.notna()
-                        if limit is not None:
-                            hold &= temps.lt(float(limit))
-                z.append([1 if float(v) > 5.0
-                          else (4 if bool(h) else 0)
-                          for v, h in zip(power, hold)])
-            else:                                   # deaktiviert -> graue Leiste
-                z.append([2] * len(x))
-        _lab = {0: "aus", 1: "AN", 2: "deaktiviert", 3: "unbekannt",
-                4: "freigegeben, heizt nicht"}
+            if not enabled or plan_col not in t.columns:
+                # Deaktiviert heisst NICHT unsichtbar: eine Last kann laufen,
+                # ohne dass wir sie steuern (Anlern-Phase, Handbetrieb). Sie
+                # pauschal grau zu malen hat genau diese Information vernichtet
+                # - der laufende Trockner war nicht mehr zu sehen.
+                real = (pd.to_numeric(t[actual_col], errors="coerce")
+                        if actual_col and actual_col in t.columns
+                        else pd.Series(float("nan"), index=x))
+                row, texts = [], []
+                for stamp, actual_v in zip(x, real):
+                    if stamp > now or not actual_col:
+                        row.append(DISABLED)
+                        texts.append(_lab[DISABLED])
+                    elif pd.isna(actual_v):
+                        row.append(UNKNOWN)
+                        texts.append("nicht gesteuert · Ist unbekannt")
+                    elif float(actual_v) > 0.5:
+                        row.append(UNPLANNED)
+                        texts.append("nicht gesteuert · Ist läuft")
+                    else:
+                        row.append(DISABLED)
+                        texts.append("nicht gesteuert · Ist aus")
+                z.append(row)
+                hover.append(texts)
+                continue
+            power = pd.to_numeric(t[plan_col], errors="coerce").fillna(0.0)
+            planned = power.gt(5.0)
+            # "Freigabe steht, aber Plan 0 W": bei T >= Geraete-Abschaltpunkt
+            # bleibt die Freigabe an (weniger Schaltspiele). Als "aus" gezeigt
+            # war das getarnt - genau dieser Zustand hat einmal 21 kWh ueber
+            # Nacht gekostet, weil das Geraet trotz Freigabe lief.
+            armed = pd.Series(False, index=x)
+            if owner is not None and getattr(owner, "thermostat", False):
+                tcol = f"load_{_lslug(owner.name)}_temp_c"
+                cutoff = getattr(owner, "thermostat_cutoff_c", None)
+                if cutoff is None:
+                    cutoff = getattr(owner, "target_c", None)
+                limit = getattr(owner, "max_c", None)
+                if tcol in t.columns and cutoff is not None:
+                    temps = pd.to_numeric(t[tcol], errors="coerce")
+                    armed = temps.ge(float(cutoff)) & temps.notna()
+                    if limit is not None:
+                        armed &= temps.lt(float(limit))
+            if actual_col and actual_col in t.columns:
+                real = pd.to_numeric(t[actual_col], errors="coerce")
+            else:
+                real = pd.Series(float("nan"), index=x)
+
+            row, texts = [], []
+            for stamp, plan_on, is_armed, actual_v in zip(
+                    x, planned, armed, real):
+                soll = "AN" if plan_on else ("freigegeben" if is_armed
+                                             else "aus")
+                # Zukunft: es KANN kein Ist geben -> nur den Sollzustand zeigen.
+                if stamp > now or pd.isna(actual_v):
+                    code = (RUN if plan_on
+                            else ARMED if is_armed else OFF)
+                    ist = "–" if stamp > now else "unbekannt"
+                    if stamp <= now and actual_col:
+                        code = UNKNOWN
+                else:
+                    running = float(actual_v) > 0.5
+                    ist = "läuft" if running else "aus"
+                    if plan_on and running:
+                        code = RUN
+                    elif plan_on and not running:
+                        code = MISSING
+                    elif running:
+                        code = UNPLANNED
+                    else:
+                        code = ARMED if is_armed else OFF
+                row.append(code)
+                texts.append(f"Soll {soll} · Ist {ist} · {_lab[code]}")
+            z.append(row)
+            hover.append(texts)
+
+        n_states = 7
+        palette_light = ["#e9ecef", "#2ca02c", "#adb5bd", "#d8a52a",
+                         "#8fa8c8", "#c2185b", "#e8710a"]
+        step = 1.0 / n_states
+        colorscale = []
+        for i, colour in enumerate(palette_light):
+            colorscale.append([round(i * step, 4), colour])
+            colorscale.append([round((i + 1) * step - 1e-4, 4), colour])
         fig.add_trace(go.Heatmap(
-            x=x, y=ylabels, z=z, zmin=-0.5, zmax=4.5, showscale=False,
-            meta="load_timeline",
-            # Fuenf Zustaende -> Fuenftel-Stufen. Die Dark-Mode-Variante in
-            # paint() muss dieselbe Zahl an Stufen haben, sonst verschieben sich
-            # die Farben gegen die Codes.
-            colorscale=[[0.0, "#e9ecef"], [0.199, "#e9ecef"],     # 0 = aus
-                        [0.20, "#2ca02c"], [0.399, "#2ca02c"],    # 1 = AN
-                        [0.40, "#adb5bd"], [0.599, "#adb5bd"],    # 2 = deaktiviert
-                        [0.60, "#d8a52a"], [0.799, "#d8a52a"],    # 3 = unbekannt
-                        [0.80, "#8fa8c8"], [1.0, "#8fa8c8"]],     # 4 = freigegeben
-            # None = Zukunft (kein Istwert) -> leeres Label statt KeyError.
-            customdata=[[_lab.get(v, "") for v in row] for row in z],
+            x=x, y=ylabels, z=z, zmin=-0.5, zmax=n_states - 0.5,
+            showscale=False, meta="load_timeline", colorscale=colorscale,
+            customdata=hover,
             hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
         # Jede Spur MUSS ihr Label bekommen: ohne tickmode="array" duennt Plotly
@@ -2105,7 +2145,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
-        height=((1120 + 22 * max(0, lane_count - 4)) if has_loads else 980)
+        height=((1120 + 26 * max(0, lane_count - 3)) if has_loads else 980)
         + (180 if temp_row else 0),
         autosize=True, template="plotly_white",
         # Kein eigener Hintergrund: sonst rendert Plotly die Grafik WEISS und
@@ -2908,7 +2948,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.199,'#263442'],[.2,'#329b4c'],[.399,'#329b4c'],[.4,'#596979'],[.599,'#596979'],[.6,'#987620'],[.799,'#987620'],[.8,'#3f5a7a'],[1,'#3f5a7a']]:[[0,'#e9ecef'],[.199,'#e9ecef'],[.2,'#2ca02c'],[.399,'#2ca02c'],[.4,'#adb5bd'],[.599,'#adb5bd'],[.6,'#d8a52a'],[.799,'#d8a52a'],[.8,'#8fa8c8'],[1,'#8fa8c8']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0.0,'#263442'],[0.1428,'#263442'],[0.1429,'#329b4c'],[0.2856,'#329b4c'],[0.2857,'#596979'],[0.4285,'#596979'],[0.4286,'#987620'],[0.5713,'#987620'],[0.5714,'#3f5a7a'],[0.7142,'#3f5a7a'],[0.7143,'#a3134a'],[0.857,'#a3134a'],[0.8571,'#b85a08'],[0.9999,'#b85a08']]:[[0.0,'#e9ecef'],[0.1428,'#e9ecef'],[0.1429,'#2ca02c'],[0.2856,'#2ca02c'],[0.2857,'#adb5bd'],[0.4285,'#adb5bd'],[0.4286,'#d8a52a'],[0.5713,'#d8a52a'],[0.5714,'#8fa8c8'],[0.7142,'#8fa8c8'],[0.7143,'#c2185b'],[0.857,'#c2185b'],[0.8571,'#e8710a'],[0.9999,'#e8710a']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});
