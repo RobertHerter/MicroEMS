@@ -315,6 +315,11 @@ def test_late_tuning_is_inactive_for_existing_strategies(strategy):
     tables = []
     for target_pen, delay_pen in ((0.0, 0.0), (1_000_000.0, 1_000_000.0)):
         cfg = make_config()
+        # HiGHS mit Seed und threads=1 ist deterministisch; CBC waehlt unter
+        # Last innerhalb der MIP-Gap teils andere, gleichwertige Loesungen -
+        # der Vergleich "gleiche Zielfunktion, gleicher Plan" wurde dadurch
+        # unter -n auto sporadisch rot.
+        cfg.optimization.solver = "highs"
         cfg.optimization.charge_strategy = strategy
         cfg.optimization.late_target_penalty_ct_kwh = target_pen
         cfg.optimization.late_charge_delay_ct_kwh = delay_pen

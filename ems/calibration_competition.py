@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 
 
+# Plausibilitaetsgrenzen der Stundenfaktoren (siehe apply_load_profile).
+FACTOR_BOUNDS = (0.2, 5.0)
+
 _DAYPARTS = (
     (0, 6, "Nacht"), (6, 12, "Morgen"),
     (12, 18, "Mittag"), (18, 24, "Abend"),
@@ -80,7 +83,11 @@ def compare_point_forecasts(
             "challenger_wape_pct": xm["wape_pct"],
             "degradation_pct": degradation,
         }
+    # Qualifiziert sich kein Tagesabschnitt (zu wenige Punkte), greift die
+    # Segmentschranke faktisch nicht. Das darf nicht still passieren - sonst
+    # liest sich eine Befoerderung wie geprueft, obwohl sie es nicht ist.
     worst = max(degradations, default=0.0)
+    segments_checked = len(degradations)
     bias_increase = (
         abs(float(challenger_metrics["bias_w"]))
         - abs(float(champion_metrics["bias_w"])))
@@ -100,8 +107,11 @@ def compare_point_forecasts(
         reason = f"absoluter Bias steigt um {bias_increase:.0f} W"
     else:
         reason = f"WAPE verbessert sich um {improvement:.1f} %"
+        if not segments_checked:
+            reason += " (kein Tagesabschnitt prüfbar - Segmentschranke inaktiv)"
     result.update(
         promote=bool(promote),
+        segments_checked=segments_checked,
         status="promoted" if promote else "held",
         reason=reason,
         improvement_percent=round(improvement, 2),
@@ -123,7 +133,14 @@ def apply_load_profile(series: pd.Series, profile: dict | None,
         float(hourly.get(ts.hour, hourly.get(str(ts.hour), global_factor)))
         for ts in local
     ]
-    return series * pd.Series(factors, index=series.index)
+    # Wie bei allen anderen Kalibrierungen begrenzt: ein korrupter Eintrag darf
+    # die Lastprognose nicht um Faktor 50 skalieren - das schlaegt direkt in die
+    # Akku-Planung durch. Nicht-endliche Werte fallen auf 1.0 zurueck.
+    clipped = np.clip(np.nan_to_num(np.asarray(factors, dtype=float), nan=1.0,
+                                    posinf=FACTOR_BOUNDS[1],
+                                    neginf=FACTOR_BOUNDS[0]),
+                      FACTOR_BOUNDS[0], FACTOR_BOUNDS[1])
+    return series * pd.Series(clipped, index=series.index)
 
 
 def interval_score(ratios, low_ratio: float, high_ratio: float,
@@ -131,9 +148,15 @@ def interval_score(ratios, low_ratio: float, high_ratio: float,
     """Normierter Winkler-Score; kleiner ist besser."""
     values = np.asarray(ratios, dtype=float)
     values = values[np.isfinite(values)]
+    low, high = float(low_ratio), float(high_ratio)
+    # Ein verdrehtes Band (high < low) hat NEGATIVE Breite und damit einen
+    # kuenstlich niedrigen Score - es wuerde jeden gesunden Champion
+    # "schlagen". Lieber kein Ergebnis als eine euphorische Befoerderung.
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        return {"n": 0, "score": None, "below_pct": None, "above_pct": None,
+                "reason": f"ungültiges Band ({low:.3f} .. {high:.3f})"}
     if not len(values):
         return {"n": 0, "score": None, "below_pct": None, "above_pct": None}
-    low, high = float(low_ratio), float(high_ratio)
     width = high - low
     score = np.full(len(values), width, dtype=float)
     below = values < low
@@ -160,6 +183,10 @@ def compare_intervals(
         "reason": "zu wenig unabhängige Prüfdaten", "improvement_percent": None,
     }
     if challenger["n"] < max(1, int(min_samples)):
+        return result
+    if champion["score"] is None or challenger["score"] is None:
+        result["reason"] = (challenger.get("reason") or champion.get("reason")
+                            or "Intervallscore nicht berechenbar")
         return result
     improvement = 100.0 * (
         float(champion["score"]) - float(challenger["score"])

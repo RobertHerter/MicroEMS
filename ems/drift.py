@@ -288,8 +288,12 @@ class DriftMonitor:
                "window_days": int(self.load_days),
                "threshold_w": round(float(self.load_alert_w), 1),
                "evaluated_at": pd.Timestamp(now).isoformat(),
-               "alert_scope": ("Tag und Nacht" if day_trigger and night_trigger
-                               else "Nacht" if night_trigger else "Gesamt"),
+               # Nur bei Alarm aussagekraeftig: ohne Ausloeser waere "Gesamt"
+               # im Dashboard als Gesamt-Alarm missverstaendlich.
+               "alert_scope": (
+                   "Tag und Nacht" if day_trigger and night_trigger
+                   else "Nacht" if night_trigger
+                   else "Gesamt" if day_trigger else None),
                "diagnostic": diagnostic,
                "alert": bool(day_trigger or night_trigger)}
         if out["alert"]:
