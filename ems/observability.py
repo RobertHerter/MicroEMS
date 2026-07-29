@@ -11,6 +11,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .quality import bias_w, enough, shortfall_note
+
 
 def _wape(actual, pred) -> float:
     """Weighted Absolute Percentage Error (%). 0 bei leerer Basis."""
@@ -27,7 +29,7 @@ def _metrics(actual: list, pred: list) -> dict:
     if len(a) == 0:
         return {"n": 0, "wape_pct": None, "bias_w": None, "mae_w": None}
     return {"n": int(len(a)), "wape_pct": _wape(a, p),
-            "bias_w": round(float(np.mean(p - a)), 1),
+            "bias_w": round(bias_w(a, p), 1),
             "mae_w": round(float(np.mean(np.abs(p - a))), 1)}
 
 
@@ -798,12 +800,22 @@ def _pv_nowcast_accuracy(config, start, now) -> dict:
               else "ohne_nowcast"
               if delta_wape is not None and delta_wape < -0.05
               else "gleichauf")
-    return {
+    result = {
         "n": prod_metrics["n"], "operational_slots": max_slots,
         "productive": prod_metrics, "without_nowcast": base_metrics,
         "improvement_wape_pp": delta_wape,
         "improvement_mae_w": delta_mae, "winner": winner,
     }
+    # Keine AUSSAGE ohne Stichprobe: der Nowcast wirkt nur auf wenige Slots je
+    # Origin, anfangs steht hinter der Kennzahl ein einzelner Messpunkt. Die
+    # Arithmetik bleibt sichtbar - aber ein Sieger wird erst ausgerufen, wenn
+    # genug Paare vorliegen. Sonst behauptet die Kachel eine Verbesserung, die
+    # aus einem Messpunkt stammt.
+    result["sufficient"] = enough("nowcast", prod_metrics["n"])
+    if not result["sufficient"]:
+        result["winner"] = "unklar"
+        result["reason"] = shortfall_note("nowcast", prod_metrics["n"])
+    return result
 
 
 def forecast_accuracy(config, days: int = 7) -> dict:

@@ -27,6 +27,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+from .quality import bias_w
+
 from . import pvforecast
 
 log = logging.getLogger("ems.pv_eval")
@@ -271,7 +273,7 @@ def evaluate_group(db, sources, start, end, tz, slot_minutes,
     p = pairs["pred"].to_numpy()
     return {"sources": sources, "method": method, "n": int(len(pairs)),
             "wape_pct": round(_wape(a, p), 2), "mae_w": round(_mae(a, p), 1),
-            "bias_w": round(float(np.mean(p - a)), 1),
+            "bias_w": round(bias_w(a, p), 1),
             "actual_kwh": round(float(a.sum()) * slot_minutes / 60.0 / 1000.0, 1)}
 
 
@@ -390,7 +392,7 @@ def _common_archive_metrics(config, lookback_days: int, now,
                          np.sum(weights * np.abs(pred - a))
                          / max(1e-9, np.sum(weights))), 1),
                      "mae_w": round(_mae(a, pred), 1),
-                     "bias_w": round(float(np.mean(pred - a)), 1),
+                     "bias_w": round(bias_w(a, pred), 1),
                      "actual_kwh": actual_kwh,
                      **weight_info}
     return out

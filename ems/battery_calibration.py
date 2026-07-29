@@ -26,19 +26,24 @@ from typing import List, Optional
 
 import pandas as pd
 
+from .quality import BOUNDS, min_soc_window_wh, soc_energy_wh
+
 log = logging.getLogger("ems.battery_calibration")
 
 # Ein Fenster zählt erst ab dieser Länge und diesem SoC-Hub - kurze Phasen
 # werden von der 1-%-Quantisierung dominiert.
 MIN_WINDOW_SLOTS = 12           # 3 h bei 15-min-Raster
-MIN_WINDOW_DROP_WH = 1000.0
+# Mindest-Hub: leitet sich aus der SoC-Quantisierung ab (ems/quality) statt
+# eine feste Wattstundenzahl zu raten - bei kleineren Speichern waere 1 kWh
+# sonst ein halber Akku, bei groesseren zu wenig.
+MIN_WINDOW_DROP_WH = None       # None = aus der Kapazitaet ableiten
 
 # Auto-Übernahme (--apply), wie bei der Pool-Kalibrierung: gedämpft und
 # nur innerhalb physikalisch plausibler Grenzen.
 APPLY_MIN_WINDOWS = 6
 APPLY_MIN_HOURS = 40.0
 APPLY_BLEND = 0.5               # neuer Wert = 0.5*alt + 0.5*Messung
-EFF_BOUNDS = (0.55, 0.98)
+EFF_BOUNDS = BOUNDS["discharge_efficiency"]
 
 
 @dataclass
@@ -104,8 +109,10 @@ def discharge_windows(actuals: pd.DataFrame, capacity_wh: float,
         slots = j - i + 1
         if slots >= MIN_WINDOW_SLOTS:
             end = min(j + 1, n - 1)     # SoC am Ende der letzten Entladung
-            drop = (soc[i] - soc[end]) / 100.0 * capacity_wh
-            if drop > MIN_WINDOW_DROP_WH:
+            drop = soc_energy_wh(soc[i], soc[end], capacity_wh)
+            floor_wh = (MIN_WINDOW_DROP_WH if MIN_WINDOW_DROP_WH is not None
+                        else min_soc_window_wh(capacity_wh))
+            if drop > floor_wh:
                 ac = float(power[i:j + 1].sum()) * dt_hours + \
                     standby_w * slots * dt_hours
                 out.append(Window(frame.index[i], slots, ac, float(drop),

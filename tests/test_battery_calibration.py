@@ -266,16 +266,16 @@ def test_load_bias_finds_a_night_only_offset(tmp_path):
     out = DriftMonitor(cfg).check_load_bias(
         pd.Timestamp("2026-01-13 12:00", tz=tz))
     assert out is not None, "Stichprobe sollte reichen"
-    assert out["night_median_w"] > 700.0        # nachts klar daneben
+    assert out["night_median_w"] < -700.0       # nachts klar zu niedrig
     assert out["alert"] is True                 # trotz unauffaelligem Tag
     assert out["alert_scope"] == "Nacht"
     assert "Grundlastbereinigung ist aktiv" in out["diagnostic"]
 
 
 def test_load_bias_reports_its_sign_convention(tmp_path):
-    """Der Wert ist Ist minus Prognose - anders als der Bias im Rest des
-    Projekts (Prognose minus Ist). Die Richtung muss deshalb mitkommen, damit
-    Anzeigen das Vorzeichen nicht selbst deuten muessen."""
+    """Projektkonvention: Prognose minus Ist (ems/quality.bias_w). Prognose 400
+    gegen Ist 1200 heisst also NEGATIV - und die Richtung kommt im Klartext mit,
+    damit Anzeigen das Vorzeichen nicht selbst deuten muessen."""
     from ems.drift import DriftMonitor
     cfg = make_config()
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
@@ -285,5 +285,6 @@ def test_load_bias_reports_its_sign_convention(tmp_path):
     out = DriftMonitor(cfg).check_load_bias(
         pd.Timestamp("2026-01-14 12:00", tz=tz))
     assert out is not None
-    assert out["sign_convention"] == "actual_minus_forecast"
-    assert out["median_w"] > 0 and out["direction"] == "Prognose zu niedrig"
+    from ems.quality import BIAS_CONVENTION
+    assert out["sign_convention"] == BIAS_CONVENTION
+    assert out["median_w"] < 0 and out["direction"] == "Prognose zu niedrig"

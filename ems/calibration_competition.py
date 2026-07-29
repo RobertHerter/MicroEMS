@@ -4,9 +4,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .quality import BOUNDS, bias_w
+
 
 # Plausibilitaetsgrenzen der Stundenfaktoren (siehe apply_load_profile).
-FACTOR_BOUNDS = (0.2, 5.0)
+FACTOR_BOUNDS = BOUNDS["load_correction_factor"]
 
 _DAYPARTS = (
     (0, 6, "Nacht"), (6, 12, "Morgen"),
@@ -25,7 +27,7 @@ def _point_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
         "wape_pct": (
             100.0 * float(error.abs().sum()) / denom if denom > 1e-9 else None),
         "mae_w": float(error.abs().mean()),
-        "bias_w": float(error.mean()),
+        "bias_w": bias_w(frame["actual"], frame["predicted"]),
     }
 
 

@@ -37,6 +37,7 @@ import pandas as pd
 import yaml
 
 from ems.config import load_config
+from ems.quality import BOUNDS, bias_w
 from ems.forecast import LoadForecaster
 from ems.influx import InfluxRepository
 
@@ -46,7 +47,7 @@ def _metrics(actual: np.ndarray, pred: np.ndarray) -> dict:
     a, p = actual[mask], pred[mask]
     if len(a) == 0:
         return {"n": 0}
-    bias = float(np.mean(p - a))
+    bias = bias_w(a, p)
     denom = np.where(np.abs(a) < 1e-6, np.nan, a)
     mape = float(np.nanmean(np.abs((p - a) / denom)) * 100)
     rmse = float(np.sqrt(np.mean((p - a) ** 2)))
@@ -442,7 +443,8 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
         boot = bootstrap_global + 0.5 * (boot_raw - bootstrap_global)
         real = float(archive_hourly.get(hour, archive_global))
         factor = (1.0 - archive_weight) * boot + archive_weight * real
-        productive_hourly[hour] = round(min(1.8, max(0.6, factor)), 3)
+        low, high = BOUNDS["hourly_correction"]
+        productive_hourly[hour] = round(min(high, max(low, factor)), 3)
     productive_global = ((1.0 - archive_weight) * bootstrap_global
                          + archive_weight * archive_global)
     res["bootstrap_global_correction"] = round(bootstrap_global, 4)

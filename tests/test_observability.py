@@ -161,7 +161,10 @@ def test_pv_nowcast_challenger_compares_same_vintage(tmp_path):
     assert result["productive"]["wape_pct"] == 0.0
     assert result["without_nowcast"]["wape_pct"] == 20.0
     assert result["improvement_wape_pp"] == 20.0
-    assert result["winner"] == "nowcast"
+    # Die Arithmetik bleibt sichtbar, der Sieger wird bei 4 Paaren aber noch
+    # nicht ausgerufen ("keine Aussage ohne Stichprobe", ems/quality.MIN_SAMPLES).
+    assert result["sufficient"] is False
+    assert result["winner"] == "unklar" and "sammelt noch" in result["reason"]
 
 
 def test_forecast_analysis_heatmap_and_vintages(tmp_path):

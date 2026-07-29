@@ -35,6 +35,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .quality import BOUNDS
+
 log = logging.getLogger("ems.pool_calibration")
 
 # Fensterlänge fürs Differenzieren: 2 h = 8 Slots. Lang genug, dass die
@@ -51,9 +53,9 @@ SLOT_HOURS = 0.25
 APPLY_MIN_WINDOWS = 96          # doppelte Mindest-Stichprobe des reinen Fits
 APPLY_MIN_R2 = 0.5
 APPLY_BLEND = 0.5               # neuer Wert = 0.5*alt + 0.5*Fit
-LOSS_BOUNDS = (30.0, 3000.0)    # W/K
-ABSORB_BOUNDS = (0.05, 1.0)     # physikalisch sinnvoller Bereich
-HEAT_BOUNDS = (300.0, 30000.0)  # effektive thermische Stufenleistung [W]
+LOSS_BOUNDS = BOUNDS["pool_loss_w_per_k"]    # W/K
+ABSORB_BOUNDS = BOUNDS["pool_solar_absorption"]     # physikalisch sinnvoller Bereich
+HEAT_BOUNDS = BOUNDS["pool_stage_heat_w"]  # effektive thermische Stufenleistung [W]
 
 
 @dataclass

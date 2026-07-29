@@ -32,6 +32,8 @@ from typing import Optional
 import pandas as pd
 
 from .config import Config
+from .quality import (BIAS_CONVENTION, bias_direction,
+                      enough, shortfall_note)
 
 log = logging.getLogger("ems.drift")
 
@@ -179,7 +181,9 @@ class DriftMonitor:
                     values.append(float(dev))
             except Exception:      # einzelne kaputte Zeile ignorieren
                 continue
-        if len(values) < 96:                    # unter einem Tag nicht bewerten
+        if not enough("drift_window", len(values)):
+            log.debug("Ausfuehrungs-Versatz: %s", shortfall_note(
+                "drift_window", len(values)))
             return None
         arr = pd.Series(values, dtype="float64")
         # Der MEDIAN entscheidet, nicht der Mittelwert: die Verteilung hat einen
@@ -245,12 +249,18 @@ class DriftMonitor:
                 for ts in common:
                     a, p = float(actual.loc[ts]), float(fc.loc[ts])
                     if pd.notna(a) and pd.notna(p):
-                        deltas.append(a - p)
+                        # Projektkonvention (ems/quality.bias_w): Prognose - Ist,
+                        # positiv = Modell sagt zu VIEL voraus. Vorher stand hier
+                        # a - p; dasselbe Vorzeichen bedeutete damit in dieser
+                        # Datei das Gegenteil von check() oben.
+                        deltas.append(p - a)
                         stamps.append(ts)
             except Exception as exc:  # pragma: no cover
                 log.debug("Lastprognose-Bias %s nicht lesbar (%s).", day, exc)
             day = day + pd.Timedelta(days=1)
-        if len(deltas) < 96:                    # unter einem Tag nicht bewerten
+        if not enough("drift_window", len(deltas)):
+            log.debug("Lastprognose-Bias: %s", shortfall_note(
+                "drift_window", len(deltas)))
             return None
         arr = pd.Series(deltas, index=pd.DatetimeIndex(stamps),
                         dtype="float64")
@@ -294,16 +304,12 @@ class DriftMonitor:
                    "Tag und Nacht" if day_trigger and night_trigger
                    else "Nacht" if night_trigger
                    else "Gesamt" if day_trigger else None),
-               # ACHTUNG Vorzeichen: hier Ist minus Prognose (positiv = die
-               # Prognose ist zu NIEDRIG). Der Rest des Projekts rechnet Bias
-               # als Prognose minus Ist (observability, pv_eval, kalibrierung,
-               # DriftMonitor.check). Damit die Zahl nicht falsch gelesen wird,
-               # steht die Richtung ausdruecklich dabei - Anzeigen sollen sie
-               # benutzen statt das Vorzeichen selbst zu deuten.
-               "sign_convention": "actual_minus_forecast",
-               "direction": ("Prognose zu niedrig" if median_w > 0
-                             else "Prognose zu hoch" if median_w < 0
-                             else "kein Versatz"),
+               # Vorzeichen nach Projektkonvention (ems/quality.bias_w):
+               # Prognose minus Ist, positiv = Modell sagt zu viel voraus. Die
+               # Richtung kommt im Klartext mit, damit Anzeigen sie nicht selbst
+               # aus dem Vorzeichen ableiten muessen.
+               "sign_convention": BIAS_CONVENTION,
+               "direction": bias_direction(median_w),
                "diagnostic": diagnostic,
                "alert": bool(day_trigger or night_trigger)}
         if out["alert"]:
@@ -312,7 +318,7 @@ class DriftMonitor:
                 "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Prognose "
                 "liegt systematisch %s. %s.",
                 median_w, len(deltas), 100.0 * one_sided, out["kwh_per_day"],
-                "zu niedrig" if median_w > 0 else "zu hoch", diagnostic)
+                "zu hoch" if median_w > 0 else "zu niedrig", diagnostic)
             if night_w is not None:
                 log.warning("  nachts (00-06 Uhr): %+.0f W", night_w)
         else:

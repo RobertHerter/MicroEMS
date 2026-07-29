@@ -623,9 +623,8 @@ def _load_bias_quality_card(load_bias) -> tuple[str, str]:
         parts.append(f"Nacht {float(night):+.0f} W")
     if median is not None:
         parts.append(f"Gesamt {float(median):+.0f} W")
-    # Die Richtung dazuschreiben: das Vorzeichen allein ist irrefuehrend, weil
-    # dieser Wert Ist minus Prognose ist, der uebrige Projekt-Bias aber
-    # Prognose minus Ist (siehe drift.check_load_bias, sign_convention).
+    # Die Richtung im Klartext dazuschreiben statt das Vorzeichen deuten zu
+    # lassen (Konvention: Prognose minus Ist, siehe ems/quality.bias_w).
     direction = load_bias.get("direction")
     if direction and (night is not None or median is not None):
         parts.append(str(direction))

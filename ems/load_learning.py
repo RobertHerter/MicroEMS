@@ -28,6 +28,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+from .quality import BOUNDS
+
 log = logging.getLogger("ems.load_learning")
 
 # Ein Lauf zaehlt ab dieser Leistung als "an". Absolut, damit auch Standby-
@@ -39,8 +41,8 @@ MIN_RUN_SLOTS = 2
 
 # Auto-Uebernahme: erst ab mehreren Laeufen, und nur in plausiblen Grenzen.
 APPLY_MIN_RUNS = 3
-DURATION_BOUNDS_MIN = (15.0, 720.0)
-ENERGY_BOUNDS_KWH = (0.05, 30.0)
+DURATION_BOUNDS_MIN = BOUNDS["load_profile_minutes"]
+ENERGY_BOUNDS_KWH = BOUNDS["load_profile_kwh"]
 
 
 @dataclass
