@@ -465,3 +465,50 @@ def test_load_bias_card_states_the_direction():
         "alert_scope": "Gesamt", "threshold_w": 100.0, "window_days": 7,
         "n": 400, "direction": "Prognose zu niedrig"})
     assert "Prognose zu niedrig" in card
+
+
+def test_load_timeline_leaves_the_future_blank():
+    """Ist-Zeilen duerfen die Zukunft nicht als "unbekannt" faerben.
+
+    Rechts vom Jetzt-Marker kann es keine Istwerte geben; ein 229 Slots langes
+    goldenes Band uebertoente die Soll-Blocke voellig ("Pumpen stehen auf
+    unbekannt"). Zusaetzlich darf das Label-Mapping an None nicht scheitern -
+    genau daran ist der Zyklus beim ersten Versuch gestorben (KeyError: None).
+    """
+    import pathlib
+
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from ems.dashboard import build_dashboard
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        stages=[LoadStage("klein", 400, 1000,
+                          power_topic="homie/pool/power")])]
+    now = pd.Timestamp.now(tz=cfg.general.timezone).floor("15min")
+    index = pd.date_range(now - pd.Timedelta(hours=2), periods=32,
+                          freq="15min", tz=cfg.general.timezone)
+    n = len(index)
+    past = index <= now
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.full(n, 800.0), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": np.zeros(n),
+        # Ist nur in der Vergangenheit - so kommt es real aus der Rueckmeldung.
+        "actual_load_Pool_klein_on": np.where(past, 1.0, np.nan),
+    }, index=index)
+    html = pathlib.Path(
+        build_dashboard(cfg, table, total_cost_ct=0.0)).read_text(
+            encoding="utf-8")
+    assert "load_timeline" in html
+    # Zukunftszellen als null (leer), nicht als Code 3 (unbekannt).
+    assert "null" in html

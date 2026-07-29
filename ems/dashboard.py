@@ -1916,8 +1916,14 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 values = (pd.to_numeric(t[col], errors="coerce")
                           if col in t.columns else
                           pd.Series(float("nan"), index=x))
-                z.append([3 if pd.isna(v) else (1 if float(v) > 0.5 else 0)
-                          for v in values])
+                # Zukunft bleibt LEER, nicht "unbekannt": rechts vom Jetzt-
+                # Marker kann es keine Istwerte geben, und ein 229 Slots langes
+                # goldenes Band uebertoente die eigentlichen Soll-Blocke voellig
+                # (gemeldet als "Pumpen stehen auf unbekannt"). Dieselbe Regel
+                # gilt fuer die Ist-KURVEN schon lange.
+                z.append([None if stamp > now
+                          else (3 if pd.isna(v) else (1 if float(v) > 0.5 else 0))
+                          for stamp, v in zip(x, values)])
             elif enabled and col in t.columns:
                 z.append([1 if float(v) > 5.0 else 0 for v in t[col].fillna(0.0)])
             else:                                   # deaktiviert -> graue Leiste
@@ -1930,7 +1936,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                         [0.25, "#2ca02c"], [0.499, "#2ca02c"],    # 1 = AN
                         [0.50, "#adb5bd"], [0.749, "#adb5bd"],    # 2 = deaktiviert
                         [0.75, "#d8a52a"], [1.0, "#d8a52a"]],     # 3 = unbekannt
-            customdata=[[_lab[v] for v in row] for row in z],
+            # None = Zukunft (kein Istwert) -> leeres Label statt KeyError.
+            customdata=[[_lab.get(v, "") for v in row] for row in z],
             hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
 
