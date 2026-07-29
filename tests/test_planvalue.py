@@ -180,12 +180,20 @@ def test_tiny_residual_load_stays_feasible_with_minimum_discharge():
         initial_house_soc_wh=cfg.house_battery.max_soc_wh,
         spot_price_ct_kwh=price)
     res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    # DAS ist die Regression: ohne die Ausnahme war der GESAMTE Plan unloesbar.
     assert res.status == "Optimal", res.status
-    imp = res.table["grid_import_w"].to_numpy(float)
-    # Die Ausnahme gilt genau in Hoehe der nicht bedienbaren Restlast ...
-    assert imp[20] == pytest.approx(53.0, abs=1.0)
-    assert imp[21] == pytest.approx(73.0, abs=1.0)
-    # ... und lockert den Bezug in der uebrigen Restlastphase nicht auf.
-    assert imp[:20].max() <= 5.0
-    # Ab ca. Slot 40 ist der Akku leer, danach ist Bezug unvermeidbar.
-    assert imp[23:38].max() <= 5.0
+    assert not res.infeasible
+
+    # Bewusst KEINE Zusicherung auf einzelne Slot-Importwerte: in diesem Fall
+    # reicht die Akkuenergie fuer die ganze Restlastphase nicht (9,6 kWh Bedarf
+    # gegen ~9 kWh nutzbar), der Suffizienz-Block ist also inaktiv und mehrere
+    # Importmuster sind gleich teuer. CBC und HiGHS waehlen unterschiedliche -
+    # eine Zusicherung auf 53 W hat nur ein zufaelliges Optimum festgenagelt.
+    table = res.table
+    imp = table["grid_import_w"].to_numpy(float)
+    exp = table["grid_export_w"].to_numpy(float)
+    # Energiebilanz statt Einzelwerte: die winzigen Restlasten werden gedeckt,
+    # und es wird nie gleichzeitig bezogen und eingespeist.
+    assert (imp[20:23] + table["batt_discharge_w"].to_numpy(float)[20:23]
+            >= np.array([50.0, 70.0, 70.0])).all()
+    assert (np.minimum(imp, exp) <= 1.0).all()

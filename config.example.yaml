@@ -405,9 +405,12 @@ optimization:
   auto_peak_soc_reserve_percent: 10.0
   auto_peak_p10_floor_percent: 60.0
   auto_peak_expected_override_percent: 150.0
-  # Welcher Solver genutzt werden soll ("cbc" oder "highs").
-  # "highs" erfordert ein installiertes `highspy` Paket.
-  solver: "cbc"
+  # Welcher Solver genutzt werden soll ("highs" oder "cbc"). Standard "highs":
+  # schneller als das gebuendelte CBC und mit festem Seed deterministisch
+  # (gleicher Input -> gleicher Plan). Darauf bauen Plan-Stabilitaet,
+  # Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. `highspy` liegt in
+  # requirements.txt; fehlt es, faellt der Optimierer sichtbar auf CBC zurueck.
+  solver: "highs"
   # Muss die reale Löszeit sicher abdecken! Erreicht CBC das Limit, wird der
   # beste Zwischenstand publiziert (Alarm auf ems/alert) - der kann deutlich
   # suboptimal sein. Läuft alle 15 min -> 300 s sind unkritisch.
@@ -770,6 +773,12 @@ e3dc_rscp:
 dashboard:
   enabled: true
   output_path: "./dashboard.html"
+  # HTTP-Server im Dienstmodus (--loop): macht das Dashboard im Browser
+  # abrufbar (http://<host>:<port>/). false = nur die HTML-Datei schreiben.
+  serve: true
+  # Port des HTTP-Servers. Unter 1024 braucht der Dienst zusaetzliche Rechte
+  # (systemd: AmbientCapabilities=CAP_NET_BIND_SERVICE).
+  port: 8080
   api_enabled: true          # GET /api/data.json (Optimierungsdaten)
   live_refresh_seconds: 5    # E3/DC-Livekacheln; 0 = deaktiviert
   username: ""               # Basic-Auth (leer = kein Auth); gilt auch fürs Ingest
