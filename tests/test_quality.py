@@ -120,3 +120,65 @@ def test_soc_step_is_one_percent_of_capacity():
 def test_soc_energy_uses_endpoints_only():
     assert soc_energy_wh(95.0, 45.0, 22344.0) == pytest.approx(11172.0)
     assert soc_energy_wh(45.0, 95.0, 22344.0) == pytest.approx(-11172.0)
+
+
+# --------------------------------------------------------------------------- #
+# Zeitstand-Disziplin
+# --------------------------------------------------------------------------- #
+# Bewertende Module duerfen eine Prognose NIE gegen den frischesten Stand
+# vergleichen - der enthaelt die eigene Nowcast-Korrektur und die Kennzahl
+# schmeichelt sich selbst. Genau diese Falle hatte der Drift-Monitor: er
+# verglich gegen eine Prognose, die alle 15 min neu beim gemessenen SoC
+# ansetzte, und meldete deshalb 0,7 pp, waehrend der Plan ueber eine Nacht um
+# zweistellige Prozentpunkte danebenlag.
+_EVALUATING_MODULES = (
+    "ems/observability.py", "ems/pv_eval.py", "ems/drift.py",
+    "ems/planvalue.py", "kalibrierung.py", "ems/archive.py",
+)
+# Diese Leser liefern den JUENGSTEN Stand und sind fuer Bewertungen tabu.
+_LATEST_VINTAGE_READERS = ("read_pv_forecast(", "read_pv_forecast ")
+
+
+def test_evaluating_modules_only_read_as_of_forecasts():
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+    for name in _EVALUATING_MODULES:
+        path = root / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for reader in _LATEST_VINTAGE_READERS:
+            if reader in text:
+                offenders.append(f"{name}: {reader.strip()}")
+    assert not offenders, (
+        "Bewertung gegen den frischesten Prognosestand: " + ", ".join(offenders)
+        + " - stattdessen read_*_asof oder read_optimizer_forecast_snapshots")
+
+
+def test_as_of_readers_exist_and_are_used():
+    """Gegenprobe: der erlaubte Weg muss auch tatsaechlich benutzt werden,
+    sonst geht der Test oben trivial durch."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent
+    allowed = ("read_optimizer_forecast_asof", "read_group_asof",
+               "read_optimizer_forecast_snapshots", "read_pv_forecast_asof")
+    used = set()
+    for name in _EVALUATING_MODULES:
+        path = root / name
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8")
+        used.update(reader for reader in allowed if reader in text)
+    assert len(used) >= 3, f"nur {sorted(used)} genutzt"
+
+
+def test_guard_report_marks_an_inactive_check():
+    """Ein Waechter, der nichts geprueft hat, muss das SAGEN - drei Fehler
+    dieser Codebasis waren stillschweigend wirkungslose Pruefungen."""
+    from ems.quality import guard_report
+    active = guard_report("segment_degradation", 4, skipped=0, detail="ok")
+    assert active["active"] is True and active["checked"] == 4
+    idle = guard_report("segment_degradation", 0, skipped=4)
+    assert idle["active"] is False
+    assert "inaktiv" in idle["detail"] and idle["skipped"] == 4

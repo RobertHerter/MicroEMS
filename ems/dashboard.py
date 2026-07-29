@@ -761,7 +761,8 @@ def _forecast_analysis_block(forecast_quality=None,
    ['pv_actual_w','PV Ist',dark()?'#ffd166':'#e87917','solid',2.8],
    ['solcast_w','Solcast','#4c9be8','solid',1.8],
    ['pvlib_w','pvlib','#43a66b','dash',1.8],
-   ['load_forecast_w','Last-Soll','#d95f59','dot',1.8]
+   ['load_forecast_w','Last-Soll','#d95f59','dot',1.8],
+   ['load_actual_w','Last Ist','#d95f59','solid',2.2]
   ];
   const traces=specs.filter(s=>(d[s[0]]||[]).some(v=>typeof v==='number')).map(s=>({
    x:d.timestamps,y:d[s[0]],type:'scatter',mode:'lines',name:s[1],

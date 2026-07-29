@@ -162,14 +162,14 @@ def _forecast_vintages(config, snapshots: list, day, now) -> dict:
 
 
 def _forecast_day_comparison(config, snapshots: list, day, now) -> dict:
-    """PV-Ist, beide PV-Quellen und produktives Last-Soll eines Zieltags.
+    """PV-Ist, beide PV-Quellen sowie Last-Soll UND Last-Ist eines Zieltags.
 
     Die Quellkurven sind Rolling-Origin: je Zielslot gilt nur der jüngste
     Forecast, der zu diesem Zeitpunkt bereits erstellt war. Das Last-Soll wird
     genauso aus den archivierten Optimierereingängen zusammengesetzt.
     """
     from . import pv_eval, pvforecast
-    from .local_history import read_actual
+    from .local_history import read_actual, read_house_load
 
     tz, db = config.general.timezone, config.e3dc_rscp.history_db_path
     slot = int(config.general.slot_minutes)
@@ -178,6 +178,10 @@ def _forecast_day_comparison(config, snapshots: list, day, now) -> dict:
         day, end, freq=f"{slot}min", inclusive="left")
     actual_end = min(end, now)
     actual = read_actual(db, "pv_w", day, actual_end, tz).reindex(index)
+    # Ohne die GEMESSENE Last ist das Last-Soll im Panel nicht bewertbar - man
+    # sieht eine Prognosekurve ohne Bezugspunkt. Dieselbe Quelle wie die
+    # Guetekennzahl (_load_accuracy), damit beide dasselbe messen.
+    load_actual = read_house_load(db, day, actual_end, tz).reindex(index)
 
     solcast_ids = [
         source.resource_id
@@ -218,11 +222,13 @@ def _forecast_day_comparison(config, snapshots: list, day, now) -> dict:
         "solcast_w": _json_values(solcast),
         "pvlib_w": _json_values(pvlib),
         "load_forecast_w": _json_values(load),
+        "load_actual_w": _json_values(load_actual),
         "coverage": {
             "pv_actual": int(actual.notna().sum()),
             "solcast": int(solcast.notna().sum()),
             "pvlib": int(pvlib.notna().sum()),
             "load_forecast": int(load.notna().sum()),
+            "load_actual": int(load_actual.notna().sum()),
         },
         "method": "rolling_origin",
     }

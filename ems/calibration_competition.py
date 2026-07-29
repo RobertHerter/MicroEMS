@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .quality import BOUNDS, bias_w
+from .quality import BOUNDS, bias_w, guard_report
 
 
 # Plausibilitaetsgrenzen der Stundenfaktoren (siehe apply_load_profile).
@@ -114,6 +114,10 @@ def compare_point_forecasts(
     result.update(
         promote=bool(promote),
         segments_checked=segments_checked,
+        segment_guard=guard_report(
+            "segment_degradation", segments_checked,
+            skipped=len(_DAYPARTS) - segments_checked,
+            detail=f"max. Verschlechterung {worst:.1f} pp"),
         status="promoted" if promote else "held",
         reason=reason,
         improvement_percent=round(improvement, 2),

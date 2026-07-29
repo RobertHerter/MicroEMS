@@ -174,3 +174,36 @@ def soc_energy_wh(soc_start_percent: float, soc_end_percent: float,
     """
     return ((float(soc_start_percent) - float(soc_end_percent)) / 100.0
             * float(capacity_wh))
+
+
+# --------------------------------------------------------------------------- #
+# Wirksamkeit von Pruefungen
+# --------------------------------------------------------------------------- #
+# Drei Fehler dieser Codebasis hatten dieselbe Form: eine Pruefung, die
+# stillschweigend NICHTS getan hat.
+#   * die Schaetz-Maske des Preises war None und wurde als "veroeffentlicht"
+#     gelesen - damit galt ein Schaetzwert als Boersenpreis,
+#   * die Segmentschranke der Befoerderung lief ohne qualifizierten Abschnitt
+#     ins Leere (worst = 0),
+#   * der Drift-Monitor konnte einen systematischen Bias strukturell nicht
+#     sehen und meldete jahrelang 0,7 pp.
+# Ein Waechter, der sich selbst abschaltet, ist schlimmer als keiner: er
+# erzeugt Vertrauen. Deshalb liefert jede Pruefung mit, WIE VIEL sie geprueft
+# hat - und ein Test stellt sicher, dass der Zaehler im Normalfall > 0 ist.
+def guard_report(name: str, checked: int, skipped: int = 0,
+                 detail: str | None = None) -> dict:
+    """Wirksamkeits-Bericht einer Pruefung.
+
+    ``checked``  Zahl tatsaechlich gepruefter Einheiten (Slots, Segmente, ...)
+    ``skipped``  Zahl uebersprungener Einheiten - wird NICHT verschwiegen
+    ``active``   False heisst: die Pruefung hat nichts geprueft
+    """
+    report = {"guard": str(name), "checked": int(checked),
+              "skipped": int(skipped), "active": int(checked) > 0}
+    if detail:
+        report["detail"] = str(detail)
+    if not report["active"]:
+        report["detail"] = (
+            (detail + " · " if detail else "")
+            + "Schranke inaktiv - nichts geprueft")
+    return report

@@ -32,8 +32,8 @@ from typing import Optional
 import pandas as pd
 
 from .config import Config
-from .quality import (BIAS_CONVENTION, bias_direction,
-                      enough, shortfall_note)
+from .quality import (BIAS_CONVENTION, bias_direction, enough,
+                      guard_report, shortfall_note)
 
 log = logging.getLogger("ems.drift")
 
@@ -128,6 +128,8 @@ class DriftMonitor:
                "window_days": round(float(self.eff_days), 1),
                "threshold_percent": round(float(self.eff_alert), 1),
                "evaluated_at": pd.Timestamp(now).isoformat(),
+               "guard": guard_report("discharge_efficiency", fit.n_windows,
+                                     detail=f"{fit.hours} h ausgewertet"),
                "alert": abs(deviation) > self.eff_alert}
         # Nur die Abweichung ist interessant - im Normalfall still bleiben,
         # sonst geht die Meldung im Log unter.
@@ -201,6 +203,7 @@ class DriftMonitor:
                "window_days": round(float(self.exec_days), 1),
                "threshold_w": round(float(self.exec_alert_w), 1),
                "evaluated_at": pd.Timestamp(now).isoformat(),
+               "guard": guard_report("execution_bias", len(values)),
                "alert": bool(abs(median_w) > self.exec_alert_w
                              and one_sided >= 0.65)}
         if out["alert"]:
@@ -311,6 +314,10 @@ class DriftMonitor:
                "sign_convention": BIAS_CONVENTION,
                "direction": bias_direction(median_w),
                "diagnostic": diagnostic,
+               "guard": guard_report(
+                   "load_bias", len(deltas), skipped=0,
+                   detail=("Nachtfenster geprueft" if night_w is not None
+                           else "Nachtfenster zu duenn - nur Tagesmedian")),
                "alert": bool(day_trigger or night_trigger)}
         if out["alert"]:
             log.warning(
