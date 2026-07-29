@@ -233,3 +233,38 @@ def test_execution_bias_needs_a_day_of_data(tmp_path):
     _seed_audits(cfg.e3dc_rscp.history_db_path, -120.0, n=20)
     assert DriftMonitor(cfg).check_execution_bias(
         pd.Timestamp("2026-01-12 06:00", tz="UTC")) is None
+
+
+def _seed_load_bias(db, tz, forecast_w, actual_w, days=3):
+    """Prognose-Snapshots und gemessene Hauslast mit bekanntem Versatz."""
+    from ems.local_history import (write_house_load,
+                                    write_optimizer_forecast_archive)
+    base = pd.Timestamp("2026-01-10 00:00", tz=tz)
+    for d in range(days):
+        day = base + pd.Timedelta(days=d)
+        idx = pd.date_range(day, periods=96, freq="15min", tz=tz)
+        fc = pd.Series([forecast_w(t) if callable(forecast_w) else forecast_w
+                        for t in idx], index=idx, dtype="float64")
+        # issue_ts VOR Tagesbeginn: genau der Stand, den die Pruefung liest.
+        write_optimizer_forecast_archive(
+            db, day - pd.Timedelta(minutes=5), {"house_load_w": fc})
+        write_house_load(db, {t.tz_convert("UTC").isoformat():
+                              (actual_w(t) if callable(actual_w) else actual_w)
+                              for t in idx})
+
+
+def test_load_bias_finds_a_night_only_offset(tmp_path):
+    """Ein Sockelfehler trifft oft nur die Nacht und verschwindet im
+    Tagesmedian - gemessen +359 W nachts gegen +62 W ueber den Tag."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    tz = cfg.general.timezone
+    _seed_load_bias(cfg.e3dc_rscp.history_db_path, tz,
+                        forecast_w=lambda t: 400.0 if t.hour < 6 else 1200.0,
+                        actual_w=lambda t: 1200.0 if t.hour < 6 else 1200.0)
+    out = DriftMonitor(cfg).check_load_bias(
+        pd.Timestamp("2026-01-13 12:00", tz=tz))
+    assert out is not None, "Stichprobe sollte reichen"
+    assert out["night_median_w"] > 700.0        # nachts klar daneben
+    assert out["alert"] is True                 # trotz unauffaelligem Tag

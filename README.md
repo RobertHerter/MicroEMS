@@ -665,6 +665,13 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
      Mittelwert meldete −67 W, während die Anlage typischerweise auf −12 W genau
      folgt. Nur zählerbasierte Prüfungen zählen – die Live-Variante mittelt ~1 min
      und streut gegen einen 15-min-Sollwert um ±1 kW.
+  4. *Lastprognose-Versatz* – die Prognose, die **vor Tagesbeginn** galt, gegen
+     die gemessene Hauslast. Das **Nachtfenster wird eigens bewertet**: ein
+     Sockelfehler aus der Grundlast-Zerlegung trifft oft nur die Nacht und
+     verschwindet im Tagesmedian – gemessen +359 W nachts bei nur +62 W über den
+     ganzen Tag. Ohne die Fenstertrennung wäre genau der Fehler durchgerutscht,
+     der den Akku nachts leerlaufen ließ (`load_bias_window_days`,
+     `load_bias_alert_w`).
 - **`ems/battery_calibration.py`** – misst den **Entladewirkungsgrad** aus den
   Ist-Werten und führt ihn wöchentlich nach. Gemessen wird über
   *zusammenhängende Entladephasen*, nicht je Slot: der SoC kommt nur in ganzen

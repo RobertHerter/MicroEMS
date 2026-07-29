@@ -2223,6 +2223,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         drift_mae = None
         efficiency_drift = None
         execution_bias = None
+        load_bias = None
         if config.monitoring.drift_enabled:
             try:
                 from .drift import DriftMonitor
@@ -2236,6 +2237,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 if _time.time() - _last_efficiency_check > 3600:
                     efficiency_drift = monitor.check_energy_model(now)
                     execution_bias = monitor.check_execution_bias(now)
+                    load_bias = monitor.check_load_bias(now)
                     _last_efficiency_check = _time.time()
             except Exception as exc:
                 log.warning("Drift-Check fehlgeschlagen (%s).", exc)
@@ -2285,6 +2287,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
+            if load_bias and load_bias.get("alert"):
+                publisher.publish_alert(
+                    "warning",
+                    f"Lastprognose {load_bias['median_w']:+.0f} W im Median "
+                    f"daneben ({load_bias['kwh_per_day']:+.2f} kWh/Tag) – "
+                    f"Grundlast-Zerlegung prüfen.")
             if execution_bias and execution_bias.get("alert"):
                 publisher.publish_alert(
                     "warning",

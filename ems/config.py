@@ -668,6 +668,11 @@ class MonitoringConfig:
     # Versatz von wenigen Watt je Slot ist über eine Woche trotzdem kWh.
     execution_bias_window_days: float = 7.0
     execution_bias_alert_w: float = 50.0
+    # Einseitiger Fehler der Hauslastprognose (Prognose vor Tagesbeginn gegen
+    # gemessene Last). Faellt in der WAPE kaum auf, verschiebt aber jede Nacht
+    # die SoC-Planung.
+    load_bias_window_days: float = 7.0
+    load_bias_alert_w: float = 100.0
     solver_runtime_alert_seconds: float = 60.0
     solver_runtime_factor: float = 3.0
     solver_runtime_baseline_runs: int = 12
@@ -1501,6 +1506,8 @@ def load_config(path: str) -> Config:
         execution_bias_window_days=float(
             mon.get("execution_bias_window_days", 7.0)),
         execution_bias_alert_w=float(mon.get("execution_bias_alert_w", 50.0)),
+        load_bias_window_days=float(mon.get("load_bias_window_days", 7.0)),
+        load_bias_alert_w=float(mon.get("load_bias_alert_w", 100.0)),
         solver_runtime_alert_seconds=float(
             mon.get("solver_runtime_alert_seconds", 60.0)),
         solver_runtime_factor=float(mon.get("solver_runtime_factor", 3.0)),

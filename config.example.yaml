@@ -618,6 +618,13 @@ monitoring:
   # Warnschwelle als MEDIAN der Abweichung (W). Bewusst der Median: die
   # Verteilung hat einen schweren Rand, der Mittelwert wuerde falsch melden.
   execution_bias_alert_w: 50.0
+  # Einseitiger Fehler der Hauslastprognose (Stand VOR Tagesbeginn gegen die
+  # gemessene Last). Das Nachtfenster wird eigens bewertet: ein Sockelfehler
+  # aus der Grundlast-Zerlegung trifft oft nur die Nacht und verschwindet
+  # sonst im Tagesmedian.
+  load_bias_window_days: 7.0
+  # Warnschwelle als Median der Abweichung (W), Tag oder Nacht.
+  load_bias_alert_w: 100.0
   # Solver-Laufzeit warnen, wenn absolut oder relativ zur Historie auffaellig
   # (Median der letzten Laeufe); eine Erholungsmeldung beendet den Alarmzustand.
   solver_runtime_alert_seconds: 60

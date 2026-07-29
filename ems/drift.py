@@ -49,6 +49,10 @@ class DriftMonitor:
             config.monitoring, "execution_bias_window_days", 7.0))
         self.exec_alert_w = float(getattr(
             config.monitoring, "execution_bias_alert_w", 50.0))
+        self.load_days = float(getattr(
+            config.monitoring, "load_bias_window_days", 7.0))
+        self.load_alert_w = float(getattr(
+            config.monitoring, "load_bias_alert_w", 100.0))
 
     def check(self, repo, now: pd.Timestamp) -> Optional[float]:
         """Vergleicht Prognose- und Ist-SoC im zurückliegenden Fenster.
@@ -199,4 +203,88 @@ class DriftMonitor:
             log.info("Ausführungs-Versatz: Median %+.0f W, Mittel %+.0f W "
                      "(%d Slots, %.0f %% gleiches Vorzeichen).",
                      median_w, mean_w, len(values), 100.0 * one_sided)
+        return out
+
+    def check_load_bias(self, now: pd.Timestamp) -> Optional[dict]:
+        """Einseitigen Fehler der Hauslastprognose aufsummieren.
+
+        Verglichen wird die Prognose, die VOR Tagesbeginn galt, gegen die
+        gemessene Hauslast - nicht der frischeste Stand, der die eigene
+        Nowcast-Korrektur schon enthielte. Ein systematischer Versatz faellt in
+        der taeglichen WAPE-Kennzahl kaum auf, verschiebt aber jede Nacht die
+        SoC-Planung: eine zu tief bereinigte Grundlast liess den Optimierer mit
+        400 W statt real 1200 W planen.
+        """
+        from .local_history import (read_house_load,
+                                    read_optimizer_forecast_asof)
+
+        db = self.cfg.e3dc_rscp.history_db_path
+        tz = self.cfg.general.timezone
+        deltas, stamps = [], []
+        day = (pd.Timestamp(now).tz_convert(tz).normalize()
+               - pd.Timedelta(days=self.load_days))
+        end = pd.Timestamp(now).tz_convert(tz)
+        while day < end:
+            nxt = min(day + pd.Timedelta(days=1), end)
+            try:
+                _issue, frame = read_optimizer_forecast_asof(db, day, day,
+                                                             nxt, tz)
+                if frame is None or frame.empty \
+                        or "house_load_w" not in frame:
+                    day = day + pd.Timedelta(days=1)
+                    continue
+                actual = read_house_load(db, day, nxt, tz)
+                fc = pd.to_numeric(frame["house_load_w"], errors="coerce")
+                common = actual.index.intersection(fc.index)
+                for ts in common:
+                    a, p = float(actual.loc[ts]), float(fc.loc[ts])
+                    if pd.notna(a) and pd.notna(p):
+                        deltas.append(a - p)
+                        stamps.append(ts)
+            except Exception as exc:  # pragma: no cover
+                log.debug("Lastprognose-Bias %s nicht lesbar (%s).", day, exc)
+            day = day + pd.Timedelta(days=1)
+        if len(deltas) < 96:                    # unter einem Tag nicht bewerten
+            return None
+        arr = pd.Series(deltas, index=pd.DatetimeIndex(stamps),
+                        dtype="float64")
+        # Median wie beim Ausfuehrungs-Versatz: einzelne Lastspitzen (Herd,
+        # Wallbox) sind kein Prognosefehler, ein verschobener Sockel schon.
+        median_w = float(arr.median())
+        share = float((arr > 0).mean())
+        one_sided = max(share, 1.0 - share)
+        # Ein Sockelfehler trifft oft nur die NACHT (Grundlast-Zerlegung) und
+        # verschwindet im Tagesmedian: gemessen +374 W nachts, aber nur +62 W
+        # ueber den ganzen Tag. Deshalb das Nachtfenster eigens bewerten - dort
+        # entscheidet sich, ob der Akku bis zum Morgen reicht.
+        night = arr.between_time("00:00", "05:59")
+        night_w = float(night.median()) if len(night) >= 24 else None
+        night_sided = (max(float((night > 0).mean()),
+                           1.0 - float((night > 0).mean()))
+                       if len(night) >= 24 else 0.0)
+        out = {"median_w": round(median_w, 1),
+               "mean_w": round(float(arr.mean()), 1),
+               "night_median_w": (None if night_w is None
+                                  else round(night_w, 1)),
+               "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
+               "same_sign_share": round(one_sided, 2), "n": len(deltas),
+               "alert": bool(
+                   (abs(median_w) > self.load_alert_w and one_sided >= 0.65)
+                   or (night_w is not None
+                       and abs(night_w) > self.load_alert_w
+                       and night_sided >= 0.65))}
+        if out["alert"]:
+            log.warning(
+                "Lastprognose-Versatz: Median %+.0f W über %d Slots "
+                "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Prognose "
+                "liegt systematisch %s - Grundlast-Zerlegung prüfen.",
+                median_w, len(deltas), 100.0 * one_sided, out["kwh_per_day"],
+                "zu niedrig" if median_w > 0 else "zu hoch")
+            if night_w is not None:
+                log.warning("  nachts (00-06 Uhr): %+.0f W", night_w)
+        else:
+            log.info("Lastprognose-Versatz: Median %+.0f W, nachts %s (%d "
+                     "Slots, %.0f %% gleiches Vorzeichen).", median_w,
+                     "-" if night_w is None else f"{night_w:+.0f} W",
+                     len(deltas), 100.0 * one_sided)
         return out
