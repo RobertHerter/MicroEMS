@@ -268,3 +268,5 @@ def test_load_bias_finds_a_night_only_offset(tmp_path):
     assert out is not None, "Stichprobe sollte reichen"
     assert out["night_median_w"] > 700.0        # nachts klar daneben
     assert out["alert"] is True                 # trotz unauffaelligem Tag
+    assert out["alert_scope"] == "Nacht"
+    assert "Grundlastbereinigung ist aktiv" in out["diagnostic"]

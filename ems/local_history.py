@@ -188,6 +188,12 @@ def _con(path: str) -> sqlite3.Connection:
                 " day TEXT PRIMARY KEY, computed_ts TEXT,"
                 " pv_wape REAL, pv_bias_w REAL, pv_n INTEGER,"
                 " load_wape REAL, load_bias_w REAL, load_n INTEGER)")
+    # Unveränderliche Wochenstände der Prognosekalibrierung. Damit zeigt das
+    # Dashboard nicht nur den letzten YAML-Stand, sondern auch, wann sich
+    # Faktoren und Unsicherheitsbänder verändert haben.
+    con.execute("CREATE TABLE IF NOT EXISTS calibration_history ("
+                " ts TEXT PRIMARY KEY, report_json TEXT NOT NULL,"
+                " profile_json TEXT NOT NULL)")
     con.commit()
     return con
 
@@ -220,6 +226,46 @@ def read_forecast_accuracy(path: str, days: int = 30) -> list:
         rows = []
     cols = ["day", "pv_wape", "pv_bias_w", "load_wape", "load_bias_w"]
     return [dict(zip(cols, r)) for r in reversed(rows)]
+
+
+def write_calibration_snapshot(path: str, generated, report: dict,
+                               profile: Optional[dict] = None) -> None:
+    """Einen Kalibrierungslauf unveränderlich und idempotent archivieren."""
+    stamp = pd.Timestamp(generated)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    stamp = stamp.tz_convert("UTC").isoformat()
+    con = _con(path)
+    con.execute(
+        "INSERT OR IGNORE INTO calibration_history"
+        "(ts,report_json,profile_json) VALUES(?,?,?)",
+        (stamp, json.dumps(report or {}, default=str, separators=(",", ":")),
+         json.dumps(profile or {}, default=str, separators=(",", ":"))))
+    con.commit()
+    con.close()
+
+
+def read_calibration_history(path: str, limit: int = 26) -> list:
+    """Letzte Kalibrierungsstände chronologisch aufsteigend lesen."""
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts,report_json,profile_json FROM calibration_history "
+            "ORDER BY ts DESC LIMIT ?", (max(1, int(limit)),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    out = []
+    for stamp, report_text, profile_text in reversed(rows):
+        try:
+            out.append({
+                "generated": stamp,
+                "report": json.loads(report_text),
+                "profile": json.loads(profile_text),
+            })
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return out
 
 
 def latest_forecast_accuracy_day(path: str) -> Optional[str]:
@@ -879,55 +925,99 @@ def read_live_slot_averages(path: str, start, end, tz: str,
 
 def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
                                  slot_minutes: int):
-    """Gemessene thermische Stufenleistung auf dem Slotraster.
+    """Gemessene Leistung steuerbarer Lasten auf dem Slotraster.
 
     Rückgabe ``(power, complete, labels)``. ``complete`` ist nur dort wahr, wo
-    jede konfigurierte Rückmeldestufe einen frischen Wert geliefert hat.
-    Unbekannte Zeiten werden nie als 0 W interpretiert.
+    jede unabhängige Messquelle einen frischen Wert geliefert hat. Mehrere
+    Stufen mit demselben ``power_topic`` teilen einen Gesamtzähler und werden
+    deshalb genau einmal bilanziert. Unbekannte Zeiten werden nie als 0 W
+    interpretiert.
     """
-    stages = {}
+    lanes = {}
     for load in loads or []:
-        if getattr(load, "type", None) != "thermal":
+        if not getattr(load, "enabled", False):
             continue
-        for stage in getattr(load, "stages", []):
-            if stage.feedback_topic or stage.power_topic:
-                stages[(str(load.name), str(stage.name))] = float(stage.power_w)
+        if getattr(load, "type", None) == "thermal":
+            members = [
+                (stage.name, stage.power_w, stage.feedback_topic,
+                 stage.power_topic)
+                for stage in getattr(load, "stages", [])]
+        else:
+            profile = getattr(load, "power_profile_w", None) or []
+            nominal = (float(getattr(load, "power_w", 0.0) or 0.0)
+                       or float(max(profile, default=0.0)))
+            members = [("__load__", nominal,
+                        getattr(load, "feedback_topic", None),
+                        getattr(load, "power_topic", None))]
+        for stage_name, nominal, state_topic, power_topic in members:
+            if not (state_topic or power_topic):
+                continue
+            lane = (str(load.name), str(stage_name))
+            # Ein power_topic ist ein physischer Messkanal. Wird er für mehrere
+            # Schwellen/Stufen verwendet, darf seine Gesamtleistung nicht je
+            # Stufe erneut addiert werden.
+            source = (("power", str(power_topic)) if power_topic else
+                      ("state", str(load.name), str(stage_name)))
+            label = (str(load.name) if stage_name == "__load__"
+                     else f"{load.name}/{stage_name}")
+            lanes[lane] = {
+                "nominal_w": float(nominal), "source": source, "label": label,
+                "uses_power": bool(power_topic)}
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
     freq = f"{int(slot_minutes)}min"
     grid = pd.date_range(begin.floor(freq), finish.ceil(freq),
                          freq=freq, inclusive="left")
-    if not stages:
+    if not lanes:
         return (pd.Series(0.0, index=grid, dtype="float64"),
                 pd.Series(True, index=grid, dtype="bool"), [])
     s_utc = begin.tz_convert("UTC").isoformat()
     e_utc = finish.tz_convert("UTC").isoformat()
     con = _con(path)
-    names = sorted({name for name, _ in stages})
+    names = sorted({name for name, _ in lanes})
     marks = ",".join("?" for _ in names)
     rows = con.execute(
         "SELECT name,stage,ts,actual_on,power_w,fresh FROM load_feedback "
         f"WHERE name IN ({marks}) AND ts>=? AND ts<? ORDER BY ts",
         (*names, s_utc, e_utc)).fetchall()
     con.close()
-    by_stage = {key: pd.Series(index=grid, dtype="float64") for key in stages}
+    by_lane = {key: pd.Series(index=grid, dtype="float64") for key in lanes}
     for name, stage, ts, actual_on, power_w, fresh in rows:
         key = (str(name), str(stage))
-        if key not in by_stage or not fresh:
+        if key not in by_lane or not fresh:
             continue
         stamp = pd.Timestamp(ts).tz_convert(tz).floor(freq)
-        if stamp not in by_stage[key].index:
+        if stamp not in by_lane[key].index:
             continue
-        value = power_w
+        value = power_w if lanes[key]["uses_power"] else None
         if value is None and actual_on is not None:
-            value = stages[key] if bool(actual_on) else 0.0
+            value = lanes[key]["nominal_w"] if bool(actual_on) else 0.0
         if value is not None:
-            by_stage[key].loc[stamp] = max(0.0, float(value))
-    frame = pd.DataFrame({
-        f"{name}/{stage}": values for (name, stage), values in by_stage.items()
-    }, index=grid)
+            by_lane[key].loc[stamp] = max(0.0, float(value))
+
+    groups = {}
+    for lane, meta in lanes.items():
+        groups.setdefault(meta["source"], []).append(lane)
+    columns, labels = {}, []
+    for source, members in groups.items():
+        member_frame = pd.concat(
+            [by_lane[lane] for lane in members], axis=1)
+        if source[0] == "power":
+            # Identischer gemeinsamer Zähler je Schwellenstufe: einmal den
+            # verfügbaren Gesamtwert nehmen. ``max`` ist robust, falls ein
+            # MQTT-Zyklus nur eine der Stufen rechtzeitig aktualisiert hat.
+            values = member_frame.max(axis=1, skipna=True).where(
+                member_frame.notna().any(axis=1))
+        else:
+            values = member_frame.sum(axis=1, min_count=len(members))
+        label_parts = [lanes[lane]["label"] for lane in members]
+        label = (" + ".join(label_parts)
+                 + (" (gemeinsame Leistung)" if len(members) > 1 else ""))
+        columns[label] = values
+        labels.append(label)
+    frame = pd.DataFrame(columns, index=grid)
     complete = frame.notna().all(axis=1)
     total = frame.sum(axis=1, min_count=len(frame.columns))
-    return total.astype("float64"), complete.astype("bool"), list(frame.columns)
+    return total.astype("float64"), complete.astype("bool"), labels
 
 
 def write_pv_actual(path: str, mapping: Dict[str, float]) -> int:

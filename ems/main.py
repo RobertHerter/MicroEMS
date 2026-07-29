@@ -66,6 +66,9 @@ _runtime_status = {
     "duration_seconds": None, "message": "Initialisierung",
     "pending_recalc": False, "trigger": "startup", "sequence": 0,
 }
+_cycle_watchdog_status = {
+    "overdue": False, "message": None, "since": None,
+}
 _shadow_status = {
     "state": "idle", "started_at": None, "finished_at": None,
     "generated": None, "message": "Noch kein automatischer Vergleich",
@@ -94,6 +97,7 @@ def _runtime_snapshot() -> dict:
     with _runtime_lock:
         out = dict(_runtime_status)
         out["shadow_comparison"] = dict(_shadow_status)
+        out["cycle_watchdog"] = dict(_cycle_watchdog_status)
         return out
 
 
@@ -131,6 +135,8 @@ def _runtime_finish(now, started_monotonic: float,
             plan_generated=pd.Timestamp(now).isoformat(),
             duration_seconds=round(_time.monotonic() - started_monotonic, 2),
             message=("Plan aktualisiert; weiterer Lauf wartet" if pending else message))
+        _cycle_watchdog_status.update(
+            overdue=False, message=None, since=None)
     # Zeitstempel des letzten ERFOLGREICHEN Zyklus (für den Staleness-Watchdog).
     _last_cycle_ok["monotonic"] = _time.monotonic()
 
@@ -173,8 +179,14 @@ def _start_cycle_watchdog(config, publisher, stop_event):
                 _last_cycle_ok["monotonic"], _time.monotonic(), threshold_s)
             now = _time.time()
             if overdue is not None:
+                mins = (overdue + threshold_s) / 60.0
+                with _runtime_lock:
+                    _cycle_watchdog_status.update(
+                        overdue=True,
+                        message=(f"Seit {mins:.0f} min kein erfolgreicher "
+                                 "Optimierungszyklus"),
+                        since=_runtime_iso())
                 if not state["alarmed"] or now - state["last"] >= repeat_s:
-                    mins = (overdue + threshold_s) / 60.0
                     try:
                         publisher.publish_alert(
                             "error", f"EMS: seit {mins:.0f} min kein erfolgreicher "
@@ -183,6 +195,9 @@ def _start_cycle_watchdog(config, publisher, stop_event):
                         pass
                     state.update(alarmed=True, last=now)
             elif state["alarmed"] and _last_cycle_ok["monotonic"] is not None:
+                with _runtime_lock:
+                    _cycle_watchdog_status.update(
+                        overdue=False, message=None, since=None)
                 try:
                     publisher.publish_alert("info", "EMS: Zyklen laufen wieder.")
                 except Exception:  # pragma: no cover
@@ -1299,7 +1314,7 @@ def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
     raise KeyError(action)
 
 
-def _status_api_payload(path: str, config):
+def _status_api_payload(path: str, config, query=None):
     """Payload + HTTP-Code der reinen Status-JSON-Endpoints (status/mode-
     comparison/events). Modulweit und ohne Live-/Datei-IO, damit das Routing der
     Handler-GET direkt testbar ist. None, wenn der Pfad kein Status-Endpoint ist."""
@@ -1330,6 +1345,10 @@ def _status_api_payload(path: str, config):
                 "30d": forecast_accuracy(config, days=30),
                 "trend": read_forecast_accuracy(
                     config.e3dc_rscp.history_db_path, days=30)}, 200
+    if path == "/api/forecast-analysis.json":
+        from .observability import forecast_analysis
+        day = ((query or {}).get("day") or [None])[0]
+        return forecast_analysis(config, days=30, target_day=day), 200
     if path == "/api/battery-health.json":
         from .observability import battery_health
         return battery_health(config, days=30), 200
@@ -1435,6 +1454,7 @@ def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
         return ("live",)
     if path in ("/api/status.json", "/api/mode-comparison.json", "/api/events.json",
                 "/api/savings-history.json", "/api/forecast-accuracy.json",
+                "/api/forecast-analysis.json",
                 "/api/battery-health.json", "/api/plan-value.json",
                 "/api/load-profiles.json"):
         return ("status", path)
@@ -1590,6 +1610,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
     """Ein Rechenzyklus. `publisher`/`e3dc`: persistente Verbindungen im Loop-
     Betrieb (MQTT Last Will bzw. RSCP-Watchdog-Thread); ohne werden sie pro Lauf
     erzeugt und wieder geschlossen."""
+    global _last_efficiency_check, _last_load_bias, _last_monitor_diagnostics
     runtime_started = _time.monotonic()
     runtime_trigger = _runtime_begin()
     repo = None
@@ -1753,7 +1774,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                      _intraday_raw["load"],
                      config.forecast.intraday_load_decay_hours)
 
-        load_p10, load_p90 = forecaster.uncertainty_band(history, load_fc)
+        load_p10, load_p90 = forecaster.uncertainty_band(
+            history, load_fc, hist_temp=temp, fut_temp=temp)
+        load_band_note = forecaster.uncertainty_summary()
         forecast_issue = pd.Timestamp.now(tz="UTC")
 
         repo.write_frame(
@@ -1787,9 +1810,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                               else None)
 
         pv_missing_slots = {}
+        pv_without_nowcast = {}
 
         def _pv_series(signal: str, required: bool = True) -> pd.Series:
-            """PV-Signal auf den Horizont + Kalibrierprofil + Intraday-Korrektur."""
+            """PV-Signal aufbereiten; Nowcast ausschließlich im Nahbereich."""
             s = solcast.read_pv_signal(
                 config, repo, signal, now, opt_end,
                 require_complete=config.solcast.enabled).reindex(opt_index)
@@ -1804,10 +1828,16 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 from .calibration import apply_pv_correction
                 s = apply_pv_correction(
                     s, cal_profile_active, config.general.timezone)
+            # Dieser unveränderte Stand ist der automatische Challenger. Er
+            # wird zusammen mit dem produktiven Nahbereichs-Nowcast archiviert
+            # und später Rolling-Origin gegen die PV-Istwerte bewertet.
+            pv_without_nowcast[signal] = s.copy()
             if pv_ratio is not None:
                 s = s * intraday_factor_series(
                     pv_ratio, s.index, now,
-                    config.forecast.intraday_pv_decay_hours)
+                    config.forecast.intraday_pv_decay_hours,
+                    max_slots=config.forecast.intraday_pv_operational_slots,
+                    slot_minutes=config.general.slot_minutes)
             return s
 
         pv = _pv_series("pv_forecast")
@@ -1819,9 +1849,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                      "angewandt.", calibration_source,
                      solcast.selected_source(config))
         if pv_ratio is not None:
-            log.info("Intraday-Korrektur PV: x%.2f (roh x%.2f; klingt über "
-                     "%.1f h ab).", pv_ratio, _intraday_raw["pv"],
-                     config.forecast.intraday_pv_decay_hours)
+            log.info("Intraday-Korrektur PV: x%.2f (roh x%.2f; nur nächste "
+                     "%d Slots, danach unveränderte %s-Prognose).",
+                     pv_ratio, _intraday_raw["pv"],
+                     config.forecast.intraday_pv_operational_slots,
+                     solcast.selected_source(config))
         # Pessimistische PV (Solcast p10, optional): dimensioniert die
         # Einspeise-Linie an Peak-Tagen wolken-robust.
         pv10 = (_pv_series("pv_forecast_p10", required=False)
@@ -2026,6 +2058,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             pv_issue = weather_issue = None
         pv_name = solcast.selected_source(config)
         pv_note = f"Quelle: {'Solcast' if pv_name == 'solcast' else 'pvlib'}"
+        pv_note += (
+            f" · PV-Nowcast nur {config.forecast.intraday_pv_operational_slots} "
+            "operative Slots; danach Quelle unverändert")
         if pv_selection and pv_selection.get("reason"):
             pv_note += f" ({pv_selection['reason']})"
         try:
@@ -2039,7 +2074,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "Hauslast", total_slots,
                 total_slots if load_source_missing else n_load_fallback,
                 "konservativer Lastwert", forecast_issue,
-                "empirisches p10–p90-Band"
+                load_band_note
                 + (f" · {load_model_note}" if load_model_note else "")),
             _forecast_quality_entry(
                 "PV", total_slots, pv_missing_slots.get("pv_forecast", total_slots),
@@ -2054,6 +2089,33 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "PV-p10", total_slots,
                 pv_missing_slots.get("pv_forecast_p10", total_slots),
                 "konservative PV-Ableitung", pv_issue, pv_note))
+        if config.calibration.enabled:
+            profile_name = os.path.basename(config.calibration.pv_profile)
+            profile_issue = None
+            try:
+                profile_issue = pd.Timestamp(
+                    os.path.getmtime(config.calibration.pv_profile),
+                    unit="s", tz="UTC")
+            except OSError:
+                pass
+            if cal_profile is None:
+                cal_level, cal_state = "replaced", "Profil fehlt oder ist unlesbar"
+                cal_detail = (
+                    f"{profile_name} · PV-Korrektur wird derzeit nicht angewandt")
+            elif cal_profile_active is None:
+                cal_level, cal_state = "partial", "für aktive Quelle ausgesetzt"
+                cal_detail = (
+                    f"{profile_name} gehört zu {calibration_source}; aktiv ist "
+                    f"{solcast.selected_source(config)}")
+            else:
+                cal_level, cal_state = "current", "aktiv"
+                cal_detail = f"{profile_name} · angewandt auf {calibration_source}"
+            forecast_quality.append({
+                "name": "PV-Kalibrierung", "state": cal_state,
+                "level": cal_level, "detail": cal_detail,
+                "issued_at": (profile_issue.isoformat()
+                              if profile_issue is not None else None),
+            })
         # Strompreis: der Day-Ahead wird erst mittags für morgen veröffentlicht,
         # der ferne Horizont ist also IMMER geschätzt -> die reine Ersatzquote
         # wäre dauerhaft gelb. Ampel daher am nächsten Tag ausrichten: grün,
@@ -2101,6 +2163,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 "house_load_p10_w": load_p10_opt,
                 "house_load_p90_w": load_p90_opt,
                 "pv_w": pv,
+                "pv_without_nowcast_w": pv_without_nowcast.get("pv_forecast"),
                 "price_ct_kwh": price,
                 "spot_price_ct_kwh": spot_price,
                 "feedin_ct_kwh": feedin,
@@ -2114,8 +2177,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         model_series.reindex(opt_index))
             if pv10 is not None:
                 archive_series["pv10_w"] = pv10
+                archive_series["pv10_without_nowcast_w"] = (
+                    pv_without_nowcast.get("pv_forecast_p10"))
             if pv90 is not None:
                 archive_series["pv90_w"] = pv90
+                archive_series["pv90_without_nowcast_w"] = (
+                    pv_without_nowcast.get("pv_forecast_p90"))
             if ambient is not None:
                 archive_series["ambient_temp_c"] = ambient
             if solar_safe is not None:
@@ -2221,9 +2288,10 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
 
         # --- 3c) SoC-Drift (Modell gegen Realität) ---------------------- #
         drift_mae = None
-        efficiency_drift = None
-        execution_bias = None
-        load_bias = None
+        efficiency_drift = _last_monitor_diagnostics.get("efficiency")
+        execution_bias = _last_monitor_diagnostics.get("execution_bias")
+        load_bias = _last_load_bias
+        diagnostics_refreshed = False
         if config.monitoring.drift_enabled:
             try:
                 from .drift import DriftMonitor
@@ -2233,14 +2301,34 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 # systematischen Modellfehler nicht (jeder Zyklus startet neu
                 # beim gemessenen SoC). Höchstens stündlich - reine SQLite-Reads,
                 # aber je Zyklus wäre es unnötig.
-                global _last_efficiency_check
                 if _time.time() - _last_efficiency_check > 3600:
                     efficiency_drift = monitor.check_energy_model(now)
                     execution_bias = monitor.check_execution_bias(now)
                     load_bias = monitor.check_load_bias(now)
+                    _last_monitor_diagnostics = {
+                        "efficiency": efficiency_drift,
+                        "execution_bias": execution_bias,
+                    }
+                    _last_load_bias = load_bias
                     _last_efficiency_check = _time.time()
+                    diagnostics_refreshed = True
             except Exception as exc:
                 log.warning("Drift-Check fehlgeschlagen (%s).", exc)
+        else:
+            efficiency_drift = execution_bias = load_bias = None
+        monitoring_status = {}
+        if drift_mae is not None:
+            monitoring_status["soc_drift"] = {
+                "mae_pp": round(float(drift_mae), 2),
+                "threshold_pp": float(config.monitoring.drift_alert_percent),
+                "window_hours": float(config.monitoring.drift_window_hours),
+                "alert": bool(
+                    drift_mae > config.monitoring.drift_alert_percent),
+            }
+        if efficiency_drift:
+            monitoring_status["efficiency"] = efficiency_drift
+        if execution_bias:
+            monitoring_status["execution_bias"] = execution_bias
 
         # --- 3d) Debug-Schnappschuss (für den Mail-Report-Button) ------- #
         try:
@@ -2287,20 +2375,27 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     "warning", f"SoC-Drift {drift_mae:.1f} pp über Schwelle "
                                f"({config.monitoring.drift_alert_percent:.0f} pp) – "
                                f"Modell weicht von der Realität ab.")
-            if load_bias and load_bias.get("alert"):
+            if diagnostics_refreshed and load_bias and load_bias.get("alert"):
+                night = load_bias.get("night_median_w")
+                scope = (f"Nacht-Bias {night:+.0f} W; "
+                         if night is not None
+                         and load_bias.get("alert_scope") in ("Nacht", "Tag und Nacht")
+                         else "")
                 publisher.publish_alert(
                     "warning",
-                    f"Lastprognose {load_bias['median_w']:+.0f} W im Median "
+                    f"Lastprognose: {scope}{load_bias['median_w']:+.0f} W im Median "
                     f"daneben ({load_bias['kwh_per_day']:+.2f} kWh/Tag) – "
-                    f"Grundlast-Zerlegung prüfen.")
-            if execution_bias and execution_bias.get("alert"):
+                    f"{load_bias.get('diagnostic', 'Lastmodell prüfen')}.")
+            if (diagnostics_refreshed and execution_bias
+                    and execution_bias.get("alert")):
                 publisher.publish_alert(
                     "warning",
                     f"Ausführungs-Versatz {execution_bias['median_w']:+.0f} W "
                     f"im Median über {execution_bias['n']} Slots "
                     f"({execution_bias['kwh_per_day']:+.2f} kWh/Tag) – die "
                     f"Anlage folgt den Sollwerten systematisch anders.")
-            if efficiency_drift and efficiency_drift.get("alert"):
+            if (diagnostics_refreshed and efficiency_drift
+                    and efficiency_drift.get("alert")):
                 publisher.publish_alert(
                     "warning",
                     f"Entladewirkungsgrad {efficiency_drift['measured']:.2f} "
@@ -2508,7 +2603,17 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                             execution_status=execution_status,
                             load_feedback_status=load_feedback_status,
                             thermal_calibration=thermal_calibration,
-                            auto_peak_basis=getattr(result, "auto_peak_basis", None))
+                            auto_peak_basis=getattr(result, "auto_peak_basis", None),
+                            load_bias=load_bias,
+                            monitoring_status=monitoring_status,
+                            plan_status={
+                                "status": result.status,
+                                "infeasible": result.infeasible,
+                                "infeasible_reason": result.infeasible_reason,
+                                "car_target_shortfall_wh":
+                                    result.car_target_shortfall_wh,
+                                "grid_overload_wh": result.grid_overload_wh,
+                            })
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
@@ -2683,6 +2788,8 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
 _last_weather_fetch = 0.0
 _last_grid_weather_fetch = 0.0
 _last_efficiency_check = 0.0
+_last_load_bias = None
+_last_monitor_diagnostics = {"efficiency": None, "execution_bias": None}
 _price_model = None
 _price_model_day = None
 
@@ -3171,7 +3278,8 @@ def _build_display_frame(repo, config, now, history, result,
                                         hist_temp=temp, fut_temp=temp,
                                         hist_pv=hist_pv, fut_pv=fut_pv)
         df["house_load_w"] = pred_load.reindex(full)
-        load_p10, load_p90 = forecaster.uncertainty_band(history, pred_load)
+        load_p10, load_p90 = forecaster.uncertainty_band(
+            history, pred_load, hist_temp=temp, fut_temp=temp)
         df["house_load_p10_w"] = load_p10.reindex(full)
         df["house_load_p90_w"] = load_p90.reindex(full)
     except Exception as exc:  # pragma: no cover
@@ -3236,7 +3344,12 @@ def _build_display_frame(repo, config, now, history, result,
             decay = (config.forecast.intraday_load_decay_hours
                      if col.startswith("house_load_") or col == "house_load_w"
                      else config.forecast.intraday_pv_decay_hours)
-            fac = intraday_factor_series(ratio, full, now, decay)
+            is_load = col.startswith("house_load_") or col == "house_load_w"
+            fac = intraday_factor_series(
+                ratio, full, now, decay,
+                max_slots=(None if is_load else
+                           config.forecast.intraday_pv_operational_slots),
+                slot_minutes=config.general.slot_minutes)
             fac[full <= now] = 1.0
             df[col] = df[col] * fac
 
@@ -3908,7 +4021,9 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                                 200 if data is not None else 503)
                     return
                 if kind == "status":
-                    obj, code = _status_api_payload(route[1], config)
+                    from urllib.parse import parse_qs, urlparse
+                    query = parse_qs(urlparse(self.path).query)
+                    obj, code = _status_api_payload(route[1], config, query)
                     self._reply(obj, code)
                     return
                 if kind == "json":

@@ -235,6 +235,9 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
   var srcAxis=src.layout[axis==='y'?'yaxis':'yaxis'+axis.slice(1)]||{{}};
   var layout={{height:420,autosize:true,hovermode:'x unified',separators:',.',showlegend:true,
    paper_bgcolor:c.paper,plot_bgcolor:c.plot,font:{{color:c.font}},margin:{{l:48,r:12,t:18,b:85}},
+   hoverlabel:{{bgcolor:document.documentElement.classList.contains('dark')?'#202b36':'#ffffff',
+    bordercolor:document.documentElement.classList.contains('dark')?'#536273':'#cfd7df',
+    font:{{color:c.font}}}},
    legend:{{orientation:'h',x:0,y:-.2,font:{{size:10}}}},
    xaxis:xaxis,
    yaxis:{{title:srcAxis.title||'',gridcolor:c.grid,zerolinecolor:c.grid}}}};
@@ -452,11 +455,12 @@ def _runtime_block(controls_enabled: bool) -> str:
  const strip=document.getElementById('runtime-strip'),btn=document.getElementById('recalc-plan');
  function fmt(s){{if(!s)return '';let d=new Date(s);return isNaN(d)?'':d.toLocaleString('de-DE',{{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}});}}
  function render(d){{
-  strip.dataset.state=d.state||'unknown';
-  document.getElementById('runtime-phase').textContent=d.phase||'EMS';
-  document.getElementById('runtime-message').textContent=d.message||'';
+  const watchdog=d.cycle_watchdog||{{}},overdue=watchdog.overdue===true;
+  strip.dataset.state=overdue?'error':(d.state||'unknown');
+  document.getElementById('runtime-phase').textContent=overdue?'EMS-Zyklus überfällig':(d.phase||'EMS');
+  document.getElementById('runtime-message').textContent=overdue?(watchdog.message||'Kein erfolgreicher Optimierungszyklus'):(d.message||'');
   document.getElementById('runtime-progress').style.width=Math.max(0,Math.min(100,Number(d.progress)||0))+'%';
-  document.getElementById('runtime-meta').textContent=d.state==='ready'?'Plan '+fmt(d.plan_generated)+(d.duration_seconds!=null?' · '+d.duration_seconds.toLocaleString('de-DE')+' s':''):(d.state==='running'?'läuft …':'');
+  document.getElementById('runtime-meta').textContent=overdue?'letzter Plan '+fmt(d.plan_generated):(d.state==='ready'?'Plan '+fmt(d.plan_generated)+(d.duration_seconds!=null?' · '+d.duration_seconds.toLocaleString('de-DE')+' s':''):(d.state==='running'?'läuft …':''));
   if(btn)btn.disabled=['queued','running'].includes(d.state);
   if(seen===null)seen=Number(d.sequence)||0;
   if(['queued','running'].includes(d.state))busy=true;
@@ -475,7 +479,7 @@ def _runtime_block(controls_enabled: bool) -> str:
 
 def _slot_detail_block() -> str:
     return """
-<details class="info-panel slot-detail" id="slot-detail"><summary>⌖ Slot-Details <small>Kurve anklicken, dann hier aufklappen</small></summary>
+<details class="info-panel slot-detail" id="slot-detail"><summary><span class="an-dot neutral" id="slot-detail-dot"></span>⌖ Slot-Details <small id="slot-detail-summary">Kurve anklicken · noch kein Slot gewählt</small></summary>
  <div id="slot-detail-body" class="detail-grid"><p>Wähle einen Zeitpunkt in einem Diagramm aus.</p></div>
 </details>
 <script>(function(){
@@ -483,7 +487,7 @@ def _slot_detail_block() -> str:
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d=0)=>typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d}):'–';
  async function data(){if(rows)return rows;let r=await fetch('api/data.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);rows=await r.json();return rows;}
- function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp),cmp=(actual,planned,delta,unit='W',digits=0)=>num(actual,digits)+' / '+num(planned,digits)+' / '+num(delta,digits)+' '+unit;let items=[['Hauslast Ist / Soll / Δ',cmp(best.actual_load_w,best.house_load_w,best.load_deviation_w)],['PV Ist / Soll / Δ',cmp(best.actual_pv_w,best.pv_w,best.pv_deviation_w)],['Netz Ist / Soll / Δ',cmp(best.actual_grid_w,best.planned_grid_w,best.grid_deviation_w)],['Akku Ist / Soll / Δ',cmp(best.actual_battery_w,best.planned_battery_w,best.battery_deviation_w)],['SoC Ist / Soll / Δ',cmp(best.actual_soc_percent,best.house_soc_percent,best.soc_deviation_percent,'%',0)],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';});}
+ function render(x){data().then(a=>{let target=new Date(x).getTime(),best=null,dist=Infinity;if(!isFinite(target))return;a.forEach(r=>{let t=new Date(r.timestamp).getTime(),d=Math.abs(t-target);if(d<dist){dist=d;best=r;}});if(!best)return;let when=new Date(best.timestamp),cmp=(actual,planned,delta,unit='W',digits=0)=>num(actual,digits)+' / '+num(planned,digits)+' / '+num(delta,digits)+' '+unit;let items=[['Hauslast Ist / Soll / Δ',cmp(best.actual_load_w,best.house_load_w,best.load_deviation_w)],['PV Ist / Soll / Δ',cmp(best.actual_pv_w,best.pv_w,best.pv_deviation_w)],['Netz Ist / Soll / Δ',cmp(best.actual_grid_w,best.planned_grid_w,best.grid_deviation_w)],['Akku Ist / Soll / Δ',cmp(best.actual_battery_w,best.planned_battery_w,best.battery_deviation_w)],['SoC Ist / Soll / Δ',cmp(best.actual_soc_percent,best.house_soc_percent,best.soc_deviation_percent,'%',0)],['Preis',num(best.price_ct_kwh,2)+' ct/kWh'],['Akku laden',num((best.batt_dc_charge_w||0)+(best.batt_ac_charge_w||0))+' W'],['Akku entladen',num(best.batt_discharge_w)+' W'],['Netzbezug',num(best.grid_import_w)+' W'],['Einspeisung',num(best.grid_export_w)+' W'],['Modus',best.mode],['Entscheidung',best.decision_reason],['Ausführung',best.execution_label||'–'],['Ausführungsdetail',best.execution_detail||'–'],['verschobene Energie',num(best.decision_energy_kwh,2)+' kWh'],['Wert',num(best.decision_value_ct,1)+' ct'],['Referenz',best.decision_reference_time?new Date(best.decision_reference_time).toLocaleString('de-DE'):'–']];document.getElementById('slot-detail-body').innerHTML='<h3>'+when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</h3>'+items.map(i=>'<div><span>'+esc(i[0])+'</span><b>'+esc(i[1])+'</b></div>').join('');document.getElementById('slot-detail-dot').className='an-dot ok';document.getElementById('slot-detail-summary').textContent=when.toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+' · '+(best.mode||'–');}).catch(()=>{document.getElementById('slot-detail-body').innerHTML='<p>Detaildaten sind nicht verfügbar.</p>';document.getElementById('slot-detail-dot').className='an-dot bad';document.getElementById('slot-detail-summary').textContent='Detaildaten nicht verfügbar';});}
  // WICHTIG: '.plotly-graph-div' vergibt nur Pythons Plotly-HTML (Desktop-Plot).
  // Der Mobil-Plot ist ein eigenes <div id="mobile-plot">, dem Plotly.react nur
  // '.js-plotly-plot' anhängt - ohne diesen Selektor blieb er ungebunden und die
@@ -510,7 +514,7 @@ def _slot_detail_block() -> str:
 
 def _events_block() -> str:
     return """
-<details class="info-panel events-panel" id="events-panel"><summary>☷ Ereignisse &amp; Bedienverlauf <small>neueste zuerst · nach Stufe filterbar</small></summary>
+<details class="info-panel events-panel" id="events-panel"><summary><span class="an-dot neutral" id="events-dot"></span>☷ Ereignisse &amp; Bedienverlauf <small id="events-summary">wird geprüft …</small></summary>
  <div class="events-filter" id="events-filter">
   <button type="button" data-lvl="info" class="info">Info</button>
   <button type="button" data-lvl="warning" class="warn">Warnung</button>
@@ -531,15 +535,16 @@ def _events_block() -> str:
   listEl.innerHTML=rows.length?rows.map(e=>'<div class="event '+esc(e.level)+' k-'+esc(e.kind)+'"><time>'+new Date(e.ts).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})+'</time><span><i class="ev-ic">'+icon(lvlClass(e.level))+'</i>'+esc(e.message)+'</span></div>').join(''):'<p>Keine Einträge für diese Filterauswahl.</p>';
   listEl.scrollTop=0;   // neueste (oben) zeigen, NICHT ans Ende springen
  }
- async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';}}
+ function headline(){const dot=document.getElementById('events-dot'),summary=document.getElementById('events-summary'),err=LAST.filter(e=>lvlClass(e.level)==='error').length,warn=LAST.filter(e=>lvlClass(e.level)==='warning').length;dot.className='an-dot '+(err?'bad':warn?'warn':'ok');summary.textContent=err+' Fehler · '+warn+' Warnungen · '+LAST.length+' Einträge';}
+ async function load(){try{let r=await fetch('api/events.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);LAST=(await r.json()).events||[];headline();render();}catch(e){listEl.textContent='Ereignisverlauf nicht erreichbar.';document.getElementById('events-dot').className='an-dot bad';document.getElementById('events-summary').textContent='nicht erreichbar';}}
  (function(){const act=active();document.querySelectorAll('#events-filter button').forEach(b=>{b.classList.toggle('on',act.has(b.dataset.lvl));b.addEventListener('click',()=>{const a=active();if(a.has(b.dataset.lvl))a.delete(b.dataset.lvl);else a.add(b.dataset.lvl);localStorage.setItem('ems-event-filter',JSON.stringify([...a]));b.classList.toggle('on',a.has(b.dataset.lvl));render();});});})();
  document.getElementById('events-panel').addEventListener('toggle',function(){if(this.open){load();listEl.scrollTop=0;}});load();setInterval(()=>{if(document.getElementById('events-panel').open)load();},10000);
 })();</script>"""
 
 
 def _analysis_block(headline=None) -> str:
-    """Zusammengefasstes Analyse-Panel (Prognosegüte, Ersparnis inkl. Verlaufs-
-    Sparkline + Treiber, Akku-Gesundheit) als Stat-Kacheln. Lädt lazy beim
+    """Analyse-Panel für Entscheidungsgüte, Ersparnis inkl. Verlauf/Treiber
+    und Akku-Gesundheit. Lädt lazy beim
     Aufklappen. `headline` (server-seitig, günstig) zeigt schon im eingeklappten
     Titel die Gesamt-Ersparnis + eine Status-Ampel."""
     if headline:
@@ -547,12 +552,9 @@ def _analysis_block(headline=None) -> str:
                    + '"></span>◴ Analyse &amp; Gesundheit <small>'
                    + _esc(headline.get("text", "")) + '</small></summary>')
     else:
-        summary = ('<summary>◴ Analyse &amp; Gesundheit '
-                   '<small>Prognosegüte · Ersparnis · Akku</small></summary>')
+        summary = ('<summary><span class="an-dot neutral"></span>◴ Analyse &amp; Gesundheit '
+                   '<small>Entscheidungsgüte · Ersparnis · Akku</small></summary>')
     body = """
- <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
- <div class="tiles" id="an-facc"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
- <div class="facc-trend" id="an-facc-trend"></div>
  <h4>Entscheidungsgüte <small>was die Unsicherheit kostet · Ø je Tag</small></h4>
  <div class="tiles" id="an-pvalue"><span class="an-hint">wird geladen …</span></div>
  <h4>Ersparnis-Verlauf <small>validiert gegen die Zähler</small></h4>
@@ -569,18 +571,6 @@ def _analysis_block(headline=None) -> str:
  const eur=v=>(typeof v==='number'?v.toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2}):'–');
  function tile(v,l,s){return '<div class="tile"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';}
  function fail(id,msg){var e=g(id);if(e)e.innerHTML='<span class="an-hint">'+msg+'</span>';}
- function trendSvg(trend){var t=(trend||[]).filter(function(x){return typeof x.pv_wape==='number'||typeof x.load_wape==='number';});
-  if(t.length<2)return '<span class="an-hint">Trend erscheint ab dem 2. Tag mit Daten</span>';
-  var W=280,H=42,n=t.length,all=[];t.forEach(function(x){if(typeof x.pv_wape==='number')all.push(x.pv_wape);if(typeof x.load_wape==='number')all.push(x.load_wape);});
-  var mx=Math.max(10,Math.max.apply(null,all));
-  function line(key,color){var pts=t.map(function(x,i){var v=x[key];if(typeof v!=='number')return null;return ((i/(n-1))*W).toFixed(1)+','+(H-(v/mx)*H).toFixed(1);}).filter(Boolean).join(' ');return pts?'<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>':'';}
-  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" class="facc-svg">'+line('pv_wape','#3a86c8')+line('load_wape','#e29a2d')+'</svg><div class="facc-legend"><span style="color:#3a86c8">■ PV</span> <span style="color:#e29a2d">■ Last</span> · WAPE % über '+n+' Tage</div>';}
- async function facc(){try{g('an-facc').innerHTML='<span class="an-hint">wird gemessen …</span>';let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=(b.pv||{}),lo30=(b.load||{});
-  g('an-facc').innerHTML=tile(num(pv.wape_pct)+' %','PV WAPE','30 T: '+num(pv30.wape_pct)+' % · Bias '+num(pv.bias_w,0)+' W')
-   +tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')
-   +tile((pv.source||'–'),'PV-Quelle','n='+((pv.n)||0)+' Slots');
-  g('an-facc-trend').innerHTML=trendSvg(d.trend);
- }catch(e){fail('an-facc','Prognosegüte nicht erreichbar.');}}
  function spark(weekly){var wk=(weekly||[]).slice(-12);if(!wk.length){g('an-spark').innerHTML='<span class="an-hint">noch keine Wochendaten</span>';return;}
   var mx=Math.max(1,...wk.map(x=>Math.abs(x.saved_eur)||0));
   g('an-spark').innerHTML=wk.map(x=>'<span class="bar'+((x.saved_eur||0)<0?' neg':'')+'" style="height:'+Math.max(4,Math.round(100*Math.abs(x.saved_eur||0)/mx))+'%" title="'+x.period+': '+eur(x.saved_eur)+' €"></span>').join('');}
@@ -607,10 +597,232 @@ def _analysis_block(headline=None) -> str:
    +tile(sd?num(d.discharge_score_percent)+' %':'–','Entlade-Timing',sd?('bewertbar an '+sd+' von '+td+' Tagen'):'kein Spielraum an '+td+' Tagen');
  }catch(e){fail('an-pvalue','Entscheidungsgüte nicht erreichbar.');}}
  let done=false;
- g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;facc();pvalue();savings();bhealth();}});
+ g('analysis-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;pvalue();savings();bhealth();}});
 })();</script>"""
     return ('<details class="info-panel analysis-panel" id="analysis-panel">'
             + summary + body)
+
+
+def _load_bias_quality_card(load_bias) -> tuple[str, str]:
+    """Rollenden Last-Bias als fachlichen Prognosequalitätsstatus darstellen."""
+    if not load_bias:
+        return "", "neutral"
+    alert = bool(load_bias.get("alert"))
+    level = "partial" if alert else "current"
+    median = load_bias.get("median_w")
+    night = load_bias.get("night_median_w")
+    scope = load_bias.get("alert_scope", "Gesamt")
+    threshold = load_bias.get("threshold_w", 100)
+    days = load_bias.get("window_days", 7)
+    samples = int(load_bias.get("n", 0) or 0)
+
+    parts = []
+    if night is not None:
+        parts.append(f"Nacht {float(night):+.0f} W")
+    if median is not None:
+        parts.append(f"Gesamt {float(median):+.0f} W")
+    state = " · ".join(parts) or "noch nicht auswertbar"
+    if not alert:
+        state = "kein systematischer Versatz · " + state
+    detail = (
+        f"{scope} {'über' if alert else 'unter'} der Schwelle "
+        f"±{float(threshold):.0f} W · {samples} Paare · {days}-Tage-Fenster"
+        " · historische Tagesstart-Prognosen; Modelländerungen laufen verzögert ein")
+    return (
+        f"<article class='quality-item {level}'>"
+        "<div class='quality-source'>Lastprognose-Bias</div>"
+        f"<div class='quality-state'>{_esc(state)}</div>"
+        f"<div class='quality-detail'>{_esc(detail)}</div>"
+        "</article>",
+        level)
+
+
+def _forecast_analysis_block(forecast_quality=None,
+                             timezone="Europe/Berlin",
+                             load_bias=None) -> str:
+    """Gemeinsames Panel für Datenstatus, Güte, Reife und Archivanalysen."""
+    quality_items, levels = _forecast_quality_cards(
+        forecast_quality, timezone)
+    bias_item, bias_level = _load_bias_quality_card(load_bias)
+    all_items = quality_items + bias_item
+    quality_html = (
+        "<h4>Aktueller Datenstatus <small>im verwendeten Optimierungshorizont</small></h4>"
+        f"<div class='quality-grid'>{all_items}</div>"
+        if all_items else
+        "<h4>Aktueller Datenstatus</h4>"
+        "<span class='an-hint'>Noch kein Quellenstatus verfügbar.</span>")
+    status_levels = levels + ([bias_level] if bias_item else [])
+    dot = _panel_dot(status_levels) if status_levels else "neutral"
+    current_count = sum(1 for level in levels if level == "current")
+    summary_text = (
+        f"{current_count}/{len(levels)} Quellen aktuell"
+        if levels else "noch kein Quellenstatus")
+    if forecast_quality:
+        first_issue = next((
+            source for source in forecast_quality
+            if source.get("level") != "current"), None)
+        if first_issue:
+            summary_text += (
+                f" · {first_issue.get('name', 'Quelle')}: "
+                f"{first_issue.get('state', 'prüfen')}")
+    if load_bias and load_bias.get("alert"):
+        bias_value = (load_bias.get("night_median_w")
+                      if load_bias.get("alert_scope") in ("Nacht", "Tag und Nacht")
+                      else load_bias.get("median_w"))
+        if bias_value is not None:
+            summary_text += f" · Last-Bias {float(bias_value):+.0f} W"
+    html = """
+<details class="info-panel forecast-analysis-panel" id="forecast-analysis-panel">
+ <summary><span class="an-dot __DOT__"></span>▦ Prognosen &amp; Qualität <small>__SUMMARY__</small></summary>
+ <!--QUALITY-->
+ <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
+ <div class="tiles forecast-accuracy-tiles" id="fa-accuracy"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
+ <div class="facc-trend" id="fa-accuracy-trend"></div>
+ <div class="forecast-analysis-toolbar">
+  <label>Zieltag <input type="date" id="fa-day"></label>
+  <button type="button" id="fa-today">Heute</button>
+ <button type="button" id="fa-refresh">Neu laden</button>
+  <span id="fa-status">wird beim Aufklappen geladen</span>
+ </div>
+ <h4>Tagesverlauf <small>PV-Ist · Solcast · pvlib · produktives Last-Soll</small></h4>
+ <div id="fa-day-comparison" class="forecast-analysis-chart day-comparison-chart"></div>
+ <h4>Kalibrierungsreife <small>Datenmenge · zeitliche Abdeckung · aktive und empfohlene Werte</small></h4>
+ <div id="fa-calibration" class="calibration-grid"><span class="an-hint">wird geladen …</span></div>
+ <h4>Kalibrierungsverlauf <small>Faktoren und Bandparameter nach Erstellungszeit</small></h4>
+ <div id="fa-calibration-history" class="forecast-analysis-chart calibration-history-chart"></div>
+ <div id="fa-calibration-changes" class="calibration-change-list"></div>
+ <h4>Fehler-Heatmap <small>WAPE · Hover zeigt Bias und Stichprobe · letzte 30 Tage</small></h4>
+ <div class="forecast-heat-grid">
+  <div><b>PV-Prognose</b><div id="fa-heat-pv" class="forecast-analysis-chart"></div></div>
+  <div><b>Lastprognose</b><div id="fa-heat-load" class="forecast-analysis-chart"></div></div>
+ </div>
+ <div class="forecast-vintage-head">
+  <h4>Prognose-Vintages <small>produktiver Optimierereingang gegen Ist</small></h4>
+  <div class="forecast-signal-switch">
+   <button type="button" data-signal="pv" class="on">PV</button>
+   <button type="button" data-signal="load">Last</button>
+  </div>
+ </div>
+ <div id="fa-vintages" class="forecast-analysis-chart vintage-chart"></div>
+</details>
+<script>(function(){
+ const panel=document.getElementById('forecast-analysis-panel'),day=document.getElementById('fa-day'),status=document.getElementById('fa-status');
+ let payload=null,signal='pv',loaded=false;
+ const dark=()=>document.documentElement.classList.contains('dark');
+ const colors=()=>dark()?{text:'#e7edf4',grid:'#3b4a59',paper:'rgba(0,0,0,0)',actual:'#ffffff'}:{text:'#28323c',grid:'#e2e7ec',paper:'rgba(0,0,0,0)',actual:'#111827'};
+ const config={responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
+ const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const num=(v,d)=>(typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d==null?1:d}):'–');
+ const tile=(v,l,s)=>'<div class="tile"><div class="v">'+esc(v)+'</div><div class="l">'+esc(l)+'</div>'+(s?'<div class="s">'+esc(s)+'</div>':'')+'</div>';
+ function trendSvg(trend){var t=(trend||[]).filter(x=>typeof x.pv_wape==='number'||typeof x.load_wape==='number');
+  if(t.length<2)return '<span class="an-hint">Trend erscheint ab dem 2. Tag mit Daten</span>';
+  var W=280,H=42,n=t.length,all=[];t.forEach(x=>{if(typeof x.pv_wape==='number')all.push(x.pv_wape);if(typeof x.load_wape==='number')all.push(x.load_wape);});var mx=Math.max(10,Math.max(...all));
+  function line(key,color){var pts=t.map((x,i)=>typeof x[key]==='number'?((i/(n-1))*W).toFixed(1)+','+(H-(x[key]/mx)*H).toFixed(1):null).filter(Boolean).join(' ');return pts?'<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>':'';}
+  return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" class="facc-svg">'+line('pv_wape','#3a86c8')+line('load_wape','#e29a2d')+'</svg><div class="facc-legend"><span style="color:#3a86c8">■ PV</span> <span style="color:#e29a2d">■ Last</span> · WAPE % über '+n+' Tage</div>';
+ }
+ async function accuracy(){const el=document.getElementById('fa-accuracy');try{let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json(),a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=b.pv||{},lo30=b.load||{},nw=a.pv_nowcast||{},delta=nw.improvement_wape_pp;
+  let nowcastValue=(nw.n&&typeof delta==='number'?(delta>0?'+':'')+num(delta)+' pp':'–'),nowcastDetail=nw.n?('n='+(nw.n||0)+' · '+(nw.winner==='nowcast'?'Nowcast besser':nw.winner==='ohne_nowcast'?'ohne Nowcast besser':'gleichauf')+' · '+(nw.operational_slots||0)+' Slots'):'Vergleich startet mit neuen Prognose-Vintages';
+  el.innerHTML=tile(num(pv.wape_pct)+' %','PV WAPE','30 T: '+num(pv30.wape_pct)+' % · Bias '+num(pv.bias_w,0)+' W')+tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')+tile(pv.source||'–','PV-Quelle','n='+(pv.n||0)+' Slots')+tile(nowcastValue,'PV-Nowcast Nutzen','WAPE-Verbesserung · '+nowcastDetail);document.getElementById('fa-accuracy-trend').innerHTML=trendSvg(d.trend);
+  }catch(e){el.innerHTML='<span class="an-hint">Prognosegüte nicht erreichbar.</span>';}}
+ function value(v){
+  if(Array.isArray(v))return v.map(x=>typeof x==='number'?x.toLocaleString('de-DE',{maximumFractionDigits:3}):'–').join(' → ');
+  if(v&&typeof v==='object')return Object.entries(v).map(([k,x])=>k+' '+(typeof x==='number'?x.toLocaleString('de-DE',{maximumFractionDigits:1})+' %':'–')).join(' · ');
+  if(typeof v==='number')return v.toLocaleString('de-DE',{maximumFractionDigits:3});
+  return String(v??'–').replaceAll('_',' ');
+ }
+ function calibration(c){
+  const el=document.getElementById('fa-calibration'),cards=(c&&c.cards)||[];
+  if(!cards.length){el.innerHTML='<span class="an-hint">Noch kein Kalibrierungsbericht vorhanden.</span>';return;}
+  el.innerHTML=cards.map(x=>'<article class="calibration-card '+esc(x.level||'partial')+'"><header><div><b>'+esc(x.title)+'</b><small>'+esc(x.state)+'</small></div><strong>'+Math.round(x.confidence_pct||0)+' %</strong></header><div class="calibration-bar"><i style="width:'+Math.max(0,Math.min(100,x.confidence_pct||0))+'%"></i></div><p>'+esc(x.detail)+'</p><dl>'+((x.values||[]).map(v=>'<div><dt>'+esc(v.label)+'</dt><dd>'+esc(value(v.value))+'</dd></div>').join(''))+'</dl>'+(x.reason?'<footer>'+esc(x.reason)+'</footer>':'')+'</article>').join('')+'<small class="calibration-note">'+esc(c.note||'')+(c.generated?' · Stand '+new Date(c.generated).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</small>';
+ }
+ function layout(title,height){
+  const c=colors();return {title:{text:title,font:{size:13}},height:height,margin:{l:58,r:18,t:38,b:45},paper_bgcolor:c.paper,plot_bgcolor:c.paper,font:{color:c.text,size:11},xaxis:{gridcolor:c.grid},yaxis:{gridcolor:c.grid},legend:{orientation:'h',y:-.24},hovermode:'x unified',hoverlabel:{bgcolor:dark()?'#202b36':'#ffffff',bordercolor:dark()?'#526273':'#c8d0d8',font:{color:c.text}}};
+ }
+ function heat(id,h,title){
+  const el=document.getElementById(id);
+  if(!h||!h.samples){el.innerHTML='<span class="an-hint">Noch keine auswertbaren Prognose-/Ist-Paare.</span>';return;}
+  const custom=h.bias_w.map((row,i)=>row.map((v,j)=>[v,(h.n[i]||[])[j]||0]));
+  Plotly.react(el,[{type:'heatmap',x:h.hours,y:h.lead_buckets,z:h.wape,customdata:custom,zmin:0,zmax:60,
+   colorscale:[[0,'#2f9e63'],[.35,'#b5c94a'],[.65,'#efb447'],[1,'#d14b57']],colorbar:{title:'WAPE %',thickness:12},
+   hovertemplate:'Zielstunde %{x}:00<br>Vorlauf %{y}<br>WAPE %{z:.1f} %<br>Bias %{customdata[0]:.0f} W<br>n=%{customdata[1]}<extra></extra>'}],
+   {...layout(title+' · '+h.samples+' Paare',270),hovermode:'closest',yaxis:{gridcolor:colors().grid,autorange:'reversed'}},config);
+ }
+ function dayComparison(d){
+  const el=document.getElementById('fa-day-comparison');
+  if(!d){el.innerHTML='<span class="an-hint">Für diesen Tag sind noch keine Vergleichsdaten vorhanden.</span>';return;}
+  const specs=[
+   ['pv_actual_w','PV Ist',dark()?'#ffd166':'#e87917','solid',2.8],
+   ['solcast_w','Solcast','#4c9be8','solid',1.8],
+   ['pvlib_w','pvlib','#43a66b','dash',1.8],
+   ['load_forecast_w','Last-Soll','#d95f59','dot',1.8]
+  ];
+  const traces=specs.filter(s=>(d[s[0]]||[]).some(v=>typeof v==='number')).map(s=>({
+   x:d.timestamps,y:d[s[0]],type:'scatter',mode:'lines',name:s[1],
+   line:{color:s[2],dash:s[3],width:s[4]},
+   hovertemplate:'%{x|%d.%m. %H:%M}<br>%{y:.0f} W<extra>'+s[1]+'</extra>'
+  }));
+  if(!traces.length){el.innerHTML='<span class="an-hint">Für diesen Tag sind noch keine Prognose-/Ist-Werte archiviert.</span>';return;}
+  const lo=layout('Tagesvergleich · Rolling-Origin',330);
+  lo.yaxis={title:'W',gridcolor:colors().grid,rangemode:'tozero'};
+  lo.xaxis={gridcolor:colors().grid,tickformat:'%H:%M'};
+  Plotly.react(el,traces,lo,config);
+ }
+ function calibrationHistory(c){
+  const el=document.getElementById('fa-calibration-history'),list=document.getElementById('fa-calibration-changes'),h=(c&&c.history)||[];
+  if(!h.length){el.innerHTML='<span class="an-hint">Die Änderungshistorie beginnt mit dem nächsten Kalibrierungslauf.</span>';list.innerHTML='';return;}
+  const specs=[
+   ['pv_factor','PV-Faktor','#e29a2d','pv_samples','pv_confidence_pct'],
+   ['load_factor','Last-Faktor','#d95f59','load_samples','load_confidence_pct'],
+   ['p10','P10-Band','#4c9be8','band_samples','band_confidence_pct'],
+   ['p90','P90-Band','#43a66b','band_samples','band_confidence_pct']
+  ];
+  const traces=specs.filter(s=>h.some(x=>typeof x[s[0]]==='number')).map(s=>({
+   x:h.map(x=>x.generated),y:h.map(x=>x[s[0]]),type:'scatter',mode:'lines+markers',name:s[1],
+   customdata:h.map(x=>[x[s[3]]||0,x[s[4]]||0]),line:{color:s[2],width:1.8},
+   hovertemplate:'%{x|%d.%m.%Y %H:%M}<br>Wert %{y:.3f}<br>n=%{customdata[0]} · Reife %{customdata[1]:.0f} %<extra>'+s[1]+'</extra>'
+  }));
+  const lo=layout('Archivierte Kalibrierungsstände',300);
+  lo.yaxis={title:'Faktor / Anteil',gridcolor:colors().grid};
+  lo.xaxis={gridcolor:colors().grid,tickformat:'%d.%m.'};
+  Plotly.react(el,traces,lo,config);
+  const changed=h.filter(x=>(x.changes||[]).length).slice(-6).reverse();
+  list.innerHTML=changed.length?changed.map(x=>'<article><time>'+new Date(x.generated).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})+'</time><span>'+x.changes.map(v=>esc(v.label)+' '+num(v.from,3)+' → '+num(v.to,3)).join(' · ')+'</span></article>').join(''):'<small class="an-hint">Bisher ist noch keine Wertänderung zwischen zwei Läufen archiviert.</small>';
+ }
+ function vintages(v){
+  const el=document.getElementById('fa-vintages');
+  if(!v||!(v.series||[]).length){el.innerHTML='<span class="an-hint">Für diesen Zieltag sind noch keine archivierten Prognosestände vorhanden.</span>';return;}
+  const key=signal==='pv'?'pv_w':'load_w',palette=['#8e7cc3','#4c78a8','#72a0c1','#54a56b','#e2a03b','#d95f59'];
+  let traces=(v.series||[]).map((s,i)=>({x:v.timestamps,y:s[key],type:'scatter',mode:'lines',
+   name:new Date(s.issue).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}),
+   line:{color:palette[i%palette.length],width:1.6},opacity:.88,
+   hovertemplate:'%{x|%d.%m. %H:%M}<br>%{y:.0f} W<extra>'+new Date(s.issue).toLocaleString('de-DE')+'</extra>'}));
+  const actual=(v.actual||{})[key]||[];
+  if(actual.some(x=>typeof x==='number'))traces.push({x:v.timestamps,y:actual,type:'scatter',mode:'lines',name:'Ist',
+   line:{color:colors().actual,width:3},hovertemplate:'%{x|%d.%m. %H:%M}<br>Ist %{y:.0f} W<extra></extra>'});
+  const lo=layout((signal==='pv'?'PV':'Hauslast')+' am '+new Date(v.day+'T12:00:00').toLocaleDateString('de-DE'),360);
+  lo.yaxis={title:'W',gridcolor:colors().grid,rangemode:'tozero'};
+  lo.xaxis={gridcolor:colors().grid,tickformat:'%H:%M'};
+  Plotly.react(el,traces,lo,config);
+ }
+ function render(){if(!payload)return;dayComparison(payload.day_comparison);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');heat('fa-heat-load',payload.heatmaps&&payload.heatmaps.load,'Last');vintages(payload.vintages);}
+ async function load(){
+  status.textContent='lädt …';
+  try{let q=day.value?'?day='+encodeURIComponent(day.value):'';let r=await fetch('api/forecast-analysis.json'+q+(q?'&':'?')+'_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);
+   payload=await r.json();day.value=(payload.vintages||{}).day||day.value;
+   if(payload.available_from)day.min=payload.available_from;if(payload.available_to)day.max=payload.available_to;
+   status.textContent=(payload.lookback_days||30)+' Tage · erstellt '+new Date(payload.generated).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});render();
+  }catch(e){status.textContent='nicht erreichbar';document.getElementById('fa-vintages').innerHTML='<span class="an-hint">Prognoseanalyse konnte nicht geladen werden.</span>';}
+ }
+ panel.addEventListener('toggle',function(){if(this.open&&!loaded){loaded=true;load();accuracy();}});
+ day.addEventListener('change',load);
+ document.getElementById('fa-today').addEventListener('click',function(){day.value=new Date().toLocaleDateString('sv-SE');load();});
+ document.getElementById('fa-refresh').addEventListener('click',function(){load();accuracy();});
+ document.querySelectorAll('.forecast-signal-switch button').forEach(b=>b.addEventListener('click',function(){signal=this.dataset.signal;document.querySelectorAll('.forecast-signal-switch button').forEach(x=>x.classList.toggle('on',x===this));vintages(payload&&payload.vintages);}));
+ window.addEventListener('ems-theme-change',render);
+})();</script>"""
+    return (html.replace("<!--QUALITY-->", quality_html)
+            .replace("__DOT__", dot)
+            .replace("__SUMMARY__", _esc(summary_text)))
 
 
 def _whatif_block(config) -> str:
@@ -620,7 +832,7 @@ def _whatif_block(config) -> str:
     if not getattr(config.dashboard, "controls_enabled", False):
         return ""
     return """
-<details class="info-panel whatif-panel" id="whatif-panel"><summary>⚗ What-if-Simulation <small>Plan mit anderen Parametern durchrechnen</small></summary>
+<details class="info-panel whatif-panel" id="whatif-panel"><summary><span class="an-dot neutral" id="whatif-dot"></span>⚗ What-if-Simulation <small id="whatif-summary">noch keine Simulation</small></summary>
  <div class="whatif-form">
   <label class="wi-field"><span>Modus</span><select id="wi-mode"><option value="">unverändert</option><option value="auto">auto</option><option value="asap">asap</option><option value="peak">peak</option><option value="late">late</option></select></label>
   <label class="wi-field"><span>Preis-Faktor</span><input type="number" id="wi-factor" value="1.0" step="0.1" min="0.1" max="5"></label>
@@ -641,8 +853,8 @@ def _whatif_block(config) -> str:
     +tile(eur(d.total_cost_eur)+' €','erwartete Kosten','über den Horizont')
     +tile(n1(d.grid_import_kwh)+' kWh','Netzbezug','Einspeisung '+n1(d.grid_export_kwh)+' kWh')
     +tile(n1(d.end_soc_percent)+' %','End-SoC','')
-    +'</div>';
-  }catch(e){box.innerHTML='<span class="an-hint">Simulation fehlgeschlagen: '+e.message+'</span>';}finally{btn.disabled=false;}}
+    +'</div>';document.getElementById('whatif-dot').className='an-dot '+(d.infeasible?'bad':'ok');document.getElementById('whatif-summary').textContent=(d.infeasible?'unzulässig · ':'')+(d.mode||'–')+' · '+eur(d.total_cost_eur)+' €';
+  }catch(e){box.innerHTML='<span class="an-hint">Simulation fehlgeschlagen: '+e.message+'</span>';document.getElementById('whatif-dot').className='an-dot bad';document.getElementById('whatif-summary').textContent='Simulation fehlgeschlagen';}finally{btn.disabled=false;}}
  document.getElementById('wi-run').addEventListener('click',run);
 })();</script>"""
 
@@ -667,6 +879,20 @@ def _pv_confidence_block(auto_peak_basis) -> str:
     def _n(v):
         return f"{float(v):.1f}" if isinstance(v, (int, float)) else "–"
 
+    values = list(auto_peak_basis.values())
+    robust = sum(1 for value in values if value.get("basis") == "p10")
+    insufficient = sum(
+        1 for value in values if value.get("basis") == "insufficient")
+    dot = ("bad" if insufficient == len(values)
+           else "warn" if robust < len(values) else "ok")
+    mode_counts = {}
+    for value in values:
+        mode = str(value.get("mode", "–"))
+        mode_counts[mode] = mode_counts.get(mode, 0) + 1
+    mode_summary = ", ".join(
+        f"{mode} {count} T" for mode, count in mode_counts.items())
+    summary = f"{robust}/{len(values)} Tage robust · {mode_summary}"
+
     cards = "".join(
         "<div class='pvconf-card'>"
         "<div class='pvconf-head'><span class='pvconf-day'>{d}</span>"
@@ -680,7 +906,8 @@ def _pv_confidence_block(auto_peak_basis) -> str:
             basis=_esc(labels.get(b.get("basis"), str(b.get("basis", "")))))
         for day, b in auto_peak_basis.items())
     return ("<details class=\"info-panel pv-confidence-panel\" id=\"pvconf-panel\">"
-            "<summary>☀ PV-Konfidenz &amp; Auto-Modus <small>p10-basiert · kWh/Tag</small></summary>"
+            f"<summary><span class=\"an-dot {dot}\"></span>☀ PV-Konfidenz &amp; "
+            f"Auto-Modus <small>{_esc(summary)}</small></summary>"
             "<div class=\"pvconf-grid\">" + cards + "</div>"
             "<p class=\"pvconf-note\">Peak nur, wenn der pessimistische (p10-)"
             "Überschuss die Schwelle trägt – sonst asap.</p></details>")
@@ -984,9 +1211,10 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
 """ % _j.dumps(meta)
 
     return (
-        "<details class='controls' id='ems-controls'><summary>"
-        "<span class='ctl-title'>⚙ Steuerung</span>"
-        "<span class='ctl-summary'>Lasten, Optimierungsmodus und Akku-Handbetrieb</span>"
+        "<details class='controls info-panel' id='ems-controls'><summary>"
+        f"<span class='an-dot {'ok' if e3dc_on else 'warn'}'></span>⚙ Steuerung"
+        f"<small>E3/DC {'aktiv' if e3dc_on else 'aus'} · "
+        f"{_esc(mode_text.get(strat, (strat, ''))[0])}</small>"
         "</summary><div class='ctl-body'>"
         "<div class='ctl-section-head'><b>Steuerbare Lasten</b>"
         "<small>Parameter und zeitlicher Leistungsverlauf</small></div>"
@@ -1000,7 +1228,7 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
 
 
 def _load_profile_block(config) -> str:
-    """Gelernte Lastprofile verschiebbarer Lasten (unter der Steuerung).
+    """Gelernte Lastprofile verschiebbarer Lasten (unter Betriebsdiagnose).
 
     Rein informativ: das Anlernen laeuft passiv aus der Verbrauchsrueckmeldung,
     es gibt nichts zu starten. Gezeigt wird, was gelernt wurde und ob es schon
@@ -1010,9 +1238,11 @@ def _load_profile_block(config) -> str:
              if ld.type == "deferrable"]
     if not loads:
         return ""
-    return """<details class="info-panel" id="profile-panel">
-<summary><span class="panel-title">Gelernte Lastprofile</span>
- <small>aus der Verbrauchsrückmeldung</small></summary>
+    configured = sum(1 for load in loads if load.power_profile_w)
+    initial_dot = "ok" if configured == len(loads) else "warn"
+    html = """<details class="info-panel" id="profile-panel">
+<summary><span class="an-dot __PROFILE_DOT__" id="lp-dot"></span>▥ Gelernte Lastprofile
+ <small id="lp-summary">__PROFILE_SUMMARY__</small></summary>
 <div class="tiles" id="lp-tiles"><span class="an-hint">wird geladen …</span></div>
 <div class="hint" id="lp-hint"></div>
 <script>(function(){
@@ -1029,7 +1259,10 @@ def _load_profile_block(config) -> str:
    if(!r.ok)throw Error(r.status);
    const d=await r.json();
    const rows=d.loads||[];
-   if(!rows.length){g('lp-tiles').innerHTML='<span class="an-hint">Keine verschiebbare Last konfiguriert.</span>';return;}
+   if(!rows.length){g('lp-tiles').innerHTML='<span class="an-hint">Keine verschiebbare Last konfiguriert.</span>';g('lp-dot').className='an-dot neutral';g('lp-summary').textContent='keine Last konfiguriert';return;}
+   const learned=rows.filter(x=>x.learned&&x.learned.usable).length,inUse=rows.filter(x=>x.in_use).length;
+   g('lp-dot').className='an-dot '+(learned===rows.length?'ok':inUse?'warn':'bad');
+   g('lp-summary').textContent=learned+'/'+rows.length+' gelernt · '+inUse+' in der Planung';
    g('lp-tiles').innerHTML=rows.map(function(x){
     const learned=x.learned;
     if(!learned)return '<div class="tile"><div class="v">–</div><div class="l">'+x.name+'</div><div class="s">'+(x.reason||'noch nichts gelernt')+'</div></div>';
@@ -1040,11 +1273,14 @@ def _load_profile_block(config) -> str:
       +bars(learned.power_w)+'</div>';
    }).join('');
    g('lp-hint').textContent='Übernommen wird ab '+(d.min_runs||3)+' Läufen; die wöchentliche Kalibrierung trägt das Profil ein. Ohne Rückmeldung (power_topic) bleibt die Last bei konstanter Leistung.';
-  }catch(e){g('lp-tiles').innerHTML='<span class="an-hint">Lastprofile nicht erreichbar.</span>';}
+  }catch(e){g('lp-tiles').innerHTML='<span class="an-hint">Lastprofile nicht erreichbar.</span>';g('lp-dot').className='an-dot bad';g('lp-summary').textContent='nicht erreichbar';}
  }
  let done=false;
  g('profile-panel').addEventListener('toggle',function(){if(this.open&&!done){done=true;load();}});
 })();</script></details>"""
+    return (html.replace("__PROFILE_DOT__", initial_dot)
+            .replace("__PROFILE_SUMMARY__",
+                     f"{configured}/{len(loads)} Profile in der Planung"))
 
 def _sources_block(source_status) -> str:
     """Frische-Chips der externen Datenquellen (Spotpreis/Wetter/Solcast):
@@ -1082,10 +1318,10 @@ def _panel_dot(levels) -> str:
         _panel_level(levels), "ok")
 
 
-def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
-    """Operative Prognosequalität je Quelle und aktuellem Horizont."""
+def _forecast_quality_cards(quality, timezone="Europe/Berlin"):
+    """Karten + Statusstufen der operativen Prognosequellen."""
     if not quality:
-        return ""
+        return "", []
     items = []
     levels = []
     for source in quality:
@@ -1108,15 +1344,26 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
             f"<div class='quality-detail'>{_esc(source.get('detail', ''))}"
             f"{issue_text}</div>"
             "</article>")
+    return "".join(items), levels
+
+
+def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
+    """Operative Prognosequalität je Quelle und aktuellem Horizont."""
+    items, levels = _forecast_quality_cards(quality, timezone)
+    if not items:
+        return ""
     return (f'<details class="info-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>⌁ Prognosequalität '
             "<small>verwendete Daten im aktuellen Optimierungshorizont</small>"
-            f"</summary><div class='quality-grid'>{''.join(items)}</div></details>")
+            f"</summary><div class='quality-grid'>{items}</div></details>")
 
 
-def _operations_block(solver, execution, timezone="Europe/Berlin") -> str:
+def _operations_block(solver, execution, timezone="Europe/Berlin",
+                      diagnostics=None, plan_status=None) -> str:
     """Kompakte, standardmaessig eingeklappte Betriebsdiagnose."""
-    if not solver and not execution:
+    diagnostics = diagnostics or {}
+    plan_status = plan_status or {}
+    if not solver and not execution and not diagnostics and not plan_status:
         return ""
     cards = []
     levels = []
@@ -1181,9 +1428,101 @@ def _operations_block(solver, execution, timezone="Europe/Berlin") -> str:
             "<div class='quality-source'>Plan-Ausführung</div>"
             f"<div class='quality-state'>{_esc(execution.get('message', ''))}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
+
+    soc_drift = diagnostics.get("soc_drift")
+    if soc_drift and soc_drift.get("mae_pp") is not None:
+        mae = float(soc_drift["mae_pp"])
+        threshold = float(soc_drift.get("threshold_pp", 0.0))
+        level = "partial" if soc_drift.get("alert") else "current"
+        levels.append(level)
+        cards.append(
+            f"<article class='quality-item {level}'>"
+            "<div class='quality-source'>SoC-Prognose ↔ Ist</div>"
+            f"<div class='quality-state'>MAE {mae:.1f} Prozentpunkte</div>"
+            f"<div class='quality-detail'>{float(soc_drift.get('window_hours', 0)):.0f}-h-Fenster"
+            f" · Warnschwelle {threshold:.1f} pp"
+            " · kurzfristige Abweichung des SoC-Modells</div></article>")
+
+    efficiency = diagnostics.get("efficiency")
+    if efficiency:
+        level = "partial" if efficiency.get("alert") else "current"
+        levels.append(level)
+        cards.append(
+            f"<article class='quality-item {level}'>"
+            "<div class='quality-source'>Entladewirkungsgrad</div>"
+            f"<div class='quality-state'>gemessen {float(efficiency.get('measured', 0)):.3f}"
+            f" · Modell {float(efficiency.get('model', 0)):.3f}</div>"
+            f"<div class='quality-detail'>Abweichung "
+            f"{float(efficiency.get('deviation_percent', 0)):+.1f} %"
+            f" · {int(efficiency.get('windows', 0))} Entladephasen / "
+            f"{float(efficiency.get('hours', 0)):.0f} h"
+            f" · Schwelle ±{float(efficiency.get('threshold_percent', 0)):.1f} %"
+            "</div></article>")
+
+    execution_bias = diagnostics.get("execution_bias")
+    if execution_bias:
+        level = "partial" if execution_bias.get("alert") else "current"
+        levels.append(level)
+        cards.append(
+            f"<article class='quality-item {level}'>"
+            "<div class='quality-source'>Ausführungs-Bias</div>"
+            f"<div class='quality-state'>Median "
+            f"{float(execution_bias.get('median_w', 0)):+.0f} W"
+            f" · {float(execution_bias.get('kwh_per_day', 0)):+.2f} kWh/Tag</div>"
+            f"<div class='quality-detail'>{int(execution_bias.get('n', 0))} Zählerprüfungen"
+            f" · {float(execution_bias.get('window_days', 0)):.0f}-Tage-Fenster"
+            f" · Schwelle ±{float(execution_bias.get('threshold_w', 0)):.0f} W"
+            " · systematische Abweichung vom Sollfahrplan</div></article>")
+
+    infeasible = bool(plan_status.get("infeasible"))
+    shortfall_wh = float(plan_status.get("car_target_shortfall_wh", 0.0) or 0.0)
+    overload_wh = float(plan_status.get("grid_overload_wh", 0.0) or 0.0)
+    if infeasible:
+        levels.append("replaced")
+        reason = plan_status.get("infeasible_reason") or "keine Ursache ermittelt"
+        cards.append(
+            "<article class='quality-item replaced'>"
+            "<div class='quality-source'>Planlösbarkeit</div>"
+            f"<div class='quality-state'>{_esc(plan_status.get('status', 'unlösbar'))}</div>"
+            f"<div class='quality-detail'>{_esc(reason)}</div></article>")
+    if shortfall_wh > 100.0:
+        levels.append("partial")
+        cards.append(
+            "<article class='quality-item partial'>"
+            "<div class='quality-source'>Fahrzeug-Ziel</div>"
+            f"<div class='quality-state'>{shortfall_wh / 1000.0:.1f} kWh fehlen</div>"
+            "<div class='quality-detail'>Ziel-SoC ist bis zur Abfahrt mit den "
+            "aktuellen Grenzen und Prognosen nicht vollständig erreichbar.</div></article>")
+    if overload_wh > 100.0:
+        levels.append("partial")
+        cards.append(
+            "<article class='quality-item partial'>"
+            "<div class='quality-source'>Hausanschluss-Grenze</div>"
+            f"<div class='quality-state'>{overload_wh / 1000.0:.1f} kWh Überschreitung</div>"
+            "<div class='quality-detail'>Eine geplante Lastspitze war innerhalb "
+            "der verfügbaren Freiheitsgrade nicht anders deckbar.</div></article>")
+    headline = []
+    if solver:
+        headline.append(
+            f"Solver {float(solver.get('seconds', 0.0)):.1f} s"
+            + (" langsam" if solver.get("slow") else ""))
+    if execution:
+        headline.append(
+            "Soll erfüllt" if execution.get("ok")
+            else _esc(execution.get("message", "Planabweichung")))
+    diagnostic_alerts = sum(
+        1 for item in diagnostics.values()
+        if isinstance(item, dict) and item.get("alert"))
+    if diagnostic_alerts:
+        headline.append(f"{diagnostic_alerts} Modellwarnung"
+                        + ("en" if diagnostic_alerts != 1 else ""))
+    plan_alerts = int(infeasible) + int(shortfall_wh > 100.0) + int(overload_wh > 100.0)
+    if plan_alerts:
+        headline.append(f"{plan_alerts} Planziel"
+                        + ("e auffällig" if plan_alerts != 1 else " auffällig"))
     return (f'<details class="info-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>⚙ Betriebsdiagnose '
-            "<small>Solver und Ergebnisprüfung abgeschlossener Slots</small>"
+            f"<small>{' · '.join(headline)}</small>"
             f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
@@ -1227,9 +1566,22 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
             f"Thermomodell {_esc(cal.get('name', ''))}</div>"
             f"<div class='quality-state'>{state}</div>"
             f"<div class='quality-detail'>{_esc(detail)}</div></article>")
+    configured_feedback = [
+        item for item in (feedback or []) if item.get("configured")]
+    fresh = sum(1 for item in configured_feedback if item.get("fresh"))
+    running = sum(
+        1 for item in configured_feedback
+        if item.get("fresh") and item.get("on"))
+    applied_models = sum(
+        1 for item in (calibrations or []) if item.get("applied"))
+    headline = (
+        f"{fresh}/{len(configured_feedback)} Rückmeldungen frisch"
+        f" · {running} läuft"
+        + (f" · {applied_models} Thermomodell aktiv"
+           if calibrations else ""))
     return (f'<details class="info-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>♨ Last-Rückkopplung '
-            "<small>reale Verbraucher, Wärmepumpen und Thermomodell</small>"
+            f"<small>{headline}</small>"
             f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
 
 
@@ -1240,7 +1592,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     control_status=None, forecast_quality=None,
                     solver_status=None, execution_status=None,
                     load_feedback_status=None,
-                    thermal_calibration=None, auto_peak_basis=None) -> str:
+                    thermal_calibration=None, auto_peak_basis=None,
+                    load_bias=None, monitoring_status=None,
+                    plan_status=None) -> str:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -1962,13 +2316,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         font-weight: 600; }}
  .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
  .controls {{ margin: 10px 0; background: #fff; border: 1px solid #dde4eb;
-        border-radius: 10px; overflow: hidden; font-size: 13px; }}
+        border-radius: 10px; overflow: hidden; }}
  .controls > summary {{ padding: 11px 13px; cursor: pointer; user-select: none;
         font-weight: 700; background: #f7f9fb; }}
  .controls[open] > summary {{ border-bottom: 1px solid #e4e7eb; }}
- .controls .ctl-title {{ font-weight: 700; }}
- .controls .ctl-summary {{ margin-left: 8px; color: #737a84; font-size: 12px; font-weight: 400; }}
- .controls .ctl-body {{ padding: 15px; }}
+ .controls > summary small {{ margin-left: 8px; color: #75808a; font-size: 12px;
+        font-weight: 400; }}
+ .controls .ctl-body {{ padding: 15px; font-size: 13px; }}
  .ctl-section-head {{ display: flex; flex-direction: column; margin: 0 0 9px 2px; }}
  .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
         font-weight: normal; margin-top: 2px; }}
@@ -2060,12 +2414,78 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
  .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
+ .an-dot.neutral {{ background: #8b98a5; }}
  .sparkline {{ display: flex; align-items: flex-end; gap: 3px; height: 46px; padding: 0 12px 12px; }}
  .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
  .sparkline .bar.neg {{ background: #d1495b; }}
  .facc-trend {{ padding: 2px 12px 10px; }}
  .facc-svg {{ width: 100%; height: 42px; display: block; }}
  .facc-legend {{ font-size: 11px; color: #8a949d; margin-top: 3px; }}
+ .forecast-analysis-panel h4 {{ margin: 13px 12px 7px; font-size: 13px; color: #55606a; }}
+ .forecast-analysis-panel h4 small {{ margin-left: 6px; color: #8a949d; font-weight: 400; }}
+ .forecast-analysis-panel > .quality-grid {{ padding: 0 12px 3px; }}
+ .forecast-accuracy-tiles {{ padding: 0 12px; }}
+ .forecast-analysis-toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+      padding: 11px 12px 2px; }}
+ .forecast-analysis-toolbar label {{ display: flex; align-items: center; gap: 6px; font-size: 12px; }}
+ .forecast-analysis-toolbar input, .forecast-analysis-toolbar button,
+ .forecast-signal-switch button {{ min-height: 34px; border: 1px solid #cbd3db; border-radius: 7px;
+      background: #f7f9fb; color: #34404c; padding: 5px 9px; font: inherit; }}
+ .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: #7b8792; font-size: 11px; }}
+ .calibration-grid {{ display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px;
+      padding: 0 12px 8px; }}
+ .calibration-card {{ min-width: 0; padding: 10px; border: 1px solid #dce3e9;
+      border-left: 4px solid #dfa82d; border-radius: 9px; background: #fafbfc; }}
+ .calibration-card.current {{ border-left-color: #35a466; }}
+ .calibration-card > header {{ display: flex; justify-content: space-between; gap: 7px; align-items: flex-start; }}
+ .calibration-card header b, .calibration-card header small {{ display: block; }}
+ .calibration-card header b {{ font-size: 12px; }}
+ .calibration-card header small {{ margin-top: 2px; color: #77838e; font-size: 10px; }}
+ .calibration-card header strong {{ color: #4d5964; font-size: 15px; white-space: nowrap; }}
+ .calibration-bar {{ height: 5px; margin: 8px 0; border-radius: 5px; overflow: hidden; background: #e3e8ed; }}
+ .calibration-bar i {{ display: block; height: 100%; background: #dda72e; border-radius: inherit; }}
+ .calibration-card.current .calibration-bar i {{ background: #35a466; }}
+ .calibration-card p {{ min-height: 31px; margin: 0 0 7px; color: #68747f; font-size: 10px; line-height: 1.45; }}
+ .calibration-card dl {{ margin: 0; }}
+ .calibration-card dl > div {{ display: flex; justify-content: space-between; gap: 5px;
+      border-top: 1px solid #e7ebef; padding: 5px 0; font-size: 10px; }}
+ .calibration-card dt {{ color: #7a8690; }}
+ .calibration-card dd {{ margin: 0; font-weight: 700; text-align: right; overflow-wrap: anywhere; }}
+ .calibration-card footer {{ margin-top: 6px; color: #68747f; font-size: 9px; line-height: 1.35; }}
+ .calibration-note {{ grid-column: 1/-1; color: #87929c; font-size: 10px; }}
+ .forecast-heat-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px;
+      padding: 0 12px 8px; }}
+ .forecast-heat-grid > div {{ min-width: 0; }}
+ .forecast-heat-grid > div > b {{ display: none; }}
+ .forecast-analysis-chart {{ min-height: 250px; border: 1px solid #e0e6ec; border-radius: 9px;
+      overflow: hidden; }}
+ .day-comparison-chart, .calibration-history-chart {{ margin: 0 12px 10px; }}
+ .calibration-change-list {{ margin: -2px 12px 12px; display: grid; gap: 5px; }}
+ .calibration-change-list article {{ display: grid; grid-template-columns: minmax(125px,auto) 1fr;
+      gap: 9px; padding: 7px 9px; border: 1px solid #e2e7ec; border-radius: 7px;
+      background: #f8fafc; font-size: 11px; }}
+ .calibration-change-list time {{ color: #73808c; white-space: nowrap; }}
+ .forecast-vintage-head {{ display: flex; align-items: center; justify-content: space-between;
+      padding-right: 12px; }}
+ .forecast-signal-switch {{ display: flex; gap: 5px; }}
+ .forecast-signal-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
+ .vintage-chart {{ margin: 0 12px 13px; min-height: 350px; }}
+ html.dark .forecast-analysis-panel h4 {{ color: #d3dbe3; }}
+ html.dark .forecast-analysis-panel h4 small, html.dark .forecast-analysis-toolbar #fa-status {{ color: #97a3ad; }}
+ html.dark .forecast-analysis-toolbar input, html.dark .forecast-analysis-toolbar button,
+ html.dark .forecast-signal-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
+ html.dark .forecast-signal-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
+ html.dark .forecast-analysis-chart {{ border-color: #354352; }}
+ html.dark .calibration-change-list article {{ background: #202b36; border-color: #354352; }}
+ html.dark .calibration-change-list time {{ color: #aebbc8; }}
+ html.dark .calibration-card {{ background: #202b36; border-color: #43515f; border-left-color: #d9b83f; }}
+ html.dark .calibration-card.current {{ border-left-color: #58b879; }}
+ html.dark .calibration-card header small, html.dark .calibration-card p,
+ html.dark .calibration-card footer, html.dark .calibration-card dt,
+ html.dark .calibration-note {{ color: #aebbc8; }}
+ html.dark .calibration-card header strong {{ color: #e7edf4; }}
+ html.dark .calibration-bar {{ background: #3b4956; }}
+ html.dark .calibration-card dl > div {{ border-color: #3b4956; }}
  .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 10px; padding: 12px; }}
  .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: 10px 11px; }}
  .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }}
@@ -2237,7 +2657,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .report button:hover {{ background: #304253; }}
  html.dark .report button.hot {{ background: #432529; color: #ffaaa4; border-color: #75454a; }}
  html.dark .tile .l, html.dark .chips, html.dark .report .msg {{ color: #c2ccd6; }}
- html.dark .tile .s, html.dark .controls .ctl-summary,
+ html.dark .tile .s, html.dark .controls > summary small,
  html.dark .ctl-section-head small, html.dark .ctl-section small,
  html.dark .load-head small {{ color: #97a5b4; }}
  html.dark .ctl-field, html.dark .ctl-section label, html.dark .planner-form > label,
@@ -2337,6 +2757,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    #recalc-plan {{ min-height: 42px; grid-column: 1/-1; }}
    .mode-compare-grid {{ grid-template-columns: 1fr; }}
    .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
+   .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 6px 8px; }}
+   .calibration-grid {{ grid-template-columns: 1fr; padding: 0 7px 8px; }}
+   .calibration-card p {{ min-height: 0; }}
+   .forecast-analysis-toolbar {{ align-items: stretch; }}
+   .forecast-analysis-toolbar label {{ width: 100%; }}
+   .forecast-analysis-toolbar input {{ flex: 1; min-height: 42px; }}
+   .forecast-analysis-toolbar button {{ min-height: 42px; }}
+   .forecast-analysis-toolbar #fa-status {{ width: 100%; margin-left: 0; }}
+   .forecast-vintage-head {{ align-items: flex-start; padding-right: 7px; }}
+   .forecast-vintage-head h4 {{ margin-right: 4px; }}
+   .forecast-signal-switch button {{ min-height: 40px; }}
+   .day-comparison-chart, .calibration-history-chart {{ margin: 0 6px 10px; }}
+   .calibration-change-list article {{ grid-template-columns: 1fr; gap: 3px; }}
+   .vintage-chart {{ margin: 0 6px 10px; }}
    .event {{ grid-template-columns: 90px 1fr; }}
  }}
  .chips {{ font-size: 12px; color: #555; margin: -2px 0 10px; }}
@@ -2354,24 +2788,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_sources_block(source_status)}
 {_control_banner(control_status)}
 {_alert_banner(violations)}
-{controls_html}
-{load_profile_html}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {_slot_detail_block()}
 {decision_html}
-{_operations_block(solver_status, execution_status, config.general.timezone)}
+{_operations_block(solver_status, execution_status, config.general.timezone,
+                   monitoring_status, plan_status)}
+{load_profile_html}
 {_thermal_feedback_block(load_feedback_status, thermal_calibration)}
-{_forecast_quality_block(forecast_quality, config.general.timezone)}
+{_forecast_analysis_block(forecast_quality, config.general.timezone, load_bias)}
 {_analysis_block(analysis_headline)}
 {_pv_confidence_block(auto_peak_basis)}
+{controls_html}
 {_whatif_block(config)}
 {_events_block()}
 {report_html}
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});

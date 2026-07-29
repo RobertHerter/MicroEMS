@@ -25,6 +25,7 @@ def test_runtime_begin_then_finish_transitions_state():
     snap = m._runtime_snapshot()
     assert snap["state"] == "ready" and snap["progress"] == 100
     assert snap["duration_seconds"] >= 0
+    assert snap["cycle_watchdog"]["overdue"] is False
 
 
 def test_request_recalc_bundles_repeated_requests():

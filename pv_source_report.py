@@ -2,7 +2,8 @@
 
 Vergleicht - rolling-origin aus dem Snapshot-Archiv (Fallback: Live-Cache) - die
 kombinierte pvlib- und Solcast-Prognose gegen die Ist-PV (actuals.pv_w) und gibt
-je Quelle WAPE/MAE/Bias sowie eine Umschalt-Empfehlung aus. Zusätzlich wird das
+je Quelle WAPE/MAE/Bias, den EMS-Entscheidungsscore sowie eine Umschalt-
+Empfehlung aus. Zusätzlich wird das
 pvlib-p10/p90-Band aus echten Residuen kalibriert (statt des heuristischen
 Festwerts pv_model.p10_uncertainty/p90_uncertainty).
 
@@ -37,9 +38,15 @@ def _print_group(name, g):
               f"{g['method']}) - sammelt noch")
         return
     print(f"  {name:8s}: WAPE {_fmt(g['wape_pct'], ' %', 2):>9s}   "
+          f"Score {_fmt(g.get('decision_score_pct'), ' %', 2):>9s}   "
           f"MAE {_fmt(g['mae_w'], ' W', 0):>8s}   "
           f"Bias {_fmt(g['bias_w'], ' W', 0):>8s}   "
           f"(n={g['n']}, {g['method']}, Ist {_fmt(g.get('actual_kwh'), ' kWh')})")
+    if g.get("mode") == "decision_weighted":
+        print(f"             Entscheidungskontext "
+              f"{_fmt(g.get('context_coverage_pct'), ' %', 1)}, "
+              f"{g.get('decision_slots', 0)} relevante Slots, "
+              f"Ø Gewicht {_fmt(g.get('mean_weight'), '', 2)}")
 
 
 def main() -> int:
@@ -70,12 +77,15 @@ def main() -> int:
                if g and g.get("n", 0) >= 8}
     rec = cmp["recommendation"]
     if rec:
+        metric = ("Entscheidungsscore" if
+                  rec.get("metric") == "decision_score_pct" else "WAPE")
+        delta = rec.get("score_delta_pct", rec.get("wape_delta_pct"))
         if rec["meaningful"]:
-            print(f"\n  -> {rec['better']} liegt {rec['wape_delta_pct']:.2f} "
-                  f"Prozentpunkte WAPE vorn -> Umschalten erwägen.")
+            print(f"\n  -> {rec['better']} liegt {delta:.2f} Punkte im "
+                  f"{metric} vorn -> Umschalten erwägen.")
         else:
-            print(f"\n  -> praktisch gleichauf (Δ {rec['wape_delta_pct']:.2f} "
-                  f"Prozentpunkte WAPE) - kein klarer Vorteil.")
+            print(f"\n  -> praktisch gleichauf (Δ {delta:.2f} Punkte "
+                  f"{metric}) - kein klarer Vorteil.")
     else:
         print("\n  -> Empfehlung erst möglich, wenn beide Quellen genug "
               "Vergleichsdaten haben.")

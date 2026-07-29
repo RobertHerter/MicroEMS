@@ -196,7 +196,14 @@ pv_source_selection:
   enabled: false
   lookback_days: 30
   min_samples: 96
+  # Mindestvorsprung der Alternative in Entscheidungsscore-Punkten.
   min_improvement_percent: 2.0
+  # Fehler bei Preisextremen, am Netz/PV-Übergang und nahe der
+  # Einspeisegrenze stärker gewichten. Bei zu wenig Hauslast-Kontext fällt die
+  # Auswahl automatisch auf die normale Energie-WAPE zurück.
+  decision_weighted: true
+  # Mindestanteil der Vergleichsslots mit gemessener Hauslast.
+  decision_min_context_percent: 50.0
 
 # -----------------------------------------------------------------------------
 # Plausibilitäts-Grenzen für externe Eingaben (Defense-in-Depth)
@@ -499,6 +506,9 @@ forecast:
   intraday_pv_deadband: 0.10
   intraday_pv_max_step: 0.10
   intraday_pv_min_power_w: 1000  # Dämmerungs-/Wolkenslots ausschließen
+  # Aktuelles PV-Wetter nur operativ verwenden: nächste 1..4 Slots korrigieren,
+  # danach vollständig auf die unveränderte Solcast-/pvlib-Prognose zurückfallen.
+  intraday_pv_operational_slots: 4
   # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen, damit
   # nicht auf Phantom-Preistäler spekuliert wird. 0 = aus, 1 = flach.
   price_damping: 0.3
@@ -522,15 +532,18 @@ forecast:
   # Prognosemethode: "similar_days" (Ähnliche-Tage-Mittelung, Standard) 
   # oder "ml" (Machine Learning mit HistGradientBoostingRegressor).
   method: "similar_days"
-  # Empirisches Unsicherheitsband der Hauslast aus vergleichbaren historischen
-  # Slots; wird archiviert und im Dashboard als p10–p90-Fläche dargestellt.
+  # Konditionales Unsicherheitsband der Hauslast aus vergleichbaren historischen
+  # Slots: Tagtyp, Saison und – bei ausreichenden Daten – ähnliche Temperatur.
+  # Bei dünner Datenlage wird stufenweise auf den Tagesslot zurückgefallen.
+  # Das Band wird archiviert und im Dashboard als p10–p90-Fläche dargestellt.
   load_uncertainty_enabled: true
   load_uncertainty_low_quantile: 0.10
   load_uncertainty_high_quantile: 0.90
   load_uncertainty_min_samples: 12
-  # Historisch enthaltene, real rückgemeldete steuerbare Lasten (z.B.
-  # Pool-Wärmepumpen) aus der Grundlast entfernen. Der Optimierer ergänzt den
-  # neuen Lastplan separat; ohne genügend Rückmeldungen bleibt dies neutral.
+  # Historisch enthaltene, real rückgemeldete steuerbare Lasten (thermisch
+  # oder verschiebbar) aus der Grundlast entfernen. Der Optimierer ergänzt den
+  # neuen Lastplan separat. Ein gemeinsam verwendeter power_topic wird auch
+  # bei mehreren Stufen nur einmal als Gesamtleistung abgezogen.
   disaggregate_controllable_loads: true
   disaggregation_lookback_days: 28
   disaggregation_min_samples: 3
@@ -675,6 +688,28 @@ report:
   enabled: false
   mail_to: ""
   snapshot_path: "./last_run_debug.json"
+
+# -----------------------------------------------------------------------------
+# Wöchentliche Prognosekalibrierung. Neue PV-/Lastfaktoren und PV-Bänder treten
+# zunächst als Challenger gegen den aktuell produktiven Champion an. Bewertet
+# wird nur auf dem jüngsten, beim Fit ausgesparten Zeitraum. Jede Komponente
+# wird unabhängig übernommen oder gehalten.
+# -----------------------------------------------------------------------------
+calibration:
+  enabled: false
+  pv_profile: "./kalibrierung_profil.yaml"
+  # true: Challenger nur nach bestandenem Holdout-Vergleich übernehmen.
+  champion_challenger_enabled: true
+  # Jüngste Tage, die vollständig aus dem Fit ausgespart und nur geprüft werden.
+  promotion_days: 14
+  # Mindestzahl überlappender Ist-/Prognoseslots im Holdout je Wettbewerb.
+  promotion_min_samples: 96
+  # Erforderliche relative Verbesserung von WAPE bzw. Intervallscore.
+  promotion_min_improvement_percent: 1.0
+  # Maximal erlaubte WAPE-Verschlechterung eines Tagesabschnitts in %-Punkten.
+  promotion_max_segment_degradation_pct: 5.0
+  # Maximal erlaubter Anstieg des absoluten mittleren Prognosebias.
+  promotion_max_bias_increase_w: 75.0
 
 # -----------------------------------------------------------------------------
 # Temperatur direkt von Open-Meteo (kostenlos, kein API-Key) statt InfluxDB.

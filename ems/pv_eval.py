@@ -46,6 +46,89 @@ def _mae(actual: np.ndarray, pred: np.ndarray) -> float:
     return float(np.mean(np.abs(pred - actual))) if len(actual) else float("nan")
 
 
+def _weighted_wape(actual: np.ndarray, pred: np.ndarray,
+                   weights: np.ndarray) -> float:
+    denom = float(np.sum(weights * np.abs(actual)))
+    if denom <= 1e-9:
+        return float("nan")
+    return 100.0 * float(np.sum(weights * np.abs(pred - actual))) / denom
+
+
+def _decision_weights(frame: pd.DataFrame, config) -> tuple[np.ndarray, dict]:
+    """Gemeinsame Slotgewichte für beide PV-Quellen.
+
+    Basis 1 bleibt die normale Energie-WAPE. Zusatzgewicht entsteht dort, wo
+    ein PV-Fehler wahrscheinlich die EMS-Entscheidung ändert: am Übergang
+    Netzbezug/Überschuss, bei Preisextremen/Negativpreisen und nahe der
+    möglichen Einspeisegrenze.
+    """
+    n = len(frame)
+    weights = np.ones(n, dtype=float)
+    house = pd.to_numeric(frame.get("house"), errors="coerce").to_numpy(
+        dtype=float) if "house" in frame else np.full(n, np.nan)
+    price = pd.to_numeric(frame.get("spot"), errors="coerce").to_numpy(
+        dtype=float) if "spot" in frame else np.full(n, np.nan)
+    actual = frame["actual"].to_numpy(dtype=float)
+    house_ok = np.isfinite(house)
+    price_ok = np.isfinite(price)
+    context_pct = 100.0 * float(house_ok.mean()) if n else 0.0
+    price_pct = 100.0 * float(price_ok.mean()) if n else 0.0
+    cfg = config.pv_source_selection
+    enabled = bool(getattr(cfg, "decision_weighted", True))
+    min_context = float(getattr(cfg, "decision_min_context_percent", 50.0))
+    if not enabled or context_pct < min_context:
+        return weights, {
+            "mode": "energy_wape", "context_coverage_pct": round(context_pct, 1),
+            "price_coverage_pct": round(price_pct, 1),
+            "decision_slots": 0, "mean_weight": 1.0}
+
+    # Netz/PV-Kippunkt: bei Ist-PV ungefähr auf Hauslast kann ein kleiner Fehler
+    # aus Netzbezug Überschuss machen (oder umgekehrt). Skala robust aus der
+    # typischen Hauslast, mindestens 500 W.
+    typical_load = float(np.nanmedian(house[house_ok])) if house_ok.any() else 500.0
+    boundary_scale = max(500.0, typical_load)
+    surplus = actual - house
+    boundary = np.zeros(n, dtype=float)
+    boundary[house_ok] = np.exp(
+        -np.abs(surplus[house_ok]) / boundary_scale)
+    weights += 1.5 * boundary
+    # Positiver Überschuss beeinflusst Ladezeitpunkt/SoC auch abseits des
+    # exakten Kippunkts.
+    weights += 0.6 * (house_ok & (surplus > 0.0))
+
+    # Nahe der physikalischen Einspeisegrenze entscheidet PV-Fehler über Peak-
+    # Laden bzw. Abregelung. Ohne explizite Grenze ist WR-max-AC die Obergrenze.
+    export_limit = (getattr(config.inverter, "max_export_w", None)
+                    or getattr(config.inverter, "max_ac_power_w", None))
+    if export_limit and float(export_limit) > 0:
+        export_ratio = np.clip(
+            np.where(house_ok, np.maximum(surplus, 0.0) / float(export_limit), 0.0),
+            0.0, 1.5)
+        weights += 1.5 * np.clip((export_ratio - 0.6) / 0.4, 0.0, 1.0)
+
+    # Preisextreme erhöhen den wirtschaftlichen Wert eines korrekten PV-Slots.
+    if price_ok.any():
+        p = price[price_ok]
+        median = float(np.nanmedian(p))
+        q10, q90 = np.nanquantile(p, [0.10, 0.90])
+        spread = max(1.0, float(q90 - q10))
+        importance = np.zeros(n, dtype=float)
+        importance[price_ok] = np.clip(
+            np.abs(price[price_ok] - median) / spread, 0.0, 2.0)
+        weights += 0.75 * importance
+        # Negativpreise sind besonders relevant, auch wenn §51 EEG deaktiviert
+        # ist: Laden, Einspeisen und ggf. Abregeln konkurrieren hier direkt.
+        weights += 2.0 * (price_ok & (price < 0.0))
+
+    return weights, {
+        "mode": "decision_weighted",
+        "context_coverage_pct": round(context_pct, 1),
+        "price_coverage_pct": round(price_pct, 1),
+        "decision_slots": int(np.count_nonzero(weights >= 2.0)),
+        "mean_weight": round(float(np.mean(weights)), 2),
+    }
+
+
 def solcast_source_ids(config) -> List[str]:
     sc = config.solcast
     if not (getattr(sc, "enabled", False) and sc.sources):
@@ -225,15 +308,30 @@ def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
                                          correction_profile=(
                                              correction if not sc else None))
     groups = {k: v for k, v in groups.items() if v is not None}
+    # Für die Empfehlung und Anzeige beide Quellen auf exakt denselben Slots
+    # samt EMS-Kontext bewerten. Nur wenn kein gemeinsamer Archivvergleich
+    # möglich ist, bleiben die Einzelmetriken als Fallback stehen.
+    common = _common_archive_metrics(config, lookback_days, now, min_pv_w)
+    for name, metrics in common.items():
+        if name in groups:
+            groups[name].update(metrics)
 
     valid = {k: v for k, v in groups.items()
              if v["n"] >= 8 and not np.isnan(v["wape_pct"])}
     recommendation = None
     if len(valid) == 2:
-        best = min(valid, key=lambda k: valid[k]["wape_pct"])
+        score_key = ("decision_score_pct"
+                     if all(np.isfinite(valid[name].get(
+                         "decision_score_pct", np.nan)) for name in valid)
+                     else "wape_pct")
+        best = min(valid, key=lambda k: valid[k][score_key])
         other = "pvlib" if best == "solcast" else "solcast"
-        delta = valid[other]["wape_pct"] - valid[best]["wape_pct"]
-        recommendation = {"better": best, "wape_delta_pct": round(delta, 2),
+        delta = valid[other][score_key] - valid[best][score_key]
+        wape_delta = valid[other]["wape_pct"] - valid[best]["wape_pct"]
+        recommendation = {"better": best,
+                          "wape_delta_pct": round(wape_delta, 2),
+                          "score_delta_pct": round(delta, 2),
+                          "metric": score_key,
                           "meaningful": bool(delta >= 1.0)}
     return {"start": start, "end": end, "lookback_days": lookback_days,
             "lead_hours": lead_hours, "groups": groups,
@@ -269,15 +367,32 @@ def _common_archive_metrics(config, lookback_days: int, now,
                       >= min_pv_w]
     if frame.empty:
         return {}
+    try:
+        from .local_history import read_house_load, read_spot
+        frame["house"] = read_house_load(db, start, end, tz).reindex(frame.index)
+        frame["spot"] = read_spot(db, start, end, tz, slot).reindex(frame.index)
+    except Exception:
+        frame["house"] = np.nan
+        frame["spot"] = np.nan
     a = frame["actual"].to_numpy(dtype=float)
+    weights, weight_info = _decision_weights(frame, config)
+    actual_kwh = round(
+        float(a.sum()) * slot / 60.0 / 1000.0, 1)
     out = {}
     for name in ("solcast", "pvlib"):
         pred = frame[name].to_numpy(dtype=float)
         out[name] = {"sources": sc_ids if name == "solcast" else pv_ids,
                      "method": "archive", "n": int(len(frame)),
                      "wape_pct": round(_wape(a, pred), 2),
+                     "decision_score_pct": round(
+                         _weighted_wape(a, pred, weights), 2),
+                     "decision_mae_w": round(float(
+                         np.sum(weights * np.abs(pred - a))
+                         / max(1e-9, np.sum(weights))), 1),
                      "mae_w": round(_mae(a, pred), 1),
-                     "bias_w": round(float(np.mean(pred - a)), 1)}
+                     "bias_w": round(float(np.mean(pred - a)), 1),
+                     "actual_kwh": actual_kwh,
+                     **weight_info}
     return out
 
 
@@ -308,6 +423,13 @@ def select_source(config, now=None) -> dict:
              if value and value.get("method") == "archive"
              and value.get("n", 0) >= cfg.min_samples
              and np.isfinite(value.get("wape_pct", np.nan))}
+    decision_ready = (
+        bool(getattr(cfg, "decision_weighted", True)) and len(valid) == 2
+        and all(value.get("mode") == "decision_weighted"
+                and np.isfinite(value.get("decision_score_pct", np.nan))
+                for value in valid.values()))
+    score_key = "decision_score_pct" if decision_ready else "wape_pct"
+    score_label = "Entscheidungsscore" if decision_ready else "WAPE"
     reason = "feste Konfiguration"
     if not cfg.enabled:
         selected = default
@@ -318,24 +440,41 @@ def select_source(config, now=None) -> dict:
                   if groups else "warte auf Prognosearchive")
     else:
         challenger = "pvlib" if selected == "solcast" else "solcast"
-        improvement = (valid[selected]["wape_pct"] -
-                       valid[challenger]["wape_pct"])
+        improvement = (valid[selected][score_key] -
+                       valid[challenger][score_key])
+        wape_detail = (
+            f"; WAPE {selected} {valid[selected]['wape_pct']:.2f} %, "
+            f"{challenger} {valid[challenger]['wape_pct']:.2f} %"
+            if decision_ready else "")
         if improvement >= cfg.min_improvement_percent:
             selected = challenger
-            reason = (f"{challenger} um {improvement:.2f} WAPE-Punkte besser")
+            reason = (f"{challenger} um {improvement:.2f} "
+                      f"{score_label}-Punkte besser{wape_detail}")
+        elif improvement > 0:
+            reason = (
+                f"{selected} bleibt aktiv; {challenger} ist nur "
+                f"{improvement:.2f} {score_label}-Punkte besser "
+                f"(Mindestvorsprung {cfg.min_improvement_percent:.2f})"
+                f"{wape_detail}")
+        elif improvement < 0:
+            reason = (
+                f"{selected} bleibt aktiv und ist "
+                f"{abs(improvement):.2f} {score_label}-Punkte besser "
+                f"als {challenger}{wape_detail}")
         else:
-            reason = (f"{selected} bleibt aktiv; Alternative nur "
-                      f"{improvement:.2f} WAPE-Punkte besser")
+            reason = (f"{selected} bleibt aktiv; beide Quellen sind im "
+                      f"{score_label} gleichauf{wape_detail}")
     record = write_pv_source_selection(
         db, now or pd.Timestamp.now(tz="UTC"), selected, reason,
         {"groups": groups, "lookback_days": cfg.lookback_days,
-         "min_samples": cfg.min_samples})
+         "min_samples": cfg.min_samples, "selection_metric": score_key})
     record["groups"] = groups
     return record
 
 
 def calibrate_band(config, lookback_days=60, now=None, min_pv_w=100.0,
-                   low=0.10, high=0.90, lead_hours=0.0) -> Optional[dict]:
+                   low=0.10, high=0.90, lead_hours=0.0,
+                   promotion_days: int = 0) -> Optional[dict]:
     """pvlib-p10/p90-Band aus echten Residuen kalibrieren.
 
     Aus den gepaarten (Punktprognose, Ist)-Erzeugungsslots das empirische
@@ -366,11 +505,19 @@ def calibrate_band(config, lookback_days=60, now=None, min_pv_w=100.0,
             method, pairs = "cache", cp
     # Nur Slots mit belastbarer Punktprognose (Nenner) zählen fürs Verhältnis.
     pairs = pairs[pairs["pred"] >= min_pv_w]
-    if len(pairs) < 20:
+    promotion = pd.DataFrame()
+    training = pairs
+    if promotion_days > 0 and not pairs.empty:
+        promotion_start = end - pd.Timedelta(days=int(promotion_days))
+        training = pairs[pairs.index < promotion_start]
+        promotion = pairs[pairs.index >= promotion_start]
+    if len(training) < 20:
         return {"method": method, "n": int(len(pairs)), "insufficient": True,
+                "training_n": int(len(training)),
+                "promotion_n": int(len(promotion)),
                 "current_p10_uncertainty": config.pv_model.p10_uncertainty,
                 "current_p90_uncertainty": config.pv_model.p90_uncertainty}
-    ratio = (pairs["actual"] / pairs["pred"]).to_numpy()
+    ratio = (training["actual"] / training["pred"]).to_numpy()
     q_low = float(np.quantile(ratio, low))
     q_high = float(np.quantile(ratio, high))
     p10_unc = float(np.clip(1.0 - q_low, 0.0, 0.95))
@@ -379,13 +526,20 @@ def calibrate_band(config, lookback_days=60, now=None, min_pv_w=100.0,
     # Empirische Abdeckung des AKTUELLEN Bandes zum Vergleich.
     cur10 = config.pv_model.p10_uncertainty
     cur90 = config.pv_model.p90_uncertainty
-    below = float(np.mean(ratio < (1.0 - cur10))) * 100.0
-    above = float(np.mean(ratio > (1.0 + cur90))) * 100.0
+    all_ratio = (pairs["actual"] / pairs["pred"]).to_numpy()
+    below = float(np.mean(all_ratio < (1.0 - cur10))) * 100.0
+    above = float(np.mean(all_ratio > (1.0 + cur90))) * 100.0
+    promotion_ratio = (
+        (promotion["actual"] / promotion["pred"]).to_numpy()
+        if not promotion.empty else np.array([], dtype=float))
     return {"method": method, "n": int(len(pairs)),
+            "training_n": int(len(training)),
+            "promotion_n": int(len(promotion)),
             "recommended_p10_uncertainty": round(p10_unc, 3),
             "recommended_p90_uncertainty": round(p90_unc, 3),
             "current_p10_uncertainty": cur10, "current_p90_uncertainty": cur90,
             "current_below_p10_pct": round(below, 1),
             "current_above_p90_pct": round(above, 1),
             "target_low_pct": round(low * 100, 0),
-            "target_high_pct": round(high * 100, 0)}
+            "target_high_pct": round(high * 100, 0),
+            "_promotion_ratios": promotion_ratio}

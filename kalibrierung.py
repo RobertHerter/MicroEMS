@@ -23,7 +23,9 @@ Ausgabe:
       influxdb.signals.pv_forecast.scale   (global)
       forecast.correction_factor           (global, Verbrauch)
     sowie stündliche/monatliche Faktoren zur Ansicht.
-Es wird NICHTS in die Datenbank geschrieben.
+Jeder Lauf wird zusätzlich als unveränderlicher Kalibrierungsstand in der
+lokalen History-Datenbank archiviert. Das beeinflusst weder Prognose noch
+Steuerung, ermöglicht aber die Änderungshistorie im Dashboard.
 """
 from __future__ import annotations
 
@@ -112,7 +114,7 @@ def _pv_actual_hist(cfg, repo, start, now):
     return pd.Series(dtype="float64"), "—"
 
 
-def calibrate_pv(repo, cfg, now, lookback_days):
+def calibrate_pv(repo, cfg, now, lookback_days, promotion_days=14):
     start = now - timedelta(days=lookback_days)
     fcast, fsrc = _pv_forecast_hist(cfg, repo, start, now)
     actual, asrc = _pv_actual_hist(cfg, repo, start, now)
@@ -124,14 +126,28 @@ def calibrate_pv(repo, cfg, now, lookback_days):
     day = p > 50.0
     a_d, p_d = a[day], p[day]
     m = _metrics(a_d.values, p_d.values)
-    hourly = _factor_table(a_d, p_d, lambda i: i.tz_convert(cfg.general.timezone).hour)
-    monthly = _factor_table(a_d, p_d, lambda i: i.tz_convert(cfg.general.timezone).month)
-    month_hour = _month_hour_table(a_d, p_d, cfg.general.timezone)
+    promotion_start = now - timedelta(days=max(1, int(promotion_days)))
+    fit = a_d.index < promotion_start
+    a_fit, p_fit = a_d[fit], p_d[fit]
+    if len(a_fit) < 20:
+        a_fit, p_fit = a_d.iloc[0:0], p_d.iloc[0:0]
+    fit_metrics = _metrics(a_fit.values, p_fit.values)
+    hourly = _factor_table(
+        a_fit, p_fit, lambda i: i.tz_convert(cfg.general.timezone).hour)
+    monthly = _factor_table(
+        a_fit, p_fit, lambda i: i.tz_convert(cfg.general.timezone).month)
+    month_hour = _month_hour_table(a_fit, p_fit, cfg.general.timezone)
     sig = cfg.influxdb.signals.get("pv_forecast")
     cur_scale = sig.scale if sig else 1.0
-    return {"metrics": m, "hourly": hourly, "monthly": monthly, "month_hour": month_hour,
+    promotion_frame = pd.DataFrame({
+        "actual": a_d[~fit], "raw": p_d[~fit]}).dropna()
+    return {"metrics": m, "fit_metrics": fit_metrics,
+            "hourly": hourly, "monthly": monthly, "month_hour": month_hour,
             "current_scale": cur_scale, "forecast_source": fsrc, "actual_source": asrc,
-            "suggested_scale": round(cur_scale * m.get("scale_actual_over_pred", 1.0), 4)}
+            "suggested_scale": round(
+                cur_scale * fit_metrics.get("scale_actual_over_pred", 1.0), 4),
+            "promotion_samples": int(len(promotion_frame)),
+            "_promotion_frame": promotion_frame}
 
 
 def _load_hist(repo, cfg, start, now):
@@ -472,7 +488,8 @@ def _print_validation(res):
           f"{res.get('correction_profile_source', 'unbekannt')}")
 
 
-def calibrate_load(repo, cfg, now, lookback_days, test_days):
+def calibrate_load(repo, cfg, now, lookback_days, test_days,
+                   promotion_days=14):
     use_local = cfg.e3dc_rscp.history_source
     if not use_local and not repo.signal_available("house_consumption"):
         return None
@@ -521,13 +538,20 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days):
                 if sub["p"].sum() > 1e-6:
                     temp_bins[str(b)] = round(float(sub["a"].sum() / sub["p"].sum()), 3)
 
+    promotion_start = now - timedelta(days=max(1, int(promotion_days)))
+    promotion_frame = pd.DataFrame({
+        "actual": a[a.index >= promotion_start],
+        "raw": p[p.index >= promotion_start]}).dropna()
     return {"metrics": m, "hourly": hourly, "daytype": daytype_tab,
             "temp_used": temp is not None, "by_temperature": temp_bins,
             "load_source": ("lokal (RSCP house_load)" if use_local
                             else "InfluxDB (house_consumption)"),
             "temp_source": ("Open-Meteo (lokal)" if (temp is not None and cfg.weather.enabled)
                             else "InfluxDB" if temp is not None else "—"),
-            "suggested_correction_factor": round(m.get("scale_actual_over_pred", 1.0), 4)}
+            "suggested_correction_factor": round(
+                m.get("scale_actual_over_pred", 1.0), 4),
+            "promotion_samples": int(len(promotion_frame)),
+            "_promotion_frame": promotion_frame}
 
 
 def _print_block(title, res):
@@ -563,16 +587,47 @@ def main():
                     help="Fenster für die pvlib-p10/p90-Bandkalibrierung")
     ap.add_argument("--no-band", action="store_true",
                     help="pvlib-p10/p90-Band NICHT automatisch anpassen")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="vollständig rechnen, aber weder Profil/Report/Overrides "
+                         "noch Kalibrierungshistorie verändern")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
+    previous_report = {}
+    previous_profile = {}
+    # Vor dem Überschreiben den bislang produktiven Stand als Ausgangspunkt
+    # sichern. Beim ersten Lauf nach dem Upgrade entsteht so bereits ein
+    # echter Vorher/Nachher-Vergleich statt erst ab der übernächsten Woche.
+    try:
+        from ems.local_history import write_calibration_snapshot
+        with open(args.output, encoding="utf-8") as fh:
+            previous_report = yaml.safe_load(fh) or {}
+        try:
+            with open(cfg.calibration.pv_profile, encoding="utf-8") as fh:
+                previous_profile = yaml.safe_load(fh) or {}
+        except OSError:
+            previous_profile = {}
+        previous_generated = (
+            previous_report.get("generated")
+            or previous_profile.get("generated"))
+        if previous_generated and not args.dry_run:
+            write_calibration_snapshot(
+                cfg.e3dc_rscp.history_db_path, previous_generated,
+                previous_report, previous_profile)
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"Hinweis: bisheriger Kalibrierungsstand nicht archiviert: {exc}")
+
     repo = InfluxRepository(cfg)
     now = pd.Timestamp.now(tz=cfg.general.timezone).floor(f"{cfg.general.slot_minutes}min")
     validation = None
     try:
         print(f"Kalibrierung über {args.lookback_days} Tage (Test: letzte {args.test_days} Tage) ...")
-        pv = calibrate_pv(repo, cfg, now, args.lookback_days)
-        load = calibrate_load(repo, cfg, now, args.lookback_days, args.test_days)
+        pv = calibrate_pv(
+            repo, cfg, now, args.lookback_days,
+            cfg.calibration.promotion_days)
+        load = calibrate_load(
+            repo, cfg, now, args.lookback_days, args.test_days,
+            cfg.calibration.promotion_days)
         if args.val_folds > 0:
             print(f"Prognose-Validierung ({args.val_folds} Folds x "
                   f"{args.val_horizon_h} h, ml vs. similar_days) ...")
@@ -586,6 +641,107 @@ def main():
                 archive_reader=_issue_time_archive_reader(cfg))
     finally:
         repo.close()
+
+    # --- Champion-/Challenger-Entscheidung für Punktprognosen -------------
+    from ems.calibration import apply_pv_correction
+    from ems.calibration_competition import (
+        apply_load_profile, compare_point_forecasts)
+
+    cc = cfg.calibration
+    candidate_profile = {"generated": now.isoformat()}
+    if pv:
+        candidate_profile.update({
+            "pv_global": round(
+                pv.get("fit_metrics", {}).get(
+                    "scale_actual_over_pred", 1.0), 4),
+            "pv_month_hour": pv.get("month_hour", {}),
+            "pv_hour": pv.get("hourly", {}),
+            "pv_month": pv.get("monthly", {}),
+        })
+    rolling_hourly = (validation or {}).get("hourly_correction")
+    if rolling_hourly:
+        candidate_profile["load_hourly"] = {
+            int(h): round(float(min(1.8, max(0.6, factor))), 3)
+            for h, factor in rolling_hourly.items()}
+        candidate_profile["load_global"] = float(
+            validation.get("global_correction", 1.0))
+        candidate_profile["load_profile_source"] = validation.get(
+            "correction_profile_source", "historical_bootstrap")
+        candidate_profile["load_archive_folds"] = int(validation.get(
+            "archive_folds", 0))
+        candidate_profile["load_archive_min_folds"] = int(validation.get(
+            "archive_min_folds", 6))
+        candidate_profile["load_archive_weight"] = float(validation.get(
+            "archive_weight", 0.0))
+
+    def _point_decision(frame, champion, challenger, available):
+        if frame is None or frame.empty:
+            return {
+                "n": 0, "promote": False, "status": "insufficient",
+                "reason": "keine unabhängigen Prüfdaten"}
+        decision = compare_point_forecasts(
+            frame["actual"], champion, challenger, cfg.general.timezone,
+            min_samples=cc.promotion_min_samples,
+            min_improvement_percent=cc.promotion_min_improvement_percent,
+            max_segment_degradation_pct=(
+                cc.promotion_max_segment_degradation_pct),
+            max_bias_increase_w=cc.promotion_max_bias_increase_w,
+            champion_available=available)
+        if not cc.champion_challenger_enabled:
+            decision.update(
+                promote=True, status="disabled",
+                reason="Champion-/Challenger-Prüfung deaktiviert")
+        return decision
+
+    pv_frame = pv.pop("_promotion_frame", None) if pv else None
+    pv_available = any(
+        key in previous_profile
+        for key in ("pv_global", "pv_month_hour", "pv_hour", "pv_month"))
+    pv_competition = {
+        "n": 0, "promote": False, "status": "insufficient",
+        "reason": "kein PV-Challenger"}
+    if (pv_frame is not None and not pv_frame.empty and pv
+            and int(pv.get("fit_metrics", {}).get("n", 0))
+            >= cc.promotion_min_samples):
+        pv_competition = _point_decision(
+            pv_frame,
+            apply_pv_correction(
+                pv_frame["raw"], previous_profile, cfg.general.timezone),
+            apply_pv_correction(
+                pv_frame["raw"], candidate_profile, cfg.general.timezone),
+            pv_available)
+    elif pv:
+        pv_competition["reason"] = (
+            f"Challenger-Training "
+            f"{int(pv.get('fit_metrics', {}).get('n', 0))}/"
+            f"{cc.promotion_min_samples} Slots")
+
+    load_frame = load.pop("_promotion_frame", None) if load else None
+    load_available = bool(previous_profile.get("load_hourly"))
+    load_competition = {
+        "n": 0, "promote": False, "status": "insufficient",
+        "reason": "kein Last-Challenger"}
+    if (load_frame is not None and not load_frame.empty
+            and candidate_profile.get("load_hourly")):
+        load_competition = _point_decision(
+            load_frame,
+            apply_load_profile(
+                load_frame["raw"], previous_profile, cfg.general.timezone),
+            apply_load_profile(
+                load_frame["raw"], candidate_profile, cfg.general.timezone),
+            load_available)
+
+    competition = {
+        "enabled": bool(cc.champion_challenger_enabled),
+        "promotion_days": int(cc.promotion_days),
+        "min_samples": int(cc.promotion_min_samples),
+        "min_improvement_percent": float(
+            cc.promotion_min_improvement_percent),
+        "signals": {
+            "pv_correction": pv_competition,
+            "load_correction": load_competition,
+        },
+    }
 
     _print_block("PV-Vorhersage (Solcast) vs. Ist-Erzeugung", pv)
     if pv:
@@ -617,24 +773,109 @@ def main():
         try:
             from ems import pv_eval
             from ems.config import save_override
-            band = pv_eval.calibrate_band(cfg, lookback_days=args.band_lookback_days)
+            band = pv_eval.calibrate_band(
+                cfg, lookback_days=args.band_lookback_days,
+                promotion_days=cc.promotion_days)
         except Exception as exc:
             print(f"\nPV-Bandkalibrierung fehlgeschlagen: {exc}")
     band_applied = {}
     if band and not band.get("insufficient"):
+        from ems.calibration_competition import compare_intervals
+
         print(f"\nPV-Band (pvlib) aus {band['n']} Residuen ({band['method']}):")
         print(f"     Abdeckung aktuell: {band['current_below_p10_pct']} % unter p10 "
               f"(Ziel {band['target_low_pct']:.0f} %), "
               f"{band['current_above_p90_pct']} % über p90.")
+        proposed = {}
         for key, rkey in (("p10_uncertainty", "recommended_p10_uncertainty"),
                           ("p90_uncertainty", "recommended_p90_uncertainty")):
             old = float(getattr(cfg.pv_model, key))
             new = round(old + 0.5 * (band[rkey] - old), 3)      # 50 % gedämpft
-            save_override(args.config, f"pv_model.{key}", new)
-            band_applied[key] = new
-            print(f"  -> pv_model.{key}: {old} -> {new} (Ziel {band[rkey]}, gedämpft)")
+            proposed[key] = new
+        ratios = band.pop("_promotion_ratios", [])
+        if int(band.get("training_n", 0)) < cc.promotion_min_samples:
+            band_competition = {
+                "n": int(band.get("promotion_n", 0)), "promote": False,
+                "status": "insufficient",
+                "reason": (
+                    f"Challenger-Training {int(band.get('training_n', 0))}/"
+                    f"{cc.promotion_min_samples} Residuen")}
+        else:
+            band_competition = compare_intervals(
+                ratios,
+                1.0 - float(cfg.pv_model.p10_uncertainty),
+                1.0 + float(cfg.pv_model.p90_uncertainty),
+                1.0 - proposed["p10_uncertainty"],
+                1.0 + proposed["p90_uncertainty"],
+                min_samples=cc.promotion_min_samples,
+                min_improvement_percent=cc.promotion_min_improvement_percent)
+        if not cc.champion_challenger_enabled:
+            band_competition.update(
+                promote=True, status="disabled",
+                reason="Champion-/Challenger-Prüfung deaktiviert")
+        competition["signals"]["pv_band"] = band_competition
+        for key, rkey in (("p10_uncertainty", "recommended_p10_uncertainty"),
+                          ("p90_uncertainty", "recommended_p90_uncertainty")):
+            old, new = float(getattr(cfg.pv_model, key)), proposed[key]
+            if band_competition["promote"] and not args.dry_run:
+                save_override(args.config, f"pv_model.{key}", new)
+                band_applied[key] = new
+            verdict = (
+                "würde übernommen" if args.dry_run and band_competition["promote"]
+                else "übernommen" if band_competition["promote"]
+                else "gehalten")
+            print(f"  -> pv_model.{key}: {old} -> {new} "
+                  f"(Ziel {band[rkey]}, gedämpft; {verdict})")
     elif band:
-        print(f"\nPV-Band: zu wenig Residuen (n={band['n']}) – Festwert bleibt.")
+        print(f"\nPV-Band: zu wenig getrennte Trainingsresiduen "
+              f"({band.get('training_n', 0)} Training / "
+              f"{band.get('promotion_n', 0)} Holdout; "
+              f"{band.get('n', 0)} gesamt) – Festwert bleibt.")
+        band.pop("_promotion_ratios", None)
+        competition["signals"]["pv_band"] = {
+            "n": int(band.get("promotion_n", 0)), "promote": False,
+            "status": "insufficient",
+            "reason": "zu wenig getrennte Trainings-/Prüfresiduen"}
+    else:
+        competition["signals"]["pv_band"] = {
+            "n": 0, "promote": False, "status": "insufficient",
+            "reason": "kein PV-Band-Challenger"}
+
+    # Aktives Profil komponentenweise zusammensetzen. Ein abgelehnter
+    # Challenger lässt exakt die betreffenden Champion-Schlüssel unangetastet.
+    profile = {
+        key: value for key, value in previous_profile.items()
+        if key.startswith("pv_") or key.startswith("load_")
+    }
+    if pv_competition.get("promote"):
+        for key in ("pv_global", "pv_month_hour", "pv_hour", "pv_month"):
+            if key in candidate_profile:
+                profile[key] = candidate_profile[key]
+    if load_competition.get("promote"):
+        for key in (
+                "load_hourly", "load_global", "load_profile_source",
+                "load_archive_folds", "load_archive_min_folds",
+                "load_archive_weight"):
+            if key in candidate_profile:
+                profile[key] = candidate_profile[key]
+    profile["generated"] = now.isoformat()
+    profile["calibration_competition"] = competition
+
+    print("\n" + "=" * 62 + "\nChampion-/Challenger-Kalibrierung\n"
+          + "-" * 62)
+    labels = {
+        "pv_correction": "PV-Korrektur",
+        "load_correction": "Lastkorrektur",
+        "pv_band": "PV-Band",
+    }
+    for name, decision in competition["signals"].items():
+        verdict = (
+            "ÜBERNEHMEN" if decision.get("promote")
+            else "CHAMPION HALTEN" if decision.get("status") == "held"
+            else "NOCH NICHT BEWERTBAR")
+        print(f"  {labels.get(name, name):<16} {verdict:<20} "
+              f"n={int(decision.get('n', 0)):>4} · "
+              f"{decision.get('reason', '–')}")
 
     out = {
         "generated": now.isoformat(),
@@ -644,6 +885,7 @@ def main():
         "load_forecast": load,
         "forecast_validation": validation,
         "pv_band": band,
+        "calibration_competition": competition,
         "empfohlene_config": {
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
             "forecast.correction_factor": (
@@ -653,44 +895,36 @@ def main():
             **{f"pv_model.{k}": v for k, v in band_applied.items()},
         },
     }
-    with open(args.output, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(out, fh, allow_unicode=True, sort_keys=False)
-    print(f"\nDetails in {args.output} geschrieben.")
+    if not args.dry_run:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(out, fh, allow_unicode=True, sort_keys=False)
+        print(f"\nDetails in {args.output} geschrieben.")
+    else:
+        print(f"\nDry-run: {args.output}, Profil und Overrides nicht verändert.")
 
     # Anwendbares Profil (zeitabhängige Korrekturen) schreiben. Wird von der
     # Pipeline genutzt, wenn calibration.enabled=true (config).
-    if pv or load:
-        profile = {"generated": now.isoformat()}
-        if pv:
-            profile.update({
-                "pv_global": round(pv["metrics"].get("scale_actual_over_pred", 1.0), 4),
-                "pv_month_hour": pv.get("month_hour", {}),
-                "pv_hour": pv.get("hourly", {}),
-                "pv_month": pv.get("monthly", {}),
-            })
-        # Hybridprofil: saisonal verteilte, leakage-freie Bootstrap-Folds
-        # liefern sofort gedämpfte Startwerte. Echte wöchentliche Issue-Time-
-        # Folds ersetzen sie bis zum sechsten Fold linear. Der alte einzelne
-        # 365-Tage-Hold-out bleibt als Quelle gesperrt, weil das ML-Modell dort
-        # nach Tag 7 sein lag_7d-Feature verliert und Faktoren aufblasen kann.
-        rolling_hourly = (validation or {}).get("hourly_correction")
-        if rolling_hourly:
-            # Geclippt auf [0.6, 1.8] gegen Ausreißer-Stunden.
-            profile["load_hourly"] = {
-                int(h): round(float(min(1.8, max(0.6, f))), 3)
-                for h, f in rolling_hourly.items()}
-            profile["load_profile_source"] = validation.get(
-                "correction_profile_source", "historical_bootstrap")
-            profile["load_archive_folds"] = int(validation.get(
-                "archive_folds", 0))
-            profile["load_archive_min_folds"] = int(validation.get(
-                "archive_min_folds", 6))
-            profile["load_archive_weight"] = float(validation.get(
-                "archive_weight", 0.0))
-        with open("kalibrierung_profil.yaml", "w", encoding="utf-8") as fh:
+    if (pv or load or previous_profile) and not args.dry_run:
+        with open(cfg.calibration.pv_profile, "w", encoding="utf-8") as fh:
             yaml.safe_dump(profile, fh, allow_unicode=True, sort_keys=True)
-        print("Korrekturprofil (PV Monat x Stunde, Last je Stunde) -> "
-              "kalibrierung_profil.yaml")
+        promoted = [
+            name for name, value in competition["signals"].items()
+            if value.get("promote")]
+        print("Korrekturprofil (Champion-/Challenger-geprüft) -> "
+              f"kalibrierung_profil.yaml; übernommen: "
+              f"{', '.join(promoted) if promoted else 'kein Challenger'}")
+
+    # Den vollständigen Wochenstand nach erfolgreicher Dateiausgabe dauerhaft
+    # archivieren. Ein Ausfall der reinen Diagnosehistorie darf die eigentliche
+    # Kalibrierung nicht fehlschlagen lassen.
+    try:
+        from ems.local_history import write_calibration_snapshot
+        if not args.dry_run:
+            write_calibration_snapshot(
+                cfg.e3dc_rscp.history_db_path, now, out, profile)
+            print("Kalibrierungsstand mit Erstellungszeit archiviert.")
+    except Exception as exc:
+        print(f"Warnung: Kalibrierungshistorie konnte nicht archiviert werden: {exc}")
 
     print("\nAnwenden:")
     print("  Zeitabhängig (empfohlen): calibration.enabled=true + pv_profile=")

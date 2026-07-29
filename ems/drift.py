@@ -123,6 +123,9 @@ class DriftMonitor:
         out = {"measured": fit.efficiency, "model": round(model, 3),
                "deviation_percent": round(deviation, 1),
                "windows": fit.n_windows, "hours": fit.hours,
+               "window_days": round(float(self.eff_days), 1),
+               "threshold_percent": round(float(self.eff_alert), 1),
+               "evaluated_at": pd.Timestamp(now).isoformat(),
                "alert": abs(deviation) > self.eff_alert}
         # Nur die Abweichung ist interessant - im Normalfall still bleiben,
         # sonst geht die Meldung im Log unter.
@@ -191,6 +194,9 @@ class DriftMonitor:
         out = {"median_w": round(median_w, 1), "mean_w": round(mean_w, 1),
                "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
                "same_sign_share": round(one_sided, 2), "n": len(values),
+               "window_days": round(float(self.exec_days), 1),
+               "threshold_w": round(float(self.exec_alert_w), 1),
+               "evaluated_at": pd.Timestamp(now).isoformat(),
                "alert": bool(abs(median_w) > self.exec_alert_w
                              and one_sided >= 0.65)}
         if out["alert"]:
@@ -262,24 +268,37 @@ class DriftMonitor:
         night_sided = (max(float((night > 0).mean()),
                            1.0 - float((night > 0).mean()))
                        if len(night) >= 24 else 0.0)
+        day_trigger = abs(median_w) > self.load_alert_w and one_sided >= 0.65
+        night_trigger = (night_w is not None
+                         and abs(night_w) > self.load_alert_w
+                         and night_sided >= 0.65)
+        disaggregation = bool(getattr(
+            self.cfg.forecast, "disaggregate_controllable_loads", False))
+        diagnostic = (
+            "Grundlastbereinigung ist aktiv; verbleibenden "
+            "Sockel-/Nacht-Bias prüfen"
+            if disaggregation else
+            "Grundlastmodell und steuerbare Lasten prüfen")
         out = {"median_w": round(median_w, 1),
                "mean_w": round(float(arr.mean()), 1),
                "night_median_w": (None if night_w is None
                                   else round(night_w, 1)),
                "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
                "same_sign_share": round(one_sided, 2), "n": len(deltas),
-               "alert": bool(
-                   (abs(median_w) > self.load_alert_w and one_sided >= 0.65)
-                   or (night_w is not None
-                       and abs(night_w) > self.load_alert_w
-                       and night_sided >= 0.65))}
+               "window_days": int(self.load_days),
+               "threshold_w": round(float(self.load_alert_w), 1),
+               "evaluated_at": pd.Timestamp(now).isoformat(),
+               "alert_scope": ("Tag und Nacht" if day_trigger and night_trigger
+                               else "Nacht" if night_trigger else "Gesamt"),
+               "diagnostic": diagnostic,
+               "alert": bool(day_trigger or night_trigger)}
         if out["alert"]:
             log.warning(
                 "Lastprognose-Versatz: Median %+.0f W über %d Slots "
                 "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Prognose "
-                "liegt systematisch %s - Grundlast-Zerlegung prüfen.",
+                "liegt systematisch %s. %s.",
                 median_w, len(deltas), 100.0 * one_sided, out["kwh_per_day"],
-                "zu niedrig" if median_w > 0 else "zu hoch")
+                "zu niedrig" if median_w > 0 else "zu hoch", diagnostic)
             if night_w is not None:
                 log.warning("  nachts (00-06 Uhr): %+.0f W", night_w)
         else:

@@ -60,6 +60,28 @@ class LoadForecaster:
                     self.load_hourly = {int(k): float(v) for k, v in lh.items()}
         except Exception:   # pragma: no cover - Profil ist optional
             self.load_hourly = None
+        self._uncertainty_status = {
+            "slots": 0, "daytype_season": 0, "temperature": 0,
+            "fallback": 0,
+        }
+
+    def uncertainty_summary(self) -> str:
+        """Kurze Diagnose des zuletzt erzeugten Lastbandes."""
+        status = self._uncertainty_status
+        slots = int(status.get("slots", 0))
+        if not slots:
+            return "konditionales p10–p90-Band wartet auf Daten"
+        parts = [
+            f"konditionales p10–p90-Band: "
+            f"{int(status.get('daytype_season', 0))}/{slots} Tagtyp/Saison"
+        ]
+        temperature = int(status.get("temperature", 0))
+        if temperature:
+            parts.append(f"{temperature}/{slots} temperaturgeführt")
+        fallback = int(status.get("fallback", 0))
+        if fallback:
+            parts.append(f"{fallback}/{slots} Slot-Fallback")
+        return " · ".join(parts)
 
     def _build_holidays(self):
         import holidays
@@ -315,17 +337,25 @@ class LoadForecaster:
             result = result.clip(lower=clip_min)
         return result.tz_convert(self.cfg.general.timezone)
 
-    def uncertainty_band(self, history: pd.Series, point: pd.Series
+    def uncertainty_band(self, history: pd.Series, point: pd.Series,
+                         hist_temp: "pd.Series | None" = None,
+                         fut_temp: "pd.Series | None" = None,
                          ) -> tuple[pd.Series, pd.Series]:
         """Empirisches P10/P90-Band um eine fertige Lastprognose.
 
         Verwendet die relative Streuung desselben Tagesslots aus vergleichbaren
         historischen Tagen. Damit bleiben Kalibrierung und Intraday-Korrektur
         des Punktwerts erhalten, während die reale Lastvariabilität sichtbar
-        wird. Bei ausreichender Datenbasis werden gleicher Tagtyp und Saison
-        bevorzugt; die Punktprognose liegt definitionsgemäß im Band.
+        wird. Bei ausreichender Datenbasis werden gleicher Tagtyp, Saison und
+        eine ähnliche Außentemperatur bevorzugt. Fehlen für eine Bedingung
+        genügend Werte, fällt die Auswahl stufenweise auf Tagtyp und zuletzt
+        den reinen Tagesslot zurück; die Punktprognose liegt immer im Band.
         """
         p = pd.Series(point, dtype="float64")
+        self._uncertainty_status = {
+            "slots": int(len(p)), "daytype_season": 0, "temperature": 0,
+            "fallback": 0,
+        }
         if p.empty or not self.fc.load_uncertainty_enabled:
             return p.copy(), p.copy()
         hist = pd.Series(history, dtype="float64").dropna()
@@ -338,16 +368,38 @@ class LoadForecaster:
         low_q = self.fc.load_uncertainty_low_quantile
         high_q = self.fc.load_uncertainty_high_quantile
         min_n = max(3, self.fc.load_uncertainty_min_samples)
+        hist_temp_values = (
+            pd.Series(hist_temp, dtype="float64").reindex(hist.index)
+            if hist_temp is not None else None)
+        fut_temp_values = (
+            pd.Series(fut_temp, dtype="float64").reindex(p.index)
+            if fut_temp is not None else None)
+        if hist_temp_values is not None:
+            hf["temp"] = hist_temp_values.values
+        temp_window = max(0.5, float(getattr(self.fc, "temp_sigma", 4.0)))
         lows, highs = [], []
         groups = {int(k): g for k, g in hf.groupby("slot_of_day")}
         for i, (_, future) in enumerate(ff.iterrows()):
             grp = groups.get(int(future["slot_of_day"]), hf)
             preferred = grp[(grp["daytype"] == future["daytype"])
                             & (grp["season"] == future["season"])]
-            if len(preferred) < min_n:
+            if len(preferred) >= min_n:
+                self._uncertainty_status["daytype_season"] += 1
+            else:
                 preferred = grp[grp["daytype"] == future["daytype"]]
             if len(preferred) < min_n:
                 preferred = grp
+                self._uncertainty_status["fallback"] += 1
+            if (fut_temp_values is not None and "temp" in preferred
+                    and pd.notna(fut_temp_values.iloc[i])):
+                close = preferred[
+                    preferred["temp"].notna()
+                    & ((preferred["temp"] - float(
+                        fut_temp_values.iloc[i])).abs() <= temp_window)
+                ]
+                if len(close) >= min_n:
+                    preferred = close
+                    self._uncertainty_status["temperature"] += 1
             vals = preferred["value"].to_numpy(dtype=float)
             center = float(np.median(vals)) if len(vals) else float("nan")
             if not np.isfinite(center) or center <= 1e-9:
@@ -418,15 +470,27 @@ def stabilize_intraday_ratio(ratio, previous: float = 1.0,
 
 
 def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
-                           decay_hours: float = 6.0) -> pd.Series:
+                           decay_hours: float = 6.0,
+                           max_slots: int | None = None,
+                           slot_minutes: int = 15) -> pd.Series:
     """Korrekturfaktor je Zukunfts-Slot: volle Korrektur jetzt, exponentiell
-    abklingend mit der Lead-Time (Halbwertszeit decay_hours) - weit voraus
-    gilt wieder das Ähnliche-Tage-Modell."""
+    abklingend mit der Lead-Time (Halbwertszeit decay_hours).
+
+    ``max_slots`` begrenzt die Korrektur hart auf den operativen Nahbereich.
+    Das ist für PV wichtig: aktuelles Wolkenrauschen ist für die nächsten
+    Minuten nützlich, darf aber weiter entfernte Solcast-/pvlib-Werte nicht
+    verbiegen. Ohne Grenze bleibt das bisherige Verhalten für die Hauslast.
+    """
     if ratio is None:
         return pd.Series(1.0, index=index)
     lead_h = np.maximum(
         (index - pd.Timestamp(now)).total_seconds() / 3600.0, 0.0)
     w = np.power(0.5, np.asarray(lead_h) / max(decay_hours, 0.1))
+    if max_slots is not None:
+        horizon_h = max(0, int(max_slots)) * max(1, int(slot_minutes)) / 60.0
+        raw_lead_h = np.asarray(
+            (index - pd.Timestamp(now)).total_seconds() / 3600.0)
+        w = np.where((raw_lead_h >= 0.0) & (raw_lead_h < horizon_h), w, 0.0)
     return pd.Series(1.0 + (float(ratio) - 1.0) * w, index=index)
 
 

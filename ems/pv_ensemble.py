@@ -186,8 +186,15 @@ def learn_weights(db: str, model_sources: Dict[str, list[str]], now,
 def residual_quantiles(db: str, aggregate_sources: list[str], now,
                        lookback_days: int, min_samples: int,
                        horizon_hours: Iterable[float],
-                       fallback_low: float, fallback_high: float) -> dict:
-    """Multiplikative Ist/Ensemble-Quantile je Vorlaufzeit."""
+                       fallback_low: float, fallback_high: float,
+                       timezone: str = "UTC") -> dict:
+    """Multiplikative Ist/Ensemble-Quantile je Vorlaufzeit und Wetterlage.
+
+    Innerhalb jedes Vorlauf-Buckets wird das Band zusätzlich nach
+    meteorologischer Saison und prognostiziertem Leistungsniveau gelernt.
+    Schwach besetzte Zellen fallen hierarchisch auf Leistungsniveau, Saison
+    und zuletzt das robuste Vorlaufband zurück.
+    """
     issue = pd.Timestamp(now)
     if issue.tzinfo is None:
         issue = issue.tz_localize("UTC")
@@ -203,7 +210,8 @@ def residual_quantiles(db: str, aggregate_sources: list[str], now,
             pairs = pairs[(pairs["ensemble"] >= 100.0)
                           & (pairs["actual"] >= 0.0)]
         n = int(len(pairs))
-        if n >= max(8, int(min_samples)):
+        required = max(8, int(min_samples))
+        if n >= required:
             ratio = (pairs["actual"] / pairs["ensemble"]).to_numpy()
             q10 = float(np.clip(np.quantile(ratio, 0.10), 0.05, 1.0))
             q90 = float(np.clip(np.quantile(ratio, 0.90), 1.0, 4.0))
@@ -211,11 +219,88 @@ def residual_quantiles(db: str, aggregate_sources: list[str], now,
         else:
             q10, q90 = fallback_low, fallback_high
             learned = False
+        conditions = {}
+        thresholds = {"low_w": None, "high_w": None}
+        if n:
+            power = pairs["ensemble"].to_numpy(dtype=float)
+            low_w, high_w = np.quantile(power, [1.0 / 3.0, 2.0 / 3.0])
+            thresholds = {"low_w": float(low_w), "high_w": float(high_w)}
+            local = pairs.index.tz_convert(timezone)
+            condition_frame = pd.DataFrame({
+                "ratio": pairs["actual"].to_numpy(dtype=float) / power,
+                "season": ((local.month % 12) // 3).astype(int),
+                "power": np.where(
+                    power < low_w, "low",
+                    np.where(power < high_w, "mid", "high")),
+            }, index=pairs.index)
+            conditional_required = max(8, required // 2)
+            selectors = {}
+            for season in sorted(condition_frame["season"].unique()):
+                selectors[f"season:{season}"] = (
+                    condition_frame["season"] == season)
+            for power_name in ("low", "mid", "high"):
+                selectors[f"power:{power_name}"] = (
+                    condition_frame["power"] == power_name)
+            for season in sorted(condition_frame["season"].unique()):
+                for power_name in ("low", "mid", "high"):
+                    selectors[f"season:{season}|power:{power_name}"] = (
+                        (condition_frame["season"] == season)
+                        & (condition_frame["power"] == power_name))
+            for key, selector in selectors.items():
+                sample = condition_frame.loc[selector, "ratio"].to_numpy()
+                sample_n = int(len(sample))
+                if sample_n < conditional_required:
+                    continue
+                raw_low = float(np.clip(
+                    np.quantile(sample, 0.10), 0.05, 1.0))
+                raw_high = float(np.clip(
+                    np.quantile(sample, 0.90), 1.0, 4.0))
+                # Kleine Teilgruppen vorsichtig zum stabilen Vorlaufband
+                # schrumpfen; ab vier Mindeststichproben gilt die Zelle voll.
+                alpha = min(
+                    1.0, sample_n / max(1.0, 4.0 * conditional_required))
+                conditions[key] = {
+                    "q10_ratio": float(
+                        np.clip((1.0 - alpha) * q10 + alpha * raw_low,
+                                0.05, 1.0)),
+                    "q90_ratio": float(
+                        np.clip((1.0 - alpha) * q90 + alpha * raw_high,
+                                1.0, 4.0)),
+                    "n": sample_n, "learned": True,
+                }
         out[name] = {
             "q10_ratio": q10, "q90_ratio": q90,
-            "n": n, "learned": learned,
+            "n": n, "learned": learned, "conditions": conditions,
+            "power_thresholds_w": thresholds, "timezone": timezone,
         }
     return out
+
+
+def _conditional_residual(residual: dict, target: pd.Timestamp,
+                          power_w: float) -> tuple[dict, str]:
+    """Beste belastbare Kondition eines Vorlaufbandes auswählen."""
+    conditions = residual.get("conditions") or {}
+    thresholds = residual.get("power_thresholds_w") or {}
+    low_w, high_w = thresholds.get("low_w"), thresholds.get("high_w")
+    if low_w is None or high_w is None:
+        return residual, "lead"
+    if power_w < float(low_w):
+        power = "low"
+    elif power_w < float(high_w):
+        power = "mid"
+    else:
+        power = "high"
+    local = target.tz_convert(residual.get("timezone") or "UTC")
+    season = int((local.month % 12) // 3)
+    for key in (
+        f"season:{season}|power:{power}",
+        f"power:{power}",
+        f"season:{season}",
+    ):
+        selected = conditions.get(key)
+        if selected and selected.get("learned"):
+            return selected, key
+    return residual, "lead"
 
 
 def _weighted_quantile(values: dict[str, float], weights: dict[str, float],
@@ -255,6 +340,7 @@ def combine(model_outputs: dict, weights_by_bucket: dict,
     })
     combined = {source: {} for source in aggregate_sources}
     usage = {name: 0 for name in weights_by_bucket}
+    condition_usage = {name: {} for name in weights_by_bucket}
     for target in targets:
         target_ts = pd.Timestamp(target)
         if target_ts.tzinfo is None:
@@ -289,8 +375,12 @@ def combine(model_outputs: dict, weights_by_bucket: dict,
         spread_low = _weighted_quantile(per_model_total, weights, 0.10)
         spread_high = _weighted_quantile(per_model_total, weights, 0.90)
         residual = residuals_by_bucket.get(bucket) or {}
-        residual_low = mean_total * float(residual.get("q10_ratio", 1.0))
-        residual_high = mean_total * float(residual.get("q90_ratio", 1.0))
+        selected_residual, condition = _conditional_residual(
+            residual, target_ts, mean_total)
+        residual_low = mean_total * float(
+            selected_residual.get("q10_ratio", 1.0))
+        residual_high = mean_total * float(
+            selected_residual.get("q90_ratio", 1.0))
         low_total = min(mean_total, spread_low, residual_low)
         high_total = max(mean_total, spread_high, residual_high)
 
@@ -307,8 +397,11 @@ def combine(model_outputs: dict, weights_by_bucket: dict,
                 float(point), float(low_total * share),
                 float(high_total * share))
         usage[bucket] = usage.get(bucket, 0) + 1
+        bucket_conditions = condition_usage.setdefault(bucket, {})
+        bucket_conditions[condition] = bucket_conditions.get(condition, 0) + 1
     diagnostics = {
         "models": models, "weights": weights_by_bucket,
         "residuals": residuals_by_bucket, "slots_by_bucket": usage,
+        "condition_slots_by_bucket": condition_usage,
     }
     return combined, diagnostics

@@ -5,8 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from ems.observability import (_metrics, _wape, battery_health,
-                               forecast_accuracy, savings_drivers,
+from ems.observability import (_metrics, _pv_nowcast_accuracy, _wape, battery_health,
+                               calibration_maturity,
+                               forecast_accuracy, forecast_analysis, savings_drivers,
                                savings_over_time)
 from tests.test_synthetic import make_config
 
@@ -57,6 +58,7 @@ def test_battery_health_from_actuals(tmp_path):
     from ems.local_history import write_actuals
     cfg = make_config()
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.calibration.pv_profile = str(tmp_path / "kalibrierung_profil.yaml")
     db = cfg.e3dc_rscp.history_db_path
     step = pd.Timedelta(minutes=cfg.general.slot_minutes)
     now = pd.Timestamp.now(tz=cfg.general.timezone).floor(step)
@@ -129,3 +131,199 @@ def test_forecast_accuracy_graceful_on_empty_history(tmp_path):
     out = forecast_accuracy(cfg, days=7)
     assert out["days"] == 7
     assert out["pv"]["n"] == 0 and out["load"]["n"] == 0
+    assert out["pv_nowcast"]["n"] == 0
+
+
+def test_pv_nowcast_challenger_compares_same_vintage(tmp_path):
+    from ems.local_history import (write_actuals,
+                                   write_optimizer_forecast_archive)
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.forecast.intraday_pv_operational_slots = 4
+    origin = pd.Timestamp("2026-07-28 10:00", tz=cfg.general.timezone)
+    issue = origin + pd.Timedelta(seconds=23)
+    index = pd.date_range(origin, periods=8, freq="15min")
+    write_optimizer_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, issue, {
+            "pv_w": pd.Series(1000.0, index=index),
+            "pv_without_nowcast_w": pd.Series(1200.0, index=index),
+        })
+    for stamp in index[:4]:
+        write_actuals(cfg.e3dc_rscp.history_db_path, stamp, {
+            "pv_w": 1000.0, "house_load_w": 500.0, "grid_w": 0.0,
+            "battery_w": 0.0, "soc_percent": 50.0,
+        })
+
+    result = _pv_nowcast_accuracy(
+        cfg, origin - pd.Timedelta(hours=1), origin + pd.Timedelta(hours=1))
+    assert result["n"] == 4
+    assert result["productive"]["wape_pct"] == 0.0
+    assert result["without_nowcast"]["wape_pct"] == 20.0
+    assert result["improvement_wape_pp"] == 20.0
+    assert result["winner"] == "nowcast"
+
+
+def test_forecast_analysis_heatmap_and_vintages(tmp_path):
+    """Produktions-Snapshots werden nach Vorlauf gruppiert und als mehrere
+    Erstellungsstände desselben Zieltags ausgegeben."""
+    from ems.config import PvArray, SolcastSource
+    from ems.local_history import (write_house_load,
+                                   write_optimizer_forecast_archive,
+                                   write_pv_actual,
+                                   write_pv_forecast_archive)
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.solcast.sources = [
+        SolcastSource(api_key="test", resource_id="solcast-test")]
+    cfg.pv_model.arrays = [
+        PvArray(name="Dach", kwp=10.0, tilt=25.0, azimuth=180.0)]
+    tz = cfg.general.timezone
+    day = pd.Timestamp("2026-07-28", tz=tz)
+    end = day + pd.DateOffset(days=1)
+    index = pd.date_range(day, end, freq="15min", inclusive="left")
+    write_pv_actual(cfg.e3dc_rscp.history_db_path, {
+        stamp.tz_convert("UTC").isoformat(): 1000.0 for stamp in index})
+    write_house_load(cfg.e3dc_rscp.history_db_path, {
+        stamp.tz_convert("UTC").isoformat(): 500.0 for stamp in index})
+    forecasts = {
+        "pv_w": pd.Series(1100.0, index=index),
+        "house_load_w": pd.Series(550.0, index=index),
+    }
+    write_optimizer_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, day - pd.Timedelta(hours=12), forecasts)
+    write_optimizer_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, day + pd.Timedelta(hours=6), forecasts)
+    source_map = {
+        stamp.tz_convert("UTC").isoformat(): (1200.0, 900.0, 1400.0)
+        for stamp in index}
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "solcast-test",
+        day - pd.Timedelta(hours=12), source_map)
+    pvlib_map = {
+        stamp: (1050.0, 800.0, 1250.0) for stamp in source_map}
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "pvmodel:Dach",
+        day - pd.Timedelta(hours=12), pvlib_map)
+
+    result = forecast_analysis(
+        cfg, days=30, target_day="2026-07-28", now=end)
+    assert result["heatmaps"]["pv"]["samples"] > 0
+    assert result["heatmaps"]["load"]["samples"] > 0
+    assert any(value == 10.0 for row in result["heatmaps"]["pv"]["wape"]
+               for value in row if value is not None)
+    vintages = result["vintages"]
+    assert vintages["day"] == "2026-07-28"
+    assert len(vintages["series"]) == 2
+    assert vintages["actual"]["pv_w"][0] == 1000.0
+    assert vintages["series"][0]["load_w"][0] == 550.0
+    comparison = result["day_comparison"]
+    assert comparison["pv_actual_w"][0] == 1000.0
+    assert comparison["solcast_w"][0] == 1200.0
+    assert comparison["pvlib_w"][0] == 1050.0
+    assert comparison["load_forecast_w"][0] == 550.0
+
+
+def test_forecast_analysis_empty_history(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "leer.sqlite")
+    cfg.calibration.pv_profile = str(tmp_path / "kalibrierung_profil.yaml")
+    out = forecast_analysis(
+        cfg, target_day="2026-07-28",
+        now=pd.Timestamp("2026-07-28 12:00", tz=cfg.general.timezone))
+    assert out["heatmaps"]["pv"]["samples"] == 0
+    assert out["vintages"]["series"] == []
+
+
+def test_calibration_maturity_reports_samples_coverage_and_active_values(tmp_path):
+    import yaml
+
+    from ems.local_history import (write_calibration_snapshot,
+                                   write_pv_source_selection)
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.calibration.pv_profile = str(tmp_path / "kalibrierung_profil.yaml")
+    report = {
+        "generated": "2026-07-26T03:00:00+02:00",
+        "pv_forecast": {
+            "metrics": {"n": 900, "nmae_pct": 20.0, "corr": 0.88},
+            "monthly": {"7": 0.91}},
+        "pv_band": {
+            "n": 96, "current_below_p10_pct": 18.0,
+            "current_above_p90_pct": 17.0,
+            "recommended_p10_uncertainty": 0.7,
+            "recommended_p90_uncertainty": 0.5},
+        "load_forecast": {"metrics": {"n": 30000, "nmae_pct": 30.0}},
+        "forecast_validation": {
+            "archive_folds": 2, "archive_min_folds": 6,
+            "archive_weight": 0.333, "global_correction": 1.02,
+            "empfehlung": "similar_days"},
+        "calibration_competition": {
+            "promotion_days": 14, "min_samples": 96,
+            "min_improvement_percent": 1.0,
+            "signals": {
+                "pv_correction": {
+                    "n": 128, "promote": True, "status": "promoted",
+                    "reason": "WAPE verbessert sich um 4,0 %"},
+                "load_correction": {
+                    "n": 128, "promote": False, "status": "held",
+                    "reason": "Verbesserung zu klein"},
+                "pv_band": {
+                    "n": 48, "promote": False, "status": "insufficient",
+                    "reason": "zu wenig Prüfdaten"},
+            },
+        },
+    }
+    (tmp_path / "kalibrierung.yaml").write_text(
+        yaml.safe_dump(report), encoding="utf-8")
+    (tmp_path / "kalibrierung_profil.yaml").write_text(
+        yaml.safe_dump({"generated": report["generated"], "pv_global": 0.91}),
+        encoding="utf-8")
+    previous = {
+        **report,
+        "generated": "2026-07-19T03:00:00+02:00",
+        "empfohlene_config": {
+            "pv_model.p10_uncertainty": 0.65,
+            "pv_model.p90_uncertainty": 0.45},
+    }
+    write_calibration_snapshot(
+        cfg.e3dc_rscp.history_db_path, previous["generated"], previous,
+        {"generated": previous["generated"], "pv_global": 0.95})
+    now = pd.Timestamp("2026-07-29 12:00", tz=cfg.general.timezone)
+    write_pv_source_selection(
+        cfg.e3dc_rscp.history_db_path, now - pd.Timedelta(days=8), "solcast",
+        "solcast aktiv", {"groups": {
+            "solcast": {"n": 120, "wape_pct": 20.0,
+                        "decision_score_pct": 18.0,
+                        "context_coverage_pct": 90.0},
+            "pvlib": {"n": 120, "wape_pct": 25.0,
+                      "decision_score_pct": 24.0,
+                      "context_coverage_pct": 90.0}}, "min_samples": 96})
+    write_pv_source_selection(
+        cfg.e3dc_rscp.history_db_path, now, "solcast", "solcast bleibt aktiv",
+        {"groups": {
+            "solcast": {"n": 128, "wape_pct": 20.0,
+                        "decision_score_pct": 18.0,
+                        "context_coverage_pct": 90.0},
+            "pvlib": {"n": 128, "wape_pct": 25.0,
+                      "decision_score_pct": 24.0,
+                      "context_coverage_pct": 90.0}}, "min_samples": 96})
+
+    out = calibration_maturity(cfg, now)
+    cards = {card["key"]: card for card in out["cards"]}
+    assert cards["calibration_competition"]["state"] == "Prüfdaten im Aufbau"
+    assert cards["calibration_competition"]["values"][0]["value"] == "PV"
+    assert cards["calibration_competition"]["values"][1]["value"] == "Last"
+    assert cards["pv_correction"]["confidence_pct"] == 33.0
+    assert cards["pv_correction"]["values"][0]["value"] == 0.91
+    assert cards["pv_band"]["confidence_pct"] == 50.0
+    assert cards["load_correction"]["state"] == "Hybridprofil 2/6 Folds"
+    assert cards["source_selection"]["confidence_pct"] == 57.0
+    assert cards["source_selection"]["reason"] == "solcast bleibt aktiv"
+    assert cards["source_selection"]["values"][1]["value"]["solcast"] == 18.0
+    assert len(out["history"]) == 2
+    assert out["history"][0]["pv_factor"] == 0.95
+    assert out["history"][1]["pv_factor"] == 0.91
+    assert out["history"][1]["changes"][0]["label"] == "PV-Faktor"

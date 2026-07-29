@@ -5,7 +5,8 @@ import pytest
 from ems import load_models
 from ems.config import ControllableLoad, LoadStage
 from ems.forecast import LoadForecaster
-from ems.local_history import (read_live_slot_averages, read_load_stage_power,
+from ems.local_history import (read_controllable_load_power,
+                               read_live_slot_averages, read_load_stage_power,
                                write_live_sample, write_load_feedback)
 from tests.test_synthetic import make_config
 
@@ -89,6 +90,60 @@ def test_controllable_feedback_is_removed_from_base_history(tmp_path):
     assert evaluation.notna().sum() == 3 * 96
     assert evaluation.dropna().median() == pytest.approx(1500.0)
     assert diag["sources"] == ["Pool/WP"]
+
+
+def test_shared_power_topic_is_subtracted_only_once(tmp_path):
+    """Ein gemeinsamer Pool-Zähler wird für mehrere Schwellwert-Stufen
+    abonniert, ist energetisch aber genau eine Messquelle."""
+    cfg = make_config()
+    path = str(tmp_path / "history.sqlite")
+    cfg.e3dc_rscp.history_db_path = path
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True,
+        stages=[
+            LoadStage("groß", 660, 3000, power_topic="pool/total-power"),
+            LoadStage("klein", 400, 1500, power_topic="pool/total-power"),
+        ])]
+    start = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    for quarter, power in enumerate((0.0, 620.0, 1120.0, 400.0)):
+        stamp = start + pd.Timedelta(minutes=15 * quarter)
+        for stage in ("groß", "klein"):
+            write_load_feedback(path, stamp, "Pool", stage, {
+                "on": power > 10.0, "power_w": power,
+                "fresh": True, "age_seconds": 0.0})
+    measured, complete, labels = read_controllable_load_power(
+        path, cfg.controllable_loads, start,
+        start + pd.Timedelta(hours=1), TZ, 15)
+    assert complete.all()
+    assert measured.to_list() == [0.0, 620.0, 1120.0, 400.0]
+    assert labels == [
+        "Pool/groß + Pool/klein (gemeinsame Leistung)"]
+
+
+def test_deferrable_power_feedback_is_removed_from_base_history(tmp_path):
+    cfg = make_config()
+    path = str(tmp_path / "history.sqlite")
+    cfg.e3dc_rscp.history_db_path = path
+    cfg.controllable_loads = [ControllableLoad(
+        name="Waschmaschine", type="deferrable", enabled=True,
+        power_w=2000.0, runtime_minutes=60,
+        power_topic="washer/power")]
+    start = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    index = pd.date_range(start, periods=8, freq="15min")
+    embedded = pd.Series(
+        [1800.0, 1800.0, 200.0, 0.0, 0.0, 0.0, 0.0, 0.0], index=index)
+    history = pd.Series(900.0, index=index) + embedded
+    for stamp, power in embedded.items():
+        write_load_feedback(path, stamp, "Waschmaschine", "__load__", {
+            "on": power > 10.0, "power_w": power,
+            "fresh": True, "age_seconds": 0.0})
+    training, evaluation, diag = load_models.disaggregate(
+        cfg, LoadForecaster(cfg), history,
+        index[-1] + pd.Timedelta(minutes=15))
+    assert training.to_list() == pytest.approx([900.0] * len(index))
+    assert evaluation.dropna().to_list() == pytest.approx(
+        [900.0] * len(index))
+    assert diag["sources"] == ["Waschmaschine"]
 
 
 def test_ensemble_weights_prefer_better_model_after_six_folds():

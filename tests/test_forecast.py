@@ -101,6 +101,30 @@ def test_load_uncertainty_band_contains_point_and_reflects_variability():
     assert (high - low).mean() > 100.0
 
 
+def test_load_uncertainty_band_prefers_matching_temperature():
+    cfg = make_config()
+    cfg.forecast.load_uncertainty_enabled = True
+    cfg.forecast.load_uncertainty_min_samples = 4
+    cfg.forecast.temp_sigma = 3.0
+    idx = pd.date_range(START - pd.Timedelta(days=60), START,
+                        freq=FREQ, inclusive="left")
+    cold = (idx.dayofyear % 2) == 0
+    hist_temp = pd.Series(np.where(cold, 10.0, 28.0), index=idx)
+    history = pd.Series(np.where(cold, 500.0, 1500.0), index=idx)
+    future = pd.date_range(START, periods=16, freq=FREQ)
+    point = pd.Series(1000.0, index=future)
+    fut_temp = pd.Series(10.0, index=future)
+    forecaster = LoadForecaster(cfg)
+
+    plain_low, plain_high = forecaster.uncertainty_band(history, point)
+    cold_low, cold_high = forecaster.uncertainty_band(
+        history, point, hist_temp=hist_temp, fut_temp=fut_temp)
+
+    assert (cold_high - cold_low).mean() < (plain_high - plain_low).mean()
+    assert forecaster._uncertainty_status["temperature"] == len(point)
+    assert "temperaturgeführt" in forecaster.uncertainty_summary()
+
+
 def test_recency_disabled_averages_all_history():
     """half_life_days=0: alte und neue Tage zählen (fast) gleich."""
     cfg = make_config()
@@ -243,6 +267,20 @@ def test_intraday_factor_decays_with_lead_time():
     assert fac.iloc[-1] < 1.1                            # weit voraus: fast 1.0
     # ratio None -> neutral
     assert (intraday_factor_series(None, idx, START) == 1.0).all()
+
+
+def test_pv_intraday_factor_is_hard_limited_to_operational_slots():
+    from ems.forecast import intraday_factor_series
+
+    idx = pd.date_range(
+        START - pd.Timedelta(minutes=15), periods=7, freq=FREQ)
+    fac = intraday_factor_series(
+        1.4, idx, START, decay_hours=1.5, max_slots=4, slot_minutes=15)
+
+    assert fac.iloc[0] == pytest.approx(1.0)       # Vergangenheit nie korrigieren
+    assert fac.iloc[1] == pytest.approx(1.4)       # laufender operativer Slot
+    assert (fac.iloc[1:5] != 1.0).all()            # genau vier Slots
+    assert (fac.iloc[5:] == 1.0).all()              # danach Quelle unverändert
 
 
 def test_hourly_correction_profile_replaces_global_factor():

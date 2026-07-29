@@ -67,6 +67,8 @@ def test_compare_recommends_more_accurate_source(tmp_path):
     g = res["groups"]
     assert g["pvlib"]["method"] == "archive" and g["pvlib"]["n"] > 50
     assert g["solcast"]["n"] > 50
+    assert g["pvlib"]["n"] == g["solcast"]["n"]
+    assert g["pvlib"]["actual_kwh"] == g["solcast"]["actual_kwh"]
     # pvlib (3 % Bias) muss besser sein als Solcast (35 % Bias)
     assert g["pvlib"]["wape_pct"] < g["solcast"]["wape_pct"]
     rec = res["recommendation"]
@@ -84,6 +86,80 @@ def test_auto_selection_switches_only_from_real_archives(tmp_path):
     selected = pv_eval.select_source(cfg, NOW)
     assert selected["selected"] == "pvlib"
     assert "WAPE-Punkte besser" in selected["reason"]
+
+
+def test_auto_selection_reason_names_active_source_when_it_is_better(tmp_path):
+    db = str(tmp_path / "hist.sqlite")
+    _seed(db, solcast_bias=1.03, pvlib_bias=1.08)
+    cfg = _cfg(db)
+    cfg.pv_source_selection.enabled = True
+    cfg.pv_source_selection.lookback_days = 6
+    cfg.pv_source_selection.min_samples = 50
+    cfg.pv_source_selection.min_improvement_percent = 2.0
+    selected = pv_eval.select_source(cfg, NOW)
+    assert selected["selected"] == "solcast"
+    assert "solcast bleibt aktiv und ist" in selected["reason"]
+    assert "besser als pvlib" in selected["reason"]
+    assert "-5.00" not in selected["reason"]
+
+
+def test_auto_selection_reason_explains_marginal_challenger(tmp_path):
+    db = str(tmp_path / "hist.sqlite")
+    _seed(db, solcast_bias=1.03, pvlib_bias=1.02)
+    cfg = _cfg(db)
+    cfg.pv_source_selection.enabled = True
+    cfg.pv_source_selection.lookback_days = 6
+    cfg.pv_source_selection.min_samples = 50
+    cfg.pv_source_selection.min_improvement_percent = 2.0
+    selected = pv_eval.select_source(cfg, NOW)
+    assert selected["selected"] == "solcast"
+    assert "pvlib ist nur 1.00 WAPE-Punkte besser" in selected["reason"]
+    assert "Mindestvorsprung 2.00" in selected["reason"]
+
+
+def test_decision_weighting_prefers_source_in_ems_critical_slots(tmp_path):
+    """Eine Quelle darf trotz minimal besserer Energie-WAPE verlieren, wenn
+    ihre Fehler gerade an Negativpreis-/Netzübergangs-Slots liegen."""
+    db = str(tmp_path / "hist.sqlite")
+    cfg = _cfg(db)
+    cfg.pv_source_selection.enabled = True
+    cfg.pv_source_selection.lookback_days = 6
+    cfg.pv_source_selection.min_samples = 50
+    cfg.pv_source_selection.min_improvement_percent = 1.0
+    grid = _daytime_grid(6)
+    actual = np.full(len(grid), 4000.0)
+    critical = np.arange(len(grid)) % 10 == 0
+    # Solcast insgesamt leicht besser, aber in den kritischen 10 % deutlich
+    # daneben. pvlib macht seinen kleinen Fehler nur in normalen Slots.
+    solcast = actual + np.where(critical, 440.0, 0.0)
+    pvlib = actual + np.where(critical, 0.0, 50.0)
+    con = local_history._con(db)
+    for ts, measured, is_critical in zip(grid, actual, critical):
+        utc = ts.tz_convert("UTC").isoformat()
+        con.execute("INSERT OR REPLACE INTO actuals(ts,pv_w) VALUES(?,?)",
+                    (utc, float(measured)))
+        con.execute("INSERT OR REPLACE INTO house_load(ts,w) VALUES(?,?)",
+                    (utc, float(measured if is_critical else 0.0)))
+        con.execute("INSERT OR REPLACE INTO spot_price(ts,ct) VALUES(?,?)",
+                    (utc, -10.0 if is_critical else 5.0))
+    con.commit()
+    con.close()
+    for source, values in (("sc1", solcast), ("pvmodel:Ost", pvlib)):
+        for ts, value in zip(grid, values):
+            local_history.write_pv_forecast_archive(
+                db, source, ts - pd.Timedelta(hours=1),
+                {ts.tz_convert("UTC").isoformat():
+                 (float(value), float(value) * 0.8, float(value) * 1.2)})
+
+    groups = pv_eval._common_archive_metrics(cfg, 6, NOW)
+    assert groups["solcast"]["wape_pct"] < groups["pvlib"]["wape_pct"]
+    assert (groups["pvlib"]["decision_score_pct"]
+            < groups["solcast"]["decision_score_pct"])
+    assert groups["solcast"]["mode"] == "decision_weighted"
+    assert groups["solcast"]["decision_slots"] > 0
+    selected = pv_eval.select_source(cfg, NOW)
+    assert selected["selected"] == "pvlib"
+    assert "Entscheidungsscore-Punkte besser" in selected["reason"]
 
 
 def test_auto_selection_ignores_optimistic_cache(tmp_path):

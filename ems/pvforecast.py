@@ -83,6 +83,10 @@ def status_summary() -> str:
     bands = sum(1 for value in residuals.values() if value.get("learned"))
     if residuals:
         parts.append(f"Band {bands}/{len(residuals)} Horizonte empirisch")
+        conditional = sum(
+            len(value.get("conditions") or {}) for value in residuals.values())
+        if conditional:
+            parts.append(f"{conditional} konditionale Bandzellen")
     return " · ".join(parts)
 
 
@@ -207,7 +211,7 @@ def refresh(config, force: bool = False) -> int:
         db, aggregate_sources, issue, cfg.ensemble_lookback_days,
         cfg.ensemble_min_samples, cfg.ensemble_horizon_hours,
         max(0.05, 1.0 - cfg.p10_uncertainty),
-        1.0 + cfg.p90_uncertainty)
+        1.0 + cfg.p90_uncertainty, config.general.timezone)
     per_source, diagnostics = pv_ensemble.combine(
         model_outputs, weights, residuals, issue,
         cfg.ensemble_horizon_hours)

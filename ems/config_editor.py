@@ -172,6 +172,7 @@ FIELD_DESCRIPTIONS = {
     "forecast.intraday_pv_max_factor": "Obergrenze des Korrekturfaktors für die PV.",
     "forecast.intraday_pv_max_step": "Maximale Änderung des PV-Korrekturfaktors je Lauf.",
     "forecast.intraday_pv_decay_hours": "Zeitkonstante, über die die PV-Korrektur abklingt.",
+    "forecast.intraday_pv_operational_slots": "Zahl der unmittelbar nächsten Slots (1–4), auf die der PV-Nowcast wirkt. Danach bleibt Solcast beziehungsweise pvlib unverändert.",
     "forecast.disaggregation_lookback_days": "Rückblick, aus dem die reale Laufzeit steuerbarer Lasten herausgerechnet wird.",
     "forecast.disaggregation_min_samples": "Mindestzahl echter Rückmeldungen, bevor herausgerechnet wird.",
     "forecast.live_nowcast_retention_days": "Aufbewahrung der 5-Sekunden-Livewerte in der lokalen Historie.",

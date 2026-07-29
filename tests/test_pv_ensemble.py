@@ -62,6 +62,46 @@ def test_residual_quantiles_are_lead_specific(tmp_path):
     assert not bands["6-24h"]["learned"]
 
 
+def test_residual_quantiles_condition_on_season_and_power(tmp_path):
+    db = str(tmp_path / "history.sqlite")
+    now = pd.Timestamp("2026-07-20 00:00", tz="UTC")
+    base = pd.Timestamp("2026-07-18 00:00", tz="UTC")
+    for slot in range(72):
+        target = base + pd.Timedelta(minutes=15 * slot)
+        issue = target - pd.Timedelta(hours=3)
+        high = slot % 2 == 1
+        predicted = 1500.0 if high else 300.0
+        actual = predicted if high else predicted * 0.5
+        _seed_actual(db, target, actual)
+        local_history.write_pv_forecast_archive(
+            db, "pvmodel:A", issue,
+            {target.isoformat(): (predicted, 0.0, 0.0)})
+
+    bands = pv_ensemble.residual_quantiles(
+        db, ["pvmodel:A"], now, lookback_days=7, min_samples=16,
+        horizon_hours=[6], fallback_low=0.65, fallback_high=1.15,
+        timezone="Europe/Berlin")
+    short = bands["0-6h"]
+    assert short["learned"]
+    assert short["conditions"]["power:high"]["q10_ratio"] > 0.9
+    assert "season:2|power:high" in short["conditions"]
+
+    issue = pd.Timestamp("2026-07-20 09:00", tz="UTC")
+    target = (issue + pd.Timedelta(hours=3)).isoformat()
+    outputs = {"model": {
+        "pvmodel:A": {target: (1500.0, 0.0, 0.0)}}}
+    weights = {
+        "0-6h": {"weights": {"model": 1.0}, "n": 72, "learned": True},
+        "6h+": {"weights": {"model": 1.0}, "n": 0, "learned": False},
+    }
+    combined, diagnostics = pv_ensemble.combine(
+        outputs, weights, bands, issue, [6])
+    _, p10, _ = combined["pvmodel:A"][target]
+    assert p10 > 1350.0
+    assert diagnostics["condition_slots_by_bucket"]["0-6h"][
+        "season:2|power:high"] == 1
+
+
 def test_combines_model_spread_and_empirical_residuals():
     issue = pd.Timestamp("2026-07-20 09:00", tz="UTC")
     target = (issue + pd.Timedelta(hours=3)).isoformat()

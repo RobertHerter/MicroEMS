@@ -522,6 +522,10 @@ class ForecastConfig:
     intraday_load_max_step: float = 0.10
     intraday_pv_max_step: float = 0.10
     intraday_pv_min_power_w: float = 1000.0
+    # PV-Nowcast ist nur operativ belastbar: auf höchstens diese Zahl direkt
+    # bevorstehender Slots anwenden. Danach gilt wieder unverändert die
+    # Solcast-/pvlib-Prognose. Zulässig 1..4.
+    intraday_pv_operational_slots: int = 4
     # Geschätzte (noch unbekannte) Folgetag-Preise zur Mitte stauchen:
     # p' = m + (p - m) * (1 - price_damping). Verhindert, dass auf
     # prognostizierte Preistäler/-spitzen spekuliert wird. 0 = aus, 1 = flach.
@@ -551,9 +555,9 @@ class ForecastConfig:
     load_uncertainty_low_quantile: float = 0.10
     load_uncertainty_high_quantile: float = 0.90
     load_uncertainty_min_samples: int = 12
-    # Steuerbare Verbraucher (derzeit thermische Stufen mit echter
-    # Rückmeldung) aus der historischen E3DC-Hauslast herausrechnen. Der
-    # Optimierer ergänzt ihre geplante Leistung separat wieder.
+    # Steuerbare Verbraucher mit echter Leistungs-/Statusrückmeldung aus der
+    # historischen E3DC-Hauslast herausrechnen. Gilt für thermische Stufen und
+    # verschiebbare Lasten; gemeinsam genutzte power_topics zählen nur einmal.
     disaggregate_controllable_loads: bool = True
     disaggregation_lookback_days: int = 28
     disaggregation_min_samples: int = 3
@@ -642,6 +646,14 @@ class CalibrationConfig:
     # Zeitabhängige PV-Korrektur (Profil aus kalibrierung.py) anwenden?
     enabled: bool = False
     pv_profile: str = "./kalibrierung_profil.yaml"
+    # Neue Faktoren auf einem unabhängigen jüngsten Zeitraum gegen den aktuell
+    # produktiven Stand prüfen und nur bei belastbarer Verbesserung übernehmen.
+    champion_challenger_enabled: bool = True
+    promotion_days: int = 14
+    promotion_min_samples: int = 96
+    promotion_min_improvement_percent: float = 1.0
+    promotion_max_segment_degradation_pct: float = 5.0
+    promotion_max_bias_increase_w: float = 75.0
 
 
 @dataclass
@@ -796,6 +808,12 @@ class PvSourceSelectionConfig:
     lookback_days: int = 30
     min_samples: int = 96
     min_improvement_percent: float = 2.0
+    # Prognosefehler in EMS-relevanten Slots (Preisextreme, Übergang
+    # Netzbezug/PV-Überschuss, Einspeiserisiko) stärker gewichten.
+    decision_weighted: bool = True
+    # Unterhalb dieser Hauslast-Kontextabdeckung bleibt die normale WAPE
+    # Auswahlmaßstab; verhindert Entscheidungen aus wenigen Kontextslots.
+    decision_min_context_percent: float = 50.0
 
 
 @dataclass
@@ -1381,6 +1399,8 @@ def load_config(path: str) -> Config:
         intraday_load_max_step=float(f.get("intraday_load_max_step", 0.10)),
         intraday_pv_max_step=float(f.get("intraday_pv_max_step", 0.10)),
         intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
+        intraday_pv_operational_slots=int(
+            f.get("intraday_pv_operational_slots", 4)),
         price_damping=float(f.get("price_damping", 0.3)),
         disaggregation_project_unmeasured=bool(
             f.get("disaggregation_project_unmeasured", False)),
@@ -1437,6 +1457,9 @@ def load_config(path: str) -> Config:
     )
     if forecast.method not in ("similar_days", "ml"):
         raise ValueError("forecast.method muss 'similar_days' oder 'ml' sein.")
+    if not 1 <= forecast.intraday_pv_operational_slots <= 4:
+        raise ValueError(
+            "forecast.intraday_pv_operational_slots muss zwischen 1 und 4 liegen.")
     if (not 0.0 <= forecast.load_ensemble_min_weight < 0.5):
         raise ValueError(
             "forecast.load_ensemble_min_weight muss >= 0 und < 0.5 sein.")
@@ -1487,7 +1510,30 @@ def load_config(path: str) -> Config:
     calibration = CalibrationConfig(
         enabled=bool(cal.get("enabled", False)),
         pv_profile=cal.get("pv_profile", "./kalibrierung_profil.yaml"),
+        champion_challenger_enabled=bool(
+            cal.get("champion_challenger_enabled", True)),
+        promotion_days=int(cal.get("promotion_days", 14)),
+        promotion_min_samples=int(cal.get("promotion_min_samples", 96)),
+        promotion_min_improvement_percent=float(
+            cal.get("promotion_min_improvement_percent", 1.0)),
+        promotion_max_segment_degradation_pct=float(
+            cal.get("promotion_max_segment_degradation_pct", 5.0)),
+        promotion_max_bias_increase_w=float(
+            cal.get("promotion_max_bias_increase_w", 75.0)),
     )
+    if calibration.promotion_days < 1:
+        raise ValueError("calibration.promotion_days muss >= 1 sein.")
+    if calibration.promotion_min_samples < 1:
+        raise ValueError("calibration.promotion_min_samples muss >= 1 sein.")
+    if calibration.promotion_min_improvement_percent < 0:
+        raise ValueError(
+            "calibration.promotion_min_improvement_percent muss >= 0 sein.")
+    if calibration.promotion_max_segment_degradation_pct < 0:
+        raise ValueError(
+            "calibration.promotion_max_segment_degradation_pct muss >= 0 sein.")
+    if calibration.promotion_max_bias_increase_w < 0:
+        raise ValueError(
+            "calibration.promotion_max_bias_increase_w muss >= 0 sein.")
 
     sav = raw.get("savings", {})
     savings = SavingsConfig(
@@ -1636,7 +1682,14 @@ def load_config(path: str) -> Config:
         min_samples=int(ps.get("min_samples", 96)),
         min_improvement_percent=float(
             ps.get("min_improvement_percent", 2.0)),
+        decision_weighted=bool(ps.get("decision_weighted", True)),
+        decision_min_context_percent=float(
+            ps.get("decision_min_context_percent", 50.0)),
     )
+    if not (0.0 <= pv_source_selection.decision_min_context_percent <= 100.0):
+        raise ValueError(
+            "pv_source_selection.decision_min_context_percent muss "
+            "zwischen 0 und 100 liegen.")
     sn = raw.get("sanity", {})
     sanity = SanityConfig(
         enabled=bool(sn.get("enabled", True)),

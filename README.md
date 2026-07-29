@@ -31,8 +31,11 @@ optionaler Fallback je Signal und Ziel für den Writeback der Zukunftswerte.
 - **Eigene Prognosen** ohne Pflicht-Cloud: Hausverbrauch (Ähnliche-Tage oder ML),
   Strompreis (Spot + Tarifmodell), PV (Solcast **oder** freies pvlib-Modell).
 - **PV-Quellen-Autowahl**: pvlib vs. Solcast werden rollierend gegen die realen
-  Ertragsdaten bewertet; die produktive Quelle wird automatisch gewählt, das
-  Unsicherheitsband aus echten Residuen kalibriert.
+  Ertragsdaten bewertet. Fehler bei Preisextremen, am Übergang zwischen
+  Netzbezug und PV-Überschuss sowie nahe der Einspeisegrenze zählen stärker;
+  die produktive Quelle wird automatisch gewählt und das konditionale
+  Unsicherheitsband aus Vorlaufzeit, Saison, Leistungsniveau und
+  echten Residuen kalibriert.
 - **Direkte E3DC-Steuerung** per RSCP (an echter Hardware verifiziert) mit
   Watchdog, Rücklese-Verifikation und Fail-safe.
 - **Steuerbare Lasten**: verschiebbar (Waschmaschine) und thermischer Speicher
@@ -44,7 +47,10 @@ optionaler Fallback je Signal und Ziel für den Writeback der Zukunftswerte.
   „Ohne-EMS"-Baseline **und** Validierung gegen die echten E3DC-Zähler,
   Invarianten-Prüfung, Drift-Monitor, Erklär-Tooltips.
 - **Kalibrierung**: wöchentliche Nachführung von Verbrauchs-, PV- und
-  Pool-Thermomodell aus den gesammelten Messdaten.
+  Unsicherheitsparametern als Champion-/Challenger-Vergleich. Neue Werte
+  werden auf einem ausgesparten Holdout geprüft und komponentenweise nur bei
+  belastbarer Verbesserung übernommen; außerdem wird das Pool-Thermomodell aus
+  den gesammelten Messdaten nachgeführt.
 
 ## Architektur
 
@@ -175,10 +181,14 @@ Netzentgelt `static`/`included`/`14a` (§14a EnWG zeitvariabel). Tiefe Historie 
   P10/P90 aus Modellstreuung plus empirischen Residuen. `shadow: true` rechnet
   es nur zum Vergleich mit, ohne den Optimierer zu beeinflussen.
 - **Autowahl** (`pv_source_selection`): sobald beide Quellen genügend gemeinsame
-  Archiv-Erfahrung haben, wählt `pv_eval.select_source` die im WAPE bessere Quelle
-  (nur aus echten Rolling-Origin-Archiven, nie aus dem optimistischen Cache); die
-  Wahl wird mit Begründung persistiert. `python pv_source_report.py` zeigt den
-  Vergleich manuell und empfiehlt das kalibrierte p10/p90-Band.
+  Archiv-Erfahrung haben, wählt `pv_eval.select_source` die Quelle mit dem
+  besseren **Entscheidungsscore** (nur aus echten Rolling-Origin-Archiven, nie
+  aus dem optimistischen Cache). Gemeinsame Slotgewichte priorisieren
+  Preisextreme, Netz/PV-Kipppunkte und Einspeiserisiken; fehlt ausreichend
+  Hauslast-Kontext, bleibt automatisch die normale Energie-WAPE maßgeblich.
+  Auswahl, Score, WAPE und Begründung werden persistiert. `python
+  pv_source_report.py` zeigt den Vergleich manuell und empfiehlt das kalibrierte
+  p10/p90-Band.
 
 Beide PV- und alle übrigen Signale sind auch per **REST-Ingest** einspielbar
 (`ingest`): so kann ein Fremdsystem die Daten liefern, RSCP/InfluxDB entfallen.
@@ -229,9 +239,13 @@ Schreibzugriff nur auf `/opt/ems`) und mit **systemd-Watchdog** (Neustart, wenn 
 Lebenszeichen ausbleibt). Die Timer:
 
 - **`ems-kalibrierung.timer`** (So 03:00): Verbrauchs-/PV-Kalibrierung
-  (`kalibrierung.py`) inkl. pvlib-p10/p90-Bandkalibrierung + Pool-Thermomodell
-  (`ems.pool_calibration --apply`). Korrekturprofil, PV-Band und Poolparameter
-  werden spätestens im nächsten EMS-Zyklus ohne Dienstneustart übernommen.
+  (`kalibrierung.py`) inkl. Champion-/Challenger-Prüfung, pvlib-p10/p90-
+  Bandkalibrierung und Pool-Thermomodell (`ems.pool_calibration --apply`).
+  PV-Korrektur, Lastkorrektur und PV-Band werden getrennt auf einem ausgesparten
+  Holdout bewertet; nur belastbar bessere Challenger werden übernommen.
+  Korrekturprofil, PV-Band und Poolparameter werden spätestens im nächsten
+  EMS-Zyklus ohne Dienstneustart übernommen. Eine schreibfreie Vorschau liefert
+  `python kalibrierung.py --config config.yaml --dry-run`.
 - **`ems-savings.timer`** (täglich 02:45): validiert die Vortags-Ersparnis gegen
   die echten E3DC-Zähler (`savings_check.py --persist`).
 - **`ems-backup.timer`** (wöchentlich): sichert die unversionierten Dateien
@@ -553,8 +567,19 @@ wird deshalb nicht im Git-Repository gespeichert.
   durchgezogen, Prognose gestrichelt), **Ladezustand**, **Strompreis** +
   Einspeisevergütung, **Steuerung**, **Modus-Zeitleiste** (Farbstreifen + Hover-
   Klartext), **Steuerbare Lasten** und **Temperaturen** (erwartet vs. echt).
-- Farbcodierte, einklappbare Diagnose-Panels (Prognosequalität, Betriebsdiagnose,
+- Farbcodierte, einklappbare Diagnose-Panels (Betriebsdiagnose,
   Pool-Rückkopplung) – Status auch eingeklappt sichtbar.
+- **Prognosen & Qualität**: Ein gemeinsames Panel bündelt aktuellen Datenstatus,
+  7-/30-Tage-WAPE und Bias sowie einen Tagesvergleich von PV-Ist, Solcast,
+  pvlib und dem produktiven Last-Soll. Fehler-Heatmaps zeigen PV und Hauslast
+  nach lokaler Zielstunde und Vorlaufzeit (0–6/6–24/24–48 h); auswählbare
+  Prognose-Vintages legen bis zu sechs archivierte Erstellungsstände eines
+  Zieltags gegen den tatsächlichen Ist-Verlauf. Reifekarten zeigen für PV-Korrektur,
+  P10/P90-Band, Lastkorrektur und Quellenwahl die Stichprobe, zeitliche Abdeckung,
+  aktiven beziehungsweise empfohlenen Wert und eine transparent hergeleitete
+  Datenkonfidenz. Wöchentliche Kalibrierungsstände werden mit Erstellungszeit
+  archiviert; Faktoren, Bandparameter und deren Änderungen erscheinen als
+  Verlauf. Die Ansicht ist mobil- und Dark-Mode-tauglich.
 - **Interaktives Steuerpanel** (`dashboard.controls_enabled: true`): Lasten an/aus +
   Kernparameter, Optimierungsmodus, manuelles Akku-Laden/-Entladen – ohne MQTT.
   Die automatische direkte E3/DC-Steuerung lässt sich dort ebenfalls sicher
@@ -832,7 +857,9 @@ Schalter unter `forecast`: `price_model_enabled` (Standard `true`),
 > **Grundlast-Zerlegung:** gemessene steuerbare Lasten werden vor dem Lernen aus
 > der Hauslast herausgerechnet, damit der Optimierer sie getrennt einplanen kann.
 > Maßgeblich ist dabei die **Messung** – wo eine Rückmeldung vorliegt, wird genau
-> sie abgezogen. Für Slots ohne Rückmeldung projiziert
+> sie abgezogen. Das gilt für thermische und verschiebbare Lasten mit
+> Rückmeldung. Verwenden mehrere Stufen denselben `power_topic`, wird dessen
+> gemeinsame Gesamtleistung nur einmal abgezogen. Für Slots ohne Rückmeldung projiziert
 > `disaggregation_project_unmeasured` (Standard `false`) optional ein
 > Erwartungsprofil. Der Standard ist bewusst aus: bei geringer Abdeckung wurde
 > sonst nachts ein Sockel abgezogen, den es nie gab – die Prognose lag bei 400 W
@@ -946,8 +973,13 @@ Gegenprüfung, Ausführungs-Audit, Auto-Recalc.
 - PV ist am DC-Bus verfügbar; DC-Laden reduziert die an den WR geführte PV-Leistung
   (`pv_to_ac = pv − dc_charge ≥ 0`). AC-Laden (Netz) hat einen eigenen, schlechteren
   Wirkungsgrad (`ac_charge_efficiency`).
-- Intraday-Korrektur: Last und PV mit getrennten Fenstern, Faktorgrenzen und
-  Abklingzeiten; Totzone und maximale Änderung je Lauf verhindern hektische Sprünge.
+- Intraday-Korrektur: Last und PV haben getrennte Fenster und Faktorgrenzen.
+  Die Lastkorrektur klingt wie bisher über die Vorlaufzeit ab. Der PV-Nowcast
+  wirkt dagegen ausschließlich auf die nächsten
+  `forecast.intraday_pv_operational_slots` (1–4, Standard 4); danach verwendet
+  der Optimierer Solcast beziehungsweise pvlib vollständig unverändert. Jeder
+  Lauf archiviert zusätzlich `pv_without_nowcast_w`, damit produktiver Nahbereich
+  und Challenger später Rolling-Origin gegen die Ist-Erzeugung bewertet werden.
 - Datenlücken werden nicht unbegrenzt interpoliert: fehlende PV/Solarstrahlung = 0,
   fehlende Preise = Historienmedian/Fixpreis, komplett fehlende Last-Historie =
   `forecast.fallback_load_w`. Bei Solcast müssen für Zukunftsslots alle Teilanlagen

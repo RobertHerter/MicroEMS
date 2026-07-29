@@ -44,8 +44,10 @@ def status_summary() -> str:
     temp = _STATUS.get("temperature") or {}
     parts = []
     if dis.get("sources"):
+        source_count = len(dis["sources"])
         parts.append(
-            f"Grundlast bereinigt: {len(dis['sources'])} Rückmeldungen, "
+            f"Grundlast bereinigt: {source_count} "
+            f"{'Rückmeldung' if source_count == 1 else 'Rückmeldungen'}, "
             f"{dis.get('coverage_percent', 0):.0f}% Abdeckung")
     elif dis.get("enabled"):
         parts.append("Grundlastzerlegung wartet auf Rückmeldungen")
@@ -67,12 +69,19 @@ def status_summary() -> str:
 
 
 def _active_controllable_loads(config) -> list:
-    return [
-        load for load in getattr(config, "controllable_loads", [])
-        if load.enabled and load.type == "thermal"
-        and any(stage.feedback_topic or stage.power_topic
+    active = []
+    for load in getattr(config, "controllable_loads", []):
+        if not load.enabled:
+            continue
+        if load.type == "thermal":
+            configured = any(
+                stage.feedback_topic or stage.power_topic
                 for stage in load.stages)
-    ]
+        else:
+            configured = bool(load.feedback_topic or load.power_topic)
+        if configured:
+            active.append(load)
+    return active
 
 
 def _embedded_profile(measured: pd.Series, complete: pd.Series,

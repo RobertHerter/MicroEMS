@@ -4,7 +4,8 @@ from ems.config import ControllableLoad
 import pandas as pd
 
 from ems.dashboard import (_control_banner, _controls_block, _decision_block,
-                           _events_block, _forecast_quality_block, _live_block,
+                           _events_block, _forecast_analysis_block,
+                           _forecast_quality_block, _live_block,
                            _mobile_plot_block, _runtime_block,
                            _slot_detail_block)
 
@@ -75,6 +76,8 @@ def test_mobile_plot_has_panel_tabs_and_24_48_hour_switch():
     assert "ems-mobile-hours" in html
     assert "ems-desktop-hours" in html
     assert "mobileView()?'24':'all'" in html
+    assert "hoverlabel:" in html
+    assert "'#202b36':'#ffffff'" in html
 
 
 def test_mobile_plot_omits_optional_tabs_without_matching_panels():
@@ -114,12 +117,51 @@ def test_operations_block_shows_which_slot_was_checked():
     }
     html = _operations_block({"seconds": 4.0, "polish_seconds": 0.4},
                              execution, "Europe/Berlin")
+    assert "Solver 4.0 s" in html
+    assert "Geräteabweichung: Akku 848 W statt geplant 4.402 W." in html
     assert "Slot 28.07. 08:45" in html          # UTC 06:45 -> lokal 08:45
     assert "Geräteabweichung: Akku 848 W" in html
     assert "quality-item partial" in html       # gelb, nicht rot
     # Ohne Zeitstempel bleibt das Panel funktionsfähig.
     execution["planned"].pop("issued_at")
     assert "Slot " not in _operations_block({}, execution, "Europe/Berlin")
+
+
+def test_operations_block_classifies_model_and_plan_warnings():
+    from ems.dashboard import _operations_block
+
+    html = _operations_block(
+        {}, None, "Europe/Berlin",
+        diagnostics={
+            "soc_drift": {
+                "mae_pp": 9.2, "threshold_pp": 8.0,
+                "window_hours": 12, "alert": True,
+            },
+            "efficiency": {
+                "measured": 0.79, "model": 0.93,
+                "deviation_percent": -15.1, "windows": 8, "hours": 20,
+                "threshold_percent": 6.0, "alert": True,
+            },
+            "execution_bias": {
+                "median_w": -75, "kwh_per_day": -1.8, "n": 400,
+                "window_days": 7, "threshold_w": 50, "alert": True,
+            },
+        },
+        plan_status={
+            "status": "Infeasible", "infeasible": True,
+            "infeasible_reason": "Akku-Mindest-SoC widersprüchlich",
+            "car_target_shortfall_wh": 2300,
+            "grid_overload_wh": 1400,
+        })
+
+    assert "SoC-Prognose ↔ Ist" in html and "MAE 9.2 Prozentpunkte" in html
+    assert "Entladewirkungsgrad" in html and "gemessen 0.790" in html
+    assert "Ausführungs-Bias" in html and "Median -75 W" in html
+    assert "Planlösbarkeit" in html and "Akku-Mindest-SoC" in html
+    assert "Fahrzeug-Ziel" in html and "2.3 kWh fehlen" in html
+    assert "Hausanschluss-Grenze" in html and "1.4 kWh Überschreitung" in html
+    assert "3 Modellwarnungen" in html and "3 Planziele auffällig" in html
+    assert '<span class="an-dot bad">' in html
 
 
 def test_report_block_offers_history_selection():
@@ -162,6 +204,23 @@ def test_forecast_quality_block_renders_all_quality_states():
     assert "quality-item current" in html and "quality-item partial" in html
 
 
+def test_forecast_analysis_shows_rolling_load_bias():
+    html = _forecast_analysis_block([{
+        "name": "Hauslast", "level": "current", "state": "aktuell",
+        "detail": "192 von 192 Slots",
+    }], load_bias={
+        "alert": True, "alert_scope": "Nacht", "night_median_w": 358.6,
+        "median_w": 74.6, "threshold_w": 100.0, "window_days": 7, "n": 718,
+    })
+
+    assert "Lastprognose-Bias" in html
+    assert "Nacht +359 W · Gesamt +75 W" in html
+    assert "718 Paare · 7-Tage-Fenster" in html
+    assert "historische Tagesstart-Prognosen" in html
+    assert "Last-Bias +359 W" in html
+    assert '<span class="an-dot warn">' in html
+
+
 def test_controls_are_collapsible_and_render_editable_power_profile():
     cfg = SimpleNamespace(
         dashboard=SimpleNamespace(controls_enabled=True),
@@ -176,7 +235,9 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
 
     html = _controls_block(cfg)
 
-    assert "<details class='controls'" in html
+    assert "<details class='controls info-panel'" in html
+    assert "<span class='an-dot warn'></span>⚙ Steuerung" in html
+    assert "<small>E3/DC aus · Automatisch</small>" in html
     assert "<details class='controls' id='ems-controls' open" not in html
     assert "p_Waschmaschine_power_profile_w" in html
     assert "2100, 300, 150" in html
@@ -230,6 +291,7 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "Plan neu berechnen" in runtime
     assert "api/control/recalc" in runtime
     assert "api/status.json" in runtime
+    assert "cycle_watchdog" in runtime and "EMS-Zyklus überfällig" in runtime
     # P3#4: Auto-Reload nur bei neuem Plan (Sequenz erhöht) und nicht während
     # einer Eingabe – sonst würde ein turnusmäßiger Recalc Eingaben verwerfen.
     assert "advanced" in runtime and "editing" in runtime
@@ -251,6 +313,10 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "scrollIntoView" not in details
     assert "panel.open" not in details
     assert "slot-detail-body" in details
+    assert 'id="slot-detail-dot"' in details
+    assert 'id="slot-detail-summary"' in details
+    assert "className='an-dot ok'" in details
+    assert "Detaildaten nicht verfügbar" in details
     assert "Hauslast Ist / Soll / Δ" in details
     assert "PV Ist / Soll / Δ" in details
     assert "Akku Ist / Soll / Δ" in details
@@ -261,6 +327,9 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
 
     events = _events_block()
     assert "api/events.json" in events
+    assert 'id="events-dot"' in events
+    assert 'id="events-summary"' in events
+    assert "err+' Fehler · '+warn+' Warnungen · '+LAST.length+' Einträge'" in events
     assert '<details class="info-panel events-panel"' in events
     assert '<details class="info-panel events-panel" open' not in events
     # Ereignisart (kind) fließt in die CSS-Klasse -> Warnungen/Schaltvorgänge
@@ -276,23 +345,53 @@ def test_runtime_slot_details_and_event_panels_are_dynamic_and_collapsed():
     assert "icon(lvlClass(e.level))" in events
 
 
-def test_analysis_block_bundles_all_three_lazily():
-    """Ein zusammengefasstes Analyse-Panel mit Stat-Kacheln für alle drei
-    Auswertungen; lädt alle Endpoints erst beim Aufklappen."""
+def test_analysis_block_contains_decisions_savings_and_battery_only():
+    """Prognosegüte liegt im Prognosepanel und wird hier nicht dupliziert."""
     from ems.dashboard import _analysis_block
     an = _analysis_block()
     assert 'id="analysis-panel"' in an
-    assert "api/forecast-accuracy.json" in an
+    assert "api/forecast-accuracy.json" not in an
     assert "api/savings-history.json" in an
     assert "api/battery-health.json" in an
     assert "api/plan-value.json" in an and 'id="an-pvalue"' in an
     assert 'class="tiles"' in an and "toggle" in an   # Kachel-Look, lazy
     assert 'id="an-spark"' in an and 'id="an-drivers"' in an  # Sparkline + Treiber
-    assert 'id="an-facc-trend"' in an and "trendSvg" in an     # #3 Prognosegüte-Trend
+    assert 'id="an-facc-trend"' not in an
     # Server-seitige Titel-Kennzahl + Ampel (eingeklappt sichtbar)
     with_head = _analysis_block({"status": "warn", "text": "Ersparnis 12,00 € · 3 Tage"})
     assert '<span class="an-dot warn">' in with_head
     assert "Ersparnis 12,00 € · 3 Tage" in with_head
+
+
+def test_forecast_analysis_block_is_lazy_and_interactive():
+    from ems.dashboard import _forecast_analysis_block
+
+    html = _forecast_analysis_block([{
+        "name": "PV", "level": "current", "state": "aktuell",
+        "detail": "Solcast vollständig",
+        "issued_at": "2026-07-29T08:00:00+00:00"}])
+    assert 'id="forecast-analysis-panel"' in html
+    assert "Prognosen &amp; Qualität" in html
+    assert '<span class="an-dot ok"></span>' in html
+    assert "1/1 Quellen aktuell" in html
+    assert "Aktueller Datenstatus" in html and "Solcast vollständig" in html
+    assert "api/forecast-accuracy.json" in html
+    assert "PV-Nowcast Nutzen" in html and "ohne Nowcast besser" in html
+    assert 'id="fa-accuracy-trend"' in html and "trendSvg" in html
+    assert "api/forecast-analysis.json" in html
+    assert 'id="fa-calibration"' in html and "Kalibrierungsreife" in html
+    assert 'id="fa-day-comparison"' in html and "Tagesverlauf" in html
+    assert "PV Ist" in html and "Solcast" in html and "pvlib" in html
+    assert "Last-Soll" in html and "dayComparison" in html
+    assert 'id="fa-calibration-history"' in html
+    assert 'id="fa-calibration-changes"' in html
+    assert "Kalibrierungsverlauf" in html and "calibrationHistory" in html
+    assert 'id="fa-heat-pv"' in html and 'id="fa-heat-load"' in html
+    assert 'id="fa-vintages"' in html and 'type="date"' in html
+    assert "Plotly.react" in html and "ems-theme-change" in html
+    assert "hoverlabel" in html and "'#202b36'" in html
+    assert "confidence_pct" in html and "calibration-bar" in html
+    assert "toggle" in html
 
 
 def test_whatif_block_only_with_controls_enabled():
@@ -305,6 +404,8 @@ def test_whatif_block_only_with_controls_enabled():
     html = _whatif_block(on)
     assert "api/whatif" in html and 'id="whatif-panel"' in html and "wi-run" in html
     assert 'class="tiles"' in html and "mode-badge" in html   # Kachel-Look statt Tabelle
+    assert 'id="whatif-dot"' in html and 'id="whatif-summary"' in html
+    assert "className='an-dot '+(d.infeasible?'bad':'ok')" in html
 
 
 def test_pv_confidence_block_renders_auto_basis():
@@ -318,3 +419,19 @@ def test_pv_confidence_block_renders_auto_basis():
     assert "mode-badge peak" in html          # farbiges Modus-Badge
     assert "10.06." in html                   # Datum lesbar formatiert
     assert "robust" in html                   # Basis-Klartext
+    assert '<span class="an-dot ok"></span>' in html
+    assert "1/1 Tage robust · peak 1 T" in html
+
+
+def test_thermal_feedback_header_summarizes_status():
+    from ems.dashboard import _thermal_feedback_block
+
+    html = _thermal_feedback_block(
+        [{"label": "Pool / WP", "configured": True, "fresh": True,
+          "on": False, "power_w": 0.0, "age_seconds": 3.0}],
+        [{"name": "Pool", "status": "applied", "applied": {"loss": 1.0},
+          "n_windows": 20, "r2": 0.82}],
+    )
+    assert '<span class="an-dot ok"></span>' in html
+    assert "♨ Last-Rückkopplung" in html
+    assert "1/1 Rückmeldungen frisch · 0 läuft · 1 Thermomodell aktiv" in html
