@@ -87,6 +87,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/validate.py` + `ems/drift.py` | Invarianten-Prüfung eines Plans + Predicted-vs-Actual-Drift |
 | `ems/explain.py` | Klartext-Begründung der Steuerentscheidungen (Dashboard-Tooltips) |
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
+| `ems/battery_calibration.py` | Entladewirkungsgrad des Speichers aus Entladephasen messen und nachführen |
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
 | `ems/gridweather.py` + `ems/priceforecast.py` | Deutschlandweite Wetter-Indizes (Residuallast) + gelernte Börsenpreis-Prognose mit Selbstprüfung |
@@ -645,7 +646,26 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
   Einspeisebegrenzung, Ausführbarkeit) plus ökonomische Plausibilität (nie teurer
   als die Baseline). Läuft in Tests, im Backtest und live (Banner + `ems/alert`).
 - **`ems/drift.py`** – Predicted-vs-Actual-SoC-Drift (MAE, Measurement `ems_drift`),
-  Warnung über der Schwelle. Deckt Modellfehler auf (Wirkungsgrade, Standby, Alterung).
+  Warnung über der Schwelle. Sieht bewusst nur EINEN Slot voraus; ein
+  systematischer Wirkungsgrad-Bias kann sich dort nicht aufsummieren (der Plan
+  startet alle 15 min neu beim gemessenen SoC) – dafür ist die
+  Akku-Kalibrierung unten bzw. das Lauf-Archiv da.
+- **`ems/battery_calibration.py`** – misst den **Entladewirkungsgrad** aus den
+  Ist-Werten und führt ihn wöchentlich nach. Gemessen wird über
+  *zusammenhängende Entladephasen*, nicht je Slot: der SoC kommt nur in ganzen
+  Prozent (~223 Wh), eine Slot-weise Auswertung greift genau die Slots heraus,
+  in denen der Zähler umspringt, und liefert Werte bis über 1,0. Auf dieser
+  Anlage ergab die Messung **0,79 statt der angesetzten 0,93** – 10 kWh ans Haus
+  kosten damit 57 % SoC statt 48 %, über eine Nacht zweistellige Prozentpunkte
+  Prognosefehler. Grund ist der Teillastbetrieb: nachts entlädt der Speicher mit
+  0,8–1,4 kW, also 6–12 % der WR-Nennleistung. Übernahme gedämpft ins Overlay,
+  mit Plausibilitätsgrenzen; die Ladeseite wird bewusst nicht gefittet
+  (Ladephasen enden meist bei 100 % und sind zu kurz für die SoC-Auflösung).
+
+  ```bash
+  python -m ems.battery_calibration --config config.yaml --days 30
+  python -m ems.battery_calibration --config config.yaml --days 30 --apply
+  ```
 - **Sanity-Grenzen** (`sanity`) – begrenzen Preis-Spikes, negative/überhöhte PV und
   negative Last vor dem Solve; ein einzelner API-Ausreißer verzerrt keinen Zyklus.
 - **Ausführungs-Audit + Auto-Recalc** – vergleicht Soll/Ist des laufenden Slots
