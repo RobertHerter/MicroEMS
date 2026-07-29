@@ -14,6 +14,13 @@ ExecStart=/opt/ems/.venv/bin/python -m kalibrierung --config /opt/ems/config.yam
 # schreibt bei ausreichender Fit-Qualitaet gedaempfte Werte ins Overlay
 # (config_overrides.yaml); bei zu wenig Daten passiert schlicht nichts.
 ExecStart=/opt/ems/.venv/bin/python -m ems.pool_calibration --config /opt/ems/config.yaml --apply
+# Entladewirkungsgrad des Speichers aus den Messdaten nachfuehren: ein zu
+# hoher Wert laesst den geplanten SoC-Verlauf zu flach aussehen (ueber eine
+# Nacht zweistellige Prozentpunkte). Gedaempft ins Overlay, mit Plausi-Grenzen.
+ExecStart=/opt/ems/.venv/bin/python -m ems.battery_calibration --config /opt/ems/config.yaml --apply
+# Lastprofil verschiebbarer Lasten aus der Verbrauchsrueckmeldung lernen
+# (Waschmaschine: Heizphase/Waschen/Schleudern statt konstanter Leistung).
+ExecStart=/opt/ems/.venv/bin/python -m ems.load_learning --config /opt/ems/config.yaml --apply
 Environment=PYTHONUNBUFFERED=1
 # Haertung analog ems.service (kein Port noetig -> keine Capabilities).
 NoNewPrivileges=true
