@@ -692,7 +692,12 @@ def _forecast_analysis_block(forecast_quality=None,
   <span id="fa-status">wird beim Aufklappen geladen</span>
  </div>
  <h4>Tagesverlauf <small>PV-Ist · Solcast · pvlib · produktives Last-Soll</small></h4>
- <div id="fa-day-comparison" class="forecast-analysis-chart day-comparison-chart"></div>
+ <div class="forecast-day-stage">
+  <div id="fa-day-loading" class="forecast-day-loading" role="status" aria-live="polite">
+   <i></i><span>Neue Vergleichsdaten werden geladen …</span>
+  </div>
+  <div id="fa-day-comparison" class="forecast-analysis-chart day-comparison-chart"></div>
+ </div>
  <h4>Kalibrierungsreife <small>Datenmenge · zeitliche Abdeckung · aktive und empfohlene Werte</small></h4>
  <div id="fa-calibration" class="calibration-grid"><span class="an-hint">wird geladen …</span></div>
  <h4>Kalibrierungsverlauf <small>Faktoren und Bandparameter nach Erstellungszeit</small></h4>
@@ -713,24 +718,25 @@ def _forecast_analysis_block(forecast_quality=None,
  <div id="fa-vintages" class="forecast-analysis-chart vintage-chart"></div>
 </details>
 <script>(function(){
- const panel=document.getElementById('forecast-analysis-panel'),day=document.getElementById('fa-day'),status=document.getElementById('fa-status');
- let payload=null,signal='pv',loaded=false;
+ const panel=document.getElementById('forecast-analysis-panel'),day=document.getElementById('fa-day'),status=document.getElementById('fa-status'),todayBtn=document.getElementById('fa-today'),refreshBtn=document.getElementById('fa-refresh');
+ let payload=null,signal='pv',loaded=false,pending=0,requestId=0,readyStatus='wird beim Aufklappen geladen';
  const dark=()=>document.documentElement.classList.contains('dark');
  const colors=()=>dark()?{text:'#e7edf4',grid:'#3b4a59',paper:'rgba(0,0,0,0)',actual:'#ffffff'}:{text:'#28323c',grid:'#e2e7ec',paper:'rgba(0,0,0,0)',actual:'#111827'};
  const config={responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
  const esc=s=>String(s??'–').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const num=(v,d)=>(typeof v==='number'&&isFinite(v)?v.toLocaleString('de-DE',{maximumFractionDigits:d==null?1:d}):'–');
  const tile=(v,l,s)=>'<div class="tile"><div class="v">'+esc(v)+'</div><div class="l">'+esc(l)+'</div>'+(s?'<div class="s">'+esc(s)+'</div>':'')+'</div>';
+ function busy(delta){pending=Math.max(0,pending+delta);const on=pending>0;panel.classList.toggle('loading',on);todayBtn.disabled=on;refreshBtn.disabled=on;day.disabled=on;refreshBtn.textContent=on?'Lädt …':'Neu laden';status.textContent=on?'Daten werden geladen …':readyStatus;}
  function trendSvg(trend){var t=(trend||[]).filter(x=>typeof x.pv_wape==='number'||typeof x.load_wape==='number');
   if(t.length<2)return '<span class="an-hint">Trend erscheint ab dem 2. Tag mit Daten</span>';
   var W=280,H=42,n=t.length,all=[];t.forEach(x=>{if(typeof x.pv_wape==='number')all.push(x.pv_wape);if(typeof x.load_wape==='number')all.push(x.load_wape);});var mx=Math.max(10,Math.max(...all));
   function line(key,color){var pts=t.map((x,i)=>typeof x[key]==='number'?((i/(n-1))*W).toFixed(1)+','+(H-(x[key]/mx)*H).toFixed(1):null).filter(Boolean).join(' ');return pts?'<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/>':'';}
   return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" class="facc-svg">'+line('pv_wape','#3a86c8')+line('load_wape','#e29a2d')+'</svg><div class="facc-legend"><span style="color:#3a86c8">■ PV</span> <span style="color:#e29a2d">■ Last</span> · WAPE % über '+n+' Tage</div>';
  }
- async function accuracy(){const el=document.getElementById('fa-accuracy');try{let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json(),a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=b.pv||{},lo30=b.load||{},nw=a.pv_nowcast||{},delta=nw.improvement_wape_pp;
+ async function accuracy(){const el=document.getElementById('fa-accuracy');busy(1);try{let r=await fetch('api/forecast-accuracy.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let d=await r.json(),a=d['7d']||{},b=d['30d']||{},pv=a.pv||{},lo=a.load||{},pv30=b.pv||{},lo30=b.load||{},nw=a.pv_nowcast||{},delta=nw.improvement_wape_pp;
   let nowcastValue=(nw.n&&typeof delta==='number'?(delta>0?'+':'')+num(delta)+' pp':'–'),nowcastDetail=nw.n?('n='+(nw.n||0)+' · '+(nw.winner==='nowcast'?'Nowcast besser':nw.winner==='ohne_nowcast'?'ohne Nowcast besser':'gleichauf')+' · '+(nw.operational_slots||0)+' Slots'):'Vergleich startet mit neuen Prognose-Vintages';
   el.innerHTML=tile(num(pv.wape_pct)+' %','PV WAPE','30 T: '+num(pv30.wape_pct)+' % · Bias '+num(pv.bias_w,0)+' W')+tile(num(lo.wape_pct)+' %','Last WAPE','30 T: '+num(lo30.wape_pct)+' % · Bias '+num(lo.bias_w,0)+' W')+tile(pv.source||'–','PV-Quelle','n='+(pv.n||0)+' Slots')+tile(nowcastValue,'PV-Nowcast Nutzen','WAPE-Verbesserung · '+nowcastDetail);document.getElementById('fa-accuracy-trend').innerHTML=trendSvg(d.trend);
-  }catch(e){el.innerHTML='<span class="an-hint">Prognosegüte nicht erreichbar.</span>';}}
+  }catch(e){el.innerHTML='<span class="an-hint">Prognosegüte nicht erreichbar.</span>';}finally{busy(-1);}}
  function value(v){
   if(Array.isArray(v))return v.map(x=>typeof x==='number'?x.toLocaleString('de-DE',{maximumFractionDigits:3}):'–').join(' → ');
   if(v&&typeof v==='object')return Object.entries(v).map(([k,x])=>k+' '+(typeof x==='number'?x.toLocaleString('de-DE',{maximumFractionDigits:1})+' %':'–')).join(' · ');
@@ -814,17 +820,18 @@ def _forecast_analysis_block(forecast_quality=None,
  }
  function render(){if(!payload)return;dayComparison(payload.day_comparison);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');heat('fa-heat-load',payload.heatmaps&&payload.heatmaps.load,'Last');vintages(payload.vintages);}
  async function load(){
-  status.textContent='lädt …';
-  try{let q=day.value?'?day='+encodeURIComponent(day.value):'';let r=await fetch('api/forecast-analysis.json'+q+(q?'&':'?')+'_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);
-   payload=await r.json();day.value=(payload.vintages||{}).day||day.value;
+  const own=++requestId;busy(1);
+  try{let q=day.value?'?day='+encodeURIComponent(day.value):'';let r=await fetch('api/forecast-analysis.json'+q+(q?'&':'?')+'_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let next=await r.json();if(own!==requestId)return;
+   payload=next;day.value=(payload.vintages||{}).day||day.value;
    if(payload.available_from)day.min=payload.available_from;if(payload.available_to)day.max=payload.available_to;
-   status.textContent=(payload.lookback_days||30)+' Tage · erstellt '+new Date(payload.generated).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});render();
-  }catch(e){status.textContent='nicht erreichbar';document.getElementById('fa-vintages').innerHTML='<span class="an-hint">Prognoseanalyse konnte nicht geladen werden.</span>';}
+   readyStatus=(payload.lookback_days||30)+' Tage · erstellt '+new Date(payload.generated).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});render();
+  }catch(e){if(own===requestId){readyStatus='nicht erreichbar';document.getElementById('fa-vintages').innerHTML='<span class="an-hint">Prognoseanalyse konnte nicht geladen werden.</span>';}}
+  finally{busy(-1);}
  }
  panel.addEventListener('toggle',function(){if(this.open&&!loaded){loaded=true;load();accuracy();}});
  day.addEventListener('change',load);
- document.getElementById('fa-today').addEventListener('click',function(){day.value=new Date().toLocaleDateString('sv-SE');load();});
- document.getElementById('fa-refresh').addEventListener('click',function(){load();accuracy();});
+ todayBtn.addEventListener('click',function(){day.value=new Date().toLocaleDateString('sv-SE');load();});
+ refreshBtn.addEventListener('click',function(){load();accuracy();});
  document.querySelectorAll('.forecast-signal-switch button').forEach(b=>b.addEventListener('click',function(){signal=this.dataset.signal;document.querySelectorAll('.forecast-signal-switch button').forEach(x=>x.classList.toggle('on',x===this));vintages(payload&&payload.vintages);}));
  window.addEventListener('ems-theme-change',render);
 })();</script>"""
@@ -2440,6 +2447,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-signal-switch button {{ min-height: 34px; border: 1px solid #cbd3db; border-radius: 7px;
       background: #f7f9fb; color: #34404c; padding: 5px 9px; font: inherit; }}
  .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: #7b8792; font-size: 11px; }}
+ .forecast-analysis-toolbar button:disabled, .forecast-analysis-toolbar input:disabled {{
+      cursor: wait; opacity: .62; }}
+ .forecast-day-stage {{ position: relative; min-height: 332px; margin: 0 12px 10px; }}
+ .forecast-day-stage .day-comparison-chart {{ margin: 0; }}
+ .forecast-day-loading {{ position: absolute; inset: 0; z-index: 5; display: none;
+      align-items: center; justify-content: center; gap: 10px; border: 1px solid #d7e0e8;
+      border-radius: 9px; background: #f6f9fb; color: #596775; font-size: 12px; }}
+ .forecast-day-loading i {{ width: 20px; height: 20px; border: 3px solid #cbd7e2;
+      border-top-color: #287fd8; border-radius: 50%; animation: forecastSpin .75s linear infinite; }}
+ .forecast-analysis-panel.loading .forecast-day-loading {{ display: flex; }}
+ .forecast-analysis-panel.loading #fa-day-comparison {{ visibility: hidden; }}
+ @keyframes forecastSpin {{ to {{ transform: rotate(360deg); }} }}
  .calibration-grid {{ display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px;
       padding: 0 12px 8px; }}
  .calibration-card {{ min-width: 0; padding: 10px; border: 1px solid #dce3e9;
@@ -2467,7 +2486,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-heat-grid > div > b {{ display: none; }}
  .forecast-analysis-chart {{ min-height: 250px; border: 1px solid #e0e6ec; border-radius: 9px;
       overflow: hidden; }}
- .day-comparison-chart, .calibration-history-chart {{ margin: 0 12px 10px; }}
+ .calibration-history-chart {{ margin: 0 12px 10px; }}
  .calibration-change-list {{ margin: -2px 12px 12px; display: grid; gap: 5px; }}
  .calibration-change-list article {{ display: grid; grid-template-columns: minmax(125px,auto) 1fr;
       gap: 9px; padding: 7px 9px; border: 1px solid #e2e7ec; border-radius: 7px;
@@ -2484,6 +2503,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .forecast-signal-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .forecast-signal-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
  html.dark .forecast-analysis-chart {{ border-color: #354352; }}
+ html.dark .forecast-day-loading {{ color: #c1ccd6; background: #202b36;
+      border-color: #43515f; }}
+ html.dark .forecast-day-loading i {{ border-color: #465869; border-top-color: #58a6e7; }}
  html.dark .calibration-change-list article {{ background: #202b36; border-color: #354352; }}
  html.dark .calibration-change-list time {{ color: #aebbc8; }}
  html.dark .calibration-card {{ background: #202b36; border-color: #43515f; border-left-color: #d9b83f; }}

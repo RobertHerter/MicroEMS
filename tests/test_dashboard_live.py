@@ -381,6 +381,12 @@ def test_forecast_analysis_block_is_lazy_and_interactive():
     assert "api/forecast-analysis.json" in html
     assert 'id="fa-calibration"' in html and "Kalibrierungsreife" in html
     assert 'id="fa-day-comparison"' in html and "Tagesverlauf" in html
+    assert 'id="fa-day-loading"' in html
+    assert "Neue Vergleichsdaten werden geladen" in html
+    assert "panel.classList.toggle('loading',on)" in html
+    assert "refreshBtn.textContent=on?'Lädt …':'Neu laden'" in html
+    assert "todayBtn.disabled=on" in html and "day.disabled=on" in html
+    assert "const own=++requestId" in html
     assert "PV Ist" in html and "Solcast" in html and "pvlib" in html
     assert "Last-Soll" in html and "dayComparison" in html
     assert 'id="fa-calibration-history"' in html
