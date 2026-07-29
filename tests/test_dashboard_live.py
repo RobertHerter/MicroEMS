@@ -512,3 +512,54 @@ def test_load_timeline_leaves_the_future_blank():
     assert "load_timeline" in html
     # Zukunftszellen als null (leer), nicht als Code 3 (unbekannt).
     assert "null" in html
+
+
+def test_timeline_marks_permit_held_without_heating():
+    """"Freigabe steht, Plan 0 W" ist ein EIGENER Zustand (Code 4).
+
+    Als "aus" dargestellt war er getarnt - und genau dieser Zustand hat einmal
+    21 kWh ueber Nacht gekostet, weil das Geraet trotz gehaltener Freigabe lief.
+    """
+    import json
+    import pathlib
+    import re
+
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from ems.dashboard import build_dashboard
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0, thermostat=True, thermostat_cutoff_c=28.5,
+        stages=[LoadStage("klein", 400, 1000)])]
+    index = pd.date_range("2026-07-29 12:00", periods=8, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": np.zeros(n),          # Plan heizt NICHT
+        # Erste Haelfte ueber dem Abschaltpunkt -> Freigabe wird gehalten,
+        # zweite Haelfte darunter -> Freigabe muss weg (Code 0).
+        "load_Pool_temp_c": np.array([30.0] * 4 + [27.0] * 4),
+    }, index=index)
+    out = pathlib.Path(build_dashboard(cfg, table, total_cost_ct=0.0))
+    html = out.read_text(encoding="utf-8")
+    assert "freigegeben, heizt nicht" in html
+    match = re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*(\[.*?\]),\s*\{',
+                      html, re.S)
+    traces = [x for x in json.loads(match.group(1))
+              if x.get("meta") == "load_timeline"]
+    assert traces, "Lastenleiste fehlt"
+    row = traces[0]["z"][0]                      # Pool / klein (Soll)
+    assert row[:4] == [4, 4, 4, 4], row
+    assert row[4:] == [0, 0, 0, 0], row

@@ -1897,20 +1897,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     stage_slug = _lslug(st.name)
                     lanes.append((f"{ld.name} / {st.name} (Soll)",
                                   f"load_{sg}_{stage_slug}_w",
-                                  ld.enabled, False))
+                                  ld.enabled, False, ld))
                     if st.feedback_topic or st.power_topic:
                         lanes.append((f"{ld.name} / {st.name} (Ist)",
                                       f"actual_load_{sg}_{stage_slug}_on",
-                                      ld.enabled, True))
+                                      ld.enabled, True, None))
             else:
                 lanes.append((f"{ld.name} (Soll)",
-                              f"load_{_lslug(ld.name)}_w", ld.enabled, False))
+                              f"load_{_lslug(ld.name)}_w", ld.enabled, False,
+                              None))
                 if ld.feedback_topic or ld.power_topic:
                     lanes.append((f"{ld.name} (Ist)",
                                   f"actual_load_{_lslug(ld.name)}_on",
-                                  ld.enabled, True))
+                                  ld.enabled, True, None))
         ylabels, z = [], []
-        for label, col, enabled, actual in lanes:
+        temp_col = {}
+        for _lbl, _c, _en, _act, _ld in lanes:
+            if _ld is not None:
+                temp_col[id(_ld)] = f"load_{_lslug(_ld.name)}_temp_c"
+        for label, col, enabled, actual, owner in lanes:
             ylabels.append(label)
             if actual:
                 values = (pd.to_numeric(t[col], errors="coerce")
@@ -1925,17 +1930,43 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                           else (3 if pd.isna(v) else (1 if float(v) > 0.5 else 0))
                           for stamp, v in zip(x, values)])
             elif enabled and col in t.columns:
-                z.append([1 if float(v) > 5.0 else 0 for v in t[col].fillna(0.0)])
+                power = t[col].fillna(0.0)
+                # "Freigabe steht, aber es wird nicht geheizt" ist ein EIGENER
+                # Zustand: bei T >= Geraete-Abschaltpunkt bleibt die Freigabe an
+                # (weniger Schaltspiele), obwohl der Plan 0 W vorsieht. Als "aus"
+                # dargestellt war genau das getarnt - und genau dieser Zustand
+                # hat einmal 21 kWh ueber Nacht gekostet, weil das Geraet trotz
+                # gehaltener Freigabe lief.
+                hold = pd.Series(False, index=x)
+                if owner is not None and getattr(owner, "thermostat", False):
+                    tcol = temp_col.get(id(owner))
+                    cutoff = getattr(owner, "thermostat_cutoff_c", None)
+                    if cutoff is None:
+                        cutoff = getattr(owner, "target_c", None)
+                    limit = getattr(owner, "max_c", None)
+                    if tcol in t.columns and cutoff is not None:
+                        temps = pd.to_numeric(t[tcol], errors="coerce")
+                        hold = temps.ge(float(cutoff)) & temps.notna()
+                        if limit is not None:
+                            hold &= temps.lt(float(limit))
+                z.append([1 if float(v) > 5.0
+                          else (4 if bool(h) else 0)
+                          for v, h in zip(power, hold)])
             else:                                   # deaktiviert -> graue Leiste
                 z.append([2] * len(x))
-        _lab = {0: "aus", 1: "AN", 2: "deaktiviert", 3: "unbekannt"}
+        _lab = {0: "aus", 1: "AN", 2: "deaktiviert", 3: "unbekannt",
+                4: "freigegeben, heizt nicht"}
         fig.add_trace(go.Heatmap(
-            x=x, y=ylabels, z=z, zmin=-0.5, zmax=3.5, showscale=False,
+            x=x, y=ylabels, z=z, zmin=-0.5, zmax=4.5, showscale=False,
             meta="load_timeline",
-            colorscale=[[0.0, "#e9ecef"], [0.249, "#e9ecef"],    # 0 = aus
-                        [0.25, "#2ca02c"], [0.499, "#2ca02c"],    # 1 = AN
-                        [0.50, "#adb5bd"], [0.749, "#adb5bd"],    # 2 = deaktiviert
-                        [0.75, "#d8a52a"], [1.0, "#d8a52a"]],     # 3 = unbekannt
+            # Fuenf Zustaende -> Fuenftel-Stufen. Die Dark-Mode-Variante in
+            # paint() muss dieselbe Zahl an Stufen haben, sonst verschieben sich
+            # die Farben gegen die Codes.
+            colorscale=[[0.0, "#e9ecef"], [0.199, "#e9ecef"],     # 0 = aus
+                        [0.20, "#2ca02c"], [0.399, "#2ca02c"],    # 1 = AN
+                        [0.40, "#adb5bd"], [0.599, "#adb5bd"],    # 2 = deaktiviert
+                        [0.60, "#d8a52a"], [0.799, "#d8a52a"],    # 3 = unbekannt
+                        [0.80, "#8fa8c8"], [1.0, "#8fa8c8"]],     # 4 = freigegeben
             # None = Zukunft (kein Istwert) -> leeres Label statt KeyError.
             customdata=[[_lab.get(v, "") for v in row] for row in z],
             hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
@@ -2843,7 +2874,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.199,'#263442'],[.2,'#329b4c'],[.399,'#329b4c'],[.4,'#596979'],[.599,'#596979'],[.6,'#987620'],[.799,'#987620'],[.8,'#3f5a7a'],[1,'#3f5a7a']]:[[0,'#e9ecef'],[.199,'#e9ecef'],[.2,'#2ca02c'],[.399,'#2ca02c'],[.4,'#adb5bd'],[.599,'#adb5bd'],[.6,'#d8a52a'],[.799,'#d8a52a'],[.8,'#8fa8c8'],[1,'#8fa8c8']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});
