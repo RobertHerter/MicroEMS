@@ -5,4 +5,4 @@ berechnet per MILP die kostenoptimale Steuertabelle (48 h) und gibt die
 Steuerbefehle per MQTT an Homey aus. Läuft als Python-Dienst auf dem Pi.
 """
 
-__version__ = "2.5.1"
+__version__ = "2.6.0"
