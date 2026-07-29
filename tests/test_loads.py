@@ -418,11 +418,21 @@ def test_dashboard_renders_loads_panel(tmp_path):
     assert "Abweichung" in html
     assert html.count("Akku-Leistung (Soll):") == 1
     assert "Waschmaschine" in html and "deaktiviert" in html   # graue Leiste
-    assert "Waschmaschine (Soll)" in html and "Waschmaschine (Ist)" in html
     assert "klein" in html and "gross" in html                 # Pool-Lanes
-    assert "pool \\u002f klein (Soll)" in html
-    assert "pool \\u002f klein (Ist)" in html
+    assert "pool \\u002f klein" in html
     assert "unbekannt" in html
+    # Seit der Zusammenfuehrung hat die LEISTE eine Zeile je Stufe; der Zustand
+    # kodiert das Paar aus Soll und Ist. "(Soll)"/"(Ist)" darf es dort nicht
+    # mehr geben - in der KURVEN-Legende dagegen sehr wohl, deshalb wird
+    # gezielt die Leiste geprueft und nicht das ganze HTML.
+    import json as _json
+    import re as _re
+    _m = _re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*(\[.*?\]),\s*\{',
+                    html, _re.S)
+    _bar = [x for x in _json.loads(_m.group(1))
+            if x.get("meta") == "load_timeline"][0]
+    assert not any("(Soll)" in y or "(Ist)" in y for y in _bar["y"]), _bar["y"]
+    assert any(y.startswith("Waschmaschine") for y in _bar["y"]), _bar["y"]
     assert "pool (Soll)" in html and "pool (Ist)" in html
     assert "Abweichung \\u0394" in html
     assert html.count("Abweichung \\u0394") == 1

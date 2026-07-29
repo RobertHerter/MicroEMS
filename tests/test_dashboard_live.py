@@ -736,4 +736,4 @@ def test_disabled_load_still_shows_that_it_runs():
     assert row[0] == 6 and row[1] == 6, "laufend, obwohl nicht gesteuert"
     assert row[2] == 2, "aus -> grau"
     assert row[3] == 3, "Vergangenheit ohne Rueckmeldung -> unbekannt"
-    assert "nicht gesteuert" in html
+    assert "deaktiviert, l" in html      # "läuft trotzdem", escaped

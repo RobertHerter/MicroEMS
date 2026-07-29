@@ -1965,13 +1965,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                         texts.append(_lab[DISABLED])
                     elif pd.isna(actual_v):
                         row.append(UNKNOWN)
-                        texts.append("nicht gesteuert · Ist unbekannt")
+                        texts.append("deaktiviert · Ist unbekannt")
                     elif float(actual_v) > 0.5:
                         row.append(UNPLANNED)
-                        texts.append("nicht gesteuert · Ist läuft")
+                        texts.append("deaktiviert, läuft trotzdem")
                     else:
                         row.append(DISABLED)
-                        texts.append("nicht gesteuert · Ist aus")
+                        texts.append("deaktiviert · Ist aus")
                 z.append(row)
                 hover.append(texts)
                 continue
