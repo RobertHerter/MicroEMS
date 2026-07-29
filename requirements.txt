@@ -9,6 +9,12 @@ python-dateutil>=2.8
 
 # Optimierung (MILP). PuLP bringt den CBC-Solver bereits mit.
 PuLP>=3.3.2
+# HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
+# mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
+# Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
+# es, faellt der Optimierer sichtbar auf CBC zurueck - lauffaehig, aber ohne
+# garantierten Determinismus.
+highspy>=1.15.1
 
 # Feiertage (Verbrauchsprognose)
 holidays>=0.45

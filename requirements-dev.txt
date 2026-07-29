@@ -3,7 +3,4 @@
 pytest>=8.0
 pytest-xdist>=3.8.0      # parallele Testausführung (-n auto), s. pytest.ini
 ruff>=0.16.0             # Linter (CI: ruff check, Regelauswahl s. ruff.toml)
-# Schnellerer, in der Praxis genutzter Solver; ohne ihn fällt der Optimierer auf
-# das gebündelte CBC zurück. In CI/Test installiert, damit dieselbe Solver-Basis
-# wie im Betrieb getestet wird (deterministische Ergebnisse).
-highspy>=1.15.1
+# highspy steht jetzt in requirements.txt (Produktiv-Solver), nicht mehr hier.

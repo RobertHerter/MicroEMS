@@ -196,6 +196,14 @@ Payloads siehe `config.example.yaml`.
 
 ## Installation
 
+> **Schritt-für-Schritt-Anleitungen** (von 0 aufsetzen, nur mit einem E3DC, ohne
+> InfluxDB oder andere Abhängigkeiten):
+> * [docs/howto-standalone.md](docs/howto-standalone.md) – als systemd-Dienst
+> * [docs/howto-docker.md](docs/howto-docker.md) – mit Docker Compose
+>
+> Der folgende Abschnitt beschreibt die Bestandteile im Detail.
+
+
 ```bash
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip coinor-cbc mosquitto mosquitto-clients
@@ -254,6 +262,8 @@ Lebenszeichen ausbleibt). Die Timer:
   (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
 
 ### Alternativ: Docker (optional)
+
+Komplette Anleitung: [docs/howto-docker.md](docs/howto-docker.md).
 
 MicroEMS lässt sich statt als systemd-Dienst vollständig mit Docker Compose
 betreiben. Das fertige Multi-Arch-Image unterstützt `linux/amd64` und
