@@ -435,3 +435,27 @@ def test_thermal_feedback_header_summarizes_status():
     assert '<span class="an-dot ok"></span>' in html
     assert "♨ Last-Rückkopplung" in html
     assert "1/1 Rückmeldungen frisch · 0 läuft · 1 Thermomodell aktiv" in html
+
+
+def test_load_bias_card_never_renders_none_as_scope():
+    """alert_scope ist None, wenn kein Alarm vorliegt - ein Default im get()
+    greift dann NICHT (der Schluessel existiert). Die Karte zeigte "None"."""
+    from ems.dashboard import _load_bias_quality_card
+    card, level = _load_bias_quality_card({
+        "alert": False, "median_w": 62.2, "night_median_w": 359.0,
+        "alert_scope": None, "threshold_w": 100.0, "window_days": 7,
+        "n": 707, "direction": "Prognose zu niedrig"})
+    assert "None" not in card
+    assert "Gesamt unter der Schwelle" in card
+    assert level == "current"
+
+
+def test_load_bias_card_states_the_direction():
+    """Das Vorzeichen allein ist irrefuehrend: dieser Wert ist Ist minus
+    Prognose, der uebrige Projekt-Bias aber Prognose minus Ist."""
+    from ems.dashboard import _load_bias_quality_card
+    card, _ = _load_bias_quality_card({
+        "alert": True, "median_w": -120.0, "night_median_w": None,
+        "alert_scope": "Gesamt", "threshold_w": 100.0, "window_days": 7,
+        "n": 400, "direction": "Prognose zu hoch"})
+    assert "Prognose zu hoch" in card

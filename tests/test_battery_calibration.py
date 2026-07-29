@@ -270,3 +270,20 @@ def test_load_bias_finds_a_night_only_offset(tmp_path):
     assert out["alert"] is True                 # trotz unauffaelligem Tag
     assert out["alert_scope"] == "Nacht"
     assert "Grundlastbereinigung ist aktiv" in out["diagnostic"]
+
+
+def test_load_bias_reports_its_sign_convention(tmp_path):
+    """Der Wert ist Ist minus Prognose - anders als der Bias im Rest des
+    Projekts (Prognose minus Ist). Die Richtung muss deshalb mitkommen, damit
+    Anzeigen das Vorzeichen nicht selbst deuten muessen."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    tz = cfg.general.timezone
+    _seed_load_bias(cfg.e3dc_rscp.history_db_path, tz,
+                    forecast_w=400.0, actual_w=1200.0)
+    out = DriftMonitor(cfg).check_load_bias(
+        pd.Timestamp("2026-01-14 12:00", tz=tz))
+    assert out is not None
+    assert out["sign_convention"] == "actual_minus_forecast"
+    assert out["median_w"] > 0 and out["direction"] == "Prognose zu niedrig"

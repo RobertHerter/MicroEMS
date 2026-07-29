@@ -294,6 +294,16 @@ class DriftMonitor:
                    "Tag und Nacht" if day_trigger and night_trigger
                    else "Nacht" if night_trigger
                    else "Gesamt" if day_trigger else None),
+               # ACHTUNG Vorzeichen: hier Ist minus Prognose (positiv = die
+               # Prognose ist zu NIEDRIG). Der Rest des Projekts rechnet Bias
+               # als Prognose minus Ist (observability, pv_eval, kalibrierung,
+               # DriftMonitor.check). Damit die Zahl nicht falsch gelesen wird,
+               # steht die Richtung ausdruecklich dabei - Anzeigen sollen sie
+               # benutzen statt das Vorzeichen selbst zu deuten.
+               "sign_convention": "actual_minus_forecast",
+               "direction": ("Prognose zu niedrig" if median_w > 0
+                             else "Prognose zu hoch" if median_w < 0
+                             else "kein Versatz"),
                "diagnostic": diagnostic,
                "alert": bool(day_trigger or night_trigger)}
         if out["alert"]:

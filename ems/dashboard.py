@@ -611,7 +611,9 @@ def _load_bias_quality_card(load_bias) -> tuple[str, str]:
     level = "partial" if alert else "current"
     median = load_bias.get("median_w")
     night = load_bias.get("night_median_w")
-    scope = load_bias.get("alert_scope", "Gesamt")
+    # alert_scope ist None, wenn gar kein Alarm vorliegt - ein Default im get()
+    # greift dann NICHT (der Schluessel existiert), und die Karte zeigte "None".
+    scope = load_bias.get("alert_scope") or "Gesamt"
     threshold = load_bias.get("threshold_w", 100)
     days = load_bias.get("window_days", 7)
     samples = int(load_bias.get("n", 0) or 0)
@@ -621,6 +623,12 @@ def _load_bias_quality_card(load_bias) -> tuple[str, str]:
         parts.append(f"Nacht {float(night):+.0f} W")
     if median is not None:
         parts.append(f"Gesamt {float(median):+.0f} W")
+    # Die Richtung dazuschreiben: das Vorzeichen allein ist irrefuehrend, weil
+    # dieser Wert Ist minus Prognose ist, der uebrige Projekt-Bias aber
+    # Prognose minus Ist (siehe drift.check_load_bias, sign_convention).
+    direction = load_bias.get("direction")
+    if direction and (night is not None or median is not None):
+        parts.append(str(direction))
     state = " · ".join(parts) or "noch nicht auswertbar"
     if not alert:
         state = "kein systematischer Versatz · " + state
