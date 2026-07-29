@@ -45,6 +45,10 @@ class DriftMonitor:
             config.monitoring, "efficiency_window_days", 7.0))
         self.eff_alert = float(getattr(
             config.monitoring, "efficiency_alert_percent", 6.0))
+        self.exec_days = float(getattr(
+            config.monitoring, "execution_bias_window_days", 7.0))
+        self.exec_alert_w = float(getattr(
+            config.monitoring, "execution_bias_alert_w", 50.0))
 
     def check(self, repo, now: pd.Timestamp) -> Optional[float]:
         """Vergleicht Prognose- und Ist-SoC im zurückliegenden Fenster.
@@ -128,4 +132,71 @@ class DriftMonitor:
         else:
             log.info("Entladewirkungsgrad: gemessen %.3f gegen Modell %.3f "
                      "(%+.1f %%).", fit.efficiency, model, deviation)
+        return out
+
+    def check_execution_bias(self, now: pd.Timestamp) -> Optional[dict]:
+        """Einseitigen Ausführungsversatz über ein Fenster aufsummieren.
+
+        Der Ausführungs-Audit prüft je Slot gegen die gereifte Zählerenergie -
+        Zeitbezug korrekt, aber er summiert NICHT auf. Ein Versatz von wenigen
+        Watt je Slot bleibt unter jeder Einzelschwelle und ist über eine Woche
+        trotzdem kWh. Alarm gibt es nur, wenn der Versatz nennenswert UND
+        einseitig ist (Rauschen wechselt das Vorzeichen).
+        """
+        from .local_history import read_execution_audits
+
+        try:
+            rows = read_execution_audits(
+                self.cfg.e3dc_rscp.history_db_path,
+                limit=int(self.exec_days * 24 * 60
+                          / max(1, self.cfg.general.slot_minutes)) + 50)
+        except Exception as exc:  # pragma: no cover
+            log.warning("Ausführungs-Bias nicht prüfbar (%s).", exc)
+            return None
+        cutoff = now - timedelta(days=self.exec_days)
+        values = []
+        for row in rows or []:
+            # Nur zählerbasierte Prüfungen: die Live-Variante mittelt ~1 min
+            # und gegen einen 15-min-Sollwert gestellt streut sie um ±1 kW -
+            # das wäre Rauschen, kein Versatz.
+            if str(row.get("state", "")) not in ("ok", "deviation"):
+                continue
+            try:
+                ts = pd.Timestamp(row.get("ts"))
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize("UTC")
+                if ts < cutoff:
+                    continue
+                dev = (row.get("deviations") or {}).get("battery_w")
+                if dev is not None and pd.notna(dev):
+                    values.append(float(dev))
+            except Exception:      # einzelne kaputte Zeile ignorieren
+                continue
+        if len(values) < 96:                    # unter einem Tag nicht bewerten
+            return None
+        arr = pd.Series(values, dtype="float64")
+        # Der MEDIAN entscheidet, nicht der Mittelwert: die Verteilung hat einen
+        # schweren Rand (einzelne Slots weichen um >800 W ab). Der Mittelwert
+        # meldete dadurch -67 W, obwohl die Anlage typischerweise auf -12 W
+        # genau folgt. Beides wird ausgegeben, alarmiert wird auf dem Median.
+        median_w = float(arr.median())
+        mean_w = float(arr.mean())
+        nonzero = arr[arr.abs() > 1.0]
+        share = (float((nonzero > 0).mean()) if len(nonzero) else 0.5)
+        one_sided = max(share, 1.0 - share)
+        out = {"median_w": round(median_w, 1), "mean_w": round(mean_w, 1),
+               "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
+               "same_sign_share": round(one_sided, 2), "n": len(values),
+               "alert": bool(abs(median_w) > self.exec_alert_w
+                             and one_sided >= 0.65)}
+        if out["alert"]:
+            log.warning(
+                "Ausführungs-Versatz: Median %+.0f W über %d Slots "
+                "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Anlage "
+                "folgt den Sollwerten systematisch anders als geplant.",
+                median_w, len(values), 100.0 * one_sided, out["kwh_per_day"])
+        else:
+            log.info("Ausführungs-Versatz: Median %+.0f W, Mittel %+.0f W "
+                     "(%d Slots, %.0f %% gleiches Vorzeichen).",
+                     median_w, mean_w, len(values), 100.0 * one_sided)
         return out

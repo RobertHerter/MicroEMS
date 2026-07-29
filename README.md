@@ -656,6 +656,14 @@ python savings_check.py --config config.yaml --summary   # kumuliert (nur DB)
      zweistellige Prozentpunkte daneben. Die Bilanzprüfung meldet denselben Fall
      mit −16 % und schlägt binnen ein, zwei Tagen an (`efficiency_window_days`,
      `efficiency_alert_percent`; stündlich, reine SQLite-Reads).
+  3. *Ausführungs-Versatz* – summiert die vorzeichenbehaftete Soll-Ist-Abweichung
+     des Ausführungs-Audits über ein Fenster. Der Audit selbst prüft je Slot; ein
+     Versatz von wenigen Watt bleibt dort unter jeder Schwelle und ist über eine
+     Woche trotzdem kWh. Alarmiert wird auf dem **Median**, nicht dem Mittelwert:
+     die Verteilung hat einen schweren Rand (einzelne Slots >800 W), der
+     Mittelwert meldete −67 W, während die Anlage typischerweise auf −12 W genau
+     folgt. Nur zählerbasierte Prüfungen zählen – die Live-Variante mittelt ~1 min
+     und streut gegen einen 15-min-Sollwert um ±1 kW.
 - **`ems/battery_calibration.py`** – misst den **Entladewirkungsgrad** aus den
   Ist-Werten und führt ihn wöchentlich nach. Gemessen wird über
   *zusammenhängende Entladephasen*, nicht je Slot: der SoC kommt nur in ganzen

@@ -182,3 +182,54 @@ def test_energy_model_check_stays_silent_without_data(tmp_path):
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "leer.sqlite")
     assert DriftMonitor(cfg).check_energy_model(
         pd.Timestamp("2026-01-14 12:00", tz=TZ)) is None
+
+
+def _seed_audits(db, deviation_w, n=200, tail=False):
+    """Zaehlerbasierte Audits mit bekanntem Versatz schreiben."""
+    from ems.local_history import write_execution_audit
+    base = pd.Timestamp("2026-01-10 00:00", tz="UTC")
+    for k in range(n):
+        dev = deviation_w
+        if tail and k % 20 == 0:        # einzelne grosse Ausreisser
+            dev = -1500.0
+        write_execution_audit(db, base + pd.Timedelta(minutes=15 * k), {
+            "ok": True, "state": "ok", "message": "",
+            "planned": {"battery_w": 0.0}, "actual": {"battery_w": dev},
+            "deviations": {"battery_w": dev}})
+
+
+def test_execution_bias_flags_a_one_sided_offset(tmp_path):
+    """Ein Versatz, der je Slot unter jeder Einzelschwelle bleibt, aber immer
+    dasselbe Vorzeichen hat, muss aufsummiert auffallen."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    _seed_audits(cfg.e3dc_rscp.history_db_path, -120.0)
+    out = DriftMonitor(cfg).check_execution_bias(
+        pd.Timestamp("2026-01-12 06:00", tz="UTC"))
+    assert out is not None and out["alert"] is True
+    assert out["median_w"] == pytest.approx(-120.0)
+    assert out["kwh_per_day"] < 0
+
+
+def test_execution_bias_ignores_a_heavy_tail(tmp_path):
+    """Einzelne grosse Ausreisser duerfen keinen Alarm ausloesen - genau daran
+    scheiterte der Mittelwert (er meldete -67 W bei -12 W Median)."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    _seed_audits(cfg.e3dc_rscp.history_db_path, -10.0, tail=True)
+    out = DriftMonitor(cfg).check_execution_bias(
+        pd.Timestamp("2026-01-12 06:00", tz="UTC"))
+    assert out is not None and out["alert"] is False
+    assert out["median_w"] == pytest.approx(-10.0)
+    assert out["mean_w"] < out["median_w"]      # Rand zieht das Mittel weg
+
+
+def test_execution_bias_needs_a_day_of_data(tmp_path):
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    _seed_audits(cfg.e3dc_rscp.history_db_path, -120.0, n=20)
+    assert DriftMonitor(cfg).check_execution_bias(
+        pd.Timestamp("2026-01-12 06:00", tz="UTC")) is None

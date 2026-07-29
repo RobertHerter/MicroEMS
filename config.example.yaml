@@ -607,6 +607,12 @@ monitoring:
   # Warnschwelle als RELATIVE Abweichung (%) zwischen gemessenem und
   # konfiguriertem Entladewirkungsgrad.
   efficiency_alert_percent: 6.0
+  # Einseitiger Ausfuehrungsversatz: der Slot-Audit summiert nicht auf, ein
+  # Versatz von wenigen Watt je Slot ist ueber eine Woche trotzdem kWh.
+  execution_bias_window_days: 7.0
+  # Warnschwelle als MEDIAN der Abweichung (W). Bewusst der Median: die
+  # Verteilung hat einen schweren Rand, der Mittelwert wuerde falsch melden.
+  execution_bias_alert_w: 50.0
   # Solver-Laufzeit warnen, wenn absolut oder relativ zur Historie auffaellig
   # (Median der letzten Laeufe); eine Erholungsmeldung beendet den Alarmzustand.
   solver_runtime_alert_seconds: 60

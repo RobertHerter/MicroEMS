@@ -658,6 +658,10 @@ class MonitoringConfig:
     # ab dem gemessenen SoC, der Fehler summiert sich dort nie auf.
     efficiency_window_days: float = 7.0
     efficiency_alert_percent: float = 6.0   # Warnung ab dieser rel. Abweichung
+    # Einseitiger Ausführungsversatz: der Slot-Audit summiert nicht auf, ein
+    # Versatz von wenigen Watt je Slot ist über eine Woche trotzdem kWh.
+    execution_bias_window_days: float = 7.0
+    execution_bias_alert_w: float = 50.0
     solver_runtime_alert_seconds: float = 60.0
     solver_runtime_factor: float = 3.0
     solver_runtime_baseline_runs: int = 12
@@ -1486,6 +1490,9 @@ def load_config(path: str) -> Config:
         efficiency_window_days=float(mon.get("efficiency_window_days", 7.0)),
         efficiency_alert_percent=float(
             mon.get("efficiency_alert_percent", 6.0)),
+        execution_bias_window_days=float(
+            mon.get("execution_bias_window_days", 7.0)),
+        execution_bias_alert_w=float(mon.get("execution_bias_alert_w", 50.0)),
         solver_runtime_alert_seconds=float(
             mon.get("solver_runtime_alert_seconds", 60.0)),
         solver_runtime_factor=float(mon.get("solver_runtime_factor", 3.0)),
