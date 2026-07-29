@@ -1667,6 +1667,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     fig.update_layout(
         height=(1120 if has_loads else 980) + (180 if temp_row else 0),
         autosize=True, template="plotly_white",
+        # Kein eigener Hintergrund: sonst rendert Plotly die Grafik WEISS und
+        # erst das nachgelagerte paint() faerbt sie dunkel - beim Neuladen ein
+        # sichtbares Weiss-Schwarz-Blinken. Transparent laesst die Karte
+        # darunter durchscheinen, und die ist per CSS sofort in der richtigen
+        # Farbe (das Theme-Skript im <head> laeuft vor dem ersten Paint).
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         hovermode="x unified",
         # Ohne harte Distanzgrenze nimmt Plotly im Unified-Hover für eine
         # Zukunftsprognose noch den letzten Istpunkt links vom Jetzt-Marker
@@ -1793,6 +1799,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  h1 {{ flex: 1; font-size: 22px; margin: 0;
         min-width: 0; }}
  h1 .ts {{ color: #888; font-weight: normal; font-size: 14px; }}
+ .desktop-plot {{ background: #fff; border-radius: 12px; }}
+ html.dark .desktop-plot {{ background: #18212b; }}
  .header-actions {{ display: flex; gap: 7px; }}
  .lp-bars {{ display: flex; align-items: flex-end; gap: 1px; height: 34px;
         margin-top: 6px; }}
@@ -2363,7 +2371,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'#18212b',plot_bgcolor:'#18212b','font.color':'#e7edf4'}}:{{paper_bgcolor:'#fff',plot_bgcolor:'#fff','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0,'#263442'],[.249,'#263442'],[.25,'#329b4c'],[.499,'#329b4c'],[.5,'#596979'],[.749,'#596979'],[.75,'#987620'],[1,'#987620']]:[[0,'#e9ecef'],[.249,'#e9ecef'],[.25,'#2ca02c'],[.499,'#2ca02c'],[.5,'#adb5bd'],[.749,'#adb5bd'],[.75,'#d8a52a'],[1,'#d8a52a']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});
