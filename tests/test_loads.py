@@ -538,3 +538,69 @@ def test_no_grid_import_off_allows_grid_heating():
     assert not res.infeasible
     wp = res.table["load_pool_klein_w"] + res.table["load_pool_gross_w"]
     assert float(wp.sum()) * DT_H > 1.0, "ohne Flag darf aus dem Netz geheizt werden"
+
+
+def test_controllable_load_curve_excludes_deviation_and_grid_share():
+    """Die Kurve "Steuerb. Lasten" darf NUR die Stufenleistungen summieren.
+
+    Das fruehere Namensmuster "load_*_w" fing zwei Fremdspalten ein:
+      * load_deviation_w - die LASTABWEICHUNG (Ist minus Prognose der
+        Hauslast). Sie erschien als steuerbare Last; im Hover stand bei
+        "Steuerb. Lasten" derselbe Wert wie bei "Verbrauch (Delta)".
+      * load_<name>_grid_w - der Netzanteil derselben Last, wodurch eine
+        laufende Pumpe doppelt gezaehlt wurde.
+    """
+    import json as _json
+    import pathlib
+    import re as _re
+
+    import numpy as np
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from ems.dashboard import build_dashboard
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0,
+        stages=[LoadStage("klein", 400, 1000)])]
+    index = pd.date_range("2026-07-29 10:00", periods=4, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.zeros(n),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": np.full(n, 400.0),      # die echte Stufenleistung
+        "load_Pool_grid_w": np.full(n, 400.0),       # deren Netzanteil
+        "load_deviation_w": np.full(n, 2470.0),      # voellig andere Groesse
+    }, index=index)
+    html = pathlib.Path(
+        build_dashboard(cfg, table, total_cost_ct=0.0)).read_text(
+            encoding="utf-8")
+    match = _re.search(r'Plotly\.newPlot\(\s*"[^"]+",\s*(\[.*?\]),\s*\{',
+                       html, _re.S)
+    curves = [x for x in _json.loads(match.group(1))
+              if x.get("name") == "Steuerb. Lasten"]
+    assert curves, "Kurve fehlt"
+
+    def _values(series):
+        # Plotly kodiert Zahlenreihen als typisiertes Array (base64 bdata),
+        # nicht als Liste - sonst findet der Test keine Werte.
+        if isinstance(series, dict) and "bdata" in series:
+            import base64
+            return np.frombuffer(base64.b64decode(series["bdata"]),
+                                 dtype=series.get("dtype", "f8"))
+        return np.asarray([v for v in series
+                           if isinstance(v, (int, float))], dtype=float)
+
+    values = _values(curves[0]["y"])
+    assert len(values), "keine Werte"
+    # Genau die Stufenleistung - nicht 400+400+2470.
+    assert float(np.nanmax(values)) == pytest.approx(400.0), values

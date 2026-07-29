@@ -1760,7 +1760,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # Steuerbare Lasten (Pool etc.): geplante Gesamt-Leistung als eigener Verlauf.
     if has_loads:
         from .loads import _slug as _lslug
-        _cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+        # Spalten AUS DER KONFIGURATION, nicht per Namensmuster: "load_*_w"
+        # fing auch load_deviation_w ein (die LASTABWEICHUNG, voellig andere
+        # Groesse - die Kurve zeigte sie als steuerbare Last) und
+        # load_Pool_grid_w, den Netzanteil derselben Last, wodurch eine
+        # laufende Pumpe doppelt gezaehlt wurde.
+        _cl_cols = []
+        for _ld in loads_cfg:
+            _sg = _lslug(_ld.name)
+            if _ld.type == "thermal":
+                _cl_cols += [f"load_{_sg}_{_lslug(_st.name)}_w"
+                             for _st in _ld.stages]
+            else:
+                _cl_cols.append(f"load_{_sg}_w")
+        _cl_cols = [c for c in _cl_cols if c in t.columns]
         if _cl_cols:
             cl_sum = t[_cl_cols].sum(axis=1)
             if float(cl_sum.abs().sum()) > 0:
