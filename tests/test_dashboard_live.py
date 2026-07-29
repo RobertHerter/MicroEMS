@@ -563,3 +563,29 @@ def test_timeline_marks_permit_held_without_heating():
     row = traces[0]["z"][0]                      # Pool / klein (Soll)
     assert row[:4] == [4, 4, 4, 4], row
     assert row[4:] == [0, 0, 0, 0], row
+
+
+def test_learned_profile_headline_does_not_overclaim():
+    """Platzhalter-Profile deaktivierter Lasten sind NICHT "in der Planung".
+
+    Vorher zaehlte die Zeile jedes vorhandene power_profile_w und behauptete
+    "4/4 Profile in der Planung", waehrend nichts gelernt war und alle vier
+    Lasten deaktiviert waren.
+    """
+    from ems.config import ControllableLoad
+    from ems.dashboard import _load_profile_block
+    from tests.test_synthetic import make_config
+
+    cfg = make_config()
+    profile = [2000.0, 300.0, 150.0, 100.0]
+    cfg.controllable_loads = [
+        ControllableLoad(name="Trockner", type="deferrable", enabled=False,
+                         power_profile_w=profile, runtime_minutes=60.0,
+                         power_topic="homie/homey/strom-trockner/measure-power"),
+        ControllableLoad(name="Waschmaschine 1", type="deferrable",
+                         enabled=True, power_profile_w=profile,
+                         runtime_minutes=60.0),
+    ]
+    html = _load_profile_block(cfg)
+    assert "1/2 in der Planung" in html
+    assert "1 im Anlernen" in html

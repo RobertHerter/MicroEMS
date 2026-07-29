@@ -1253,8 +1253,18 @@ def _load_profile_block(config) -> str:
              if ld.type == "deferrable"]
     if not loads:
         return ""
-    configured = sum(1 for load in loads if load.power_profile_w)
-    initial_dot = "ok" if configured == len(loads) else "warn"
+    # "In der Planung" heisst: die Last ist AKTIV und hat ein Profil. Nur
+    # power_profile_w zu zaehlen log dreifach: Platzhalter galten als gelernt,
+    # deaktivierte Lasten als eingeplant, und 4/4 stand da, waehrend nichts
+    # gelernt war. Anlern-Lasten (enabled: false) werden getrennt genannt.
+    planned = sum(1 for load in loads if load.power_profile_w and load.enabled)
+    learning = sum(1 for load in loads
+                   if not load.enabled and getattr(load, "power_topic", None))
+    # Gruen nur, wenn wirklich alle aktiven Lasten ein Profil fahren;
+    # Anlern-Lasten sind kein Fehler, aber auch kein "fertig".
+    active_loads = sum(1 for load in loads if load.enabled)
+    initial_dot = ("ok" if active_loads and planned == active_loads
+                   else "warn")
     html = """<details class="info-panel" id="profile-panel">
 <summary><span class="an-dot __PROFILE_DOT__" id="lp-dot"></span>▥ Gelernte Lastprofile
  <small id="lp-summary">__PROFILE_SUMMARY__</small></summary>
@@ -1295,7 +1305,8 @@ def _load_profile_block(config) -> str:
 })();</script></details>"""
     return (html.replace("__PROFILE_DOT__", initial_dot)
             .replace("__PROFILE_SUMMARY__",
-                     f"{configured}/{len(loads)} Profile in der Planung"))
+                     f"{planned}/{len(loads)} in der Planung"
+                     + (f" · {learning} im Anlernen" if learning else "")))
 
 def _sources_block(source_status) -> str:
     """Frische-Chips der externen Datenquellen (Spotpreis/Wetter/Solcast):
@@ -1645,7 +1656,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     if has_loads:
         titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
                   "<b>Steuerung</b>", "", "<b>Steuerbare Lasten</b>"]
-        row_heights = [0.33, 0.14, 0.14, 0.24, 0.045, 0.105]
+        # Die Lastenleiste muss mit der Spurenzahl wachsen. Bei fester Hoehe
+        # blieben von 12 Spuren nur ~8 px je Zeile - Plotly liess dann jedes
+        # zweite Tick-Label weg und es sah aus, als fehlten Lasten.
+        lane_count = 0
+        for _ld in loads_cfg:
+            if _ld.type == "thermal":
+                for _st in _ld.stages:
+                    lane_count += 1
+                    if _st.feedback_topic or _st.power_topic:
+                        lane_count += 1
+            else:
+                lane_count += 1
+                if _ld.feedback_topic or _ld.power_topic:
+                    lane_count += 1
+        lane_share = min(0.30, max(0.105, 0.026 * lane_count))
+        rest = 1.0 - lane_share - 0.045
+        row_heights = [0.33 * rest / 0.85, 0.14 * rest / 0.85,
+                       0.14 * rest / 0.85, 0.24 * rest / 0.85,
+                       0.045, lane_share]
     else:
         titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
                   "<b>Steuerung</b>", ""]
@@ -1971,6 +2000,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             customdata=[[_lab.get(v, "") for v in row] for row in z],
             hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
             row=6, col=1)
+        # Jede Spur MUSS ihr Label bekommen: ohne tickmode="array" duennt Plotly
+        # bei vielen Zeilen automatisch aus, und es sieht aus, als fehlten Lasten.
+        fig.update_yaxes(tickmode="array", tickvals=ylabels, ticktext=ylabels,
+                         tickfont=dict(size=9), row=6, col=1)
 
     # ---------- Panel 7: Temperaturen (Pool erwartet/echt, Außentemperatur) ---
     if temp_row is not None:
@@ -2072,7 +2105,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        xanchor="left", yanchor="top", showarrow=False,
                        text=mode_leg, font=dict(size=11, color="#555"))
     fig.update_layout(
-        height=(1120 if has_loads else 980) + (180 if temp_row else 0),
+        height=((1120 + 22 * max(0, lane_count - 4)) if has_loads else 980)
+        + (180 if temp_row else 0),
         autosize=True, template="plotly_white",
         # Kein eigener Hintergrund: sonst rendert Plotly die Grafik WEISS und
         # erst das nachgelagerte paint() faerbt sie dunkel - beim Neuladen ein
