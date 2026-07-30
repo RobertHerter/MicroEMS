@@ -1,11 +1,12 @@
 """Predicted-vs-Actual-Drift: vergleicht den prognostizierten Haus-SoC-Verlauf
 mit dem tatsächlich gemessenen und meldet systematische Abweichung.
 
-Modell gegen Realität: Jeder Zyklus schreibt seine SoC-Prognose nach
-ems_prediction. Für vergangene Slots steht dort die Prognose, die zu jenem
-Zeitpunkt für den (damals aktuellen) Slot galt. Der Vergleich mit dem echten
-battery_soc deckt Modellfehler auf, die kein einzelner Plan zeigt: falsche
-Wirkungsgrade, Standby, Kapazitätsalterung, nicht ausgeführte Sollwerte.
+Modell gegen Realität: Jeder Zyklus sichert seinen Sollfahrplan lokal
+(``execution_plan``) und - sofern konfiguriert - zusätzlich nach ems_prediction.
+Für vergangene Slots steht dort die Prognose, die zu jenem Zeitpunkt für den
+(damals aktuellen) Slot galt. Der Vergleich mit dem echten battery_soc deckt
+Modellfehler auf, die kein einzelner Plan zeigt: falsche Wirkungsgrade, Standby,
+Kapazitätsalterung, nicht ausgeführte Sollwerte.
 
 Kennzahl je Lauf: MAE über das Fenster (Prozentpunkte SoC), nach ems_drift
 geschrieben. Übersteigt sie den Schwellwert -> Warnung (ems/alert).
@@ -56,6 +57,31 @@ class DriftMonitor:
         self.load_alert_w = float(getattr(
             config.monitoring, "load_bias_alert_w", 100.0))
 
+    def _planned_soc(self, repo, start, end) -> Optional[pd.Series]:
+        """Geplanter SoC-Verlauf je Slot - bevorzugt aus der lokalen SQLite.
+
+        Der Sollfahrplan in ``execution_plan`` enthaelt dieselbe Groesse wie
+        ``predicted_state.house_soc_percent`` in der InfluxDB, hat ihr gegenueber
+        aber zwei Vorteile: er ist auch OHNE InfluxDB da (sonst fiel diese
+        Pruefung im Standalone-Betrieb stillschweigend aus), und seine
+        Jahrgangsdisziplin ist strenger - ein bereits begonnener Slot wird nur
+        beim ersten Lauf INNERHALB des Slots festgeschrieben, ein spaeteres
+        Recalc ersetzt das damalige Soll nicht rueckwirkend.
+        """
+        from .local_history import read_execution_plan_range
+        frame = read_execution_plan_range(self.cfg.e3dc_rscp.history_db_path,
+                                          start, end, self.cfg.general.timezone)
+        if frame is not None and not frame.empty \
+                and "house_soc_percent" in frame.columns:
+            series = pd.to_numeric(frame["house_soc_percent"],
+                                   errors="coerce").dropna()
+            if not series.empty:
+                return series
+        # Fallback fuer Anlagen ohne lokalen Sollfahrplan (z.B. reiner
+        # Influx-Betrieb oder die ersten Zyklen nach einem frischen Setup).
+        return repo.read_slots_output("predicted_state", "house_soc_percent",
+                                      start, end)
+
     def check(self, repo, now: pd.Timestamp) -> Optional[float]:
         """Vergleicht Prognose- und Ist-SoC im zurückliegenden Fenster.
         Rückgabe: MAE in Prozentpunkten, oder None (zu wenig Daten)."""
@@ -67,8 +93,7 @@ class DriftMonitor:
             from .local_history import read_actual_signal
             actual = read_actual_signal(self.cfg, repo, "battery_soc",
                                         start, now).dropna()
-            pred = repo.read_slots_output("predicted_state", "house_soc_percent",
-                                          start, now)
+            pred = self._planned_soc(repo, start, now)
         except Exception as exc:  # pragma: no cover
             log.warning("Drift-Check nicht möglich (%s).", exc)
             return None

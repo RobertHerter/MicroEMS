@@ -235,6 +235,84 @@ def test_execution_bias_needs_a_day_of_data(tmp_path):
         pd.Timestamp("2026-01-12 06:00", tz="UTC")) is None
 
 
+# --------------------------------------------------------------------------- #
+# SoC-Kurve: laeuft ueber die lokale SQLite, nicht ueber die InfluxDB
+# --------------------------------------------------------------------------- #
+def _seed_soc_plan(db, planned, actual, start="2026-01-12 18:00"):
+    """Sollfahrplan (execution_plan) und gemessenen SoC (actuals) schreiben."""
+    from ems.local_history import write_actuals, write_execution_plan
+    idx = pd.date_range(pd.Timestamp(start, tz=TZ), periods=24, freq="15min")
+    table = pd.DataFrame({
+        "house_soc_percent": [planned(k) for k in range(len(idx))],
+        "grid_import_w": 0.0, "grid_export_w": 0.0,
+        "batt_dc_charge_w": 0.0, "batt_ac_charge_w": 0.0,
+        "batt_discharge_w": 1000.0, "house_load_w": 1000.0, "pv_w": 0.0,
+        "mode": "auto"}, index=idx)
+    # issued_at vor dem ersten Zielslot: alle Slots werden als Soll gesichert.
+    write_execution_plan(db, idx[0] - pd.Timedelta(minutes=5), table,
+                         initial_soc_percent=float(table
+                                                   ["house_soc_percent"].iloc[0]))
+    for k, ts in enumerate(idx):
+        write_actuals(db, ts, {"soc_percent": float(actual(k)),
+                               "battery_w": -1000.0, "pv_w": 0.0,
+                               "house_load_w": 1000.0, "grid_w": 0.0})
+    return idx
+
+
+def _noinflux_repo(cfg):
+    """Repository wie im Standalone-Betrieb: kein Signal, kein Writeback."""
+    from ems.influx import NoOpRepository
+    cfg.influxdb.enabled = False
+    return NoOpRepository(cfg)
+
+
+def test_soc_drift_works_without_influxdb(tmp_path):
+    """Die SoC-Pruefung darf nicht am fehlenden predicted_state haengen.
+
+    Ohne InfluxDB lieferte ``read_slots_output`` None und die Pruefung fiel
+    STILLSCHWEIGEND aus - im reinen E3DC-Betrieb also immer. Der Sollfahrplan
+    liegt lokal in ``execution_plan`` und traegt dieselbe Groesse.
+    """
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.e3dc_rscp.history_source = True
+    cfg.monitoring.drift_window_hours = 12.0
+    # Plan faellt von 80 % auf 68 %, real nur auf 74 % -> 3 pp mittlerer Fehler.
+    idx = _seed_soc_plan(cfg.e3dc_rscp.history_db_path,
+                         planned=lambda k: 80.0 - 0.5 * k,
+                         actual=lambda k: 80.0 - 0.25 * k)
+    repo = _noinflux_repo(cfg)
+    assert repo.read_slots_output("predicted_state", "house_soc_percent",
+                                  None, None) is None
+    mae = DriftMonitor(cfg).check(repo, idx[-1] + pd.Timedelta(minutes=15))
+    assert mae is not None, "ohne InfluxDB muss die Pruefung trotzdem laufen"
+    assert mae == pytest.approx(2.875, abs=0.1)
+
+
+def test_soc_drift_is_quiet_when_the_plan_holds(tmp_path):
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.e3dc_rscp.history_source = True
+    idx = _seed_soc_plan(cfg.e3dc_rscp.history_db_path,
+                         planned=lambda k: 80.0 - 0.5 * k,
+                         actual=lambda k: 80.0 - 0.5 * k)
+    mae = DriftMonitor(cfg).check(_noinflux_repo(cfg),
+                                  idx[-1] + pd.Timedelta(minutes=15))
+    assert mae == pytest.approx(0.0, abs=0.01)
+
+
+def test_soc_drift_stays_silent_without_a_local_plan(tmp_path):
+    """Kein Sollfahrplan und keine InfluxDB: lieber None als eine Zahl."""
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "leer.sqlite")
+    cfg.e3dc_rscp.history_source = True
+    assert DriftMonitor(cfg).check(
+        _noinflux_repo(cfg), pd.Timestamp("2026-01-13 06:00", tz=TZ)) is None
+
+
 def _seed_load_bias(db, tz, forecast_w, actual_w, days=3):
     """Prognose-Snapshots und gemessene Hauslast mit bekanntem Versatz."""
     from ems.local_history import (write_house_load,
