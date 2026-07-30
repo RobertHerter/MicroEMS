@@ -98,8 +98,8 @@ dashboard:
   password: "bitte-aendern"
 ```
 
-`serve` und `port` stehen nicht in `config.example.yaml`, sind aber gültig
-(Standard `true` / `8080`).
+`serve` schaltet den HTTP-Server im `--loop`-Betrieb; ohne ihn wird das Dashboard
+nur als Datei geschrieben (`output_path`).
 
 Azimut: 0 = Nord, 90 = Ost, 180 = Süd, 270 = West.
 
@@ -257,7 +257,7 @@ Plattenplatz. Wer sie weglassen will, installiert von Hand:
 ## Optional
 
 * **MQTT ans Smart Home:** `mqtt.enabled: true` mit Broker-Daten. Läuft parallel zur RSCP-Steuerung.
-* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.0.2`; die Kalibrierungs-Timer sind im Container enthalten.
+* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.0.3`; die Kalibrierungs-Timer sind im Container enthalten.
 * **Konfiguration im Browser:** `dashboard.controls_enabled: true` schaltet den Editor unter `/config` frei (mit Prüfung, Backup und Neustart).
 
 
