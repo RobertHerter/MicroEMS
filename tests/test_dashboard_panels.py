@@ -13,6 +13,7 @@ import re
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ems.dashboard import build_dashboard
 from tests.test_synthetic import make_config
@@ -54,6 +55,20 @@ def _mobile_css(html: str) -> str:
         if ".recalc-label" in block:
             return block
     raise AssertionError("Handy-Regeln nicht gefunden")
+
+
+def _series(werte):
+    """Zahlenreihe einer Plotly-Spur lesen.
+
+    Plotly kodiert Zahlenreihen als typisiertes Array (base64 ``bdata``), nicht
+    als Liste - ein Test, der nur Listen erwartet, findet stillschweigend
+    nichts und geht durch.
+    """
+    if isinstance(werte, dict) and "bdata" in werte:
+        import base64
+        return np.frombuffer(base64.b64decode(werte["bdata"]),
+                             dtype=werte.get("dtype", "f8"))
+    return np.asarray([np.nan if v is None else float(v) for v in werte])
 
 
 def _figure(html: str):
@@ -175,12 +190,57 @@ def test_thermal_load_gets_its_own_power_curve(tmp_path):
     html = _render_with_temperature(tmp_path)
     data, _ = _figure(html)
     namen = [t.get("name") for t in data if t.get("name")]
-    assert "Pool Heizleistung" in namen, namen
+    assert "Pool Heizleistung (Soll)" in namen, namen
     # Kein Namenskonflikt mit der Temperaturkurve derselben Last.
     assert namen.count("Pool (Soll)") == 1
 
-    kurve = next(t for t in data if t.get("name") == "Pool Heizleistung")
+    kurve = next(t for t in data
+                 if t.get("name") == "Pool Heizleistung (Soll)")
     assert kurve.get("yaxis", "y") == "y", "gehört ins Leistungspanel"
+
+
+def test_shared_meter_is_not_counted_twice(tmp_path):
+    """Beide Pool-Stufen hängen an EINEM Shelly - summieren zählt doppelt.
+
+    Der Zähler misst den ganzen Poolkreis; die kleine Wärmepumpe wird per
+    Schwelle auf demselben Messwert erkannt. Jede Stufe liefert deshalb
+    dieselbe Reihe. Eine naive Summe über die Stufen zeigte die doppelte
+    Leistung - und zwar plausibel genug, um nicht aufzufallen.
+    """
+    from ems.config import ControllableLoad, LoadStage
+
+    topic = "homie/pool/measure-power"
+    cfg = make_config(tmp_html=str(tmp_path / "dash_meter.html"))
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0,
+        stages=[LoadStage("gross", 660, 4000, power_topic=topic),
+                LoadStage("klein", 400, 3000, power_topic=topic)])]
+    index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.full(n, 800.0),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_gross_w": np.full(n, 660.0),
+        "load_Pool_klein_w": np.zeros(n),
+        # Derselbe Zähler, an beide Stufen gehängt - so liegt es real vor.
+        "actual_load_Pool_gross_power_w": np.full(n, 1050.0),
+        "actual_load_Pool_klein_power_w": np.full(n, 1050.0),
+    }, index=index)
+    html = pathlib.Path(build_dashboard(
+        cfg, table, total_cost_ct=0.0)).read_text(encoding="utf-8")
+    data, _ = _figure(html)
+    ist = next(t for t in data
+               if t.get("name") == "Pool Heizleistung (Ist)")
+    werte = _series(ist["y"])
+    assert float(np.nanmax(werte)) == pytest.approx(1050.0), \
+        f"geteilter Zähler doppelt gezählt: {float(np.nanmax(werte))}"
 
 
 def test_thermal_curve_stays_away_when_nothing_is_planned(tmp_path):
@@ -209,7 +269,8 @@ def test_thermal_curve_stays_away_when_nothing_is_planned(tmp_path):
     html = pathlib.Path(build_dashboard(
         cfg, table, total_cost_ct=0.0)).read_text(encoding="utf-8")
     data, _ = _figure(html)
-    assert "Pool Heizleistung" not in [t.get("name") for t in data]
+    assert not [t for t in data
+                if str(t.get("name")).startswith("Pool Heizleistung")]
 
 
 def test_shapes_and_annotations_use_the_same_time_format(tmp_path):

@@ -1874,21 +1874,43 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 # Thermolasten hatten NIE eine eigene Leistungskurve - sie
                 # steckten nur in der Summe "Steuerb. Lasten" und in der
                 # Zeitleiste. Neben den einzeln gezeichneten Waschmaschinen
-                # sah das aus, als fehle der Pool. Hier die geplante
-                # Heizleistung als Summe der Stufen; "Heizleistung" statt
-                # "(Soll)", weil dieser Name im Temperaturpanel schon fuer die
-                # Solltemperatur derselben Last vergeben ist.
-                stufen = [f"load_{sg}_{_lslug(st.name)}_w" for st in ld.stages]
-                stufen = [c for c in stufen if c in t.columns]
-                if stufen and float(t[stufen].sum().sum()) > 0.0:
+                # sah das aus, als fehle der Pool. "Heizleistung" statt bloss
+                # "(Soll)"/"(Ist)", weil diese Namen im Temperaturpanel schon
+                # fuer Soll- und Ist-TEMPERATUR derselben Last vergeben sind.
+                stufen = [c for c in
+                          (f"load_{sg}_{_lslug(st.name)}_w" for st in ld.stages)
+                          if c in t.columns]
+                # Ist-Leistung: Stufen koennen sich EINEN Zaehler teilen (hier
+                # ein Shelly fuer den ganzen Poolkreis, die kleine WP wird per
+                # Schwelle auf demselben Messwert erkannt). Dann liefert jede
+                # Stufe dieselbe Reihe, und eine Summe zaehlte doppelt. Deshalb
+                # je Messtopic nur EINE Spalte.
+                gesehen, ist_cols = set(), []
+                for st in ld.stages:
+                    spalte = f"actual_load_{sg}_{_lslug(st.name)}_power_w"
+                    topic = getattr(st, "power_topic", None) or f"#{st.name}"
+                    if (spalte in t.columns and t[spalte].notna().any()
+                            and topic not in gesehen):
+                        gesehen.add(topic)
+                        ist_cols.append(spalte)
+                if ist_cols or (stufen and float(t[stufen].sum().sum()) > 0.0):
                     _n_load += 1
+                if stufen and (ist_cols or float(t[stufen].sum().sum()) > 0.0):
                     fig.add_trace(go.Scatter(
                         x=xp, y=t[stufen].sum(axis=1),
-                        name=f"{ld.name} Heizleistung", mode="lines",
+                        name=f"{ld.name} Heizleistung (Soll)", mode="lines",
                         line=dict(color=colour, width=1.4, dash="dash"),
                         hovertemplate=HOVER_W, legendgroup="prog",
                         legendrank=_GROUP_RANK["prog"],
                         legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
+                if ist_cols:
+                    fig.add_trace(go.Scatter(
+                        x=xp, y=t[ist_cols].sum(axis=1),
+                        name=f"{ld.name} Heizleistung (Ist)", mode="lines",
+                        line=dict(color=colour, width=1.8),
+                        hovertemplate=HOVER_W, legendgroup="ist",
+                        legendrank=_GROUP_RANK["ist"],
+                        legendgrouptitle_text=_GROUPS["ist"]), row=1, col=1)
                 continue
             if ld.type != "deferrable":
                 continue
