@@ -121,6 +121,51 @@ def test_all_traces_share_one_time_format(tmp_path):
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", str(a[0])), a[0]
 
 
+def test_each_controllable_load_gets_its_own_colour(tmp_path):
+    """Vier Geräte in derselben Farbe sind im Diagramm nicht unterscheidbar.
+
+    Vorher trugen alle verschiebbaren Lasten dasselbe Violett - bei zwei
+    Waschmaschinen, Trockner und Spülmaschine half nur noch die Legende, also
+    nichts im Bild selbst. Ist- und Soll-Kurve EINER Last teilen sich weiter
+    eine Farbe; sie unterscheiden sich durch die Strichart.
+    """
+    from ems.config import ControllableLoad
+
+    cfg = make_config(tmp_html=str(tmp_path / "dash_loads.html"))
+    namen = ["Waschmaschine 1", "Waschmaschine 2", "Trockner", "Spülmaschine"]
+    cfg.controllable_loads = [
+        ControllableLoad(name=n, type="deferrable", enabled=True,
+                         power_w=2000.0, runtime_minutes=90.0)
+        for n in namen]
+    index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    from ems.loads import _slug
+    spalten = {
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.full(n, 800.0),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+    }
+    for name in namen:
+        spalten[f"load_{_slug(name)}_w"] = np.full(n, 2000.0)
+        spalten[f"actual_load_{_slug(name)}_power_w"] = np.full(n, 1900.0)
+    html = pathlib.Path(build_dashboard(
+        cfg, pd.DataFrame(spalten, index=index),
+        total_cost_ct=0.0)).read_text(encoding="utf-8")
+
+    data, _ = _figure(html)
+    farben = {t["name"]: (t.get("line") or {}).get("color")
+              for t in data if (t.get("name") or "").endswith("(Ist)")
+              and any(n_ in t["name"] for n_ in namen)}
+    assert len(farben) == len(namen), f"nicht alle Lasten gezeichnet: {farben}"
+    assert len(set(farben.values())) == len(namen), \
+        f"Lasten teilen sich Farben: {farben}"
+
+
 def test_shapes_and_annotations_use_the_same_time_format(tmp_path):
     """Jetzt-Linie, Vergangenheitsband und Tagesgrenzen sitzen auf derselben
     Achse wie die Kurven - im falschen Format zeigen sie auf die falsche

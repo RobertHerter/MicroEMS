@@ -287,7 +287,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
     if future.empty:
         return ("<details class='decisions' id='decisions-panel'><summary>"
                 "<span class='decision-head'>"
-                "❖ <b>Planentscheidungen erklärt</b><small>keine besonderen "
+                "⚖ <b>Planentscheidungen erklärt</b><small>keine besonderen "
                 "Eingriffe</small></span></summary><div class='decision-body'>"
                 "<div class='decision-empty'>Keine besonderen Akku-Eingriffe "
                 "geplant.</div></div></details>")
@@ -344,7 +344,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
     count = len(blocks[:limit])
     return ("<details class='decisions' id='decisions-panel'><summary>"
             "<span class='decision-head'>"
-            "❖ <b>Planentscheidungen erklärt</b>"
+            "⚖ <b>Planentscheidungen erklärt</b>"
             f"<small>{count} Entscheidungsblöcke</small></span></summary>"
             "<div class='decision-body'><div class='decision-list'>"
             f"{''.join(cards)}</div></div></details>")
@@ -580,7 +580,7 @@ def _slot_detail_block() -> str:
 
 def _events_block() -> str:
     return """
-<details class="info-panel events-panel" id="events-panel"><summary><span class="an-dot neutral" id="events-dot"></span>☷ Ereignisse &amp; Bedienverlauf <small id="events-summary">wird geprüft …</small></summary>
+<details class="info-panel events-panel" id="events-panel"><summary><span class="an-dot neutral" id="events-dot"></span>≣ Ereignisse &amp; Bedienverlauf <small id="events-summary">wird geprüft …</small></summary>
  <div class="events-filter" id="events-filter">
   <button type="button" data-lvl="info" class="info">Info</button>
   <button type="button" data-lvl="warning" class="warn">Warnung</button>
@@ -615,10 +615,10 @@ def _analysis_block(headline=None) -> str:
     Titel die Gesamt-Ersparnis + eine Status-Ampel."""
     if headline:
         summary = ('<summary><span class="an-dot ' + _esc(headline.get("status", "ok"))
-                   + '"></span>◴ Analyse &amp; Gesundheit <small>'
+                   + '"></span>∑ Analyse &amp; Gesundheit <small>'
                    + _esc(headline.get("text", "")) + '</small></summary>')
     else:
-        summary = ('<summary><span class="an-dot neutral"></span>◴ Analyse &amp; Gesundheit '
+        summary = ('<summary><span class="an-dot neutral"></span>∑ Analyse &amp; Gesundheit '
                    '<small>Entscheidungsgüte · Ersparnis · Akku</small></summary>')
     body = """
  <h4>Entscheidungsgüte <small>was die Unsicherheit kostet · Ø je Tag</small></h4>
@@ -746,7 +746,7 @@ def _forecast_analysis_block(forecast_quality=None,
             summary_text += f" · Last-Bias {float(bias_value):+.0f} W"
     html = """
 <details class="info-panel forecast-analysis-panel" id="forecast-analysis-panel">
- <summary><span class="an-dot __DOT__"></span>▦ Prognosen &amp; Qualität <small>__SUMMARY__</small></summary>
+ <summary><span class="an-dot __DOT__"></span>☁ Prognosen &amp; Qualität <small>__SUMMARY__</small></summary>
  <!--QUALITY-->
  <h4>Prognosegüte <small>WAPE gegen die Ist-Werte · 7 Tage (30 Tage)</small></h4>
  <div class="tiles forecast-accuracy-tiles" id="fa-accuracy"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
@@ -1293,7 +1293,7 @@ window.addEventListener('ems-theme-change',()=>Object.keys(EMS_LOADS).forEach(s=
 
     return (
         "<details class='controls info-panel' id='ems-controls'><summary>"
-        f"<span class='an-dot {'ok' if e3dc_on else 'warn'}'></span>⚙ Steuerung"
+        f"<span class='an-dot {'ok' if e3dc_on else 'warn'}'></span>⏻ Steuerung"
         f"<small>E3/DC {'aktiv' if e3dc_on else 'aus'} · "
         f"{_esc(mode_text.get(strat, (strat, ''))[0])}</small>"
         "</summary><div class='ctl-body'>"
@@ -1332,7 +1332,7 @@ def _load_profile_block(config) -> str:
     initial_dot = ("ok" if active_loads and planned == active_loads
                    else "warn")
     html = """<details class="info-panel" id="profile-panel">
-<summary><span class="an-dot __PROFILE_DOT__" id="lp-dot"></span>▥ Gelernte Lastprofile
+<summary><span class="an-dot __PROFILE_DOT__" id="lp-dot"></span>▤ Gelernte Lastprofile
  <small id="lp-summary">__PROFILE_SUMMARY__</small></summary>
 <div class="tiles" id="lp-tiles"><span class="an-hint">wird geladen …</span></div>
 <div class="hint" id="lp-hint"></div>
@@ -1445,7 +1445,7 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
     if not items:
         return ""
     return (f'<details class="info-panel" id="fquality-panel"><summary>'
-            f'<span class="an-dot {_panel_dot(levels)}"></span>⌁ Prognosequalität '
+            f'<span class="an-dot {_panel_dot(levels)}"></span>▣ Prognosequalität '
             "<small>verwendete Daten im aktuellen Optimierungshorizont</small>"
             f"</summary><div class='quality-grid'>{items}</div></details>")
 
@@ -1744,8 +1744,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                          for _ld in loads_cfg)
         lane_share = min(0.30, max(0.105, 0.032 * lane_count))
         rest = 1.0 - lane_share - 0.045
-        row_heights = [0.33 * rest / 0.85, 0.14 * rest / 0.85,
-                       0.14 * rest / 0.85, 0.24 * rest / 0.85,
+        # Leistung ist das Panel, auf das man zuerst schaut - es bekommt den
+        # groessten Anteil. Die Summe der vier Zahlen muss 0.85 bleiben, sonst
+        # stimmt die Normierung auf `rest` nicht mehr.
+        row_heights = [0.36 * rest / 0.85, 0.13 * rest / 0.85,
+                       0.13 * rest / 0.85, 0.23 * rest / 0.85,
                        0.045, lane_share]
     else:
         titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
@@ -1758,7 +1761,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         row_heights.append(0.12)
     n_rows = len(titles)
     fig = make_subplots(
-        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.035,
+        # Enger gesetzt: bei 0.035 gingen ueber sechs Zwischenraeume rund 21 %
+        # der Gesamthoehe fuer Leerraum drauf (gemessen 209 von 1378 px).
+        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.024,
         row_heights=row_heights, subplot_titles=titles,
     )
 
@@ -1865,6 +1870,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # Verschiebbare Lasten mit Leistungsmessung einzeln als Soll/Ist
         # darstellen. Das Summensignal oben bleibt für die Gesamtwirkung
         # erhalten, die Einzelkurven erlauben die Ausführungskontrolle.
+        # Je Last eine EIGENE Farbe. Vorher trugen alle verschiebbaren Lasten
+        # dasselbe Violett - bei vier Geraeten (zwei Waschmaschinen, Trockner,
+        # Spuelmaschine) waren die Kurven nur noch ueber die Legende
+        # auseinanderzuhalten, also gar nicht im Diagramm selbst.
+        # Bewusst abseits der belegten Familien: Rot = Verbrauch, Gruen =
+        # Einspeisung/Laden, Blau = Netz, Orange = PV.
+        _LOAD_COLORS = ["#6f42c1", "#00897b", "#c2185b", "#5d4037",
+                        "#00838f", "#7cb342"]
+        _n_load = 0
         for ld in loads_cfg:
             if ld.type != "deferrable":
                 continue
@@ -1872,9 +1886,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             planned_col = f"load_{sg}_w"
             actual_col = f"actual_load_{sg}_power_w"
             if actual_col in t.columns and t[actual_col].notna().any():
-                line(planned_col, f"{ld.name} (Soll)", "#9467bd", 1, "prog",
+                colour = _LOAD_COLORS[_n_load % len(_LOAD_COLORS)]
+                _n_load += 1
+                line(planned_col, f"{ld.name} (Soll)", colour, 1, "prog",
                      dash="dash", width=1.4)
-                line(actual_col, f"{ld.name} (Ist)", "#6f42c1", 1, "ist",
+                line(actual_col, f"{ld.name} (Ist)", colour, 1, "ist",
                      width=1.8, compare_col=planned_col)
     line("actual_grid_w", "Netz (Ist)", "#1f77b4", 1, "ist", width=1.8,
          compare_col="planned_grid_w")
@@ -2241,12 +2257,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         f"<span style='color:{_MODE_SWATCH[m]}'>■</span> "
         f"{_MODE_LABEL[m].replace(' (kein Eingriff)', '')}"
         for m in _MODES if m in present)
-    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.085,
+    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.045,
                        xanchor="left", yanchor="top", showarrow=False,
-                       text=mode_leg, font=dict(size=11, color="#555"))
+                       text=mode_leg, font=dict(size=11, color="#606a75"))
     fig.update_layout(
-        height=((1120 + 26 * max(0, lane_count - 3)) if has_loads else 980)
-        + (180 if temp_row else 0),
+        # Niedriger als zuvor (gemessen 1378 px): die Legende steht jetzt
+        # rechts statt unter dem Diagramm, damit faellt der grosse Fussbereich
+        # weg, und die Zwischenraeume sind enger gesetzt.
+        height=((950 + 26 * max(0, lane_count - 3)) if has_loads else 840)
+        + (150 if temp_row else 0),
         autosize=True, template="plotly_white",
         # Kein eigener Hintergrund: sonst rendert Plotly die Grafik WEISS und
         # erst das nachgelagerte paint() faerbt sie dunkel - beim Neuladen ein
@@ -2264,12 +2283,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         barmode="relative", bargap=0,
         # Deutsche Zahlenformate in Hover/Achsen: Dezimal-Komma, Tausender-Punkt
         separators=",.",
-        # Großer Fußbereich: die (im Quermodus mehrzeilig umbrechende) Legende und
-        # die Modus-Zeile müssen UNTER dem letzten Panel Platz haben, sonst
-        # überlappen sie auf dem Handy das unterste Panel (steuerbare Lasten).
-        margin=dict(l=60, r=30, t=80, b=210),
-        legend=dict(orientation="h", yanchor="top", y=-0.135, xanchor="left",
-                    x=0, font=dict(size=11), groupclick="toggleitem"),
+        # Legende als SPALTE rechts. Waagerecht unter dem Diagramm brauchte sie
+        # bei 26 Eintraegen mehrere Zeilen und dafuer 210 px Fussbereich - das
+        # war der groesste Einzelposten der Gesamthoehe. Rechts steht sie neben
+        # der Grafik statt unter ihr und nutzt die ohnehin vorhandene Hoehe.
+        # Diese Figur wird auf dem Handy ausgeblendet (dort baut sich die Seite
+        # aus denselben Spuren eine Einzelansicht), die Breite ist also
+        # unkritisch.
+        margin=dict(l=60, r=205, t=70, b=90),
+        legend=dict(orientation="v", yanchor="top", y=1.0, xanchor="left",
+                    x=1.005, font=dict(size=11), groupclick="toggleitem",
+                    tracegroupgap=10),
     )
 
     # ---------- KPI-Kacheln ----------
@@ -2370,17 +2394,36 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{var saved=localStorage.getItem('ems-theme');var dark=saved==='dark'||(!saved&&matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.classList.toggle('dark',dark);}})();</script>
 <script src="plotly.min.js"></script>
 <style>
- html {{ background: #eef3f8; }}
+ /* Ein Satz Gestaltungsgroessen statt verstreuter Einzelwerte. Vorher gab es
+    vier Eckenradien (12/11/10/8) und zwei Schattenrezepte nebeneinander; die
+    gedaempften Graustufen (#999 auf Weiss = Kontrast 2,8:1, #888 = 3,5:1)
+    lagen zudem unter der Lesbarkeitsschwelle von 4,5:1 und liessen die Seite
+    ausgewaschen wirken. */
+ :root {{ --r-card: 14px; --r-ctl: 9px;
+        --line: #e3e8ee; --card: #fff; --muted: #6b7480; --muted-2: #59616b;
+        --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
+ html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
+        --muted-2: #b6c2ce;
+        --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
+ html {{ background: #eef2f6; }}
+ html.dark {{ background: #10171e; }}
  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
         max-width: 1800px; margin: 0 auto; padding: 16px; color: #20252b;
-        background: linear-gradient(145deg,#f7f9fc 0,#eef3f8 100%); }}
+        background: none; }}
+ /* Zahlen mit fester Ziffernbreite: die Live-Kacheln schreiben sich alle
+    fuenf Sekunden neu, mit proportionalen Ziffern springt die Breite je
+    Aktualisierung sichtbar. */
+ .tile .v, #runtime-meta, .quality-value, .an-tile b {{
+        font-variant-numeric: tabular-nums; }}
  .app-header {{ display: flex; align-items: center; gap: 12px; margin: 0 0 14px;
-        padding: 13px 16px; background: #fff; border: 1px solid #e0e5eb;
-        border-radius: 12px; box-shadow: 0 3px 14px rgba(28,45,68,.07); }}
- h1 {{ flex: 1; font-size: 22px; margin: 0;
+        padding: 13px 16px; background: var(--card); border: 1px solid var(--line);
+        border-radius: var(--r-card); box-shadow: var(--shadow); }}
+ h1 {{ flex: 1; font-size: 22px; margin: 0; letter-spacing: -.2px;
         min-width: 0; }}
- h1 .ts {{ color: #888; font-weight: normal; font-size: 14px; }}
- .desktop-plot {{ background: #fff; border-radius: 12px; }}
+ h1 .ts {{ color: var(--muted); font-weight: normal; font-size: 14px;
+        font-variant-numeric: tabular-nums; }}
+ .desktop-plot {{ background: var(--card); border: 1px solid var(--line);
+        border-radius: var(--r-card); box-shadow: var(--shadow); }}
  html.dark .desktop-plot {{ background: #18212b; }}
  .header-actions {{ display: flex; gap: 7px; }}
  .lp-bars {{ display: flex; align-items: flex-end; gap: 1px; height: 34px;
@@ -2389,16 +2432,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         min-width: 2px; }}
  .tile.warn {{ border-color: #e1b74a; }}
  .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
-        border: 1px solid #ccd4dc; border-radius: 8px; background: #f4f6f8;
+        border: 1px solid var(--line); border-radius: var(--r-ctl); background: #f5f7f9;
         color: #26313c; cursor: pointer; font: inherit; font-size: 13px;
         text-decoration: none; display: inline-flex; align-items: center;
-        justify-content: center; gap: 5px; }}
+        justify-content: center; gap: 5px; transition: background .12s, border-color .12s; }}
+ .header-actions button:hover, .header-actions a:hover {{ background: #e9eef3;
+        border-color: #cbd4dd; }}
  #install-app {{ display: none; }}
  .runtime-strip {{ display: grid; grid-template-columns: minmax(220px,1fr) minmax(120px,2fr) auto auto;
         align-items: center; gap: 12px; margin: -4px 0 12px; padding: 9px 12px;
-        border: 1px solid #dbe3eb; border-radius: 10px; background: #fff; font-size: 12px; }}
+        border: 1px solid var(--line); border-radius: var(--r-card);
+        background: var(--card); font-size: 12px; box-shadow: var(--shadow); }}
  .runtime-main {{ display: flex; align-items: center; gap: 9px; min-width: 0; }}
- .runtime-main small {{ display: block; color: #6e7781; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+ .runtime-main small {{ display: block; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
  .runtime-dot {{ width: 10px; height: 10px; border-radius: 50%; background: #7b8794; flex: 0 0 auto; }}
  .runtime-strip[data-state=ready] .runtime-dot {{ background: #2a9d55; }}
  .runtime-strip[data-state=running] .runtime-dot, .runtime-strip[data-state=queued] .runtime-dot {{ background: #2678c8; animation: runtimePulse 1.2s infinite; }}
@@ -2406,15 +2452,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  @keyframes runtimePulse {{ 50% {{ opacity: .35; }} }}
  .runtime-progress {{ height: 7px; border-radius: 7px; background: #e5eaf0; overflow: hidden; }}
  .runtime-progress i {{ display: block; width: 0; height: 100%; background: #2678c8; transition: width .25s; }}
- #runtime-meta {{ color: #68727c; white-space: nowrap; }}
- #recalc-plan {{ padding: 7px 11px; border: 1px solid #a9bdd1; border-radius: 8px; background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
+ #runtime-meta {{ color: var(--muted); white-space: nowrap; }}
+ #recalc-plan {{ padding: 7px 11px; border: 1px solid #a9bdd1; border-radius: var(--r-ctl); background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
  #recalc-plan:disabled {{ opacity: .55; cursor: wait; }}
  .tiles {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }}
- .tile {{ flex: 1 1 150px; background: #fff; border: 1px solid #e0e5eb;
-         border-radius: 11px; padding: 11px 14px; box-shadow: 0 2px 8px rgba(25,42,65,.05); }}
- .tile .v {{ font-size: 22px; font-weight: 700; }}
- .tile .l {{ font-size: 12px; color: #555; margin-top: 2px; }}
- .tile .s {{ font-size: 11px; color: #999; }}
+ .tile {{ flex: 1 1 150px; background: var(--card); border: 1px solid var(--line);
+         border-radius: var(--r-card); padding: 11px 14px; box-shadow: var(--shadow); }}
+ .tile .v {{ font-size: 22px; font-weight: 650; letter-spacing: -.3px; }}
+ .tile .l {{ font-size: 12px; color: var(--muted-2); margin-top: 2px; }}
+ .tile .s {{ font-size: 11px; color: var(--muted); }}
  .live-panel {{ margin-bottom: 12px; }}
  .live-head {{ display: flex; justify-content: space-between; align-items: center;
         margin: 2px 2px 7px; font-size: 14px; }}
@@ -2508,7 +2554,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .desktop-horizon-toolbar {{ color: #aebbc8; }}
  html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .horizon-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
- .banner {{ border-radius: 8px; padding: 8px 14px; margin-bottom: 10px;
+ .banner {{ border-radius: var(--r-ctl); padding: 9px 14px; margin-bottom: 10px;
            font-size: 13px; border: 1px solid; }}
  .banner ul {{ margin: 6px 0 0; padding-left: 20px; }}
  .banner li {{ margin: 2px 0; }}
@@ -2629,9 +2675,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .control-channels {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }}
  .control-channels span {{ padding: 3px 7px; border-radius: 999px; background: #e7f0f8;
         color: #315f83; font-size: 10px; }}
- .info-panel {{ margin: 10px 0; border: 1px solid #dde4eb; border-radius: 10px; background: #fff; overflow: hidden; }}
- .info-panel > summary {{ padding: 11px 13px; cursor: pointer; font-weight: 700; background: #f7f9fb; }}
- .info-panel > summary small {{ margin-left: 8px; color: #75808a; font-weight: 400; }}
+ .info-panel {{ margin: 10px 0; border: 1px solid var(--line);
+        border-radius: var(--r-card); background: var(--card); overflow: hidden;
+        box-shadow: var(--shadow); }}
+ .info-panel > summary {{ padding: 12px 14px; cursor: pointer; font-weight: 650;
+        background: none; transition: background .12s; }}
+ .info-panel > summary:hover {{ background: #f5f8fa; }}
+ html.dark .info-panel > summary:hover {{ background: #1e2833; }}
+ .info-panel[open] > summary {{ border-bottom: 1px solid var(--line); }}
+ .info-panel > summary small {{ margin-left: 8px; color: var(--muted); font-weight: 400; }}
  .analysis-panel h4 {{ margin: 13px 12px 6px; font-size: 13px; font-weight: 700; color: #55606a; }}
  .analysis-panel h4 small {{ margin-left: 6px; font-weight: 400; color: #8a949d; }}
  .analysis-panel .tiles {{ padding: 0 12px; margin-bottom: 4px; }}
@@ -3045,7 +3097,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .vintage-chart {{ margin: 0 6px 10px; }}
    .event {{ grid-template-columns: 90px 1fr; }}
  }}
- .chips {{ font-size: 12px; color: #555; margin: -2px 0 10px; }}
+ .chips {{ font-size: 12px; color: var(--muted-2); margin: -2px 0 10px; }}
  .chips .chip {{ margin-right: 14px; white-space: nowrap; }}
  .chips .dot {{ display: inline-block; width: 8px; height: 8px;
         border-radius: 50%; margin-right: 4px; }}

@@ -237,7 +237,7 @@ def test_controls_are_collapsible_and_render_editable_power_profile():
     html = _controls_block(cfg)
 
     assert "<details class='controls info-panel'" in html
-    assert "<span class='an-dot warn'></span>⚙ Steuerung" in html
+    assert "<span class='an-dot warn'></span>⏻ Steuerung" in html
     assert "<small>E3/DC aus · Automatisch</small>" in html
     assert "<details class='controls' id='ems-controls' open" not in html
     assert "p_Waschmaschine_power_profile_w" in html

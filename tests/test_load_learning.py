@@ -130,7 +130,7 @@ def test_dashboard_panel_shows_learned_profiles():
         power_w=2000.0, runtime_minutes=120.0)]
     html = _load_profile_block(cfg)
     assert 'id="profile-panel"' in html and 'id="lp-tiles"' in html
-    assert "▥ Gelernte Lastprofile" in html
+    assert "▤ Gelernte Lastprofile" in html
     assert 'id="lp-dot"' in html and 'id="lp-summary"' in html
     # "In der Planung" heisst aktiv UND Profil - hier fehlt das Profil.
     assert "0/1 in der Planung" in html
