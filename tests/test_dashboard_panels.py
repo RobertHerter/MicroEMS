@@ -43,6 +43,21 @@ def _panel_tags(html: str) -> list[str]:
     return re.findall(r"<details\b[^>]*>", html)
 
 
+def _mobile_css(html: str) -> str:
+    """Der Block mit den Handy-Regeln, über eine Regel darin gefunden.
+
+    Nicht über die erste ``@media``-Marke: der Stil hat mehrere Blöcke mit
+    derselben Breite, und ein Test, der den falschen erwischt, prüft nichts.
+    """
+    marke = "@media (max-width: 620px)"
+    for start in [i for i in range(len(html))
+                  if html.startswith(marke, i)]:
+        block = html[start:html.index("</style>", start)]
+        if ".recalc-label" in block:
+            return block
+    raise AssertionError("Handy-Regeln nicht gefunden")
+
+
 def _figure(html: str):
     """Spuren und Layout des Hauptdiagramms aus der Seite holen."""
     import json
@@ -145,6 +160,28 @@ def test_panel_ids_are_unique(tmp_path):
                      _render(tmp_path))
     doppelt = {i for i in ids if ids.count(i) > 1}
     assert not doppelt, f"doppelte Panel-ids: {doppelt}"
+
+
+def test_navigation_is_desktop_only_but_state_persistence_is_not(tmp_path):
+    """Die Leiste kostet mobil dauerhaft Bildschirmhöhe und wird dort
+    ausgeblendet - das Merken des Panel-Zustands darf daran NICHT hängen,
+    sonst wäre der Nutzen auf dem Handy weg, obwohl er dort am meisten zählt.
+    """
+    html = _render(tmp_path)
+    mobil = _mobile_css(html)
+    assert ".panel-nav { display: none; }" in mobil
+    # Zustands-Skript und Speicher-Schlüssel liegen AUSSERHALB der Medienregel.
+    assert "ems-panel-open" in html.replace(mobil, "")
+
+
+def test_runtime_strip_is_one_row_on_mobile(tmp_path):
+    """Der Statusstreifen stapelte mobil Text, Fortschritt und Knopf in voller
+    Breite - rund 120 px, bevor ein einziger Messwert zu sehen war."""
+    mobil = _mobile_css(_render(tmp_path))
+    assert ".recalc-label { display: none; }" in mobil
+    assert "position: absolute" in mobil.split(".runtime-progress")[1][:180]
+    # Die Meldung bleibt sichtbar (nur einzeilig) - sie traegt den Fehlergrund.
+    assert "display: inline" in mobil.split(".runtime-main small")[1][:80]
 
 
 def test_navigation_and_state_persistence_are_wired(tmp_path):

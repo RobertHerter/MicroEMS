@@ -442,8 +442,12 @@ def _js_str(s: str) -> str:
 
 
 def _runtime_block(controls_enabled: bool) -> str:
-    button = ("<button id='recalc-plan' type='button' onclick='emsRecalc()'>"
-              "↻ Plan neu berechnen</button>" if controls_enabled else "")
+    # Beschriftung in einem eigenen span: auf dem Handy bleibt nur das Symbol
+    # stehen, damit der Knopf keine eigene Zeile in voller Breite braucht.
+    button = ("<button id='recalc-plan' type='button' onclick='emsRecalc()' "
+              "title='Plan neu berechnen'>↻"
+              "<span class='recalc-label'> Plan neu berechnen</span></button>"
+              if controls_enabled else "")
     return f"""
 <section class="runtime-strip" id="runtime-strip">
  <div class="runtime-main"><span class="runtime-dot"></span>
@@ -2648,8 +2652,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .pnav-chip.on {{ border-color: #1769c2; color: #1769c2; }}
  html.dark .pnav-chip {{ background: #1c2530; border-color: #3c4b5a; color: #cdd8e3; }}
  html.dark .pnav-chip.on {{ border-color: #4ea1f0; color: #8fc6fb; }}
- @media (max-width: 620px) {{ .panel-nav {{ padding: 6px 0; }}
-        .pnav-chip {{ min-height: 34px; }} }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
  .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
  .an-dot.neutral {{ background: #8b98a5; }}
@@ -3003,11 +3005,28 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .planner-head {{ flex-direction: column; }}
    .schedule-state {{ width: 100%; text-align: left; }}
    .schedule-item {{ flex-wrap: wrap; }}
-   .runtime-strip {{ grid-template-columns: 1fr auto; gap: 8px; }}
-   .runtime-main {{ grid-column: 1/-1; }}
-   .runtime-progress {{ grid-column: 1/-1; grid-row: 2; }}
+   /* Statusstreifen mobil auf EINE Zeile: vorher stapelten sich Text,
+      Fortschrittsbalken und Knopf in voller Breite zu rund 120 px, bevor
+      irgendein Inhalt kam. Der Fortschritt sitzt jetzt als 3-px-Linie auf der
+      Unterkante des Streifens, der Knopf zeigt nur noch das Symbol. Die
+      Meldung bleibt LESBAR (nur einzeilig gekuerzt) - sie traegt im Fehlerfall
+      den Grund, den sonst niemand sieht. */
+   .runtime-strip {{ position: relative; grid-template-columns: 1fr auto;
+        gap: 8px; padding: 7px 11px 9px; }}
+   .runtime-main {{ grid-column: 1; min-width: 0; }}
+   .runtime-main > div {{ min-width: 0; overflow: hidden;
+        white-space: nowrap; text-overflow: ellipsis; }}
+   .runtime-main small {{ display: inline; margin-left: 7px; }}
+   .runtime-progress {{ position: absolute; left: 0; right: 0; bottom: 0;
+        height: 3px; border-radius: 0 0 10px 10px; }}
    #runtime-meta {{ display: none; }}
-   #recalc-plan {{ min-height: 42px; grid-column: 1/-1; }}
+   #recalc-plan {{ grid-column: 2; min-height: 36px; padding: 6px 11px; }}
+   .recalc-label {{ display: none; }}
+   /* Sprungleiste nur am Schreibtisch: mobil scrollt man ohnehin, und als
+      klebendes Element kostete sie dauerhaft rund 46 px Bildschirmhoehe.
+      Das Merken des Panel-Zustands haengt NICHT daran - das Skript laeuft
+      weiter, nur die Leiste wird nicht gezeigt. */
+   .panel-nav {{ display: none; }}
    .mode-compare-grid {{ grid-template-columns: 1fr; }}
    .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
    .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 6px 8px; }}
