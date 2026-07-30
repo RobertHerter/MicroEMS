@@ -329,6 +329,21 @@ def test_archive_has_the_same_horizon_switch_as_the_dashboard():
     assert "ems-archive-hours" in html          # Auswahl bleibt erhalten
 
 
+def test_archive_can_switch_from_plan_actual_lines_to_delta_areas():
+    """Der direkte Linienvergleich bleibt erhalten, eine gespeicherte zweite
+    Ansicht zeigt dagegen Ist minus Plan als gefuellte Flaeche um null."""
+    html = archive_html().decode("utf-8")
+    assert 'id="archive-view"' in html
+    assert 'data-view="lines"' in html and 'data-view="delta"' in html
+    assert "ems-archive-view" in html
+    assert "fill:'tozeroy'" in html
+    assert "?a-p:null" in html
+    assert "Ist − Plan" in html
+    # SoC darf in der Differenzansicht nicht auf den absoluten Bereich
+    # 0..100 % festgeklemmt bleiben.
+    assert "deltaMode?{}:{range:[0,100]}" in html
+
+
 def test_archive_never_computes_time_ranges_in_utc():
     """Die Zeitachse traegt den UTC-Versatz.
 

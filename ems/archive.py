@@ -259,14 +259,17 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
 .tile .v{font-size:19px;font-weight:750}.tile .l{color:var(--muted);font-size:12px;margin-top:2px}.tile .s{color:var(--muted);font-size:11px;margin-top:3px}
 .tile.warn{border-color:#e1b74a}.tile.bad{border-color:#d56b67}
 .hint{color:var(--muted);font-size:12px;margin-top:9px;line-height:1.45}
-.horizon-switch{display:flex;gap:5px}
-.horizon-switch button{min-width:0;padding:8px 11px;font-size:12px}
-.horizon-switch button.on{background:var(--blue);border-color:var(--blue);color:#fff}
+.chart-controls{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap}
+.horizon-switch,.view-switch{display:flex;gap:5px}
+.horizon-switch button,.view-switch button{min-width:0;padding:8px 11px;font-size:12px}
+.horizon-switch button.on,.view-switch button.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .chart{height:720px}
 @media(max-width:700px){.chart{height:600px}body{padding:0 9px}
  .app-header{padding:10px 11px;margin:9px auto}.app-header h1{font-size:17px;line-height:1.25}
  .app-header h1 .ts{display:block;font-size:11px;margin-top:2px}
- .header-actions .button-label{display:none}.pick{grid-template-columns:1fr 1fr}}
+ .header-actions .button-label{display:none}.pick{grid-template-columns:1fr 1fr}
+ .chart-controls{align-items:stretch}.horizon-switch,.view-switch{flex:1}
+ .horizon-switch button,.view-switch button{flex:1}}
 .err{color:var(--danger);font-weight:600}
 </style></head><body>
 <header class="app-header"><h1>EMS Lauf-Archiv
@@ -280,13 +283,22 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
  <select id="run"><option>lade …</option></select>
  <button id="prev" title="älterer Lauf">◀ <span class="button-label">älter</span></button>
  <button id="next" title="neuerer Lauf"><span class="button-label">neuer</span> ▶</button>
- <div class="horizon-switch" id="horizon" aria-label="Zeitraum">
-  <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
+ <div class="chart-controls">
+  <div class="horizon-switch" id="horizon" aria-label="Zeitraum">
+   <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
+  </div>
+  <div class="view-switch" id="archive-view" aria-label="Vergleichsdarstellung">
+   <button type="button" data-view="lines">Plan / Ist</button>
+   <button type="button" data-view="delta">Differenzfläche</button>
+  </div>
  </div>
 </div><div class="hint" id="meta"></div></div>
 <div class="card"><div class="tiles" id="kpi"></div></div>
 <div class="card"><div id="chart" class="chart"></div>
-<div class="hint">Durchgezogen = <b>Plan</b> dieses Laufs, gestrichelt = <b>Ist</b>.
+<div class="hint"><span id="lines-hint">Durchgezogen = <b>Plan</b> dieses Laufs,
+gestrichelt = <b>Ist</b>.</span><span id="delta-hint" hidden>Die Fläche zeigt
+<b>Ist − Plan</b>: oberhalb der Nulllinie war der Ist-Wert höher, unterhalb
+niedriger.</span>
 Ist-Werte gibt es nur für die Zeit, die seit dem Lauf vergangen ist – bei einem
 frischen Lauf also nur am linken Rand. Akku positiv = laden, Netz positiv = Bezug.
 <br>Beim <b>Preis</b> umgekehrt: durchgezogen ist der tatsächliche Börsenpreis;
@@ -389,8 +401,18 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
           : 'Plan gegen veröffentlichten Preis'))
    +tile(cov+' %','Ist-Abdeckung',d.actual_slots+' von '+d.slots+' Slots');
  }
+ function viewPref(){return localStorage.getItem('ems-archive-view')||'lines';}
+ function markView(){
+  const mode=viewPref();
+  document.querySelectorAll('#archive-view button').forEach(function(b){
+   b.classList.toggle('on',b.dataset.view===mode);});
+  g('lines-hint').hidden=mode!=='lines';
+  g('delta-hint').hidden=mode!=='delta';
+ }
  function draw(d){
   const x=d.index,T=[];
+  const deltaMode=viewPref()==='delta';
+  markView();
   const fg=css('--text')||'#20252b',mut=css('--muted')||'#697785',line=css('--line')||'#dce4eb';
   function add(y,name,color,row,dash,unit,noLegend){
    if(!y||!y.some(v=>v!==null))return;
@@ -400,12 +422,40 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
      showlegend:!noLegend,
      hovertemplate:name+': %{y:,.'+(unit==='%'?1:0)+'f} '+unit+'<extra></extra>'});
   }
+  function transparent(color,alpha){
+   const c=String(color||'').replace('#','');
+   if(!/^[0-9a-f]{6}$/i.test(c))return 'rgba(23,105,194,'+alpha+')';
+   return 'rgba('+parseInt(c.slice(0,2),16)+','+parseInt(c.slice(2,4),16)+','
+    +parseInt(c.slice(4,6),16)+','+alpha+')';
+  }
+  function addDelta(plan,actual,name,color,row,unit){
+   if(!plan||!actual)return;
+   const y=x.map(function(_,i){
+    const p=plan[i],a=actual[i];
+    return (typeof p==='number'&&isFinite(p)&&typeof a==='number'&&isFinite(a))
+     ?a-p:null;
+   });
+   if(!y.some(v=>v!==null))return;
+   T.push({x:x,y:y,name:name+' Δ',type:'scatter',mode:'lines',
+    line:{color:color,width:1.5,shape:'hv'},fill:'tozeroy',
+    fillcolor:transparent(color,.22),yaxis:row===1?'y':'y'+row,
+    legendgroup:name,hovertemplate:name+' Δ (Ist − Plan): %{y:,.'
+     +(unit==='%'?1:0)+'f} '+unit+'<extra></extra>'});
+  }
   const P=d.plan||{},A=d.actual||{};
-  add(P.pv_w,'PV Plan','#e8a33d',1,null,'W');        add(A.pv_w,'PV Ist','#e8a33d',1,'dot','W');
-  add(P.house_w,'Last Plan','#c1554f',1,null,'W');   add(A.house_w,'Last Ist','#c1554f',1,'dot','W');
-  add(P.battery_w,'Akku Plan','#2f8f4e',1,null,'W'); add(A.battery_w,'Akku Ist','#2f8f4e',1,'dot','W');
-  add(P.grid_w,'Netz Plan','#6c7a89',1,null,'W');    add(A.grid_w,'Netz Ist','#6c7a89',1,'dot','W');
-  add(P.soc_percent,'SoC Plan','#1769c2',2,null,'%');add(A.soc_percent,'SoC Ist','#1769c2',2,'dot','%');
+  if(deltaMode){
+   addDelta(P.pv_w,A.pv_w,'PV','#e8a33d',1,'W');
+   addDelta(P.house_w,A.house_w,'Last','#c1554f',1,'W');
+   addDelta(P.battery_w,A.battery_w,'Akku','#2f8f4e',1,'W');
+   addDelta(P.grid_w,A.grid_w,'Netz','#6c7a89',1,'W');
+   addDelta(P.soc_percent,A.soc_percent,'SoC','#1769c2',2,'%');
+  }else{
+   add(P.pv_w,'PV Plan','#e8a33d',1,null,'W');        add(A.pv_w,'PV Ist','#e8a33d',1,'dot','W');
+   add(P.house_w,'Last Plan','#c1554f',1,null,'W');   add(A.house_w,'Last Ist','#c1554f',1,'dot','W');
+   add(P.battery_w,'Akku Plan','#2f8f4e',1,null,'W'); add(A.battery_w,'Akku Ist','#2f8f4e',1,'dot','W');
+   add(P.grid_w,'Netz Plan','#6c7a89',1,null,'W');    add(A.grid_w,'Netz Ist','#6c7a89',1,'dot','W');
+   add(P.soc_percent,'SoC Plan','#1769c2',2,null,'%');add(A.soc_percent,'SoC Ist','#1769c2',2,'dot','%');
+  }
   // Preis wie im Dashboard: EINE durchgezogene Linie mit dem tatsaechlichen
   // Boersenpreis. Wo er zur Planung schon veroeffentlicht war, ist das der
   // Planpreis selbst (Plan und Ist doppelt zu zeichnen zeigte denselben Wert
@@ -421,12 +471,16 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
   const guessed=i=>((est[i]===0||est[i]===1)?!!est[i]:real(i)===null);
   // Durchgezogen NUR echter Boersenpreis: bekannt zur Laufzeit (dann ist der
   // Planwert genau dieser Preis) oder inzwischen veroeffentlicht.
-  add(pp.map((v,i)=>real(i)!==null?real(i):(guessed(i)?null:v)),
-      'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
-  if(pp.some((v,i)=>guessed(i)))
-   // Der Uebergangsslot gehoert mit dazu, sonst klafft eine Luecke.
-   add(pp.map((v,i)=>(guessed(i)||(i+1<pp.length&&guessed(i+1)))?v:null),
-       'Preis (Schätzung)','#b58fd6',3,'dash','ct/kWh');
+  if(deltaMode){
+   addDelta(pp,ap,'Preis','#7d5ba6',3,'ct/kWh');
+  }else{
+   add(pp.map((v,i)=>real(i)!==null?real(i):(guessed(i)?null:v)),
+       'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
+   if(pp.some((v,i)=>guessed(i)))
+    // Der Uebergangsslot gehoert mit dazu, sonst klafft eine Luecke.
+    add(pp.map((v,i)=>(guessed(i)||(i+1<pp.length&&guessed(i+1)))?v:null),
+        'Preis (Schätzung)','#b58fd6',3,'dash','ct/kWh');
+  }
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im
   // Dark-Mode weiss auf weiss (Plotly-Standard ist hell).
@@ -439,9 +493,10 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
    hoverlabel:hoverlabel,modebar:modebar,
    legend:{orientation:'h',y:1.06,font:{size:11}},
    xaxis:Object.assign({},ax,{domain:[0,1],anchor:'y3'}),
-   yaxis:Object.assign({},ax,{title:{text:'Leistung (W)',font:{size:11}},domain:[0.46,1]}),
-   yaxis2:Object.assign({},ax,{title:{text:'SoC (%)',font:{size:11}},domain:[0.24,0.42],range:[0,100]}),
-   yaxis3:Object.assign({},ax,{title:{text:'ct/kWh',font:{size:11}},domain:[0,0.20]}),
+   yaxis:Object.assign({},ax,{title:{text:(deltaMode?'Δ Leistung (W)':'Leistung (W)'),font:{size:11}},domain:[0.46,1]}),
+   yaxis2:Object.assign({},ax,{title:{text:(deltaMode?'Δ SoC (pp)':'SoC (%)'),font:{size:11}},domain:[0.24,0.42]},
+                        deltaMode?{}:{range:[0,100]}),
+   yaxis3:Object.assign({},ax,{title:{text:(deltaMode?'Δ ct/kWh':'ct/kWh'),font:{size:11}},domain:[0,0.20]}),
    shapes:[{type:'line',x0:x[0],x1:x[0],yref:'paper',y0:0,y1:1,
             line:{color:mut,width:1,dash:'dot'}}]
   },{responsive:true,displaylogo:false,
@@ -469,6 +524,11 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
  document.querySelectorAll('#horizon button').forEach(function(b){
   b.addEventListener('click',function(){
    localStorage.setItem('ems-archive-hours',b.dataset.hours);applyHours();});});
+ document.querySelectorAll('#archive-view button').forEach(function(b){
+  b.addEventListener('click',function(){
+   localStorage.setItem('ems-archive-view',b.dataset.view);
+   if(window.LAST)draw(window.LAST);else markView();});});
+ markView();
  sel.onchange=function(){IDX=parseInt(this.value,10)||0;show();};
  g('day').onchange=function(){if(fillDay(this.value,null))show();};
  function step(delta){            // ueber Tagesgrenzen hinweg blaettern

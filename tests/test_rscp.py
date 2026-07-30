@@ -35,6 +35,18 @@ class FakeE3DC:
         self.power_calls = []
         self.derate_percent = 1.0
         self.derate_write_error = None
+        self.battery_data_error = None
+        self.battery_data = {
+            "BAT_RSOC": 63.4,
+            "BAT_RSOC_REAL": 67.0,
+            "BAT_USABLE_CAPACITY": 24.5,
+            "BAT_USABLE_REMAINING_CAPACITY": 15.533,
+            "BAT_FCC": 25.9,
+            "BAT_RC": 17.35,
+            "BAT_MODULE_VOLTAGE": 700.0,
+            "BAT_CURRENT": 1.28,
+            "BAT_SPECIFIED_CAPACITY": 22344.0,
+        }
         self._poll = {
             "stateOfCharge": 63.0,
             "production": {"solar": 4200.0, "add": 0.0, "grid": -1500.0},
@@ -77,6 +89,33 @@ class FakeE3DC:
         # Erwartet SET_POWER-Container -> Mode/Value mitschreiben
         tag, typ, val = req
         from e3dc._rscpTags import RscpTag, RscpType
+        if tag == RscpTag.BAT_REQ_DATA:
+            if self.battery_data_error is not None:
+                raise self.battery_data_error
+            requested = {item[0] for item in val}
+            response = []
+            if RscpTag.BAT_REQ_SPECIFICATION in requested:
+                response.append((RscpTag.BAT_SPECIFICATION.name, "Container", [
+                    (RscpTag.BAT_SPECIFIED_CAPACITY.name, "Float32",
+                     self.battery_data["BAT_SPECIFIED_CAPACITY"]),
+                ]))
+            mapping = {
+                RscpTag.BAT_REQ_RSOC: RscpTag.BAT_RSOC,
+                RscpTag.BAT_REQ_RSOC_REAL: RscpTag.BAT_RSOC_REAL,
+                RscpTag.BAT_REQ_USABLE_CAPACITY: RscpTag.BAT_USABLE_CAPACITY,
+                RscpTag.BAT_REQ_USABLE_REMAINING_CAPACITY:
+                    RscpTag.BAT_USABLE_REMAINING_CAPACITY,
+                RscpTag.BAT_REQ_FCC: RscpTag.BAT_FCC,
+                RscpTag.BAT_REQ_RC: RscpTag.BAT_RC,
+                RscpTag.BAT_REQ_MODULE_VOLTAGE: RscpTag.BAT_MODULE_VOLTAGE,
+                RscpTag.BAT_REQ_CURRENT: RscpTag.BAT_CURRENT,
+            }
+            for request_tag, response_tag in mapping.items():
+                if request_tag in requested:
+                    response.append((
+                        response_tag.name, "Float32",
+                        self.battery_data[response_tag.name]))
+            return (RscpTag.BAT_DATA.name, "Container", response)
         if tag == RscpTag.EMS_REQ_SET_DERATE_PERCENT:
             if self.derate_write_error:
                 raise self.derate_write_error
@@ -114,7 +153,16 @@ def _link(**rscp):
 def test_read_live_mapping():
     cfg, link = _link()
     live = link.read_live()
-    assert live["soc_percent"] == 63.0
+    assert live["soc_percent"] == 63.4
+    assert live["soc_source"] == "BAT_RSOC"
+    assert live["soc_ems_percent"] == 63.0
+    assert live["rsoc_real_percent"] == 67.0
+    assert live["usable_capacity_ah"] == 24.5
+    assert live["usable_remaining_capacity_ah"] == 15.533
+    assert live["full_charge_capacity_ah"] == 25.9
+    assert live["remaining_capacity_ah"] == 17.35
+    assert live["battery_voltage_v"] == 700.0
+    assert live["battery_current_a"] == 1.28
     assert live["pv_w"] == 4200.0
     assert live["house_load_w"] == 1800.0
     assert live["grid_w"] == -1500.0     # grid_sign 1.0
@@ -224,6 +272,31 @@ def test_read_live_graceful_failure():
             raise RuntimeError("keine Verbindung")
     link._e3dc = Boom()
     assert link.read_live() is None
+
+
+def test_read_live_falls_back_to_ems_soc_when_battery_tags_fail():
+    _cfg, link = _link()
+    link._e3dc.battery_data_error = RuntimeError("Tag nicht unterstützt")
+    live = link.read_live()
+    assert live["soc_percent"] == 63.0
+    assert live["soc_source"] == "EMS_BAT_SOC"
+
+
+def test_read_live_rejects_unverified_divergent_bat_rsoc():
+    _cfg, link = _link()
+    link._e3dc.battery_data["BAT_RSOC"] = 80.0
+    # Kapazitätsverhältnis bleibt bei 63,4 % und entlarvt den Ausreißer.
+    live = link.read_live()
+    assert live["soc_percent"] == 63.0
+    assert live["soc_source"] == "EMS_BAT_SOC"
+
+
+def test_read_live_uses_validated_bat_rsoc_if_ems_soc_is_spurious_zero():
+    _cfg, link = _link()
+    link._e3dc._poll["stateOfCharge"] = 0.0
+    live = link.read_live()
+    assert live["soc_percent"] == 63.4
+    assert live["soc_source"] == "BAT_RSOC"
 
 
 def test_read_energy_total_uses_single_aggregate_and_balances_load():
@@ -636,6 +709,34 @@ def test_actuals_roundtrip_and_routing(tmp_path):
         read_actual_signal(cfg, Repo(), "electricity_price", t0, t0)
 
 
+def test_battery_diagnostics_are_archived(tmp_path):
+    import pandas as pd
+    from ems.local_history import read_battery_diagnostics, write_actuals
+
+    db = str(tmp_path / "h.sqlite")
+    ts = pd.Timestamp("2026-07-30 12:15", tz="Europe/Berlin")
+    write_actuals(db, ts, {
+        "soc_percent": 68.2, "soc_ems_percent": 68.0,
+        "rsoc_real_percent": 70.0, "usable_capacity_ah": 24.56,
+        "usable_remaining_capacity_ah": 16.76,
+        "full_charge_capacity_ah": 25.9, "remaining_capacity_ah": 18.1,
+        "battery_voltage_v": 703.0, "battery_current_a": 2.59,
+        "specified_capacity_wh": 22344.0, "soc_source": "BAT_RSOC",
+    })
+    row = read_battery_diagnostics(db, limit=1)[0]
+    assert row["soc_operational"] == 68.2
+    assert row["soc_ems"] == 68.0
+    assert row["rsoc_real"] == 70.0
+    assert row["usable_capacity_ah"] == 24.56
+    assert row["usable_remaining_capacity_ah"] == 16.76
+    assert row["full_charge_capacity_ah"] == 25.9
+    assert row["remaining_capacity_ah"] == 18.1
+    assert row["voltage_v"] == 703.0
+    assert row["current_a"] == 2.59
+    assert row["specified_capacity_wh"] == 22344.0
+    assert row["soc_source"] == "BAT_RSOC"
+
+
 def test_local_history_roundtrip(tmp_path):
     import pandas as pd
     from ems.local_history import (write_house_load, read_house_load,
@@ -658,24 +759,30 @@ def test_local_history_roundtrip(tmp_path):
 
 
 def test_read_system_limits_maps_device_fields():
-    """Auto-Auslesen: nur die verlässlichen W-Werte aus system_info/power_settings."""
+    """Auto-Auslesen: Anlagengrenzen plus nomineller Diagnosewert."""
     _cfg, link = _link(enabled=True)
     lim = link.read_system_limits()
     assert lim == {
+        "capacity_wh": 22344.0,
         "inverter_max_ac_power_w": 12000.0,
         "max_charge_w": 12480.0,
         "max_discharge_w": 12120.0,
         "min_discharge_w": 100.0,
     }
+    live = link.read_live(force=True)
+    assert live["specified_capacity_wh"] == 22344.0
 
 
-def test_apply_system_limits_overrides_config():
+def test_apply_system_limits_keeps_effective_battery_capacity():
     from ems.main import _apply_system_limits
     cfg = make_config()
+    cap_before = cfg.house_battery.capacity_wh
     _apply_system_limits(cfg, {
         "capacity_wh": 22344.0, "inverter_max_ac_power_w": 12000.0,
         "max_charge_w": 12480.0, "max_discharge_w": 12120.0, "min_discharge_w": 100.0})
-    assert cfg.house_battery.capacity_wh == 22344.0
+    # Der E3DC-Wert ist die nominelle BAT_SPECIFIED_CAPACITY; der Optimierer
+    # braucht die konfigurierte effektive Kapazität seiner SoC-Bilanz.
+    assert cfg.house_battery.capacity_wh == cap_before
     assert cfg.inverter.max_ac_power_w == 12000.0
     assert cfg.house_battery.max_discharge_w == 12120.0
     assert cfg.house_battery.max_charge_w == 12480.0

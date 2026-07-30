@@ -26,6 +26,16 @@ def _con(path: str) -> sqlite3.Connection:
     con.execute("CREATE TABLE IF NOT EXISTS actuals ("
                 " ts TEXT PRIMARY KEY, pv_w REAL, house_w REAL, grid_w REAL,"
                 " battery_w REAL, soc REAL)")
+    # Erweiterte BMS-/RSCP-Diagnose je Optimierungslauf. Bewusst getrennt von
+    # ``actuals``: Der operative SoC bleibt dort das stabile Standardsignal,
+    # während diese Rohwerte Firmware-/Batterie-spezifisch fehlen dürfen.
+    con.execute("CREATE TABLE IF NOT EXISTS battery_diagnostics ("
+                " ts TEXT PRIMARY KEY, soc_operational REAL, soc_ems REAL,"
+                " rsoc_real REAL, usable_capacity_ah REAL,"
+                " usable_remaining_capacity_ah REAL,"
+                " full_charge_capacity_ah REAL, remaining_capacity_ah REAL,"
+                " voltage_v REAL, current_a REAL,"
+                " specified_capacity_wh REAL, soc_source TEXT)")
     # Hochaufgelöste E3DC-Livewerte für den Kurzfrist-Nowcast. Im Gegensatz zu
     # ``actuals`` (ein Diagnose-Snapshot je Optimierungszyklus) werden diese
     # Werte etwa alle fünf Sekunden geschrieben und später zeitgewichtet auf
@@ -816,8 +826,50 @@ def write_actuals(path: str, ts, live: dict) -> None:
         "battery_w=excluded.battery_w, soc=excluded.soc",
         (key, live.get("pv_w"), live.get("house_load_w"), live.get("grid_w"),
          live.get("battery_w"), live.get("soc_percent")))
+    con.execute(
+        "INSERT INTO battery_diagnostics("
+        "ts,soc_operational,soc_ems,rsoc_real,usable_capacity_ah,"
+        "usable_remaining_capacity_ah,full_charge_capacity_ah,"
+        "remaining_capacity_ah,voltage_v,current_a,specified_capacity_wh,"
+        "soc_source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(ts) DO UPDATE SET "
+        "soc_operational=excluded.soc_operational,soc_ems=excluded.soc_ems,"
+        "rsoc_real=excluded.rsoc_real,"
+        "usable_capacity_ah=excluded.usable_capacity_ah,"
+        "usable_remaining_capacity_ah=excluded.usable_remaining_capacity_ah,"
+        "full_charge_capacity_ah=excluded.full_charge_capacity_ah,"
+        "remaining_capacity_ah=excluded.remaining_capacity_ah,"
+        "voltage_v=excluded.voltage_v,current_a=excluded.current_a,"
+        "specified_capacity_wh=excluded.specified_capacity_wh,"
+        "soc_source=excluded.soc_source",
+        (key, live.get("soc_percent"), live.get("soc_ems_percent"),
+         live.get("rsoc_real_percent"), live.get("usable_capacity_ah"),
+         live.get("usable_remaining_capacity_ah"),
+         live.get("full_charge_capacity_ah"),
+         live.get("remaining_capacity_ah"), live.get("battery_voltage_v"),
+         live.get("battery_current_a"), live.get("specified_capacity_wh"),
+         live.get("soc_source")))
     con.commit()
     con.close()
+
+
+def read_battery_diagnostics(path: str, limit: int = 96) -> list[dict]:
+    """Letzte erweiterte RSCP-Batteriewerte, chronologisch aufsteigend."""
+    columns = [
+        "ts", "soc_operational", "soc_ems", "rsoc_real",
+        "usable_capacity_ah", "usable_remaining_capacity_ah",
+        "full_charge_capacity_ah", "remaining_capacity_ah",
+        "voltage_v", "current_a", "specified_capacity_wh", "soc_source",
+    ]
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT " + ",".join(columns) + " FROM battery_diagnostics "
+            "ORDER BY ts DESC LIMIT ?", (max(1, int(limit)),)).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    return [dict(zip(columns, row)) for row in reversed(rows)]
 
 
 def write_live_sample(path: str, ts, live: dict) -> None:

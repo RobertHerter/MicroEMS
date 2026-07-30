@@ -78,6 +78,9 @@ class E3DCLink:
         self._watchdog_failed = False
         self._curtailment_active = False
         self._curtailment_baseline_percent: Optional[float] = None
+        # Statischer Nennwert aus BAT_SPECIFICATION. Er dient ausschließlich
+        # der Diagnose und darf die effektive Modellkapazität nicht ersetzen.
+        self._specified_capacity_wh_cache: Optional[float] = None
 
     # ------------------------------------------------------------------ #
     def _connect(self):
@@ -145,7 +148,79 @@ class E3DCLink:
         self._e3dc = None
 
     # ------------------------------------------------------------------ #
-    def _map_live(self, poll: dict) -> dict:
+    @staticmethod
+    def _number(value) -> Optional[float]:
+        """RSCP-Zahlen defensiv normalisieren; Fehler-/NaN-Werte werden None."""
+        try:
+            value = float(value)
+            return value if pd.notna(value) else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _select_operational_soc(cls, ems_soc, battery: dict) -> tuple[
+            Optional[float], str]:
+        """BAT_RSOC bevorzugen, sofern Wert und Bezugsverhältnis plausibel sind.
+
+        BAT_RSOC ist der feine operative SoC. Das Verhältnis aus
+        BAT_USABLE_REMAINING_CAPACITY/BAT_USABLE_CAPACITY ist eine unabhängige
+        Plausibilisierung aus derselben RSCP-Antwort. Fehlen diese Werte, muss
+        BAT_RSOC zur ganzzahligen EMS-Sicht passen; andernfalls bleibt
+        EMS_BAT_SOC der sichere Fallback.
+        """
+        ems = cls._number(ems_soc)
+        rsoc = cls._number(battery.get("soc_float"))
+        ems_ok = ems is not None and 0.0 <= ems <= 100.0
+        rsoc_ok = rsoc is not None and 0.0 <= rsoc <= 100.0
+        usable = cls._number(battery.get("usable_capacity_ah"))
+        remaining = cls._number(battery.get("usable_remaining_capacity_ah"))
+        ratio_ok = False
+        if (rsoc_ok and usable is not None and usable > 0.0
+                and remaining is not None and 0.0 <= remaining <= usable * 1.01):
+            ratio = 100.0 * remaining / usable
+            ratio_ok = abs(rsoc - ratio) <= 0.5
+        agrees = ems_ok and rsoc_ok and abs(rsoc - ems) <= 1.5
+        if rsoc_ok and (ratio_ok or agrees or not ems_ok):
+            return rsoc, "BAT_RSOC"
+        if ems_ok:
+            return ems, "EMS_BAT_SOC"
+        return None, "unavailable"
+
+    @staticmethod
+    def _read_battery_state(e) -> dict:
+        """Feine SoC-/Kapazitätswerte ohne den teuren DCB-Komplettabruf lesen."""
+        from e3dc._rscpLib import rscpFindTagIndex
+        from e3dc._rscpTags import RscpTag, RscpType
+
+        req = e.sendRequest((RscpTag.BAT_REQ_DATA, RscpType.Container, [
+            (RscpTag.BAT_INDEX, RscpType.Uint16, 0),
+            (RscpTag.BAT_REQ_RSOC, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_RSOC_REAL, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_USABLE_CAPACITY, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_USABLE_REMAINING_CAPACITY,
+             RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_FCC, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_RC, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_MODULE_VOLTAGE, RscpType.NoneType, None),
+            (RscpTag.BAT_REQ_CURRENT, RscpType.NoneType, None),
+        ]), keepAlive=True)
+
+        def value(tag):
+            return E3DCLink._number(rscpFindTagIndex(req, tag))
+
+        return {
+            "soc_float": value(RscpTag.BAT_RSOC),
+            "rsoc_real_percent": value(RscpTag.BAT_RSOC_REAL),
+            "usable_capacity_ah": value(RscpTag.BAT_USABLE_CAPACITY),
+            "usable_remaining_capacity_ah":
+                value(RscpTag.BAT_USABLE_REMAINING_CAPACITY),
+            "full_charge_capacity_ah": value(RscpTag.BAT_FCC),
+            "remaining_capacity_ah": value(RscpTag.BAT_RC),
+            "battery_voltage_v": value(RscpTag.BAT_MODULE_VOLTAGE),
+            "battery_current_a": value(RscpTag.BAT_CURRENT),
+        }
+
+    def _map_live(self, poll: dict, battery: Optional[dict] = None) -> dict:
         """pye3dc.poll() -> interne Einheiten (W, %).
         Gegen echte Hardware (pye3dc 0.10) verifiziert:
           production.solar (+ .add) = PV, consumption.house = Hauslast,
@@ -159,14 +234,21 @@ class E3DCLink:
         grid = prod.get("grid")
         batt = cons.get("battery")
         pv = (prod.get("solar") or 0.0) + (prod.get("add") or 0.0)
-        return {
-            "soc_percent": poll.get("stateOfCharge"),
+        battery = dict(battery or {})
+        ems_soc = self._number(poll.get("stateOfCharge"))
+        soc, source = self._select_operational_soc(ems_soc, battery)
+        battery.update({
+            "soc_percent": soc,
+            "soc_ems_percent": ems_soc,
+            "soc_source": source,
+            "specified_capacity_wh": self._specified_capacity_wh_cache,
             "pv_w": pv,
             "house_load_w": cons.get("house"),
             "grid_w": (gs * grid if grid is not None else None),
             "battery_w": (bs * batt if batt is not None else None),
             "wallbox_w": cons.get("wallbox"),
-        }
+        })
+        return battery
 
     def read_live(self, force: bool = False) -> Optional[dict]:
         """Aktuelle Werte (gecacht je Zyklus). None bei Fehler."""
@@ -176,7 +258,15 @@ class E3DCLink:
             with self._lock:
                 e = self._connect()
                 poll = e.poll()
-            self._live_cache = self._map_live(poll)
+                try:
+                    battery = self._read_battery_state(e)
+                except Exception as exc:
+                    # Der etablierte EMS_BAT_SOC-Pfad muss bei einem älteren
+                    # Batteriecontroller oder einzelnen Tagfehlern weiterlaufen.
+                    log.debug("RSCP BAT_RSOC nicht lesbar – nutze EMS_BAT_SOC (%s).",
+                              exc)
+                    battery = {}
+            self._live_cache = self._map_live(poll, battery)
             return self._live_cache
         except Exception as exc:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
@@ -192,6 +282,7 @@ class E3DCLink:
             info = e.get_system_info() or {}
             ps = e.get_power_settings() or {}
             cap = self._specified_capacity_wh(e)
+            self._specified_capacity_wh_cache = cap
         out: dict = {}
         if cap:
             out["capacity_wh"] = cap

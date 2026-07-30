@@ -1909,9 +1909,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             live = get_live()
             live_src = "Ingest-API"
         if live:
-            log.info("%s live: SoC %.0f%%, PV %.0f W, Last %.0f W.", live_src,
-                     live.get("soc_percent") or -1, live.get("pv_w") or 0,
-                     live.get("house_load_w") or 0)
+            live_soc = live.get("soc_percent")
+            log.info("%s live: SoC %.1f%% (%s), PV %.0f W, Last %.0f W.",
+                     live_src, float(live_soc) if live_soc is not None else -1.0,
+                     live.get("soc_source") or "extern",
+                     live.get("pv_w") or 0, live.get("house_load_w") or 0)
             # Ist-Werte lokal protokollieren (Ersatz für die InfluxDB-Ist-Signale).
             if config.e3dc_rscp.history_source:
                 try:
@@ -4163,9 +4165,9 @@ def _apply_system_limits(config: Config, lim: dict) -> None:
     if not lim:
         return
     changes = []
-    if "capacity_wh" in lim:
-        config.house_battery.capacity_wh = lim["capacity_wh"]
-        changes.append(f"capacity={lim['capacity_wh']:.0f} Wh")
+    # BAT_SPECIFIED_CAPACITY ist die nominelle Herstellerkapazität. Für die
+    # SoC-Bilanz wird dagegen die konfigurierte effektive Kapazität verwendet;
+    # sie darf beim Start nicht durch den Nominalwert überschrieben werden.
     if "inverter_max_ac_power_w" in lim:
         config.inverter.max_ac_power_w = lim["inverter_max_ac_power_w"]
         changes.append(f"WR max_ac={lim['inverter_max_ac_power_w']:.0f} W")
