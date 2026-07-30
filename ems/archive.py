@@ -259,6 +259,9 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
 .tile .v{font-size:19px;font-weight:750}.tile .l{color:var(--muted);font-size:12px;margin-top:2px}.tile .s{color:var(--muted);font-size:11px;margin-top:3px}
 .tile.warn{border-color:#e1b74a}.tile.bad{border-color:#d56b67}
 .hint{color:var(--muted);font-size:12px;margin-top:9px;line-height:1.45}
+.horizon-switch{display:flex;gap:5px}
+.horizon-switch button{min-width:0;padding:8px 11px;font-size:12px}
+.horizon-switch button.on{background:var(--blue);border-color:var(--blue);color:#fff}
 .chart{height:720px}
 @media(max-width:700px){.chart{height:600px}body{padding:0 9px}
  .app-header{padding:10px 11px;margin:9px auto}.app-header h1{font-size:17px;line-height:1.25}
@@ -268,7 +271,7 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
 </style></head><body>
 <header class="app-header"><h1>EMS Lauf-Archiv
  <span class="ts">Archivierten Optimierer-Lauf gegen die eingetretenen Werte legen</span></h1>
- <div class="header-actions"><a class="button" href="/" title="Zurück zum Dashboard">↩ <span class="button-label">Dashboard</span></a>
+ <div class="header-actions"><a class="button" href="/" title="Zurück zum Dashboard">⌂ <span class="button-label">Dashboard</span></a>
  <button id="theme" title="Darstellung wechseln">◐ <span class="button-label">Darstellung</span></button></div></header>
 <main>
 <div class="card"><div class="pick">
@@ -277,6 +280,9 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
  <select id="run"><option>lade …</option></select>
  <button id="prev" title="älterer Lauf">◀ <span class="button-label">älter</span></button>
  <button id="next" title="neuerer Lauf"><span class="button-label">neuer</span> ▶</button>
+ <div class="horizon-switch" id="horizon" aria-label="Zeitraum">
+  <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
+ </div>
 </div><div class="hint" id="meta"></div></div>
 <div class="card"><div class="tiles" id="kpi"></div></div>
 <div class="card"><div id="chart" class="chart"></div>
@@ -336,7 +342,11 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
    const wanted=RUNS.find(x=>x.generated===want);
    // Standard: heute; gibt es für heute nichts, der jüngste vorhandene Tag.
    let day=wanted?dayOf(wanted):days[days.length-1];
-   if(!wanted){const today=new Date().toISOString().slice(0,10);
+   // Ortszeit, NICHT toISOString: das rechnet nach UTC, und zwischen
+   // Mitternacht und dem Zeitzonenversatz (im Sommer bis 02:00) waere "heute"
+   // dann der Vortag - die Vorauswahl haette den falschen Tag getroffen.
+   if(!wanted){const n=new Date(),z=v=>String(v).padStart(2,'0');
+    const today=n.getFullYear()+'-'+z(n.getMonth()+1)+'-'+z(n.getDate());
     if(days.indexOf(today)>=0)day=today;}
    dayEl.value=day;
    if(fillDay(day,want))await show();
@@ -436,7 +446,29 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
             line:{color:mut,width:1,dash:'dot'}}]
   },{responsive:true,displaylogo:false,
      modeBarButtonsToRemove:['lasso2d','select2d','autoScale2d']});
+  window.LAST_X=x;applyHours();
  }
+ // Zeitraum-Schalter: der Bezugspunkt ist der ANFANG des gewaehlten Laufs,
+ // nicht "jetzt" - ein archivierter Lauf von vorgestern soll seine ersten 24 h
+ // zeigen, nicht die letzten 24 h vor der Gegenwart.
+ function hoursPref(){return localStorage.getItem('ems-archive-hours')||'all';}
+ function applyHours(){
+  const x=window.LAST_X;if(!x||!x.length)return;
+  const h=hoursPref();
+  document.querySelectorAll('#horizon button').forEach(function(b){
+   b.classList.toggle('on',b.dataset.hours===h);});
+  if(h==='all'){Plotly.relayout('chart',{'xaxis.autorange':true,'xaxis.range':null});return;}
+  // Grenzen aus der Zeitachse SELBST greifen statt sie zu rechnen. Die Werte
+  // tragen den UTC-Versatz; ein toISOString() haette den Bereich um den Versatz
+  // verschoben (derselbe Fehler, den der Dashboard-Test ausdruecklich verbietet).
+  // Ueber die Slotzahl ist es zudem unempfindlich gegen die Zeitumstellung.
+  const proSlot=x.length>1?(new Date(x[1])-new Date(x[0]))/3600000:0.25;
+  const bis=Math.min(x.length-1,Math.round(parseInt(h,10)/(proSlot||0.25)));
+  Plotly.relayout('chart',{'xaxis.autorange':false,'xaxis.range':[x[0],x[bis]]});
+ }
+ document.querySelectorAll('#horizon button').forEach(function(b){
+  b.addEventListener('click',function(){
+   localStorage.setItem('ems-archive-hours',b.dataset.hours);applyHours();});});
  sel.onchange=function(){IDX=parseInt(this.value,10)||0;show();};
  g('day').onchange=function(){if(fillDay(this.value,null))show();};
  function step(delta){            // ueber Tagesgrenzen hinweg blaettern

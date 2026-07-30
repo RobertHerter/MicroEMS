@@ -3054,10 +3054,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    h1 {{ font-size: 17px; line-height: 1.25; }}
    h1 .ts {{ display: block; font-size: 11px; margin-top: 2px; }}
    .header-actions button, .header-actions a {{ min-width: 44px; min-height: 44px; font-size: 0; padding: 0; }}
-   #config-link .config-icon, #archive-link .config-icon {{ font-size: 21px; }}
-   #config-link .config-label, #archive-link .config-label {{ display: none; }}
-   #theme-toggle:after {{ content: '◐'; font-size: 21px; }}
-   #install-app:after {{ content: '↓'; font-size: 22px; }}
+   /* Alle Kopfknoepfe gleich behandelt: mobil nur das Symbol. Vorher trugen
+      zwei von ihnen ihr Zeichen ueber ein :after-Pseudoelement, weil sie im
+      Markup gar keines hatten - jetzt steht es bei allen im Markup und die
+      Regel gilt einheitlich. */
+   .header-actions .config-icon {{ font-size: 21px; }}
+   .header-actions .config-label {{ display: none; }}
    .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }}
    .live-daily {{ grid-template-columns: repeat(2,minmax(0,1fr)); }}
    .tile {{ min-width: 0; padding: 9px 10px; overflow: hidden; }}
@@ -3130,8 +3132,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <header class="app-header"><h1>E3DC EMS Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
 {runtime_html}
- <div class="header-actions">{archive_link}{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
- <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
+ <div class="header-actions">{archive_link}{config_link}<button type="button" id="install-app" title="Als App installieren"><span class="config-icon">⬇</span><span class="config-label">Installieren</span></button>
+ <button type="button" id="theme-toggle" title="Darstellung wechseln"><span class="config-icon">◐</span><span class="config-label">Darstellung</span></button></div></header>
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
 {_control_banner(control_status)}

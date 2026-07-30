@@ -313,3 +313,41 @@ def test_dashboard_links_to_the_archive_page():
     out = build_dashboard(cfg, table, total_cost_ct=0.0)
     html = pathlib.Path(out).read_text(encoding="utf-8")
     assert 'href="/archiv"' in html and 'id="archive-link"' in html
+
+
+# --------------------------------------------------------------------------- #
+# Zeitraum-Schalter und Kopfzeile
+# --------------------------------------------------------------------------- #
+def test_archive_has_the_same_horizon_switch_as_the_dashboard():
+    """24/48/Alles wie im Dashboard - ein archivierter 72-h-Lauf ist sonst nur
+    als Ganzes zu betrachten, und die interessanten ersten Stunden sind
+    zusammengedrueckt."""
+    html = archive_html().decode("utf-8")
+    assert 'id="horizon"' in html
+    for stunden in ("24", "48", "all"):
+        assert f'data-hours="{stunden}"' in html
+    assert "ems-archive-hours" in html          # Auswahl bleibt erhalten
+
+
+def test_archive_never_computes_time_ranges_in_utc():
+    """Die Zeitachse traegt den UTC-Versatz.
+
+    ``toISOString()`` rechnet nach UTC: als Bereichsgrenze haette es den
+    Ausschnitt um den Versatz verschoben, und fuer "heute" lieferte es zwischen
+    Mitternacht und dem Versatz (im Sommer bis 02:00) den VORTAG - die
+    Tagesvorauswahl traf dann den falschen Tag. Derselbe Fehler ist im
+    Dashboard schon einmal aufgetreten und dort per Test verboten.
+    """
+    html = archive_html().decode("utf-8")
+    code = "\n".join(z for z in html.splitlines()
+                     if "toISOString" in z and not z.strip().startswith("//"))
+    assert not code, f"UTC-Datumsrechnung im Archiv: {code}"
+    # Die Grenzen kommen aus der Zeitachse selbst (versatz- und DST-fest).
+    assert "'xaxis.range':[x[0],x[bis]]" in html
+
+
+def test_archive_header_uses_a_house_for_the_dashboard():
+    """Der Rueckkehrpfeil sagte "zurueck", nicht WOHIN."""
+    html = archive_html().decode("utf-8")
+    assert "⌂ <span class=\"button-label\">Dashboard</span>" in html
+    assert "↩" not in html

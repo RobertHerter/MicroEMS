@@ -430,3 +430,21 @@ def test_panels_stay_collapsed_by_default(tmp_path):
     offen = [t for t in _panel_tags(_render(tmp_path))
              if re.search(r"\bopen\b", t)]
     assert len(offen) <= 1, f"unerwartet offene Panels: {offen}"
+
+
+def test_all_header_buttons_carry_an_icon(tmp_path):
+    """Zwei der vier Kopfknoepfe hatten im Markup gar kein Zeichen - mobil
+    bekamen sie eines per :after-Pseudoelement, am Schreibtisch keines. In
+    einer Reihe mit Archiv und Konfiguration sah das wie ein Versehen aus.
+    """
+    html = _render(tmp_path)
+    kopf = html[html.index('<header class="app-header"'):]
+    kopf = kopf[:kopf.index("</header>")]
+    for knopf in ("install-app", "theme-toggle"):
+        block = kopf[kopf.index(f'id="{knopf}"'):]
+        block = block[:block.index("</button>")]
+        assert 'class="config-icon"' in block, f"{knopf} ohne Symbol"
+        assert 'class="config-label"' in block, f"{knopf} ohne Beschriftung"
+    # Die Notloesung ueber Pseudoelemente ist damit ueberfluessig.
+    assert "#theme-toggle:after" not in html
+    assert "#install-app:after" not in html
