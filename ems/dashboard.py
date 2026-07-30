@@ -285,7 +285,8 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
     future = future[(future["mode"].fillna("auto") != "auto")
                     & future["decision_reason"].fillna("").ne("")]
     if future.empty:
-        return ("<details class='decisions'><summary><span class='decision-head'>"
+        return ("<details class='decisions' id='decisions-panel'><summary>"
+                "<span class='decision-head'>"
                 "❖ <b>Planentscheidungen erklärt</b><small>keine besonderen "
                 "Eingriffe</small></span></summary><div class='decision-body'>"
                 "<div class='decision-empty'>Keine besonderen Akku-Eingriffe "
@@ -341,7 +342,8 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
             f"<div class='decision-reason'>{reason}</div>"
             f"<div class='decision-facts'>{facts_html}</div></article>")
     count = len(blocks[:limit])
-    return ("<details class='decisions'><summary><span class='decision-head'>"
+    return ("<details class='decisions' id='decisions-panel'><summary>"
+            "<span class='decision-head'>"
             "❖ <b>Planentscheidungen erklärt</b>"
             f"<small>{count} Entscheidungsblöcke</small></span></summary>"
             "<div class='decision-body'><div class='decision-list'>"
@@ -475,6 +477,66 @@ def _runtime_block(controls_enabled: bool) -> str:
  window.emsRecalc=async function(){{if(btn)btn.disabled=true;try{{let r=await fetch('api/control/recalc',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});if(!r.ok)throw Error((await r.text()).slice(0,160));busy=true;emsRuntimePoll();}}catch(e){{if(btn)btn.disabled=false;document.getElementById('runtime-message').textContent='Neuberechnung fehlgeschlagen: '+e.message;}}}};
  emsRuntimePoll();setInterval(emsRuntimePoll,2000);
 }})();</script>"""
+
+
+def _panel_nav_block() -> str:
+    """Sprungleiste über alle Panels + Sicherung ihres Auf-/Zu-Zustands.
+
+    Zwei zusammengehörende Probleme:
+
+    * Die Seite lädt sich bei jedem neuen Plan komplett neu (``_RELOAD_JS``).
+      Der Auf-/Zu-Zustand der Panels ist reine DOM-Zustandsinformation und war
+      bis auf das Tagespanel nirgends gesichert - ein aufgeklapptes Panel fiel
+      also spätestens beim nächsten Zyklus zu, samt allem, was es beim
+      Aufklappen nachgeladen hatte.
+    * Zwölf Panels untereinander ohne Wegweiser: die Statusampeln stecken in
+      den Kopfzeilen und sind erst nach dem Scrollen sichtbar.
+
+    Die Leiste wird bewusst AUS DEM DOM gebaut statt aus einer serverseitigen
+    Liste: Panels, die je nach Konfiguration fehlen (kein Pool, keine
+    Steuerung), verschwinden damit automatisch auch aus der Navigation.
+    """
+    return """
+<nav class="panel-nav" id="panel-nav" hidden></nav>
+<script>(function(){
+ var KEY='ems-panel-open',SKIP={'live-daily-panel':1};
+ function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
+ function save(s){try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){}}
+ function title(d){var s=d.querySelector('summary');if(!s)return d.id;
+  var c=s.cloneNode(true);Array.prototype.forEach.call(c.querySelectorAll('small,.an-dot'),function(n){n.remove();});
+  return (c.textContent||'').replace(/\\s+/g,' ').trim()||d.id;}
+ function dot(d){var e=d.querySelector('summary .an-dot');
+  if(!e)return 'neutral';var m=/\\b(warn|bad|neutral)\\b/.exec(e.className);return m?m[1]:'ok';}
+ document.addEventListener('DOMContentLoaded',function(){
+  var bar=document.getElementById('panel-nav'),state=load();
+  var panels=Array.prototype.filter.call(document.querySelectorAll('details[id]'),
+    function(d){return !SKIP[d.id];});
+  if(!panels.length)return;
+  var chips=panels.map(function(d){
+   if(state[d.id]===true)d.open=true;else if(state[d.id]===false)d.open=false;
+   var b=document.createElement('button');
+   b.type='button';b.className='pnav-chip';b.dataset.target=d.id;
+   var s=document.createElement('span');s.className='an-dot';
+   var t=document.createTextNode(title(d));
+   b.appendChild(s);b.appendChild(t);
+   b.addEventListener('click',function(){
+    d.open=true;d.scrollIntoView({behavior:'smooth',block:'start'});});
+   bar.appendChild(b);
+   d.addEventListener('toggle',function(){
+    var cur=load();cur[d.id]=d.open;save(cur);sync();});
+   return {panel:d,chip:b,dotEl:s};});
+  function sync(){chips.forEach(function(c){
+   c.dotEl.className='an-dot '+dot(c.panel);
+   c.chip.classList.toggle('on',c.panel.open);});}
+  sync();bar.hidden=false;
+  // Mehrere Ampeln werden erst nach einem fetch gesetzt (Ereignisse, What-if,
+  // Lastprofile, Slot-Details) - ohne Beobachter bliebe die Leiste auf dem
+  // Stand des Seitenaufbaus stehen.
+  if(window.MutationObserver){var mo=new MutationObserver(sync);
+   panels.forEach(function(d){var s=d.querySelector('summary');
+    if(s)mo.observe(s,{attributes:true,attributeFilter:['class'],subtree:true});});}
+ });
+})();</script>"""
 
 
 def _slot_detail_block() -> str:
@@ -1378,7 +1440,7 @@ def _forecast_quality_block(quality, timezone="Europe/Berlin") -> str:
     items, levels = _forecast_quality_cards(quality, timezone)
     if not items:
         return ""
-    return (f'<details class="info-panel"><summary>'
+    return (f'<details class="info-panel" id="fquality-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>⌁ Prognosequalität '
             "<small>verwendete Daten im aktuellen Optimierungshorizont</small>"
             f"</summary><div class='quality-grid'>{items}</div></details>")
@@ -1546,7 +1608,7 @@ def _operations_block(solver, execution, timezone="Europe/Berlin",
     if plan_alerts:
         headline.append(f"{plan_alerts} Planziel"
                         + ("e auffällig" if plan_alerts != 1 else " auffällig"))
-    return (f'<details class="info-panel"><summary>'
+    return (f'<details class="info-panel" id="operations-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>⚙ Betriebsdiagnose '
             f"<small>{' · '.join(headline)}</small>"
             f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
@@ -1605,7 +1667,7 @@ def _thermal_feedback_block(feedback, calibrations) -> str:
         f" · {running} läuft"
         + (f" · {applied_models} Thermomodell aktiv"
            if calibrations else ""))
-    return (f'<details class="info-panel"><summary>'
+    return (f'<details class="info-panel" id="thermal-panel"><summary>'
             f'<span class="an-dot {_panel_dot(levels)}"></span>♨ Last-Rückkopplung '
             f"<small>{headline}</small>"
             f"</summary><div class='quality-grid'>{''.join(cards)}</div></details>")
@@ -1627,6 +1689,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     t = table
     x = t.index
     now = pd.Timestamp.now(tz=x.tz)
+    # Zeitachse der SPUREN als naive Ortszeit-Strings statt ISO mit UTC-Versatz.
+    # Plotly rechnet Datumsangaben ohnehin als Wanduhrzeit - die Achse zeigt
+    # heute schon Ortszeit, sonst laege alles zwei Stunden daneben -, der
+    # Versatz kostet also nur Bytes. Und er kostet sie 30-mal: JEDE Spur traegt
+    # eine eigene Kopie derselben 288 Zeitstempel (gemessen 8 KB je Spur,
+    # 244 KB einer 580-KB-Seite). Umgerechnet wird weiter JE PUNKT durch pandas,
+    # nicht ueber ein unterstelltes gleichmaessiges Raster - sonst waeren die
+    # beiden Zeitumstellungstage im Jahr falsch.
+    # WICHTIG: alles, was auf derselben Achse sitzt (Formen, Anmerkungen), muss
+    # dasselbe Format benutzen, sonst verrutscht es gegen die Kurven.
+    def _xp(ts) -> str:
+        return pd.Timestamp(ts).tz_localize(None).strftime("%Y-%m-%d %H:%M")
+
+    xp = x.tz_localize(None).strftime("%Y-%m-%d %H:%M").tolist()
     load_temp_actual = load_temp_actual or {}
 
     # Günstige Kennzahl für den (eingeklappten) Analyse-Panel-Titel + Ampel:
@@ -1710,7 +1786,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     f"%{{customdata:{fmt}}} {compare_unit}")
             hovertemplate += "<extra></extra>"
             fig.add_trace(go.Scatter(
-                x=x, y=values, name=name, mode="lines",
+                x=xp, y=values, name=name, mode="lines",
                 line=dict(color=color, width=width, dash=dash,
                           shape=shape or "linear"),
                 customdata=customdata, hovertemplate=hovertemplate,
@@ -1721,11 +1797,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 1: Leistung ----------
     # Reihenfolge = Reihenfolge im Unified-Hover: je Signal Ist vor Prognose.
     if {"pv10_w", "pv90_w"} <= set(t.columns) and t["pv10_w"].notna().any():
-        fig.add_trace(go.Scatter(x=x, y=t["pv90_w"], mode="lines",
+        fig.add_trace(go.Scatter(x=xp, y=t["pv90_w"], mode="lines",
                                  line=dict(width=0), legendgroup="prog",
                                  showlegend=False, hoverinfo="skip"),
                       row=1, col=1)
-        fig.add_trace(go.Scatter(x=x, y=t["pv10_w"], mode="lines",
+        fig.add_trace(go.Scatter(x=xp, y=t["pv10_w"], mode="lines",
                                  line=dict(width=0), fill="tonexty",
                                  fillcolor="rgba(255,127,14,0.14)",
                                  name="PV (80%)", legendgroup="prog",
@@ -1739,7 +1815,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         pvc = pv_compare.reindex(x)
         if pvc.notna().any():
             fig.add_trace(go.Scatter(
-                x=x, y=pvc, name="PV (Model)", mode="lines",
+                x=xp, y=pvc, name="PV (Model)", mode="lines",
                 line=dict(color="#8c564b", width=2, dash="dot"),
                 hovertemplate=HOVER_W, legendgroup="prog",
                 legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
@@ -1748,11 +1824,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     if ({"house_load_p10_w", "house_load_p90_w"} <= set(t.columns)
             and t["house_load_p10_w"].notna().any()):
         fig.add_trace(go.Scatter(
-            x=x, y=t["house_load_p90_w"], mode="lines",
+            x=xp, y=t["house_load_p90_w"], mode="lines",
             line=dict(width=0), legendgroup="prog", showlegend=False,
             hoverinfo="skip"), row=1, col=1)
         fig.add_trace(go.Scatter(
-            x=x, y=t["house_load_p10_w"], mode="lines",
+            x=xp, y=t["house_load_p10_w"], mode="lines",
             line=dict(width=0), fill="tonexty",
             fillcolor="rgba(214,39,40,0.10)", name="Verbrauch (80%)",
             legendgroup="prog", hoverinfo="skip"), row=1, col=1)
@@ -1778,7 +1854,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             cl_sum = t[_cl_cols].sum(axis=1)
             if float(cl_sum.abs().sum()) > 0:
                 fig.add_trace(go.Scatter(
-                    x=x, y=cl_sum, name="Steuerb. Lasten", mode="lines",
+                    x=xp, y=cl_sum, name="Steuerb. Lasten", mode="lines",
                     line=dict(color="#9467bd", width=1.6, dash="dot"),
                     hovertemplate=HOVER_W, legendgroup="prog",
                     legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
@@ -1801,7 +1877,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     if "grid_import_w" in t.columns and "grid_export_w" in t.columns:
         net = t["grid_import_w"].fillna(0) - t["grid_export_w"].fillna(0)
         net = net.where(t["grid_import_w"].notna() | t["grid_export_w"].notna())
-        fig.add_trace(go.Scatter(x=x, y=net, name="Netz (Prog.)", mode="lines",
+        fig.add_trace(go.Scatter(x=xp, y=net, name="Netz (Prog.)", mode="lines",
                                  line=dict(color="#1f77b4", width=1.5, dash="dot"),
                                  hovertemplate=HOVER_W, legendrank=_GROUP_RANK["progb"],
                                  legendgroup="progb",
@@ -1830,7 +1906,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         price = t["price_ct_kwh"]
         est = (t["price_estimated"].fillna(0) > 0.5) \
             if "price_estimated" in t.columns else pd.Series(False, index=x)
-        fig.add_trace(go.Scatter(x=x, y=price.mask(est), name="Börsenpreis",
+        fig.add_trace(go.Scatter(x=xp, y=price.mask(est), name="Börsenpreis",
                                  mode="lines", legendgroup="progb",
                                  legendrank=_GROUP_RANK["progb"],
                                  legendgrouptitle_text=_GROUPS["progb"],
@@ -1839,7 +1915,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                       row=3, col=1)
         if est.any():
             fig.add_trace(go.Scatter(
-                x=x, y=price.where(est | est.shift(-1, fill_value=False)),
+                x=xp, y=price.where(est | est.shift(-1, fill_value=False)),
                 name="Preis (Schätzung)", mode="lines", legendgroup="progb",
                 legendrank=_GROUP_RANK["progb"],
                 legendgrouptitle_text=_GROUPS["progb"], hovertemplate=HOVER_CT,
@@ -1854,7 +1930,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             known = guess.notna() & price.notna() & ~est
             if bool(((guess - price).abs() > 0.05)[known].any()):
                 fig.add_trace(go.Scatter(
-                    x=x, y=guess.where(known),
+                    x=xp, y=guess.where(known),
                     name="Preis (Schätzung 00:00)", mode="lines",
                     legendgroup="progb", legendrank=_GROUP_RANK["progb"],
                     legendgrouptitle_text=_GROUPS["progb"],
@@ -1868,7 +1944,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 4: Steuerung ----------
     def bar(col, name, color, sign=1):
         if col in t.columns and t[col].abs().max() > 1:
-            fig.add_trace(go.Bar(x=x, y=sign * t[col], name=name,
+            fig.add_trace(go.Bar(x=xp, y=sign * t[col], name=name,
                                  marker_color=color,
                                  hovertemplate=(
                                      f"{name}: {HOVER_W}<extra></extra>"),
@@ -1914,7 +1990,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                 text += f"<br>Modellschätzung: {float(v):+.2f} ct"
             mode_hover.append(text)
         fig.add_trace(go.Heatmap(
-            x=x, y=[""], z=z, zmin=-0.5, zmax=len(_MODES) - 0.5,
+            x=xp, y=[""], z=z, zmin=-0.5, zmax=len(_MODES) - 0.5,
             colorscale=colorscale, showscale=False, meta="mode_timeline",
             customdata=[mode_hover],
             hovertemplate="%{x|%H:%M}<br>%{customdata}<extra>Entscheidung</extra>"),
@@ -2048,7 +2124,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             colorscale.append([round(i * step, 4), colour])
             colorscale.append([round((i + 1) * step - 1e-4, 4), colour])
         fig.add_trace(go.Heatmap(
-            x=x, y=ylabels, z=z, zmin=-0.5, zmax=n_states - 0.5,
+            x=xp, y=ylabels, z=z, zmin=-0.5, zmax=n_states - 0.5,
             showscale=False, meta="load_timeline", colorscale=colorscale,
             customdata=hover,
             hovertemplate="%{y}: %{x|%H:%M} – %{customdata}<extra></extra>"),
@@ -2079,7 +2155,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                        pd.Series(float("nan"), index=x))
             if col in t.columns and t[col].notna().any():
                 fig.add_trace(go.Scatter(
-                    x=x, y=planned, name=f"{ld.name} (Soll)", mode="lines",
+                    x=xp, y=planned, name=f"{ld.name} (Soll)", mode="lines",
                     line=dict(color=c, width=2, dash="dash"),
                     hovertemplate=(
                         f"{ld.name} Soll: %{{y:.1f}} °C"
@@ -2088,7 +2164,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     legendgrouptitle_text="Temperatur"), row=temp_row, col=1)
             if act is not None and len(act) > 0:
                 fig.add_trace(go.Scatter(
-                    x=x, y=actual_aligned, name=f"{ld.name} (Ist)", mode="lines",
+                    x=xp, y=actual_aligned, name=f"{ld.name} (Ist)", mode="lines",
                     line=dict(color=c, width=2),
                     customdata=(actual_aligned - planned).to_list(),
                     hovertemplate=(
@@ -2103,7 +2179,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             amb = ambient_temp_c.dropna()
             if len(amb) > 0:
                 fig.add_trace(go.Scatter(
-                    x=amb.index, y=amb.values, name="Außentemperatur", mode="lines",
+                    # Eigener Index (Open-Meteo-Raster), deshalb hier dieselbe
+                    # Umrechnung wie fuer xp - eine Spur im ISO-Format auf einer
+                    # sonst naiven Achse wuerde gegen alle anderen verrutschen.
+                    x=amb.index.tz_localize(None).strftime("%Y-%m-%d %H:%M"),
+                    y=amb.values, name="Außentemperatur", mode="lines",
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate="Außentemperatur: %{y:.1f} °C<extra></extra>",
                     legendgroup="temp",
@@ -2111,13 +2191,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 
     # ---------- Orientierung: Vergangenheit, Jetzt, Tagesgrenzen ----------
     if x[0] < now:
-        fig.add_vrect(x0=x[0], x1=min(now, x[-1]), fillcolor="rgba(0,0,0,0.05)",
+        fig.add_vrect(x0=_xp(x[0]), x1=_xp(min(now, x[-1])),
+                      fillcolor="rgba(0,0,0,0.05)",
                       line_width=0, layer="below", row="all", col=1)
-    fig.add_vline(x=now, line=dict(color="#0d6efd", width=2), row="all", col=1)
+    fig.add_vline(x=_xp(now), line=dict(color="#0d6efd", width=2),
+                  row="all", col=1)
     # "Jetzt"-Label in den freien oberen Rand setzen. Innerhalb von Panel 1
     # verdeckte die Box genau am aktuellen Zeitpunkt Leistungs-/PV-Kurven.
     # Die senkrechte Linie bleibt im Plot die eindeutige Zeitmarkierung.
-    fig.add_annotation(x=now, y=1.01, xref="x", yref="paper",
+    fig.add_annotation(x=_xp(now), y=1.01, xref="x", yref="paper",
                        yanchor="bottom",
                        text=f"▼ Jetzt {now.strftime('%H:%M')}", showarrow=False,
                        font=dict(color="#0d6efd", size=11))
@@ -2125,9 +2207,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     day = x[0].normalize()
     while day <= x[-1]:
         if day > x[0]:
-            fig.add_vline(x=day, line=dict(color="#bbbbbb", width=1, dash="dot"),
+            fig.add_vline(x=_xp(day),
+                          line=dict(color="#bbbbbb", width=1, dash="dot"),
                           row="all", col=1)
-        fig.add_annotation(x=day + pd.Timedelta(hours=12), y=1.06, xref="x",
+        fig.add_annotation(x=_xp(day + pd.Timedelta(hours=12)), y=1.06, xref="x",
                            yref="paper", showarrow=False,
                            text=f"<b>{_WD[day.weekday()]} "
                                 f"{day.strftime('%d.%m.')}</b>",
@@ -2552,6 +2635,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
+ .panel-nav {{ position: sticky; top: 0; z-index: 20; display: flex; gap: 6px;
+        overflow-x: auto; scrollbar-width: none; padding: 7px 0 8px;
+        margin: 2px 0 8px; background: #f5f7f9;
+        box-shadow: 0 6px 8px -8px rgba(28,45,68,.35); }}
+ .panel-nav::-webkit-scrollbar {{ display: none; }}
+ html.dark .panel-nav {{ background: #141c24; }}
+ .pnav-chip {{ flex: 0 0 auto; display: inline-flex; align-items: center;
+        min-height: 30px; padding: 4px 11px; border: 1px solid #d3dae1;
+        border-radius: 999px; background: #fff; color: #34404c; font: inherit;
+        font-size: 12px; white-space: nowrap; cursor: pointer; }}
+ .pnav-chip.on {{ border-color: #1769c2; color: #1769c2; }}
+ html.dark .pnav-chip {{ background: #1c2530; border-color: #3c4b5a; color: #cdd8e3; }}
+ html.dark .pnav-chip.on {{ border-color: #4ea1f0; color: #8fc6fb; }}
+ @media (max-width: 620px) {{ .panel-nav {{ padding: 6px 0; }}
+        .pnav-chip {{ min-height: 34px; }} }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
  .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
  .an-dot.neutral {{ background: #8b98a5; }}
@@ -2937,6 +3035,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
  <div class="header-actions">{archive_link}{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
+{_panel_nav_block()}
 {runtime_html}
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>

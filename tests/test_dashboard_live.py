@@ -98,8 +98,9 @@ def test_decision_block_shows_empty_plan_state():
     html = _decision_block(table, idx[0])
     assert "Planentscheidungen erklärt" in html
     assert "Keine besonderen Akku-Eingriffe" in html
-    assert "<details class='decisions'>" in html
-    assert "<details class='decisions' open" not in html
+    # Eingeklapptes Panel mit stabiler id (Sprungleiste + gemerkter Zustand).
+    assert html.startswith("<details class='decisions' id='decisions-panel'>")
+    assert " open>" not in html and " open " not in html
 
 
 def test_operations_block_shows_which_slot_was_checked():
@@ -196,7 +197,7 @@ def test_forecast_quality_block_renders_all_quality_states():
     assert "Prognosequalität" in html
     # Einheitlicher .info-panel-Look; die Statusfarbe des schlechtesten Items
     # (hier replaced -> bad) steckt im Ampelpunkt der Kopfzeile.
-    assert html.startswith('<details class="info-panel"><summary>')
+    assert html.startswith('<details class="info-panel" id="fquality-panel">')
     assert '<span class="an-dot bad">' in html
     assert " open>" not in html
     assert "aktuell" in html and "teilweise ergänzt" in html

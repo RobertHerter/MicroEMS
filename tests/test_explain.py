@@ -39,5 +39,5 @@ def test_plan_explanations_quantify_grid_charge_hold_and_peak():
     assert "Planentscheidungen erklärt" in html
     assert "Netzladen" in html and "Entladen gesperrt" in html
     assert "Modellschätzung" in html
-    assert "<details class='decisions'>" in html
+    assert "<details class='decisions' id='decisions-panel'>" in html
     assert "<details class='decisions' open" not in html
