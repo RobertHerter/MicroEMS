@@ -483,62 +483,32 @@ def _runtime_block(controls_enabled: bool) -> str:
 }})();</script>"""
 
 
-def _panel_nav_block() -> str:
-    """Sprungleiste über alle Panels + Sicherung ihres Auf-/Zu-Zustands.
+def _panel_state_block() -> str:
+    """Auf-/Zu-Zustand der Panels über den Auto-Reload retten.
 
-    Zwei zusammengehörende Probleme:
+    Die Seite lädt sich bei jedem neuen Plan komplett neu (``_RELOAD_JS``). Der
+    Zustand eines Panels ist reine DOM-Information und war bis auf das
+    Tagespanel nirgends gesichert - ein aufgeklapptes Panel fiel also
+    spätestens beim nächsten Zyklus zu, samt allem, was es beim Aufklappen
+    nachgeladen hatte.
 
-    * Die Seite lädt sich bei jedem neuen Plan komplett neu (``_RELOAD_JS``).
-      Der Auf-/Zu-Zustand der Panels ist reine DOM-Zustandsinformation und war
-      bis auf das Tagespanel nirgends gesichert - ein aufgeklapptes Panel fiel
-      also spätestens beim nächsten Zyklus zu, samt allem, was es beim
-      Aufklappen nachgeladen hatte.
-    * Zwölf Panels untereinander ohne Wegweiser: die Statusampeln stecken in
-      den Kopfzeilen und sind erst nach dem Scrollen sichtbar.
-
-    Die Leiste wird bewusst AUS DEM DOM gebaut statt aus einer serverseitigen
-    Liste: Panels, die je nach Konfiguration fehlen (kein Pool, keine
-    Steuerung), verschwinden damit automatisch auch aus der Navigation.
+    Hier hing zeitweise auch eine Sprungleiste über alle Panels. Sie ist wieder
+    raus (sie trug im Gebrauch nichts bei und kostete oben dauerhaft Platz);
+    das Merken des Zustands hat nie an ihr gehangen und bleibt.
     """
     return """
-<nav class="panel-nav" id="panel-nav" hidden></nav>
 <script>(function(){
  var KEY='ems-panel-open',SKIP={'live-daily-panel':1};
  function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
  function save(s){try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){}}
- function title(d){var s=d.querySelector('summary');if(!s)return d.id;
-  var c=s.cloneNode(true);Array.prototype.forEach.call(c.querySelectorAll('small,.an-dot'),function(n){n.remove();});
-  return (c.textContent||'').replace(/\\s+/g,' ').trim()||d.id;}
- function dot(d){var e=d.querySelector('summary .an-dot');
-  if(!e)return 'neutral';var m=/\\b(warn|bad|neutral)\\b/.exec(e.className);return m?m[1]:'ok';}
  document.addEventListener('DOMContentLoaded',function(){
-  var bar=document.getElementById('panel-nav'),state=load();
-  var panels=Array.prototype.filter.call(document.querySelectorAll('details[id]'),
-    function(d){return !SKIP[d.id];});
-  if(!panels.length)return;
-  var chips=panels.map(function(d){
+  var state=load();
+  Array.prototype.forEach.call(document.querySelectorAll('details[id]'),function(d){
+   if(SKIP[d.id])return;
    if(state[d.id]===true)d.open=true;else if(state[d.id]===false)d.open=false;
-   var b=document.createElement('button');
-   b.type='button';b.className='pnav-chip';b.dataset.target=d.id;
-   var s=document.createElement('span');s.className='an-dot';
-   var t=document.createTextNode(title(d));
-   b.appendChild(s);b.appendChild(t);
-   b.addEventListener('click',function(){
-    d.open=true;d.scrollIntoView({behavior:'smooth',block:'start'});});
-   bar.appendChild(b);
    d.addEventListener('toggle',function(){
-    var cur=load();cur[d.id]=d.open;save(cur);sync();});
-   return {panel:d,chip:b,dotEl:s};});
-  function sync(){chips.forEach(function(c){
-   c.dotEl.className='an-dot '+dot(c.panel);
-   c.chip.classList.toggle('on',c.panel.open);});}
-  sync();bar.hidden=false;
-  // Mehrere Ampeln werden erst nach einem fetch gesetzt (Ereignisse, What-if,
-  // Lastprofile, Slot-Details) - ohne Beobachter bliebe die Leiste auf dem
-  // Stand des Seitenaufbaus stehen.
-  if(window.MutationObserver){var mo=new MutationObserver(sync);
-   panels.forEach(function(d){var s=d.querySelector('summary');
-    if(s)mo.observe(s,{attributes:true,attributeFilter:['class'],subtree:true});});}
+    var cur=load();cur[d.id]=d.open;save(cur);});
+  });
  });
 })();</script>"""
 
@@ -2415,7 +2385,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     Aktualisierung sichtbar. */
  .tile .v, #runtime-meta, .quality-value, .an-tile b {{
         font-variant-numeric: tabular-nums; }}
- .app-header {{ display: flex; align-items: center; gap: 12px; margin: 0 0 14px;
+ .app-header {{ position: relative; display: flex; align-items: center;
+        flex-wrap: wrap; gap: 12px; margin: 0 0 14px; overflow: hidden;
         padding: 13px 16px; background: var(--card); border: 1px solid var(--line);
         border-radius: var(--r-card); box-shadow: var(--shadow); }}
  h1 {{ flex: 1; font-size: 22px; margin: 0; letter-spacing: -.2px;
@@ -2439,18 +2410,24 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .header-actions button:hover, .header-actions a:hover {{ background: #e9eef3;
         border-color: #cbd4dd; }}
  #install-app {{ display: none; }}
- .runtime-strip {{ display: grid; grid-template-columns: minmax(220px,1fr) minmax(120px,2fr) auto auto;
-        align-items: center; gap: 12px; margin: -4px 0 12px; padding: 9px 12px;
-        border: 1px solid var(--line); border-radius: var(--r-card);
-        background: var(--card); font-size: 12px; box-shadow: var(--shadow); }}
+ /* Laufzeitstatus sitzt IN der Titelleiste: als eigener Streifen brauchte er
+    eine zweite Karte mit Rahmen, Schatten und Aussenabstand - auf dem Handy
+    rund 120 px, bevor ein Messwert zu sehen war. Hier kostet er nur noch die
+    Zeilenhoehe, die die Titelleiste ohnehin hat. */
+ .runtime-strip {{ display: flex; align-items: center; gap: 10px; min-width: 0;
+        flex: 1 1 240px; margin: 0; padding: 0; border: 0; background: none;
+        box-shadow: none; font-size: 12px; }}
+ .runtime-main > div {{ min-width: 0; overflow: hidden; white-space: nowrap;
+        text-overflow: ellipsis; }}
  .runtime-main {{ display: flex; align-items: center; gap: 9px; min-width: 0; }}
- .runtime-main small {{ display: block; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+ .runtime-main small {{ display: inline; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
  .runtime-dot {{ width: 10px; height: 10px; border-radius: 50%; background: #7b8794; flex: 0 0 auto; }}
  .runtime-strip[data-state=ready] .runtime-dot {{ background: #2a9d55; }}
  .runtime-strip[data-state=running] .runtime-dot, .runtime-strip[data-state=queued] .runtime-dot {{ background: #2678c8; animation: runtimePulse 1.2s infinite; }}
  .runtime-strip[data-state=error] .runtime-dot {{ background: #d13a32; }}
  @keyframes runtimePulse {{ 50% {{ opacity: .35; }} }}
- .runtime-progress {{ height: 7px; border-radius: 7px; background: #e5eaf0; overflow: hidden; }}
+ .runtime-progress {{ position: absolute; left: 0; right: 0; bottom: 0;
+        height: 3px; background: none; overflow: hidden; }}
  .runtime-progress i {{ display: block; width: 0; height: 100%; background: #2678c8; transition: width .25s; }}
  #runtime-meta {{ color: var(--muted); white-space: nowrap; }}
  #recalc-plan {{ padding: 7px 11px; border: 1px solid #a9bdd1; border-radius: var(--r-ctl); background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
@@ -2561,8 +2538,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
  .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
  .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
- .decisions {{ margin: 10px 0; background: #fff; border: 1px solid #dde4eb;
-        border-radius: 10px; overflow: hidden; }}
+ .decisions {{ margin: 10px 0; background: var(--card);
+        border: 1px solid var(--line); border-radius: var(--r-card);
+        overflow: hidden; box-shadow: var(--shadow); }}
  .decisions > summary {{ padding: 11px 13px; cursor: pointer;
         font-weight: 700; user-select: none; background: #f7f9fb; }}
  .decisions[open] > summary {{ border-bottom: 1px solid #e2e7ec; }}
@@ -2579,7 +2557,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .decision-name {{ font-weight: 750; margin: 2px 0 4px; }}
  .decision-reason {{ color: #4d5863; font-size: 12px; line-height: 1.35; }}
  .decision-facts {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }}
- .decision-facts span {{ padding: 3px 6px; border-radius: 10px; background: #eef3f7;
+ .decision-facts span {{ padding: 3px 6px; border-radius: 999px; background: #eef3f7;
         color: #52606d; font-size: 10px; }}
  .decision-empty {{ color: #68737d; font-size: 12px; }}
  .report {{ margin: 4px 0 12px; }}
@@ -2588,8 +2566,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .report button.hot {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e;
         font-weight: 600; }}
  .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
- .controls {{ margin: 10px 0; background: #fff; border: 1px solid #dde4eb;
-        border-radius: 10px; overflow: hidden; }}
+ .controls {{ margin: 10px 0; background: var(--card);
+        border: 1px solid var(--line); border-radius: var(--r-card);
+        overflow: hidden; }}
  .controls > summary {{ padding: 11px 13px; cursor: pointer; user-select: none;
         font-weight: 700; background: #f7f9fb; }}
  .controls[open] > summary {{ border-bottom: 1px solid #e4e7eb; }}
@@ -2600,7 +2579,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
         font-weight: normal; margin-top: 2px; }}
  .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: 12px; }}
- .load-card {{ border: 1px solid #e1e5ea; border-radius: 10px; padding: 13px;
+ .load-card {{ border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 13px;
         background: #fbfcfe; min-width: 0; }}
  .load-head {{ display: flex; justify-content: space-between; align-items: flex-start;
         padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #e9ecf0; }}
@@ -2691,19 +2670,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
- .panel-nav {{ position: sticky; top: 0; z-index: 20; display: flex; gap: 6px;
-        overflow-x: auto; scrollbar-width: none; padding: 7px 0 8px;
-        margin: 2px 0 8px; background: #f5f7f9;
-        box-shadow: 0 6px 8px -8px rgba(28,45,68,.35); }}
- .panel-nav::-webkit-scrollbar {{ display: none; }}
- html.dark .panel-nav {{ background: #141c24; }}
- .pnav-chip {{ flex: 0 0 auto; display: inline-flex; align-items: center;
-        min-height: 30px; padding: 4px 11px; border: 1px solid #d3dae1;
-        border-radius: 999px; background: #fff; color: #34404c; font: inherit;
-        font-size: 12px; white-space: nowrap; cursor: pointer; }}
- .pnav-chip.on {{ border-color: #1769c2; color: #1769c2; }}
- html.dark .pnav-chip {{ background: #1c2530; border-color: #3c4b5a; color: #cdd8e3; }}
- html.dark .pnav-chip.on {{ border-color: #4ea1f0; color: #8fc6fb; }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
  .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
  .an-dot.neutral {{ background: #8b98a5; }}
@@ -2841,7 +2807,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .event.k-switch span {{ color: #2f6f9e; }}
  .switch {{ display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }}
  .switch input {{ position: absolute; opacity: 0; pointer-events: none; }}
- .switch span {{ width: 34px; height: 19px; border-radius: 12px; background: #b9bec5;
+ .switch span {{ width: 34px; height: 19px; border-radius: 999px; background: #b9bec5;
         position: relative; transition: background .2s; }}
  .switch span:after {{ content: ''; position: absolute; width: 15px; height: 15px;
         left: 2px; top: 2px; border-radius: 50%; background: #fff; transition: transform .2s;
@@ -2849,12 +2815,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .switch input:checked + span {{ background: #278445; }}
  .switch input:checked + span:after {{ transform: translateX(15px); }}
  .switch em {{ font-style: normal; font-size: 11px; color: #68707a; }}
- .battery-planner {{ margin-top: 13px; padding: 14px; border: 1px solid #d9e1ea;
-        border-radius: 10px; background: linear-gradient(150deg,#fbfdff,#f3f7fc); }}
+ .battery-planner {{ margin-top: 13px; padding: 14px; border: 1px solid var(--line);
+        border-radius: var(--r-ctl); background: linear-gradient(150deg,#fbfdff,#f3f7fc); }}
  .planner-head {{ display: flex; align-items: flex-start; justify-content: space-between;
         gap: 10px; margin-bottom: 12px; }}
  .planner-head small {{ display: block; color: #737c87; margin-top: 2px; }}
- .planner-badge {{ padding: 5px 9px; border-radius: 12px; background: #edf0f3;
+ .planner-badge {{ padding: 5px 9px; border-radius: 999px; background: #edf0f3;
         color: #68717a; font-size: 11px; white-space: nowrap; }}
  .planner-badge.active {{ background: #dcecff; color: #155aa4; font-weight: 700; }}
  .planner-form {{ display: grid; grid-template-columns: 1fr 1.6fr 1fr 1fr auto;
@@ -2913,8 +2879,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .controls button.mini {{ padding: 4px 8px; font-size: 11px; }}
  .controls button.schedule-delete {{ color: #6b4b4b; background: #f7eeee; border-color: #e8cece; }}
  .schedule-empty {{ color: #7c858e; text-align: center; padding: 12px; font-size: 12px; }}
- .plotly-graph-div {{ border-radius: 12px; box-shadow: 0 3px 14px rgba(28,45,68,.07); }}
- html.dark {{ background: #111820; color-scheme: dark; }}
+ .plotly-graph-div {{ border-radius: var(--r-card); }}
+ html.dark {{ color-scheme: dark; }}
  html.dark body {{ color: #e7edf4; background: linear-gradient(145deg,#111820,#17212b); }}
  html.dark .app-header, html.dark .tile, html.dark .controls,
  html.dark .schedule-chart-wrap, html.dark .schedule-item, html.dark .decisions,
@@ -3030,9 +2996,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .live-daily-panel > summary {{ min-height: 42px; align-items: center; margin-bottom: 2px; }}
    .desktop-plot {{ display: none; }}
    .desktop-horizon-toolbar {{ display: none; }}
-   .mobile-plot-shell {{ display: block; background: #fff; border: 1px solid #e0e5eb;
-        border-radius: 12px; margin: 10px 0 13px; overflow: hidden;
-        box-shadow: 0 3px 14px rgba(28,45,68,.07); }}
+   .mobile-plot-shell {{ display: block; background: var(--card);
+        border: 1px solid var(--line); border-radius: var(--r-card);
+        margin: 10px 0 13px; overflow: hidden; box-shadow: var(--shadow); }}
    html.dark .mobile-plot-shell {{ background: #18212b; border-color: #354352; }}
    .mobile-plot-toolbar {{ display: flex; flex-direction: column; gap: 7px; padding: 9px;
         border-bottom: 1px solid #e2e7ec; }}
@@ -3057,28 +3023,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .planner-head {{ flex-direction: column; }}
    .schedule-state {{ width: 100%; text-align: left; }}
    .schedule-item {{ flex-wrap: wrap; }}
-   /* Statusstreifen mobil auf EINE Zeile: vorher stapelten sich Text,
-      Fortschrittsbalken und Knopf in voller Breite zu rund 120 px, bevor
-      irgendein Inhalt kam. Der Fortschritt sitzt jetzt als 3-px-Linie auf der
-      Unterkante des Streifens, der Knopf zeigt nur noch das Symbol. Die
-      Meldung bleibt LESBAR (nur einzeilig gekuerzt) - sie traegt im Fehlerfall
-      den Grund, den sonst niemand sieht. */
-   .runtime-strip {{ position: relative; grid-template-columns: 1fr auto;
-        gap: 8px; padding: 7px 11px 9px; }}
-   .runtime-main {{ grid-column: 1; min-width: 0; }}
-   .runtime-main > div {{ min-width: 0; overflow: hidden;
-        white-space: nowrap; text-overflow: ellipsis; }}
-   .runtime-main small {{ display: inline; margin-left: 7px; }}
-   .runtime-progress {{ position: absolute; left: 0; right: 0; bottom: 0;
-        height: 3px; border-radius: 0 0 10px 10px; }}
+   /* Mobil bekommt der Laufzeitstatus eine eigene Zeile INNERHALB der
+      Titelleiste - nebeneinander mit Titel und Knopfleiste waere er auf einem
+      Telefon nicht mehr lesbar. Die Meldung bleibt sichtbar (nur einzeilig
+      gekuerzt): sie traegt im Fehlerfall den Grund, den sonst niemand sieht. */
+   .runtime-strip {{ flex: 1 1 100%; order: 3; }}
+   .runtime-main small {{ margin-left: 7px; }}
    #runtime-meta {{ display: none; }}
-   #recalc-plan {{ grid-column: 2; min-height: 36px; padding: 6px 11px; }}
+   #recalc-plan {{ min-height: 34px; padding: 5px 10px; margin-left: auto; }}
    .recalc-label {{ display: none; }}
-   /* Sprungleiste nur am Schreibtisch: mobil scrollt man ohnehin, und als
-      klebendes Element kostete sie dauerhaft rund 46 px Bildschirmhoehe.
-      Das Merken des Panel-Zustands haengt NICHT daran - das Skript laeuft
-      weiter, nur die Leiste wird nicht gezeigt. */
-   .panel-nav {{ display: none; }}
    .mode-compare-grid {{ grid-template-columns: 1fr; }}
    .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
    .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 6px 8px; }}
@@ -3104,10 +3057,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 </style></head><body>
 <header class="app-header"><h1>E3DC EMS Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
+{runtime_html}
  <div class="header-actions">{archive_link}{config_link}<button type="button" id="install-app" title="Als App installieren">Installieren</button>
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
-{_panel_nav_block()}
-{runtime_html}
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
 {_sources_block(source_status)}
@@ -3137,6 +3089,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});
  if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(function(){{}});
 }})();</script>
+{_panel_state_block()}
 <script>{_RELOAD_JS}</script>
 </body></html>"""
 

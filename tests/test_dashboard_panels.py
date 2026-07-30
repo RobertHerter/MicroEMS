@@ -1,12 +1,10 @@
-"""Seitengerüst des Dashboards: Panels, Sprungleiste, Zeitachse.
-
-Sprungleiste und gemerkter Panel-Zustand (ems/dashboard.py).
+"""Seitengerüst des Dashboards: Panels, Kopfzeile, Zeitachse, Farben.
 
 Die Seite lädt sich bei jedem neuen Plan komplett neu. Der Auf-/Zu-Zustand der
 Panels ist reine DOM-Information: ohne Sicherung fällt ein aufgeklapptes Panel
 spätestens beim nächsten Zyklus zu - samt allem, was es beim Aufklappen
-nachgeladen hat. Beides hängt an einer Bedingung, die man leicht verliert:
-JEDES Panel braucht eine stabile, eindeutige id.
+nachgeladen hat. Das hängt an einer Bedingung, die man leicht verliert: JEDES
+Panel braucht eine stabile, eindeutige id.
 """
 from __future__ import annotations
 
@@ -207,35 +205,32 @@ def test_panel_ids_are_unique(tmp_path):
     assert not doppelt, f"doppelte Panel-ids: {doppelt}"
 
 
-def test_navigation_is_desktop_only_but_state_persistence_is_not(tmp_path):
-    """Die Leiste kostet mobil dauerhaft Bildschirmhöhe und wird dort
-    ausgeblendet - das Merken des Panel-Zustands darf daran NICHT hängen,
-    sonst wäre der Nutzen auf dem Handy weg, obwohl er dort am meisten zählt.
+def test_panel_state_survives_the_reload(tmp_path):
+    """Die Seite laedt bei jedem neuen Plan komplett neu - ohne Sicherung faellt
+    jedes aufgeklappte Panel zu, samt allem, was es nachgeladen hatte.
+
+    Hier hing zeitweise eine Sprungleiste mit dran. Die ist wieder raus; dass
+    das Merken NICHT an ihr hing, sichert dieser Test ab.
     """
     html = _render(tmp_path)
-    mobil = _mobile_css(html)
-    assert ".panel-nav { display: none; }" in mobil
-    # Zustands-Skript und Speicher-Schlüssel liegen AUSSERHALB der Medienregel.
-    assert "ems-panel-open" in html.replace(mobil, "")
-
-
-def test_runtime_strip_is_one_row_on_mobile(tmp_path):
-    """Der Statusstreifen stapelte mobil Text, Fortschritt und Knopf in voller
-    Breite - rund 120 px, bevor ein einziger Messwert zu sehen war."""
-    mobil = _mobile_css(_render(tmp_path))
-    assert ".recalc-label { display: none; }" in mobil
-    assert "position: absolute" in mobil.split(".runtime-progress")[1][:180]
-    # Die Meldung bleibt sichtbar (nur einzeilig) - sie traegt den Fehlergrund.
-    assert "display: inline" in mobil.split(".runtime-main small")[1][:80]
-
-
-def test_navigation_and_state_persistence_are_wired(tmp_path):
-    html = _render(tmp_path)
-    assert '<nav class="panel-nav" id="panel-nav"' in html
-    # Der Zustand landet unter einem eigenen Schlüssel; das Tagespanel behält
-    # seinen eigenen (mobile Voreinstellung) und wird bewusst ausgenommen.
     assert "ems-panel-open" in html
-    assert "'live-daily-panel':1" in html
+    assert "addEventListener('toggle'" in html
+    assert "panel-nav" not in html and "pnav-chip" not in html
+
+
+def test_runtime_status_lives_in_the_header(tmp_path):
+    """Als eigener Streifen brauchte der Laufzeitstatus eine zweite Karte mit
+    Rahmen, Schatten und Aussenabstand - mobil rund 120 px, bevor ein Messwert
+    zu sehen war. Jetzt kostet er nur die Zeilenhoehe der Titelleiste."""
+    html = _render(tmp_path)
+    kopf = html[html.index("<header class=\"app-header\""):]
+    kopf = kopf[:kopf.index("</header>")]
+    assert 'class="runtime-strip"' in kopf, "Status steht nicht in der Titelleiste"
+    assert 'id="runtime-progress"' in kopf
+    mobil = _mobile_css(html)
+    assert ".recalc-label { display: none; }" in mobil
+    # Die Meldung bleibt lesbar - sie traegt im Fehlerfall den Grund.
+    assert "display: none" not in mobil.split("#runtime-meta")[0][-200:]
 
 
 def test_panels_stay_collapsed_by_default(tmp_path):

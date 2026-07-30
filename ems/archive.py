@@ -236,26 +236,26 @@ _ARCHIVE_HTML = r"""<!doctype html>
 <title>EMS Lauf-Archiv</title>
 <script>(function(){const s=localStorage.getItem('ems-theme');document.documentElement.classList.toggle('dark',s==='dark'||(!s&&matchMedia('(prefers-color-scheme:dark)').matches));})();</script>
 <style>
-:root{color-scheme:light;--bg:#eef3f8;--card:#fff;--text:#20252b;--muted:#697785;--line:#dce4eb;--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--danger:#b52d28;--ok:#258448;--warn:#8a6d1f}
-html.dark{color-scheme:dark;--bg:#111820;--card:#1a2631;--text:#e7edf4;--muted:#aebbc8;--line:#3d4c5b;--input:#202e3a;--blue:#338be0;--soft:#202e3a;--danger:#ff8c87;--ok:#75ce91;--warn:#e5cb74}
+:root{color-scheme:light;--bg:#eef2f6;--card:#fff;--text:#20252b;--muted:#6b7480;--line:#e3e8ee;--r-card:14px;--r-ctl:9px;--shadow:0 1px 2px rgba(20,35,55,.05),0 4px 16px rgba(20,35,55,.06);--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--danger:#b52d28;--ok:#258448;--warn:#8a6d1f}
+html.dark{color-scheme:dark;--bg:#10171e;--card:#18212b;--text:#e7edf4;--muted:#9aa7b4;--line:#33414f;--shadow:0 1px 2px rgba(0,0,0,.30),0 4px 16px rgba(0,0,0,.28);--input:#202e3a;--blue:#338be0;--soft:#202e3a;--danger:#ff8c87;--ok:#75ce91;--warn:#e5cb74}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{padding:0 18px}
 .app-header{display:flex;align-items:center;gap:12px;margin:14px 0;padding:13px 16px;
- background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 3px 14px rgba(28,45,68,.07)}
+ background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);box-shadow:var(--shadow)}
 .app-header h1{flex:1;font-size:22px;margin:0;min-width:0}
 .app-header h1 .ts{color:var(--muted);font-weight:normal;font-size:14px}
 .header-actions{display:flex;gap:7px}
-button,.button{border:1px solid var(--line);border-radius:8px;background:var(--soft);color:var(--text);
+button,.button{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--soft);color:var(--text);
  padding:8px 12px;font:inherit;cursor:pointer;text-decoration:none;display:inline-flex;
  align-items:center;justify-content:center;gap:5px;min-width:42px;min-height:38px}
 button:disabled{opacity:.55;cursor:wait}
-select,input{border:1px solid var(--line);border-radius:8px;background:var(--input);color:var(--text);padding:8px 9px;font:inherit;max-width:100%}
+select,input{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--input);color:var(--text);padding:8px 9px;font:inherit;max-width:100%}
 main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;margin:14px auto}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}
 .pick{display:grid;grid-template-columns:minmax(240px,1fr) auto auto auto;gap:9px;align-items:center}
 .pick label{grid-column:1/-1;color:var(--muted);font-size:12px}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:9px}
-.tile{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+.tile{background:var(--soft);border:1px solid var(--line);border-radius:var(--r-ctl);padding:9px 11px}
 .tile .v{font-size:19px;font-weight:750}.tile .l{color:var(--muted);font-size:12px;margin-top:2px}.tile .s{color:var(--muted);font-size:11px;margin-top:3px}
 .tile.warn{border-color:#e1b74a}.tile.bad{border-color:#d56b67}
 .hint{color:var(--muted);font-size:12px;margin-top:9px;line-height:1.45}
