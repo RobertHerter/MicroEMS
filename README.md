@@ -98,6 +98,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
 | `ems/gridweather.py` + `ems/priceforecast.py` | Deutschlandweite Wetter-Indizes (Residuallast) + gelernte Börsenpreis-Prognose mit Selbstprüfung |
+| `pool_horizon_bench.py` | Misst am echten Schnappschuss, wie weit der binäre Entscheidungshorizont der Thermolasten reichen darf (`binary_horizon_hours`) |
 | `ems/ingest.py` | Externe Einspeisung (REST) von Live-/Historienwerten → Betrieb ohne RSCP/InfluxDB |
 | `ems/dashboard.py` | Interaktives HTML-Dashboard + JSON-API |
 | `tests/` | pytest-Suite (E2E, Optimierer-Randfälle, Prognose, Ersparnis, Diagnose …) |
