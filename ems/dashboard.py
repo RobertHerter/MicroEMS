@@ -1868,13 +1868,33 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                         "#00838f", "#7cb342"]
         _n_load = 0
         for ld in loads_cfg:
+            sg = _lslug(ld.name)
+            colour = _LOAD_COLORS[_n_load % len(_LOAD_COLORS)]
+            if ld.type == "thermal":
+                # Thermolasten hatten NIE eine eigene Leistungskurve - sie
+                # steckten nur in der Summe "Steuerb. Lasten" und in der
+                # Zeitleiste. Neben den einzeln gezeichneten Waschmaschinen
+                # sah das aus, als fehle der Pool. Hier die geplante
+                # Heizleistung als Summe der Stufen; "Heizleistung" statt
+                # "(Soll)", weil dieser Name im Temperaturpanel schon fuer die
+                # Solltemperatur derselben Last vergeben ist.
+                stufen = [f"load_{sg}_{_lslug(st.name)}_w" for st in ld.stages]
+                stufen = [c for c in stufen if c in t.columns]
+                if stufen and float(t[stufen].sum().sum()) > 0.0:
+                    _n_load += 1
+                    fig.add_trace(go.Scatter(
+                        x=xp, y=t[stufen].sum(axis=1),
+                        name=f"{ld.name} Heizleistung", mode="lines",
+                        line=dict(color=colour, width=1.4, dash="dash"),
+                        hovertemplate=HOVER_W, legendgroup="prog",
+                        legendrank=_GROUP_RANK["prog"],
+                        legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
+                continue
             if ld.type != "deferrable":
                 continue
-            sg = _lslug(ld.name)
             planned_col = f"load_{sg}_w"
             actual_col = f"actual_load_{sg}_power_w"
             if actual_col in t.columns and t[actual_col].notna().any():
-                colour = _LOAD_COLORS[_n_load % len(_LOAD_COLORS)]
                 _n_load += 1
                 line(planned_col, f"{ld.name} (Soll)", colour, 1, "prog",
                      dash="dash", width=1.4)

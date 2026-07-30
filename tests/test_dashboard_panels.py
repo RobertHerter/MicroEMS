@@ -88,8 +88,8 @@ def _render_with_temperature(tmp_path) -> str:
         "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
         "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
         "slot_cost_ct": np.zeros(n),
-        "load_pool_klein_w": np.full(n, 400.0),
-        "load_pool_temp_c": np.full(n, 27.5),
+        "load_Pool_klein_w": np.full(n, 400.0),
+        "load_Pool_temp_c": np.full(n, 27.5),
     }, index=index)
     # Stundenraster - bewusst NICHT das Slot-Raster der Tabelle.
     ambient = pd.Series(
@@ -162,6 +162,54 @@ def test_each_controllable_load_gets_its_own_colour(tmp_path):
     assert len(farben) == len(namen), f"nicht alle Lasten gezeichnet: {farben}"
     assert len(set(farben.values())) == len(namen), \
         f"Lasten teilen sich Farben: {farben}"
+
+
+def test_thermal_load_gets_its_own_power_curve(tmp_path):
+    """Der Pool hatte nie eine eigene Leistungskurve, die Waschmaschinen schon.
+
+    Er steckte nur in der Summe "Steuerb. Lasten" und in der Zeitleiste - neben
+    den einzeln gezeichneten verschiebbaren Lasten sah das aus, als fehle er.
+    Der Name ist bewusst "Heizleistung": "(Soll)" ist im Temperaturpanel schon
+    für die Solltemperatur derselben Last vergeben.
+    """
+    html = _render_with_temperature(tmp_path)
+    data, _ = _figure(html)
+    namen = [t.get("name") for t in data if t.get("name")]
+    assert "Pool Heizleistung" in namen, namen
+    # Kein Namenskonflikt mit der Temperaturkurve derselben Last.
+    assert namen.count("Pool (Soll)") == 1
+
+    kurve = next(t for t in data if t.get("name") == "Pool Heizleistung")
+    assert kurve.get("yaxis", "y") == "y", "gehört ins Leistungspanel"
+
+
+def test_thermal_curve_stays_away_when_nothing_is_planned(tmp_path):
+    """Ohne geplante Heizleistung keine Nullkurve in der Legende - sie waere
+    ein Eintrag mehr in einer ohnehin langen Liste, ohne Aussage."""
+    from ems.config import ControllableLoad, LoadStage
+
+    cfg = make_config(tmp_html=str(tmp_path / "dash_kalt.html"))
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0, stages=[LoadStage("klein", 400, 1000)])]
+    index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.full(n, 800.0),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": np.zeros(n),          # geplant: gar nicht heizen
+        "load_Pool_temp_c": np.full(n, 29.0),
+    }, index=index)
+    html = pathlib.Path(build_dashboard(
+        cfg, table, total_cost_ct=0.0)).read_text(encoding="utf-8")
+    data, _ = _figure(html)
+    assert "Pool Heizleistung" not in [t.get("name") for t in data]
 
 
 def test_shapes_and_annotations_use_the_same_time_format(tmp_path):
