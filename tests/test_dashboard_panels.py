@@ -233,6 +233,44 @@ def test_runtime_status_lives_in_the_header(tmp_path):
     assert "display: none" not in mobil.split("#runtime-meta")[0][-200:]
 
 
+def test_sources_and_validation_are_tiles_without_losing_detail():
+    """Beide standen als eigene Zeile in voller Breite über dem Diagramm.
+
+    Als Kachel ist nur Platz für eine Zahl - die Einzelheiten (welche Quelle
+    hängt, welche Invariante verletzt ist) dürfen dabei nicht verschwinden,
+    sonst wird aus dem Aufräumen ein Informationsverlust. Sie stehen deshalb
+    im Kurzinfotext der Kachel.
+    """
+    from dataclasses import dataclass
+
+    from ems.dashboard import _sources_tile, _validation_tile
+
+    @dataclass
+    class Verstoss:
+        severity: str
+        text: str
+
+        def __str__(self) -> str:
+            return self.text
+
+    quellen = [{"name": "Spotpreis", "level": "ok", "detail": "echt bis 23:45"},
+               {"name": "Wetter", "level": "ok", "detail": "vor 5 min"},
+               {"name": "Hauslast", "level": "warn", "detail": "vor 75 min"}]
+    kachel = _sources_tile(quellen)
+    assert "2/3 aktuell" in kachel and "Datenquellen" in kachel
+    assert "Hauslast" in kachel                      # der Ausreisser wird genannt
+    assert "vor 75 min" in kachel                    # Detail im Kurzinfotext
+    assert "echt bis 23:45" in kachel
+
+    schlecht = _validation_tile(
+        [Verstoss("error", "SoC unter Minimum in Slot 42")])
+    assert "1 Fehler" in schlecht
+    assert "SoC unter Minimum in Slot 42" in schlecht
+
+    assert "✓ OK" in _validation_tile([])
+    assert _validation_tile(None) == ""               # ungeprueft -> keine Kachel
+
+
 def test_panels_stay_collapsed_by_default(tmp_path):
     """Nur das Tagespanel ist offen - sonst wäre die Seite eine Bleiwüste.
 

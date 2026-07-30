@@ -270,10 +270,61 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
 }})();</script>"""
 
 
-def _tile(label: str, value: str, sub: str = "", color: str = "") -> str:
+def _tile(label: str, value: str, sub: str = "", color: str = "",
+          title: str = "") -> str:
+    """Kennzahlkachel. ``title`` traegt Details, die in der Kachel keinen Platz
+    haben (Kurzinfo beim Zeigen) - so wird aus einer Zeile eine Kachel, ohne
+    dass die Einzelheiten verlorengehen."""
     style = f' style="color:{color}"' if color else ""
-    return (f'<div class="tile"><div class="v"{style}>{value}</div>'
+    tip = f' title="{_esc(title)}"' if title else ""
+    return (f'<div class="tile"{tip}><div class="v"{style}>{value}</div>'
             f'<div class="l">{label}</div><div class="s">{sub}</div></div>')
+
+
+def _sources_tile(source_status) -> str:
+    """Frische der externen Datenquellen als EINE Kachel.
+
+    Vorher eine eigene Chip-Zeile in voller Breite ueber dem Diagramm. Als
+    Kachel steht sie bei den uebrigen Kennzahlen, und die Einzelheiten je
+    Quelle bleiben ueber den Kurzinfotext erreichbar - ausserdem stehen sie
+    ausfuehrlich im Panel "Prognosen & Qualitaet".
+    """
+    if not source_status:
+        return ""
+    rang = {"ok": 0, "warn": 1, "err": 2}
+    schlecht = [s for s in source_status if rang.get(s.get("level"), 1) > 0]
+    frisch = len(source_status) - len(schlecht)
+    farbe = ("#d62728" if any(s.get("level") == "err" for s in schlecht)
+             else "#e6a700" if schlecht else "#2ca02c")
+    unter = (", ".join(str(s.get("name")) for s in schlecht[:2])
+             + (" …" if len(schlecht) > 2 else "")) if schlecht \
+        else "alle Quellen frisch"
+    return _tile("Datenquellen", f"{frisch}/{len(source_status)} aktuell",
+                 _esc(unter), color=farbe,
+                 title="\n".join(f"{s.get('name')}: {s.get('detail', '')}"
+                                 for s in source_status))
+
+
+def _validation_tile(violations) -> str:
+    """Ergebnis der Planpruefung als Kachel statt als Banner in voller Breite.
+
+    Die einzelnen Verstoesse standen im Banner als Liste; sie wandern in den
+    Kurzinfotext, damit die Kachel kurz bleibt, ohne dass sie verschwinden.
+    """
+    if violations is None:
+        return ""
+    errs = [v for v in violations if getattr(v, "severity", "") == "error"]
+    warns = [v for v in violations if getattr(v, "severity", "") == "warning"]
+    if errs:
+        wert, farbe = f"{len(errs)} Fehler", "#d62728"
+        unter = f"{len(warns)} Warnungen" if warns else "Plan verletzt Invarianten"
+    elif warns:
+        wert, farbe = f"{len(warns)} Warnungen", "#e6a700"
+        unter = "keine Fehler"
+    else:
+        wert, farbe, unter = "✓ OK", "#2ca02c", "alle Invarianten erfüllt"
+    return _tile("Planprüfung", wert, unter, color=farbe,
+                 title="\n".join(str(v) for v in (errs + warns)))
 
 
 def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> str:
@@ -352,24 +403,6 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
 
 def _esc(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-
-
-def _alert_banner(violations) -> str:
-    """HTML-Banner der Planprüfung (ems/validate). Grün wenn sauber, sonst
-    rot (Fehler) bzw. gelb (nur Warnungen) mit den einzelnen Meldungen."""
-    if violations is None:
-        return ""
-    errs = [v for v in violations if getattr(v, "severity", "") == "error"]
-    warns = [v for v in violations if getattr(v, "severity", "") == "warning"]
-    if not errs and not warns:
-        return ('<div class="banner ok">✓ Planprüfung: keine Verstöße – '
-                'alle Invarianten erfüllt.</div>')
-    cls = "err" if errs else "warn"
-    head = (f"✗ Planprüfung: {len(errs)} Fehler"
-            + (f", {len(warns)} Warnungen" if warns else "")) if errs \
-        else f"⚠ Planprüfung: {len(warns)} Warnungen"
-    items = "".join(f"<li>{_esc(v)}</li>" for v in (errs + warns))
-    return (f'<div class="banner {cls}"><b>{head}</b><ul>{items}</ul></div>')
 
 
 def _control_banner(status) -> str:
@@ -1344,21 +1377,6 @@ def _load_profile_block(config) -> str:
                      f"{planned}/{len(loads)} in der Planung"
                      + (f" · {learning} im Anlernen" if learning else "")))
 
-def _sources_block(source_status) -> str:
-    """Frische-Chips der externen Datenquellen (Spotpreis/Wetter/Solcast):
-    grün = frisch, gelb = älter als erwartet, rot = veraltet/fehlend -
-    macht sichtbar, wenn still auf Cache/Schätzung optimiert wird."""
-    if not source_status:
-        return ""
-    col = {"ok": "#2ca02c", "warn": "#e6a700", "err": "#d62728"}
-    chips = "".join(
-        f'<span class="chip"><span class="dot" style="background:'
-        f'{col.get(s.get("level"), "#999")}"></span>{s.get("name")}: '
-        f'{s.get("detail", "")}</span>'
-        for s in source_status)
-    return f'<div class="chips">Datenquellen: {chips}</div>'
-
-
 _LEVEL_RANK = {"current": 0, "partial": 1, "replaced": 2}
 
 
@@ -2310,8 +2328,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
               .replace(",", ".")),
         _tile("Eingriffe im Plan", f"{n_eingriffe}", "Slots ≠ auto"),
     ]
-    # (Planprüfung wird als eigenes Banner gezeigt - _alert_banner -, daher hier
-    # KEINE zusätzliche KPI-Kachel, um die Doppelanzeige zu vermeiden.)
     if control_status:
         ok = control_status.get("ok")
         state = control_status.get("state", "unknown")
@@ -2325,6 +2341,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             value, color = "nicht geprüft", "#777"
         tiles.append(_tile("E3DC-Steuerung", value,
                            _esc(control_status.get("message", "")), color=color))
+    # Datenquellen und Planpruefung standen bisher als eigene Zeilen in voller
+    # Breite zwischen Kacheln und Diagramm. Als Kacheln stehen sie bei den
+    # uebrigen Statuswerten und kosten keine eigene Zeile mehr.
+    tiles.append(_sources_tile(source_status))
+    tiles.append(_validation_tile(violations))
+    tiles = [kachel for kachel in tiles if kachel]
 
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
@@ -3062,9 +3084,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  <button type="button" id="theme-toggle" title="Darstellung wechseln">Darstellung</button></div></header>
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
-{_sources_block(source_status)}
 {_control_banner(control_status)}
-{_alert_banner(violations)}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {_slot_detail_block()}
