@@ -243,6 +243,47 @@ def test_shared_meter_is_not_counted_twice(tmp_path):
         f"geteilter Zähler doppelt gezählt: {float(np.nanmax(werte))}"
 
 
+def test_thermal_actual_curve_stops_at_the_present(tmp_path):
+    """Eine Ist-Kurve darf nicht in die Zukunft laufen.
+
+    ``sum(axis=1)`` macht in pandas aus jedem NaN eine 0 - die gemessene
+    Heizleistung lief damit als 0-W-Linie bis ans Horizontende, obwohl es dort
+    keine Messung gibt. Das ist keine Kosmetik: eine Ist-Kurve in der Zukunft
+    behauptet eine Messung, die es nicht gibt.
+    """
+    from ems.config import ControllableLoad, LoadStage
+
+    cfg = make_config(tmp_html=str(tmp_path / "dash_zukunft.html"))
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, target_c=28.0,
+        min_c=26.0, max_c=32.0,
+        stages=[LoadStage("klein", 400, 1000, power_topic="homie/pool")])]
+    index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    gemessen = np.full(n, np.nan)
+    gemessen[:3] = [900.0, 950.0, 0.0]          # nur die ersten drei Slots
+    table = pd.DataFrame({
+        "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
+        "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
+        "batt_dc_charge_w": np.zeros(n), "batt_ac_charge_w": np.zeros(n),
+        "batt_discharge_w": np.zeros(n), "grid_import_w": np.full(n, 800.0),
+        "grid_export_w": np.zeros(n), "house_soc_percent": np.full(n, 60.0),
+        "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
+        "slot_cost_ct": np.zeros(n),
+        "load_Pool_klein_w": np.full(n, 400.0),
+        "actual_load_Pool_klein_power_w": gemessen,
+    }, index=index)
+    html = pathlib.Path(build_dashboard(
+        cfg, table, total_cost_ct=0.0)).read_text(encoding="utf-8")
+    data, _ = _figure(html)
+    ist = next(t for t in data if t.get("name") == "Pool Heizleistung (Ist)")
+    werte = _series(ist["y"])
+    assert np.count_nonzero(~np.isnan(werte)) == 3, \
+        f"Ist-Kurve reicht über die Messung hinaus: {werte}"
+    assert float(werte[2]) == 0.0, "eine gemessene 0 muss eine 0 bleiben"
+
+
 def test_thermal_curve_stays_away_when_nothing_is_planned(tmp_path):
     """Ohne geplante Heizleistung keine Nullkurve in der Legende - sie waere
     ein Eintrag mehr in einer ohnehin langen Liste, ohne Aussage."""

@@ -1897,7 +1897,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     _n_load += 1
                 if stufen and (ist_cols or float(t[stufen].sum().sum()) > 0.0):
                     fig.add_trace(go.Scatter(
-                        x=xp, y=t[stufen].sum(axis=1),
+                        # min_count=1 wie bei den Sollkurven in main.py: fehlt
+                        # EINE Stufe, gilt sie als 0; fehlen ALLE Werte eines
+                        # Slots, bleibt die Kurve NaN statt faelschlich 0 W.
+                        x=xp, y=t[stufen].sum(axis=1, min_count=1),
                         name=f"{ld.name} Heizleistung (Soll)", mode="lines",
                         line=dict(color=colour, width=1.4, dash="dash"),
                         hovertemplate=HOVER_W, legendgroup="prog",
@@ -1905,7 +1908,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                         legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
                 if ist_cols:
                     fig.add_trace(go.Scatter(
-                        x=xp, y=t[ist_cols].sum(axis=1),
+                        # Ohne min_count=1 macht pandas aus jedem NaN eine 0 -
+                        # die Ist-Kurve lief damit als 0-W-Linie bis ans Ende
+                        # des Horizonts, obwohl es dort naturgemaess keine
+                        # Messung gibt. Eine Ist-Kurve in der Zukunft ist keine
+                        # Kosmetik, sondern eine falsche Aussage.
+                        x=xp, y=t[ist_cols].sum(axis=1, min_count=1),
                         name=f"{ld.name} Heizleistung (Ist)", mode="lines",
                         line=dict(color=colour, width=1.8),
                         hovertemplate=HOVER_W, legendgroup="ist",
