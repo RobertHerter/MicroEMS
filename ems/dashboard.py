@@ -3025,7 +3025,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         padding: var(--s2) var(--s2); box-sizing: border-box; overflow: hidden; white-space: nowrap;
         text-overflow: ellipsis; font-size: var(--t0); font-weight: 700; z-index: 3;
         min-width: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.18); }}
- .schedule-bar.charge, .schedule-bar.grid_charge {{ top: 8px; background: #397fd0; }}
+ /* Netzladen kostet Geld - dieselbe Aussage wie beim Netzbezug in den
+    Kacheln. Vorher Blau, das im Diagramm fuer das Netz als GROESSE steht,
+    nicht fuer die Bewertung. */
+ .schedule-bar.charge, .schedule-bar.grid_charge {{ top: 8px;
+        background: var(--bad); }}
  .schedule-bar.pv_charge {{ top: 8px; background: #269b79; }}
  .schedule-bar.discharge {{ bottom: 10px; background: #dc7a27; }}
  .schedule-bar.idle {{ top: 33px; background: #77818c; }}
@@ -3033,7 +3037,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  @keyframes schedulePulse {{ 50% {{ filter: brightness(1.18); }} }}
  .schedule-legend {{ display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s2);
         color: var(--muted); font-size: var(--t0); }}
- .schedule-legend .charge, .schedule-legend .grid_charge {{ color: #397fd0; }}
+ .schedule-legend .charge, .schedule-legend .grid_charge {{ color: var(--bad); }}
  .schedule-legend .pv_charge {{ color: #269b79; }}
  .schedule-legend .discharge {{ color: #dc7a27; }}
  .schedule-legend .idle {{ color: var(--muted); }}
