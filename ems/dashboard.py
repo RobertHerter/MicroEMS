@@ -2444,7 +2444,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     lagen zudem unter der Lesbarkeitsschwelle von 4,5:1 und liessen die Seite
     ausgewaschen wirken. */
  :root {{ --r-card: 14px; --r-ctl: 9px;
-        --line: #e3e8ee; --card: #fff; --muted: #4a515b; --muted-2: #363c44;
+        --line: #e3e8ee; --card: #fff; --muted: #434a54; --muted-2: #2f353c;
         /* Statusfarben JE THEMA. Vorher standen sie als feste Hexwerte in den
            Kacheln und wechselten mit hell/dunkel nicht mit: das Gelb der
            Warnung kam auf Weiss auf 2,1:1 - ausgerechnet der Warnzustand war

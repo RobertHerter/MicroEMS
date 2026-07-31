@@ -304,3 +304,43 @@ def test_no_page_hardcodes_a_divider_or_surface_colour():
                 verdaechtig.append(f"{selektoren[:40]} -> {m.group(0)[:44]}")
     assert not verdaechtig, \
         f"feste Farbe fuer Trennlinien statt --line: {verdaechtig}"
+
+
+def _dunkler_vordergrund(quelle: str) -> str:
+    """Textfarbe, die im Dunkelmodus gilt.
+
+    Das Dashboard setzt sie auf ``html.dark body``, die beiden kompakten Seiten
+    fuehren sie als ``--text``. Beide Formen muessen gefunden werden - sonst
+    prueft der Test nur eine Seite und geht bei den anderen durch.
+    """
+    m = re.search(r"html\.dark body \{\{[^}]*?color:\s*(#[0-9a-fA-F]{3,6})", quelle)
+    if m:
+        return m.group(1)
+    start = quelle.index("html.dark", quelle.index("<style>"))
+    block = quelle[start:quelle.index("}", start)]
+    m = re.search(r"--text:\s*(#[0-9a-fA-F]{3,6})", block)
+    assert m, "keine Textfarbe im Dunkelblock gefunden"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("seite", SEITEN)
+def test_dark_mode_declares_its_own_text_colour(seite):
+    """Ohne eigene Textfarbe erbt der Dunkelmodus die HELLE - dunkelgrau auf
+    dunkelgrau, die Seite waere unlesbar.
+
+    Der Test steht hier, weil genau das beinahe passiert ist: ein Skript, das
+    ueberfluessige Dunkelmodus-Regeln entfernen sollte, hatte keine
+    Helligkeitsgrenze und loeschte ``html.dark body`` gleich mit. Aufgefallen
+    ist es nur beim Durchsehen der entfernten Regeln - keine Pruefung haette
+    es gefangen.
+    """
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    vordergrund = _dunkler_vordergrund(quelle)
+    werte = _tokens(quelle, dark=True)
+    for name in ("--card", "--surface"):
+        grund = werte.get(name)
+        assert grund, f"{seite}: {name} im Dunkelblock nicht deklariert"
+        verhaeltnis = _kontrast(vordergrund, grund)
+        assert verhaeltnis >= 4.5, (
+            f"{seite}: Text {vordergrund} auf {name} {grund} = "
+            f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")
