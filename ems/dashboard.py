@@ -2444,7 +2444,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     lagen zudem unter der Lesbarkeitsschwelle von 4,5:1 und liessen die Seite
     ausgewaschen wirken. */
  :root {{ --r-card: 14px; --r-ctl: 9px;
-        --line: #e3e8ee; --card: #fff; --muted: #656e79; --muted-2: #59616b;
+        --line: #e3e8ee; --card: #fff; --muted: #5a626d; --muted-2: #464d56;
         /* Statusfarben JE THEMA. Vorher standen sie als feste Hexwerte in den
            Kacheln und wechselten mit hell/dunkel nicht mit: das Gelb der
            Warnung kam auf Weiss auf 2,1:1 - ausgerechnet der Warnzustand war
@@ -2457,7 +2457,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
            unruhige Eindruck. Die Zuordnung bewegt jeden Einzelwert um
            hoechstens 1-2 px; der Gewinn liegt im gemeinsamen Rhythmus. */
         --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
-        --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
+        --t0: 11px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #217a41; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
         --surface: #f7f9fb;
@@ -2678,7 +2678,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .quality-item.current .quality-state {{ color: #237a3b; }}
  .quality-item.partial .quality-state {{ color: #8a6d00; }}
  .quality-item.replaced .quality-state {{ color: #b3261e; }}
- .quality-detail {{ margin-top: var(--s0); color: var(--muted); font-size: var(--t0);
+ /* Ein Absatz, keine Bildunterschrift: eine Stufe groesser als die
+    kleinste. Bei 10 px und gedaempftem Grau war er im hellen Thema
+    nicht mehr lesbar - Groesse und Kontrast wirken zusammen. */
+ .quality-detail {{ margin-top: var(--s0); color: var(--muted); font-size: var(--t1);
         line-height: 1.3; }}
  .live-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
         margin-right: var(--s1); background: #999; }}
