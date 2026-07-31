@@ -2622,9 +2622,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .quality-item {{ position: relative; min-width: 0; padding: var(--s2) var(--s2) var(--s2) var(--s3);
         border: 1px solid #dfe5eb; border-left: 4px solid #999;
         border-radius: 8px; background: #f8fafb; }}
- .quality-item.current {{ border-left-color: #2ca02c; background: #f1faf4; }}
- .quality-item.partial {{ border-left-color: #e6a700; background: #fff9e8; }}
- .quality-item.replaced {{ border-left-color: #d62728; background: #fdf0ef; }}
+ /* Nur die Kante traegt den Zustand, nicht die ganze Flaeche. Ist alles in
+    Ordnung, waren vorher SAEMTLICHE Karten eines Panels gruen getoent - eine
+    Wand aus Farbe, die nichts hervorhebt. Auffaellig wird jetzt, was
+    abweicht. */
+ .quality-item.current {{ border-left-color: var(--ok); }}
+ .quality-item.partial {{ border-left-color: var(--warn); }}
+ .quality-item.replaced {{ border-left-color: var(--bad); }}
  .quality-source {{ font-size: var(--t1); font-weight: 700; }}
  .quality-state {{ margin-top: var(--s0); font-size: var(--t1); font-weight: 650; }}
  .quality-item.current .quality-state {{ color: #237a3b; }}
@@ -3070,9 +3074,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
  html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
  html.dark .quality-item {{ background: #202b36; border-color: #43515f; }}
- html.dark .quality-item.current {{ background: #173326; border-left-color: #58b879; }}
- html.dark .quality-item.partial {{ background: #3a3219; border-left-color: #d9b83f; }}
- html.dark .quality-item.replaced {{ background: #402124; border-left-color: #df6c68; }}
+
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
  html.dark .quality-item.replaced .quality-state {{ color: #f1a29c; }}
