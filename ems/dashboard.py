@@ -1792,7 +1792,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     has_thermal = len(thermal_cfg) > 0
     if has_loads:
         titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
-                  "<b>Steuerung</b>", "", "<b>Steuerbare Lasten</b>"]
+                  "<b>Steuerung</b>", "<b>Modus</b>",
+                  "<b>Steuerbare Lasten</b>"]
         # Die Lastenleiste muss mit der Spurenzahl wachsen. Bei fester Hoehe
         # blieben von 12 Spuren nur ~8 px je Zeile - Plotly liess dann jedes
         # zweite Tick-Label weg und es sah aus, als fehlten Lasten.
@@ -1806,11 +1807,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # stimmt die Normierung auf `rest` nicht mehr.
         row_heights = [0.36 * rest / 0.85, 0.13 * rest / 0.85,
                        0.13 * rest / 0.85, 0.23 * rest / 0.85,
-                       0.045, lane_share]
+                       0.055, lane_share]
     else:
         titles = ["<b>Leistung</b>", "<b>Ladezustand</b>", "<b>Strompreis</b>",
-                  "<b>Steuerung</b>", ""]
-        row_heights = [0.36, 0.15, 0.15, 0.26, 0.045]
+                  "<b>Steuerung</b>", "<b>Modus</b>"]
+        row_heights = [0.36, 0.15, 0.15, 0.25, 0.055]
     temp_row = None
     if has_thermal:
         temp_row = len(titles) + 1

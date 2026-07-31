@@ -177,13 +177,16 @@ def test_spacing_and_type_follow_a_scale(seite):
     assert not frei, f"{seite}: freihändige Werte statt Skala: {sorted(set(frei))}"
 
 
-@pytest.mark.parametrize("dark", [False, True], ids=["hell", "dunkel"])
-def test_the_scale_itself_is_a_scale(dark):
+def test_the_scale_itself_is_a_scale():
     """Die Token muessen aufsteigend und ohne Dubletten sein - sonst waere die
-    Skala nur eine andere Schreibweise fuer Freihand."""
+    Skala nur eine andere Schreibweise fuer Freihand.
+
+    Bewusst OHNE Aufteilung nach Thema: Abstaende und Schriftgrade stehen nur
+    in :root, der Dunkelblock aendert allein Farben. Die Aufteilung war hier
+    ein Denkfehler von mir - sie erzeugte einen Fall, der dauerhaft
+    uebersprungen wurde und damit nur so aussah, als pruefe er etwas.
+    """
     quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
-    if dark:
-        pytest.skip("Groessen erben aus :root, der Dunkelblock aendert nur Farben")
     for praefix, anzahl in (("--s", 6), ("--t", 5)):
         werte = [int(re.search(r"(\d+)px", m).group(1)) for m in
                  re.findall(rf"{praefix}\d: *\d+px", quelle)][:anzahl]
