@@ -203,3 +203,36 @@ def test_values_keep_a_fixed_digit_width_without_a_typewriter_face(seite):
     assert "--font-num" in quelle, "kein Token fuer die Wertschrift"
     assert "monospace" not in quelle, \
         f"{seite}: Schreibmaschinenschrift ist zurueck"
+
+
+def test_no_theme_rule_overrides_the_tile_family_colour():
+    """Eine spaetere Themenregel darf die Familienfarbe nicht ausknipsen.
+
+    Genau das passierte: eine alte ``html.dark``-Sammelregel setzte fuer
+    ``.tile`` Hintergrund UND border-color auf feste Werte - und stand SPAETER
+    im Stil als die Kachelregel selbst. Im hellen Thema war die Zugehoerigkeit
+    damit sichtbar, im dunklen gar nicht. Der Fehler ist unsichtbar, solange
+    man nur ein Thema anschaut.
+    """
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    stil = quelle[quelle.index("<style>"):quelle.index("</style>")]
+    # Kommentare zuerst entfernen: sie stehen direkt vor der Regel und kleben
+    # sonst am ersten Selektor, der dadurch nie exakt "html.dark .tile" heisst.
+    stil = re.sub(r"/\*.*?\*/", " ", stil, flags=re.S)
+    # Regelweise zerlegen statt zeilenweise: Selektorlisten laufen ueber
+    # mehrere Zeilen, ein einzeiliges Muster findet sie nicht - und ein Test,
+    # der nichts findet, geht immer durch.
+    schuldige = []
+    for block in stil.split("}}"):
+        if "{{" not in block:
+            continue
+        selektoren, regeln = block.rsplit("{{", 1)
+        selektoren = selektoren[selektoren.rfind("}") + 1:]
+        trifft_kachel = any(
+            teil.strip() in ("html.dark .tile", ".tile")
+            for teil in selektoren.split(","))
+        if trifft_kachel and ("background" in regeln or "border-color" in regeln):
+            if "html.dark" in selektoren:
+                schuldige.append(" ".join(selektoren.split())[:90])
+    assert not schuldige, \
+        f"Themenregel ueberschreibt Kachelfarbe: {schuldige}"

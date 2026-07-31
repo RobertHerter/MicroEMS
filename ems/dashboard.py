@@ -2464,7 +2464,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
         --muted-2: #b6c2ce;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
-        --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 20%;
+        --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 28%;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
  /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
     verschwindet der Standardring des Browsers fast. Ohne sichtbaren Fokus
@@ -3021,10 +3021,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .schedule-empty {{ color: #7c858e; text-align: center; padding: var(--s3); font-size: var(--t1); }}
  .plotly-graph-div {{ border-radius: var(--r-card); }}
  html.dark {{ color-scheme: dark; }}
- html.dark body {{ color: #e7edf4; background: linear-gradient(145deg,#111820,#17212b); }}
- html.dark .app-header, html.dark .tile, html.dark .controls,
- html.dark .schedule-chart-wrap, html.dark .schedule-item, html.dark .decisions,
- html.dark .curve-box span, html.dark .runtime-strip, html.dark .info-panel {{ background: #18212b; border-color: #354352; color: #e7edf4; }}
+ html.dark body {{ color: #e7edf4; }}
+ /* Nur noch fuer die Elemente, die ihre Farben NICHT ueber Token beziehen.
+    Vorher stand hier auch .tile - mit festem Hintergrund UND border-color, und
+    zwar SPAETER im Stil als die Kachelregel selbst. Damit ueberschrieb diese
+    Zeile im Dunkelmodus sowohl die Familientoenung als auch die farbige Kante:
+    im hellen Thema war die Zugehoerigkeit sichtbar, im dunklen gar nicht.
+    .app-header, .controls, .decisions, .info-panel und .runtime-strip haben
+    dasselbe Problem gehabt und beziehen ihre Farben laengst aus --card/--line;
+    ihre Eintraege hier waren nur noch Altlast. */
+ html.dark .schedule-chart-wrap, html.dark .schedule-item,
+ html.dark .curve-box span {{ background: var(--card); border-color: var(--line);
+        color: #e7edf4; }}
  html.dark .runtime-main small, html.dark #runtime-meta {{ color: #b6c2ce; }}
  html.dark .runtime-progress {{ background: #354352; }}
  html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
