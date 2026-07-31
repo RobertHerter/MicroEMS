@@ -294,8 +294,8 @@ def _sources_tile(source_status) -> str:
     rang = {"ok": 0, "warn": 1, "err": 2}
     schlecht = [s for s in source_status if rang.get(s.get("level"), 1) > 0]
     frisch = len(source_status) - len(schlecht)
-    farbe = ("#d62728" if any(s.get("level") == "err" for s in schlecht)
-             else "#e6a700" if schlecht else "#2ca02c")
+    farbe = ("var(--bad)" if any(s.get("level") == "err" for s in schlecht)
+             else "var(--warn)" if schlecht else "var(--ok)")
     unter = (", ".join(str(s.get("name")) for s in schlecht[:2])
              + (" …" if len(schlecht) > 2 else "")) if schlecht \
         else "alle Quellen frisch"
@@ -316,13 +316,13 @@ def _validation_tile(violations) -> str:
     errs = [v for v in violations if getattr(v, "severity", "") == "error"]
     warns = [v for v in violations if getattr(v, "severity", "") == "warning"]
     if errs:
-        wert, farbe = f"{len(errs)} Fehler", "#d62728"
+        wert, farbe = f"{len(errs)} Fehler", "var(--bad)"
         unter = f"{len(warns)} Warnungen" if warns else "Plan verletzt Invarianten"
     elif warns:
-        wert, farbe = f"{len(warns)} Warnungen", "#e6a700"
+        wert, farbe = f"{len(warns)} Warnungen", "var(--warn)"
         unter = "keine Fehler"
     else:
-        wert, farbe, unter = "✓ OK", "#2ca02c", "alle Invarianten erfüllt"
+        wert, farbe, unter = "✓ OK", "var(--ok)", "alle Invarianten erfüllt"
     return _tile("Planprüfung", wert, unter, color=farbe,
                  title="\n".join(str(v) for v in (errs + warns)))
 
@@ -2382,13 +2382,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         ok = control_status.get("ok")
         state = control_status.get("state", "unknown")
         if ok is True:
-            value, color = "✓ bestätigt", "#2ca02c"
+            value, color = "✓ bestätigt", "var(--ok)"
         elif ok is False:
-            value, color = "✗ ausgefallen", "#d62728"
+            value, color = "✗ ausgefallen", "var(--bad)"
         elif state == "manual":
-            value, color = "Handbetrieb", "#e6a700"
+            value, color = "Handbetrieb", "var(--warn)"
         else:
-            value, color = "nicht geprüft", "#777"
+            value, color = "nicht geprüft", "var(--muted)"
         tiles.append(_tile("E3DC-Steuerung", value,
                            _esc(control_status.get("message", "")), color=color))
     # Datenquellen und Planpruefung standen bisher als eigene Zeilen in voller
@@ -2443,10 +2443,31 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     ausgewaschen wirken. */
  :root {{ --r-card: 14px; --r-ctl: 9px;
         --line: #e3e8ee; --card: #fff; --muted: #6b7480; --muted-2: #59616b;
+        /* Statusfarben JE THEMA. Vorher standen sie als feste Hexwerte in den
+           Kacheln und wechselten mit hell/dunkel nicht mit: das Gelb der
+           Warnung kam auf Weiss auf 2,1:1 - ausgerechnet der Warnzustand war
+           der am schlechtesten lesbare. Diese Werte liegen in BEIDEN Themen
+           ueber 4,5:1 und sind dieselben wie im Lauf-Archiv. */
+        --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
         --muted-2: #b6c2ce;
+        --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
+ /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
+    verschwindet der Standardring des Browsers fast. Ohne sichtbaren Fokus
+    weiss man beim Durchtabben nicht, wo man steht. */
+ :where(a, button, summary, input, select, textarea, [tabindex]):focus-visible {{
+        outline: 2px solid var(--focus); outline-offset: 2px;
+        border-radius: var(--r-ctl); }}
+ /* Drei Endlos-Animationen laufen dauerhaft (Statuspunkt, Zeitplan, Prognose).
+    Wer Bewegung reduziert haben will, bekommt den Zustand weiter ueber Farbe
+    und Text - die Bewegung selbst traegt keine eigene Information. */
+ @media (prefers-reduced-motion: reduce) {{
+   *, *::before, *::after {{ animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important; scroll-behavior: auto !important; }}
+ }}
  html {{ background: #eef2f6; }}
  html.dark {{ background: #10171e; }}
  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -2473,7 +2494,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         margin-top: 6px; }}
  .lp-bars span {{ flex: 1; background: #3a86c8; border-radius: 1px 1px 0 0;
         min-width: 2px; }}
- .tile.warn {{ border-color: #e1b74a; }}
+ .tile.warn {{ border-color: var(--warn); }}
  .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
         border: 1px solid var(--line); border-radius: var(--r-ctl); background: #f5f7f9;
         color: #26313c; cursor: pointer; font: inherit; font-size: 13px;
@@ -2742,9 +2763,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
- .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; vertical-align: middle; background: #28a261; }}
- .an-dot.warn {{ background: #e29a2d; }} .an-dot.bad {{ background: #d1495b; }}
- .an-dot.neutral {{ background: #8b98a5; }}
+ .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+        margin-right: 7px; vertical-align: middle; background: var(--ok); }}
+ .an-dot.warn {{ background: var(--warn); }}
+ .an-dot.bad {{ background: var(--bad); }}
+ .an-dot.neutral {{ background: var(--muted); }}
  .sparkline {{ display: flex; align-items: flex-end; gap: 3px; height: 46px; padding: 0 12px 12px; }}
  .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
  .sparkline .bar.neg {{ background: #d1495b; }}

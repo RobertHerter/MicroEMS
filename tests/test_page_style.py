@@ -18,7 +18,8 @@ import pytest
 SEITEN = ["ems/dashboard.py", "ems/archive.py", "ems/config_editor.py"]
 # Nur die Größen, die seitenübergreifend gleich aussehen MÜSSEN. Farben wie
 # --blue oder --danger darf jede Seite für sich führen.
-TOKENS = ["--r-card", "--r-ctl", "--line", "--muted", "--card"]
+TOKENS = ["--r-card", "--r-ctl", "--line", "--muted", "--card",
+          "--ok", "--warn", "--bad", "--focus"]
 
 
 def _tokens(quelle: str, dark: bool) -> dict[str, str]:
@@ -71,3 +72,72 @@ def test_no_page_hardcodes_a_card_radius_beside_the_token():
         if treffer:
             verdaechtig[seite] = treffer
     assert not verdaechtig, f"feste Kartenradien statt Token: {verdaechtig}"
+
+
+@pytest.mark.parametrize("seite", SEITEN)
+def test_every_page_shows_where_the_keyboard_is(seite):
+    """Ohne sichtbaren Fokus weiss man beim Durchtabben nicht, wo man steht.
+
+    Die Knoepfe tragen eigene Flaechen und Rahmen; darauf verschwindet der
+    Standardring des Browsers fast. Keine der drei Seiten hatte eine
+    Fokusregel - null Treffer fuer :focus in allen dreien.
+    """
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    assert ":focus-visible" in quelle, f"{seite}: keine Fokusregel"
+    assert "outline: 2px solid var(--focus)" in quelle \
+        or "outline:2px solid var(--focus)" in quelle, \
+        f"{seite}: Fokusring nicht ueber das Token"
+
+
+@pytest.mark.parametrize("seite", SEITEN)
+def test_every_page_respects_reduced_motion(seite):
+    """Drei Endlos-Animationen laufen dauerhaft (Statuspunkt, Zeitplan,
+    Prognose). Ihre Bewegung traegt keine eigene Information - Zustand steht
+    in Farbe und Text -, also darf sie abschaltbar sein."""
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    assert "prefers-reduced-motion" in quelle, f"{seite}: keine Regel dafuer"
+
+
+def test_status_colours_are_not_hardcoded_in_tiles():
+    """Die Statusfarben standen als feste Hexwerte in den Kacheln und
+    wechselten mit hell/dunkel nicht mit. Das Gelb der Warnung kam damit auf
+    Weiss auf 2,1:1 - ausgerechnet der Warnzustand war der am schlechtesten
+    lesbare."""
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    zeilen = [z for z in quelle.splitlines()
+              if ("farbe =" in z or "color = " in z)
+              and any(h in z for h in ("#2ca02c", "#e6a700", "#d62728", '"#777"'))]
+    assert not zeilen, f"feste Statusfarben statt Token: {zeilen}"
+
+
+def _kontrast(a: str, b: str) -> float:
+    """WCAG-Kontrastverhältnis zweier Hexfarben."""
+    def leuchtdichte(hexwert: str) -> float:
+        hexwert = hexwert.lstrip("#")
+        if len(hexwert) == 3:                       # Kurzform wie #fff
+            hexwert = "".join(z * 2 for z in hexwert)
+        kanaele = [int(hexwert[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        kanaele = [k / 12.92 if k <= 0.03928 else ((k + 0.055) / 1.055) ** 2.4
+                   for k in kanaele]
+        return 0.2126 * kanaele[0] + 0.7152 * kanaele[1] + 0.0722 * kanaele[2]
+    hell, dunkel = leuchtdichte(a), leuchtdichte(b)
+    hoch, tief = max(hell, dunkel), min(hell, dunkel)
+    return (hoch + 0.05) / (tief + 0.05)
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["hell", "dunkel"])
+def test_status_colours_stay_readable_on_their_own_background(dark):
+    """Der eigentliche Anspruch, nicht nur "es gibt ein Token".
+
+    Ein Token laesst sich jederzeit auf einen unlesbaren Wert setzen. Geprueft
+    wird deshalb die Zahl: 4,5:1 gegen die Flaeche, auf der die Farbe steht.
+    Vorher scheiterte genau hier das Gelb der Warnung mit 2,1:1 auf Weiss.
+    """
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    werte = _tokens(quelle, dark)
+    grund = werte["--card"] if werte["--card"].startswith("#") else "#ffffff"
+    for token in ("--ok", "--warn", "--bad", "--muted"):
+        verhaeltnis = _kontrast(werte[token], grund)
+        assert verhaeltnis >= 4.5, (
+            f"{token} = {werte[token]} auf {grund}: "
+            f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")

@@ -236,8 +236,10 @@ _ARCHIVE_HTML = r"""<!doctype html>
 <title>EMS Lauf-Archiv</title>
 <script>(function(){const s=localStorage.getItem('ems-theme');document.documentElement.classList.toggle('dark',s==='dark'||(!s&&matchMedia('(prefers-color-scheme:dark)').matches));})();</script>
 <style>
-:root{color-scheme:light;--bg:#eef2f6;--card:#fff;--text:#20252b;--muted:#6b7480;--line:#e3e8ee;--r-card:14px;--r-ctl:9px;--shadow:0 1px 2px rgba(20,35,55,.05),0 4px 16px rgba(20,35,55,.06);--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--danger:#b52d28;--ok:#258448;--warn:#8a6d1f}
-html.dark{color-scheme:dark;--bg:#10171e;--card:#18212b;--text:#e7edf4;--muted:#9aa7b4;--line:#33414f;--shadow:0 1px 2px rgba(0,0,0,.30),0 4px 16px rgba(0,0,0,.28);--input:#202e3a;--blue:#338be0;--soft:#202e3a;--danger:#ff8c87;--ok:#75ce91;--warn:#e5cb74}
+:root{color-scheme:light;--bg:#eef2f6;--card:#fff;--text:#20252b;--muted:#6b7480;--line:#e3e8ee;--r-card:14px;--r-ctl:9px;--shadow:0 1px 2px rgba(20,35,55,.05),0 4px 16px rgba(20,35,55,.06);--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--focus:#1769c2;--bad:#b52d28;--ok:#258448;--warn:#8a6d1f}
+html.dark{color-scheme:dark;--bg:#10171e;--card:#18212b;--text:#e7edf4;--muted:#9aa7b4;--line:#33414f;--shadow:0 1px 2px rgba(0,0,0,.30),0 4px 16px rgba(0,0,0,.28);--input:#202e3a;--blue:#338be0;--soft:#202e3a;--focus:#4ea1f0;--bad:#ff8c87;--ok:#75ce91;--warn:#e5cb74}
+:where(a,button,summary,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--r-ctl)}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{padding:0 18px}
 .app-header{display:flex;align-items:center;gap:12px;margin:14px 0;padding:13px 16px;
@@ -270,7 +272,7 @@ main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;
  .header-actions .button-label{display:none}.pick{grid-template-columns:1fr 1fr}
  .chart-controls{align-items:stretch}.horizon-switch,.view-switch{flex:1}
  .horizon-switch button,.view-switch button{flex:1}}
-.err{color:var(--danger);font-weight:600}
+.err{color:var(--bad);font-weight:600}
 </style></head><body>
 <header class="app-header"><h1>EMS Lauf-Archiv
  <span class="ts">Archivierten Optimierer-Lauf gegen die eingetretenen Werte legen</span></h1>
