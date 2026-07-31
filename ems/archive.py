@@ -247,7 +247,7 @@ _ARCHIVE_HTML = r"""<!doctype html>
 <title>EMS Lauf-Archiv</title>
 <script>(function(){const s=localStorage.getItem('ems-theme');document.documentElement.classList.toggle('dark',s==='dark'||(!s&&matchMedia('(prefers-color-scheme:dark)').matches));})();</script>
 <style>
-:root{color-scheme:light;--bg:#eef2f6;--card:#fff;--text:#20252b;--muted:#434a54;--line:#e3e8ee;--r-card:14px;--r-ctl:9px;--s0:2px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--font-num:inherit;--t0:11px;--t1:12px;--t2:14px;--t3:17px;--t4:22px;--shadow:0 1px 2px rgba(20,35,55,.05),0 4px 16px rgba(20,35,55,.06);--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--surface:#f1f4f8;--muted-2:#2f353c;--focus:#1769c2;--bad:#b52d28;--ok:#217a41;--warn:#7f631b}
+:root{color-scheme:light;--bg:#eef2f6;--card:#fff;--text:#20252b;--muted:#434a54;--line:#e3e8ee;--r-card:14px;--r-ctl:9px;--s0:2px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--font-num:inherit;--t0:11px;--t1:12px;--t2:14px;--t3:17px;--t4:22px;--shadow:0 1px 2px rgba(20,35,55,.05),0 4px 16px rgba(20,35,55,.06);--input:#fff;--blue:#1769c2;--soft:#f5f7f9;--surface:#f1f4f8;--seitenbreite:1800px;--muted-2:#2f353c;--focus:#1769c2;--bad:#b52d28;--ok:#217a41;--warn:#7f631b}
 html.dark{color-scheme:dark;--bg:#10171e;--card:#18212b;--text:#e7edf4;--muted:#bcc7d3;--line:#33414f;--shadow:0 1px 2px rgba(0,0,0,.30),0 4px 16px rgba(0,0,0,.28);--input:#202e3a;--blue:#338be0;--soft:#202e3a;--surface:#202b36;--muted-2:#ccd6e0;--focus:#4ea1f0;--bad:#ff8c87;--ok:#75ce91;--warn:#e5cb74}
 :where(a,button,summary,input,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--r-ctl)}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
@@ -263,7 +263,7 @@ button,.button{border:1px solid var(--line);border-radius:var(--r-ctl);backgroun
  align-items:center;justify-content:center;gap:var(--s1);min-width:42px;min-height:38px}
 button:disabled{opacity:.55;cursor:wait}
 select,input{border:1px solid var(--line);border-radius:var(--r-ctl);background:var(--input);color:var(--text);padding:var(--s2) var(--s2);font:inherit;max-width:100%}
-main{max-width:1500px;margin:auto;padding:0 0 60px}.app-header{max-width:1500px;margin:var(--s4) auto}
+main{max-width:var(--seitenbreite);margin:auto;padding:0 0 60px}.app-header{max-width:var(--seitenbreite);margin:var(--s4) auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);padding:var(--s4) var(--s4);margin-bottom:var(--s3);box-shadow:var(--shadow)}
 .pick{display:grid;grid-template-columns:minmax(240px,1fr) auto auto auto;gap:var(--s2);align-items:center}
 .pick label{grid-column:1/-1;color:var(--muted);font-size:var(--t1)}

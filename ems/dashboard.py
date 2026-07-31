@@ -2540,6 +2540,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --netzladen: #8f1f1b;
         --surface: #f1f4f8; --fg: #20252b; --accent: #1769c2;
         --control: #f4f6f8; --control-line: #cbd3db; --hover: #f5f8fa;
+        --seitenbreite: 1800px;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #bcc7d3;
         --muted-2: #ccd6e0;
@@ -2566,7 +2567,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html {{ background: #eef2f6; }}
  html.dark {{ background: #10171e; }}
  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
-        max-width: 1800px; margin: 0 auto; padding: var(--s4); color: #20252b;
+        max-width: var(--seitenbreite); margin: 0 auto;
+        padding: var(--s4); color: #20252b;
         background: none; }}
  /* Messwerte tragen eine eigene Schrift. Begruendung, nicht Geschmack: diese
     Seite ist ein Instrument - sie zeigt Groessen, die man untereinander

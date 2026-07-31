@@ -19,7 +19,8 @@ SEITEN = ["ems/dashboard.py", "ems/archive.py", "ems/config_editor.py"]
 # Nur die Größen, die seitenübergreifend gleich aussehen MÜSSEN. Farben wie
 # --blue oder --danger darf jede Seite für sich führen.
 TOKENS = ["--r-card", "--r-ctl", "--line", "--muted", "--muted-2",
-          "--card", "--surface", "--ok", "--warn", "--bad", "--focus"]
+          "--card", "--surface", "--ok", "--warn", "--bad", "--focus",
+          "--seitenbreite"]
 
 
 def _tokens(quelle: str, dark: bool) -> dict[str, str]:
@@ -382,3 +383,14 @@ def test_theme_duplicates_do_not_grow_again():
     assert len(dubletten) <= MAX_THEMEN_DUBLETTEN, (
         f"{len(dubletten)} Regeln mit eigener Fassung je Thema "
         f"(erlaubt {MAX_THEMEN_DUBLETTEN}): {dubletten}")
+
+
+@pytest.mark.parametrize("seite", SEITEN)
+def test_no_page_sets_its_own_width(seite):
+    """Dashboard war 1800 px breit, Archiv und Editor 1500 - beim Wechsel
+    zwischen den Seiten sprang der Inhalt. Die Breite ist jetzt ein Token."""
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    # Nur SEITENbreiten, keine Umbruchpunkte: @media (max-width: 700px) ist
+    # eine Bildschirmgrenze, keine Layoutbreite.
+    eigene = [m for m in re.findall(r"max-width:\s*(\d{4,})px", quelle)]
+    assert not eigene, f"{seite}: eigene Seitenbreite {eigene}"
