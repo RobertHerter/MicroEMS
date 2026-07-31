@@ -448,3 +448,31 @@ def test_all_header_buttons_carry_an_icon(tmp_path):
     # Die Notloesung ueber Pseudoelemente ist damit ueberfluessig.
     assert "#theme-toggle:after" not in html
     assert "#install-app:after" not in html
+
+
+def test_every_panel_header_carries_a_status_dot(tmp_path):
+    """Die Planentscheidungs-Box war die einzige Kopfzeile ohne Ampelpunkt.
+
+    In einer Reihe gleich gebauter Kopfzeilen faellt so eine Luecke sofort auf.
+    Ihr Punkt ist neutral (grau), denn das Panel hat keinen Zustand: es erklaert
+    den Plan, es bewertet ihn nicht.
+    """
+    from ems.dashboard import _decision_block
+
+    index = pd.date_range("2026-07-29 10:00", periods=2, freq="15min",
+                          tz="Europe/Berlin")
+    leer = _decision_block(pd.DataFrame(
+        {"mode": ["auto"] * 2, "decision_reason": [""] * 2}, index=index),
+        index[0])
+    assert "an-dot neutral" in leer, "leeres Panel ohne Punkt"
+
+    # Ausgenommen ist die "Heute"-Klappe INNERHALB der Live-Kacheln: sie ist
+    # kein Diagnosepanel mit Zustand, sondern ein Auszug der Tageszähler.
+    html = _render(tmp_path)
+    ohne = []
+    for m in re.finditer(r"<details\b[^>]*>\s*<summary\b.*?</summary>",
+                         html, re.S):
+        if "live-daily-panel" in m.group(0) or "an-dot" in m.group(0):
+            continue
+        ohne.append(m.group(0)[:80])
+    assert not ohne, f"Kopfzeilen ohne Ampelpunkt: {ohne}"

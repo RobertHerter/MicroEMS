@@ -338,6 +338,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
     if future.empty:
         return ("<details class='decisions' id='decisions-panel'><summary>"
                 "<span class='decision-head'>"
+                "<span class='an-dot neutral'></span>"
                 "⚖ <b>Planentscheidungen erklärt</b><small>keine besonderen "
                 "Eingriffe</small></span></summary><div class='decision-body'>"
                 "<div class='decision-empty'>Keine besonderen Akku-Eingriffe "
@@ -395,6 +396,7 @@ def _decision_block(table: pd.DataFrame, now: pd.Timestamp, limit: int = 6) -> s
     count = len(blocks[:limit])
     return ("<details class='decisions' id='decisions-panel'><summary>"
             "<span class='decision-head'>"
+            "<span class='an-dot neutral'></span>"
             "⚖ <b>Planentscheidungen erklärt</b>"
             f"<small>{count} Entscheidungsblöcke</small></span></summary>"
             "<div class='decision-body'><div class='decision-list'>"
@@ -2481,11 +2483,22 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
         max-width: 1800px; margin: 0 auto; padding: var(--s4); color: #20252b;
         background: none; }}
- /* Zahlen mit fester Ziffernbreite: die Live-Kacheln schreiben sich alle
-    fuenf Sekunden neu, mit proportionalen Ziffern springt die Breite je
-    Aktualisierung sichtbar. */
- .tile .v, #runtime-meta, .quality-value, .an-tile b {{
-        font-variant-numeric: tabular-nums; }}
+ /* Messwerte tragen eine eigene Schrift. Begruendung, nicht Geschmack: diese
+    Seite ist ein Instrument - sie zeigt Groessen, die man untereinander
+    vergleicht und die sich alle fuenf Sekunden neu schreiben. Eine
+    Schreibmaschinenschrift mit fester Ziffernbreite laesst Werte in Spalten
+    fluchten und haelt die Breite beim Aktualisieren still; die durchgestrichene
+    Null trennt 0 von O in Modus- und Statustexten. Die BESCHRIFTUNGEN bleiben
+    bewusst in der Oberflaechenschrift - traegt beides dieselbe Schrift, wirkt
+    die Seite wie ein Terminal statt wie ein Messgeraet.
+    Ein Token, ein Rueckweg: --font-num auf 'inherit' stellen genuegt. */
+ :root {{ --font-num: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono',
+        'Roboto Mono', 'DejaVu Sans Mono', monospace; }}
+ .tile .v, #runtime-meta, .quality-value, .an-tile b, h1 .ts,
+ .live-tiles .v, .decision-facts span {{
+        font-family: var(--font-num);
+        font-variant-numeric: tabular-nums slashed-zero;
+        font-feature-settings: 'zero' 1; }}
  .app-header {{ position: relative; display: flex; align-items: center;
         flex-wrap: wrap; gap: var(--s3); margin: 0 0 var(--s4); overflow: hidden;
         padding: var(--s3) var(--s4); background: var(--card); border: 1px solid var(--line);

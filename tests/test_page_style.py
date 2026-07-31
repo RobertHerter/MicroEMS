@@ -186,3 +186,25 @@ def test_the_scale_itself_is_a_scale(dark):
                  re.findall(rf"{praefix}\d: *\d+px", quelle)][:anzahl]
         assert len(werte) == anzahl, f"{praefix}: {len(werte)} statt {anzahl} Stufen"
         assert werte == sorted(set(werte)), f"{praefix} nicht aufsteigend: {werte}"
+
+
+@pytest.mark.parametrize("seite", ["ems/dashboard.py", "ems/archive.py"])
+def test_measured_values_use_the_instrument_face(seite):
+    """Messwerte tragen eine eigene Schrift, Beschriftungen nicht.
+
+    Die Seite ist ein Instrument: Werte werden untereinander verglichen und
+    schreiben sich alle fuenf Sekunden neu. Traegt aber ALLES dieselbe
+    Schreibmaschinenschrift, wirkt sie wie ein Terminal statt wie ein
+    Messgeraet - deshalb prueft der Test auch die Gegenrichtung.
+    """
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    assert "--font-num" in quelle, "kein Token für die Messwertschrift"
+    assert "tabular-nums slashed-zero" in quelle, \
+        "feste Ziffernbreite oder durchgestrichene Null fehlt"
+    # Der Fliesstext darf sie NICHT tragen.
+    for selektor in (" body {{", "body{"):
+        if selektor in quelle:
+            block = quelle[quelle.index(selektor):]
+            block = block[:block.index("}")]
+            assert "--font-num" not in block, \
+                f"{seite}: Messwertschrift auf dem gesamten Fliesstext"
