@@ -347,3 +347,38 @@ def test_dark_mode_declares_its_own_text_colour(seite):
         assert verhaeltnis >= 4.5, (
             f"{seite}: Text {vordergrund} auf {name} {grund} = "
             f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")
+
+
+# Stand nach dem Aufraeumen. Die Zahl darf SINKEN, nie steigen: sie ist eine
+# Sperre, keine Zielvorgabe. Wer sie erhoeht, umgeht den Sinn des Tests.
+MAX_THEMEN_DUBLETTEN = 11
+
+
+def test_theme_duplicates_do_not_grow_again():
+    """Jede Regel mit einer eigenen Fassung je Thema ist eine Dublette.
+
+    Sie sind der Boden, aus dem heute jeder Farbfehler kam: die weisse Linie im
+    Dunkelmodus, die ausgeknipste Kachelfarbe, 36 unlesbare Grautoene. Anfangs
+    waren es 49 Selektoren und 296 feste Farben; die Token haben daraus 11 und
+    175 gemacht. Was bleibt, sind echte Einzelfaelle - Verlaufsflaechen und die
+    Schriftfarbe des Dunkelmodus.
+    """
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    stil = re.sub(r"/\*.*?\*/", " ",
+                  quelle[quelle.index("<style>"):quelle.index("</style>")],
+                  flags=re.S)
+    themen = {}
+    for block in stil.split("}}"):
+        if "{{" not in block:
+            continue
+        selektoren, regeln = block.rsplit("{{", 1)
+        selektoren = " ".join(selektoren[selektoren.rfind("}") + 1:].split())
+        if not re.search(r"#[0-9a-fA-F]{6}", regeln):
+            continue
+        schluessel = selektoren.replace("html.dark ", "")
+        themen.setdefault(schluessel, set()).add(
+            "dunkel" if "html.dark" in selektoren else "hell")
+    dubletten = sorted(k for k, v in themen.items() if len(v) == 2)
+    assert len(dubletten) <= MAX_THEMEN_DUBLETTEN, (
+        f"{len(dubletten)} Regeln mit eigener Fassung je Thema "
+        f"(erlaubt {MAX_THEMEN_DUBLETTEN}): {dubletten}")
