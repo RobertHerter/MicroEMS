@@ -2460,11 +2460,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
+        --surface: #f7f9fb;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
         --muted-2: #b6c2ce;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
         --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 28%;
+        --surface: #202b36;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
  /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
     verschwindet der Standardring des Browsers fast. Ohne sichtbaren Fokus
@@ -2630,6 +2632,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .tile .v {{ font-size: var(--t3); }}
  .live-tiles .v {{ font-size: var(--t4); }}
  .live-daily .v {{ font-size: var(--t3); }}
+ /* EIN Rezept fuer alle Karten INNERHALB der Panels. Vorher hatte jede
+    Familie ihr eigenes: neun verschiedene Rahmenfarben von Hand gemischt,
+    ebenso viele Hintergruende und Radien von 7, 8 und 9 px nebeneinander.
+    Sichtbar wird so etwas nie an einer einzelnen Karte, sondern erst im
+    Nebeneinander - und dann als Unruhe, der man nicht ansieht, woher sie
+    kommt. Die Abstaende bleiben je Karte verschieden: eine Kennzahl braucht
+    weniger Luft als der Akku-Planer. */
+ .quality-item, .calibration-card, .decision-item, .load-card, .pvconf-card,
+ .mode-compare-card, .plan-compare, .ctl-section, .detail-grid > div,
+ .calibration-change-list article, .curve-box, .battery-planner,
+ .schedule-item, .forecast-day-loading {{
+        background: var(--surface); border: 1px solid var(--line);
+        border-left: 3px solid var(--akzent, var(--line));
+        border-radius: var(--r-ctl); }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
  /* Betriebsdiagnose/Pool-Rückkopplung/Prognosequalität nutzen jetzt den
@@ -2637,9 +2653,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     (wie beim Analyse-Panel). */
  .quality-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr));
         gap: var(--s2); padding: var(--s3) var(--s3) var(--s3); }}
- .quality-item {{ position: relative; min-width: 0; padding: var(--s2) var(--s2) var(--s2) var(--s3);
-        border: 1px solid #dfe5eb; border-left: 4px solid #999;
-        border-radius: 8px; background: #f8fafb; }}
+ .quality-item {{ position: relative; min-width: 0; padding: var(--s2) var(--s2) var(--s2) var(--s3);; }}
  /* Nur die Kante traegt den Zustand, nicht die ganze Flaeche. Ist alles in
     Ordnung, waren vorher SAEMTLICHE Karten eines Panels gruen getoent - eine
     Wand aus Farbe, die nichts hervorhebt. Auffaellig wird jetzt, was
@@ -2687,8 +2701,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .decision-body {{ padding: var(--s3) var(--s4) var(--s4); }}
  .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
         gap: var(--s2); }}
- .decision-item {{ position: relative; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);
-        border: 1px solid #e2e7ec; border-radius: 9px; background: #fafcfe; }}
+ .decision-item {{ position: relative; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);; }}
  .decision-item:before {{ content: ''; position: absolute; left: 0; top: 0; bottom: 0;
         width: 5px; border-radius: 9px 0 0 9px; background: var(--decision-color); }}
  .decision-time {{ color: #66717c; font-size: var(--t1); }}
@@ -2717,8 +2730,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
         font-weight: normal; margin-top: var(--s0); }}
  .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: var(--s3); }}
- .load-card {{ border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s3);
-        background: #fbfcfe; min-width: 0; }}
+ .load-card {{ padding: var(--s3); min-width: 0;; }}
  .load-head {{ display: flex; justify-content: space-between; align-items: flex-start;
         padding-bottom: var(--s3); margin-bottom: var(--s3); border-bottom: 1px solid #e9ecf0; }}
  .load-head b {{ font-size: var(--t2); }}
@@ -2734,8 +2746,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .profile-edit > label {{ display: flex; flex-direction: column; gap: var(--s0); margin-bottom: var(--s1); }}
  .profile-edit > label small {{ color: #7b828c; font-weight: normal; }}
  .profile-edit textarea {{ width: 100%; resize: vertical; line-height: 1.4; }}
- .curve-box {{ margin-top: var(--s2); border: 1px solid #e0e5eb; border-radius: 8px;
-        overflow: hidden; background: #f7f9fc; }}
+ .curve-box {{ margin-top: var(--s2);
+        overflow: hidden;; }}
  .curve-box canvas {{ display: block; width: 100%; height: 92px; }}
  .curve-box span {{ display: block; padding: var(--s1) var(--s2); color: #5e6874; background: #fff;
         border-top: 1px solid #e5e8ec; font-size: var(--t1); }}
@@ -2752,22 +2764,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .controls button.mode.on small {{ color: rgba(255,255,255,.82); }}
  .controls button.stop {{ color: #a22b25; border-color: #e2b6b3; background: #fff5f4; }}
  .ctl-section {{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3);
-        margin-top: var(--s3); padding: var(--s3) var(--s3); border: 1px solid #e2e6eb;
-        border-radius: 9px; background: #fafbfc; }}
+        margin-top: var(--s3); padding: var(--s3) var(--s3);; }}
  .ctl-section > div:first-child {{ min-width: 175px; margin-right: auto; }}
  .ctl-section label {{ color: #555e68; }}
  .ctl-section input {{ width: 75px !important; margin: 0 var(--s0); }}
  .button-group {{ display: flex; flex-wrap: wrap; gap: var(--s2); }}
  .controls .ctl-msg {{ margin-top: var(--s2); font-size: var(--t1); color: #555; min-height: 1em; }}
- .plan-compare {{ display: block; margin-top: var(--s3); padding: var(--s3); border: 1px solid #dbe3eb;
-        border-radius: 9px; background: #f5f9fd; }}
+ .plan-compare {{ display: block; margin-top: var(--s3); padding: var(--s3);; }}
  .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: var(--s0); }}
  .compare-result {{ color: #5e6872; }}
  .compare-chart-status {{ min-height: 16px; margin-top: var(--s2); color: #74808b; font-size: var(--t0); }}
  .compare-chart {{ display: none; width: 100%; min-height: 340px; }}
  .compare-note {{ margin-bottom: var(--s2); }}
  .mode-compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(205px,1fr)); gap: var(--s2); margin: var(--s2) 0; }}
- .mode-compare-card {{ min-width: 0; padding: var(--s3); border: 1px solid #dfe6ed; border-radius: 9px; background: #fff; }}
+ .mode-compare-card {{ min-width: 0; padding: var(--s3);; }}
  .mode-compare-card.recommended {{ border-color: #62ad78; box-shadow: inset 0 3px #45a164; }}
  .mode-compare-card.active {{ border-color: #6ca6dc; }}
  .mode-compare-card header {{ display: flex; justify-content: space-between; gap: var(--s1); align-items: flex-start; margin-bottom: var(--s2); }}
@@ -2835,8 +2845,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-day-stage {{ position: relative; min-height: 332px; margin: 0 var(--s3) var(--s3); }}
  .forecast-day-stage .day-comparison-chart {{ margin: 0; }}
  .forecast-day-loading {{ position: absolute; inset: 0; z-index: 5; display: none;
-      align-items: center; justify-content: center; gap: var(--s3); border: 1px solid #d7e0e8;
-      border-radius: 9px; background: #f6f9fb; color: #596775; font-size: var(--t1); }}
+      align-items: center; justify-content: center; gap: var(--s3); color: #596775; font-size: var(--t1);; }}
  .forecast-day-loading i {{ width: 20px; height: 20px; border: 3px solid #cbd7e2;
       border-top-color: #287fd8; border-radius: 50%; animation: forecastSpin .75s linear infinite; }}
  .forecast-analysis-panel.loading .forecast-day-loading {{ display: flex; }}
@@ -2844,8 +2853,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  @keyframes forecastSpin {{ to {{ transform: rotate(360deg); }} }}
  .calibration-grid {{ display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: var(--s2);
       padding: 0 var(--s3) var(--s2); }}
- .calibration-card {{ min-width: 0; padding: var(--s3); border: 1px solid #dce3e9;
-      border-left: 4px solid #dfa82d; border-radius: 9px; background: #fafbfc; }}
+ .calibration-card {{ min-width: 0; padding: var(--s3);; }}
  .calibration-card.current {{ border-left-color: #35a466; }}
  .calibration-card > header {{ display: flex; justify-content: space-between; gap: var(--s2); align-items: flex-start; }}
  .calibration-card header b, .calibration-card header small {{ display: block; }}
@@ -2872,8 +2880,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .calibration-history-chart {{ margin: 0 var(--s3) var(--s3); }}
  .calibration-change-list {{ margin: -var(--s0) var(--s3) var(--s3); display: grid; gap: var(--s1); }}
  .calibration-change-list article {{ display: grid; grid-template-columns: minmax(125px,auto) 1fr;
-      gap: var(--s2); padding: var(--s2) var(--s2); border: 1px solid #e2e7ec; border-radius: 7px;
-      background: #f8fafc; font-size: var(--t1); }}
+      gap: var(--s2); padding: var(--s2) var(--s2); font-size: var(--t1);; }}
  .calibration-change-list time {{ color: #73808c; white-space: nowrap; }}
  .forecast-vintage-head {{ display: flex; align-items: center; justify-content: space-between;
       padding-right: var(--s3); }}
@@ -2889,7 +2896,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .forecast-day-loading {{ color: #c1ccd6; background: #202b36;
       border-color: #43515f; }}
  html.dark .forecast-day-loading i {{ border-color: #465869; border-top-color: #58a6e7; }}
- html.dark .calibration-change-list article {{ background: #202b36; border-color: #354352; }}
  html.dark .calibration-change-list time {{ color: #aebbc8; }}
  html.dark .calibration-card {{ background: #202b36; border-color: #43515f; border-left-color: #d9b83f; }}
  html.dark .calibration-card.current {{ border-left-color: #58b879; }}
@@ -2900,7 +2906,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .calibration-bar {{ background: #3b4956; }}
  html.dark .calibration-card dl > div {{ border-color: #3b4956; }}
  .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: var(--s3); padding: var(--s3); }}
- .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: var(--s3) var(--s3); }}
+ .pvconf-card {{ padding: var(--s3) var(--s3);; }}
  .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s2); }}
  .pvconf-day {{ font-weight: 700; font-size: var(--t1); }}
  .mode-badge {{ font-size: var(--t1); font-weight: 700; padding: var(--s0) var(--s2); border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }}
@@ -2911,7 +2917,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .pvconf-metrics b {{ color: #20252b; font-weight: 700; }}
  .pvconf-basis {{ margin-top: var(--s2); font-size: var(--t1); color: #75808a; }}
  .pvconf-note {{ margin: 0 var(--s3) var(--s3); font-size: var(--t1); color: #8a949d; }}
- html.dark .pvconf-card {{ background: #202b36; border-color: #354352; }}
  html.dark .pvconf-metrics {{ color: #97a3ad; }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
  html.dark .pvconf-basis, html.dark .pvconf-note {{ color: #97a3ad; }}
  .whatif-form {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); padding: var(--s3); }}
@@ -2926,7 +2931,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .whatif-head small {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: var(--s2); padding: var(--s3); }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 var(--s1); }}
- .detail-grid > div {{ padding: var(--s2) var(--s2); border-radius: 7px; background: #f4f7fa; }}
+ .detail-grid > div {{ padding: var(--s2) var(--s2);; }}
  .detail-grid span, .detail-grid b {{ display: block; }}
  .detail-grid span {{ color: #74808b; font-size: var(--t0); }}
  .events-list {{ max-height: 360px; overflow: auto; padding: var(--s2) var(--s3) var(--s3); }}
@@ -2955,8 +2960,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .switch input:checked + span {{ background: #278445; }}
  .switch input:checked + span:after {{ transform: translateX(15px); }}
  .switch em {{ font-style: normal; font-size: var(--t1); color: #68707a; }}
- .battery-planner {{ margin-top: var(--s3); padding: var(--s4); border: 1px solid var(--line);
-        border-radius: var(--r-ctl); background: linear-gradient(150deg,#fbfdff,#f3f7fc); }}
+ .battery-planner {{ margin-top: var(--s3); padding: var(--s4);; }}
  .planner-head {{ display: flex; align-items: flex-start; justify-content: space-between;
         gap: var(--s3); margin-bottom: var(--s3); }}
  .planner-head small {{ display: block; color: #737c87; margin-top: var(--s0); }}
@@ -3004,8 +3008,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .schedule-legend .idle {{ color: #77818c; }}
  .schedule-legend .now {{ color: #20252b; }}
  .schedule-list {{ display: grid; gap: var(--s2); margin-top: var(--s2); }}
- .schedule-item {{ display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2);
-        border: 1px solid #e0e5ea; border-radius: 8px; background: #fff; }}
+ .schedule-item {{ display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2);; }}
  .schedule-item > div {{ flex: 1; min-width: 120px; }}
  .schedule-item small {{ display: block; color: #747d87; margin-top: var(--s0); }}
  .schedule-color {{ width: 9px; height: 30px; border-radius: 5px; flex: 0 0 auto; }}
@@ -3037,7 +3040,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .runtime-progress {{ background: #354352; }}
  html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
  html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
- html.dark .detail-grid > div {{ background: #202b36; border-color: #354352; }}
  html.dark .detail-grid span {{ color: #aebbc8; }}
  html.dark .event time {{ color: #c3cdd8; }}
  html.dark .compare-chart-status {{ color: #aebbc8; }}
@@ -3049,8 +3051,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .events-filter button.info.on {{ background: #173326; border-color: #58b879; color: #8fd7a9; }}
  html.dark .events-filter button.warn.on {{ background: #3a3219; border-color: #d9b83f; color: #e1c96b; }}
  html.dark .events-filter button.err.on {{ background: #402124; border-color: #df6c68; color: #f1a29c; }}
- html.dark .plan-compare {{ background: #1b2834; border-color: #354352; }}
- html.dark .mode-compare-card {{ background: #202b36; border-color: #425364; }}
  html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}
  html.dark .mode-compare-card.active {{ border-color: #4e86b9; }}
  html.dark .mode-compare-card header small, html.dark .mode-metrics span {{ color: #aebbc8; }}
@@ -3061,7 +3061,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .late-confidence.expected_only {{ background: #4b4026; color: #f1d18a; }}
  html.dark .late-confidence.p10_unreachable {{ background: #4b2d2c; color: #efaaa5; }}
  html.dark .decisions > summary {{ background: #202b36; color: #e7edf4; }}
- html.dark .decision-item {{ background: #202b36; border-color: #354352; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
  html.dark .decision-facts span {{ background: #2a3947; color: #d9e3ed; }}
@@ -3099,7 +3098,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
  html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
  html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
- html.dark .quality-item {{ background: #202b36; border-color: #43515f; }}
 
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}

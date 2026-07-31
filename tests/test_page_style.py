@@ -236,3 +236,37 @@ def test_no_theme_rule_overrides_the_tile_family_colour():
                 schuldige.append(" ".join(selektoren.split())[:90])
     assert not schuldige, \
         f"Themenregel ueberschreibt Kachelfarbe: {schuldige}"
+
+
+def test_all_cards_share_one_recipe():
+    """Vierzehn Kartenfamilien hatten je ein eigenes Rezept.
+
+    Neun von Hand gemischte Rahmenfarben, ebenso viele Hintergruende und Radien
+    von 7, 8 und 9 px nebeneinander. An einer einzelnen Karte sieht man das
+    nie - erst im Nebeneinander, und dann als Unruhe, der man nicht ansieht,
+    woher sie kommt. Ein neues eigenes Rezept faellt hier auf.
+    """
+    KARTEN = {".quality-item", ".calibration-card", ".decision-item",
+              ".load-card", ".pvconf-card", ".mode-compare-card",
+              ".plan-compare", ".ctl-section", ".detail-grid > div",
+              ".calibration-change-list article", ".curve-box",
+              ".battery-planner", ".schedule-item", ".forecast-day-loading"}
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    stil = re.sub(r"/\*.*?\*/", " ",
+                  quelle[quelle.index("<style>"):quelle.index("</style>")],
+                  flags=re.S)
+    eigene, gemeinsam = [], False
+    for block in stil.split("}}"):
+        if "{{" not in block:
+            continue
+        selektoren, regeln = block.rsplit("{{", 1)
+        selektoren = selektoren[selektoren.rfind("}") + 1:]
+        teile = {" ".join(t.split()) for t in selektoren.split(",")}
+        if KARTEN <= teile:
+            gemeinsam = True
+            continue
+        for name in teile & KARTEN:
+            if re.search(r"\b(background|border|border-radius)\s*:", regeln):
+                eigene.append(f"{name}: {' '.join(regeln.split())[:44]}")
+    assert gemeinsam, "keine gemeinsame Kartenregel gefunden"
+    assert not eigene, f"Karten mit eigenem Rezept: {eigene}"
