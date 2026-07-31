@@ -606,14 +606,14 @@ def test_controllable_load_curve_excludes_deviation_and_grid_share():
     assert float(np.nanmax(values)) == pytest.approx(400.0), values
 
 
-def test_no_heating_above_the_device_cutoff():
-    """Oberhalb des geraeteeigenen Abschaltpunkts kommt keine Waerme an.
+def test_no_heating_above_the_heating_limit():
+    """Oberhalb von max_c kommt keine Waerme an - hart, nicht nur teuer.
 
     Real gemessen: der Plan sah 660 W fuer die Pool-Waermepumpe vor, waehrend
     der Pool bei 29,5 °C stand und das Geraet bei 28,5 °C abschaltet - gemessen
-    wurden 3 W Standby. Das Modell kannte den Abschaltpunkt nicht und rechnete
-    bis max_c (32 °C) weiter; es plante damit 1,65 kWh PV-Aufnahme ein, die es
-    nicht gab.
+    wurden 3 W Standby. Damals stand max_c auf 32 °C und beschrieb ein
+    Komfortband statt der Heizgrenze; das Modell plante 1,65 kWh PV-Aufnahme
+    ein, die es nicht gab. max_c IST jetzt die Heizgrenze.
     """
     import numpy as np
     import pandas as pd
@@ -625,8 +625,8 @@ def test_no_heating_above_the_device_cutoff():
     cfg = make_config()
     cfg.controllable_loads = [ControllableLoad(
         name="Pool", type="thermal", enabled=True,
-        target_c=28.0, min_c=26.0, max_c=32.0,
-        thermostat=True, thermostat_cutoff_c=28.5,
+        target_c=28.0, min_c=26.0, max_c=28.5,
+        thermostat=True,
         volume_l=8000, loss_w_per_k=200.0,
         stages=[LoadStage("gross", 660, 4000)])]
     index = pd.date_range("2026-07-31 10:00", periods=24, freq="15min",
@@ -642,15 +642,15 @@ def test_no_heating_above_the_device_cutoff():
         price_ct_kwh=np.full(n, 30.0), feedin_ct_kwh=np.full(n, 7.0),
         initial_house_soc_wh=cfg.house_battery.max_soc_wh,
         ambient_temp_c=np.full(n, 25.0),
-        load_state={"Pool": 29.5})            # ueber dem Abschaltpunkt
+        load_state={"Pool": 29.5})            # ueber der Heizgrenze
     res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
     assert res.status == "Optimal", res.status
     geplant = res.table["load_Pool_gross_w"].sum()
-    assert geplant == 0.0, f"{geplant} W oberhalb des Abschaltpunkts eingeplant"
+    assert geplant == 0.0, f"{geplant} W oberhalb der Heizgrenze eingeplant"
 
 
-def test_heating_stays_possible_below_the_cutoff():
-    """Die Gegenrichtung: unter dem Abschaltpunkt muss geheizt werden duerfen -
+def test_heating_stays_possible_below_the_limit():
+    """Die Gegenrichtung: unter der Heizgrenze muss geheizt werden duerfen -
     sonst haette die Schranke die Last stillgelegt statt sie zu begrenzen.
 
     Der Start liegt bewusst UNTER dem Komfortband: das Modell bewertet
@@ -668,8 +668,8 @@ def test_heating_stays_possible_below_the_cutoff():
     cfg = make_config()
     cfg.controllable_loads = [ControllableLoad(
         name="Pool", type="thermal", enabled=True,
-        target_c=28.0, min_c=26.0, max_c=32.0,
-        thermostat=True, thermostat_cutoff_c=28.5,
+        target_c=28.0, min_c=26.0, max_c=28.5,
+        thermostat=True,
         volume_l=8000, loss_w_per_k=200.0,
         stages=[LoadStage("gross", 660, 4000)])]
     index = pd.date_range("2026-07-31 10:00", periods=24, freq="15min",
@@ -680,8 +680,8 @@ def test_heating_stays_possible_below_the_cutoff():
         price_ct_kwh=np.full(n, 30.0), feedin_ct_kwh=np.full(n, 7.0),
         initial_house_soc_wh=cfg.house_battery.max_soc_wh,
         ambient_temp_c=np.full(n, 25.0),
-        load_state={"Pool": 25.5})            # unter Band UND Abschaltpunkt
+        load_state={"Pool": 25.5})            # unter Band UND Heizgrenze
     res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
     assert res.status == "Optimal", res.status
     assert res.table["load_Pool_gross_w"].sum() > 0.0, \
-        "unter dem Abschaltpunkt wird gar nicht mehr geheizt"
+        "unter der Heizgrenze wird gar nicht mehr geheizt"

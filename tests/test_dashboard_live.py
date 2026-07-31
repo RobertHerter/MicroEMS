@@ -537,7 +537,7 @@ def test_timeline_marks_permit_held_without_heating():
     cfg = make_config()
     cfg.controllable_loads = [ControllableLoad(
         name="Pool", type="thermal", enabled=True, target_c=28.0,
-        min_c=26.0, max_c=32.0, thermostat=True, thermostat_cutoff_c=28.5,
+        min_c=26.0, max_c=28.5, thermostat=True,
         stages=[LoadStage("klein", 400, 1000)])]
     index = pd.date_range("2026-07-29 12:00", periods=8, freq="15min",
                           tz=cfg.general.timezone)
@@ -551,7 +551,7 @@ def test_timeline_marks_permit_held_without_heating():
         "mode": ["auto"] * n, "car_charge_w": np.zeros(n),
         "slot_cost_ct": np.zeros(n),
         "load_Pool_klein_w": np.zeros(n),          # Plan heizt NICHT
-        # Erste Haelfte ueber dem Abschaltpunkt -> Freigabe wird gehalten,
+        # Erste Haelfte ueber der Heizgrenze -> Freigabe wird gehalten,
         # zweite Haelfte darunter -> Freigabe muss weg (Code 0).
         "load_Pool_temp_c": np.array([30.0] * 4 + [27.0] * 4),
     }, index=index)

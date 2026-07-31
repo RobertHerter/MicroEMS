@@ -138,11 +138,11 @@ def test_every_editable_field_has_a_description(tmp_path):
 
 def test_new_safety_options_are_documented_in_the_editor():
     """Neue Konfigurationswerte müssen im Editor erklärt sein - sonst stehen sie
-    dort unkommentiert und werden falsch gesetzt. thermostat_cutoff_c gehört
+    dort unkommentiert und werden falsch gesetzt. max_c gehört
     zusätzlich in die Vorlage für neue thermische Lasten."""
     from ems.config_editor import LOAD_DESCRIPTIONS, LOAD_TEMPLATES
-    assert "controllable_loads[].thermostat_cutoff_c" in LOAD_DESCRIPTIONS
-    assert "thermostat_cutoff_c" in LOAD_TEMPLATES["thermal"]
+    assert "controllable_loads[].max_c" in LOAD_DESCRIPTIONS
+    assert "max_c" in LOAD_TEMPLATES["thermal"]
     # Die Optimierer-Optionen werden über die Kommentare der Beispiel-Config
     # beschrieben - dort müssen sie also stehen.
     import pathlib
@@ -153,22 +153,19 @@ def test_new_safety_options_are_documented_in_the_editor():
         assert f"{key}:" in text, f"{key} fehlt in config.example.yaml"
 
 
-def test_thermostat_cutoff_zero_means_unset(tmp_path):
-    """Die Editor-Vorlage setzt 0. Das darf NICHT als Cutoff 0 °C ankommen -
-    sonst bliebe die Heiz-Freigabe immer stehen (Ursache des Akku-Leerlaufs)."""
-    from ems.config import parse_controllable_loads
+def test_heating_limit_is_max_c():
+    """max_c ist die Heizgrenze - ein zweiter Parameter dafuer existiert nicht
+    mehr. Frueher stand daneben thermostat_cutoff_c; zwei Werte fuer dieselbe
+    Sache mussten uebereinstimmen, und genau das tat die Produktivkonfiguration
+    nicht (max_c 32 gegen 28,5 am Geraet)."""
+    from ems.config import ControllableLoad, parse_controllable_loads
     loads = parse_controllable_loads([{
         "name": "Pool", "type": "thermal", "enabled": True, "volume_l": 7000,
-        "target_c": 28.0, "thermostat": True, "thermostat_cutoff_c": 0,
+        "target_c": 28.0, "max_c": 28.5, "thermostat": True,
         "stages": [{"name": "s1", "power_w": 400, "heat_w": 3000}],
     }])
-    assert loads[0].thermostat_cutoff_c is None       # -> faellt auf target_c
-    loads = parse_controllable_loads([{
-        "name": "Pool", "type": "thermal", "enabled": True, "volume_l": 7000,
-        "target_c": 28.0, "thermostat": True, "thermostat_cutoff_c": 28.5,
-        "stages": [{"name": "s1", "power_w": 400, "heat_w": 3000}],
-    }])
-    assert loads[0].thermostat_cutoff_c == 28.5
+    assert loads[0].max_c == 28.5
+    assert not hasattr(ControllableLoad, "thermostat_cutoff_c")
 
 
 def test_editor_html_is_responsive_and_supports_load_management():

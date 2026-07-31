@@ -281,7 +281,6 @@ class ControllableLoad:
     # die Freigabe an, obwohl das Geraet weiterheizt - real lief die WP so eine
     # ganze Nacht und zog den Akku von 97 % auf 5 %. None = target_c (altes
     # Verhalten). Den am Geraet abgelesenen Abschaltwert eintragen.
-    thermostat_cutoff_c: Optional[float] = None
     temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
@@ -1089,9 +1088,6 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             # 0/leer = nicht gesetzt -> target_c. Ein echter Cutoff von 0 °C
             # ergibt fuer diese Lasten keinen Sinn, waere aber fatal: die
             # Heiz-Freigabe bliebe dann IMMER stehen (T >= 0 °C).
-            thermostat_cutoff_c=(float(w["thermostat_cutoff_c"])
-                                 if w.get("thermostat_cutoff_c")
-                                 else None),
             no_grid_import=bool(w.get("no_grid_import",
                                       w.get("pv_surplus_only", False))),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),

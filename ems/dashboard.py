@@ -2202,15 +2202,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             armed = pd.Series(False, index=x)
             if owner is not None and getattr(owner, "thermostat", False):
                 tcol = f"load_{_lslug(owner.name)}_temp_c"
-                cutoff = getattr(owner, "thermostat_cutoff_c", None)
-                if cutoff is None:
-                    cutoff = getattr(owner, "target_c", None)
-                limit = getattr(owner, "max_c", None)
-                if tcol in t.columns and cutoff is not None:
+                # Ab max_c haelt das Geraet selbst aus - dort steht die
+                # Freigabe folgenlos. Darunter wuerde es heizen.
+                grenze = getattr(owner, "max_c", None)
+                if tcol in t.columns and grenze is not None:
                     temps = pd.to_numeric(t[tcol], errors="coerce")
-                    armed = temps.ge(float(cutoff)) & temps.notna()
-                    if limit is not None:
-                        armed &= temps.lt(float(limit))
+                    armed = temps.ge(float(grenze)) & temps.notna()
             if actual_col and actual_col in t.columns:
                 real = pd.to_numeric(t[actual_col], errors="coerce")
             else:

@@ -269,24 +269,21 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             if not active[t]:
                 prob += on[t] == 0
 
-    # Oberhalb des GERAETEEIGENEN Abschaltpunkts kommt keine Waerme an: die
-    # Pumpe haelt ihr Thermostat dort aus, egal was das EMS freigibt. Ohne diese
-    # Schranke plante das Modell bis max_c weiter - real gemessen 660 W
-    # eingeplant bei 29,5 °C Pooltemperatur und 28,5 °C Abschaltpunkt, waehrend
-    # die Pumpe 3 W Standby zog. Der Plan rechnete damit 1,65 kWh PV-Aufnahme
-    # ein, die es nicht gab.
-    # Nur fuer Lasten mit eigenem Thermostat, und mit derselben Ableitung wie im
-    # Steuerpfad (ems/homey_mqtt._lane_command): expliziter Abschaltpunkt, sonst
-    # die Zieltemperatur. Sonst wuerden Modell und Steuerung wieder von
-    # verschiedenen Grenzen ausgehen.
-    if ld.thermostat:
-        cutoff = float(ld.thermostat_cutoff_c or ld.target_c)
-        spanne = max(0.0, t_ub - cutoff)
-        for st in ld.stages:
-            for t in range(N):
-                # Big-M ueber die verbleibende Temperaturspanne: laeuft die
-                # Stufe, muss T am Slotbeginn unter dem Abschaltpunkt liegen.
-                prob += T[t] <= cutoff + spanne * (1 - stage_on[st.name][t])
+    # Oberhalb von max_c wird nie geheizt - hart, nicht nur ueber den Malus.
+    # max_c ist die Temperatur, bis zu der diese Last geheizt werden kann und
+    # soll: bei einem Geraet mit eigenem Thermostat der Punkt, an dem es selbst
+    # abschaltet, sonst der Punkt, an dem das EMS abschaltet. Ohne diese
+    # Schranke plante das Modell Heizen ein, das physisch nicht stattfindet -
+    # real gemessen 660 W bei 29,5 °C Pooltemperatur, waehrend die Pumpe 3 W
+    # Standby zog und der Plan 1,65 kWh PV-Aufnahme einrechnete, die es nicht
+    # gab. Der weiche Malus (slack_hi) bleibt fuer den PASSIVEN Pfad: die Sonne
+    # kann den Pool ueber max_c treiben, dagegen hilft keine Entscheidung.
+    spanne = max(0.0, t_ub - float(ld.max_c))
+    for st in ld.stages:
+        for t in range(N):
+            # Big-M ueber die verbleibende Temperaturspanne: laeuft die Stufe,
+            # muss T am Slotbeginn unter max_c liegen.
+            prob += T[t] <= ld.max_c + spanne * (1 - stage_on[st.name][t])
 
     for st in ld.stages:                       # Kopplung (z.B. groß nur mit klein)
         if st.requires and st.requires in stage_on:

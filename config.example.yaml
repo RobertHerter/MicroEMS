@@ -252,7 +252,13 @@ controllable_loads: []
   #   volume_l: 7000
   #   target_c: 28
   #   min_c: 27            # der Optimierer hält die Temperatur >= min_c
-  #   max_c: 29
+  #   # max_c ist die Heiz-Obergrenze. Bei thermostat: true MUSS sie der
+  #   # Abschalttemperatur des GERÄTS entsprechen - am Gerät ablesen, nicht
+  #   # raten: eine Pool-WP heizt z.B. bis 28.5 °C, obwohl target_c 28 sagt.
+  #   # Darüber plant der Optimierer nicht mehr, und die Freigabe darf dort
+  #   # folgenlos stehenbleiben. Passiv (Sonne) darf die Temperatur höher
+  #   # steigen; das wird nicht als vermeidbar bewertet.
+  #   max_c: 28.5
   #   loss_w_per_k: 120    # Wärmeverlust je K (T_pool - T_außen); ggf. kalibrieren
   #   # Solarer Wärmeeintrag (braucht weather.enabled: Open-Meteo-Einstrahlung):
   #   surface_m2: 8.0          # Wasseroberfläche; 0/weglassen = kein Solareintrag
@@ -264,12 +270,6 @@ controllable_loads: []
   #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE. Sie bleibt
   #   # nur AN, solange die WP per eigenem Thermostat wirklich aus hält.
   #   thermostat: true
-  #   # WICHTIG: Abschalttemperatur des GERÄTS - oft NICHT target_c! Eine Pool-WP
-  #   # heizt z.B. bis 28.5 °C und startet erst bei 27.0 °C wieder. Zwischen
-  #   # target_c und diesem Wert heizt sie weiter, die Freigabe muss dort also
-  #   # abgeschaltet werden. Fehlt der Wert, gilt target_c (kann zu Dauerlauf
-  #   # führen, wenn das Gerät erst später abschaltet). Am Gerät ablesen.
-  #   thermostat_cutoff_c: 28.5
   #   # Kein Netzbezug durch die WP: läuft eine Stufe, muss der Netzbezug im
   #   # Slot 0 sein - PV-Überschuss UND Akku dürfen decken, Netzstrom nie.
   #   # (Alter Name pv_surplus_only wird weiter als Alias gelesen.)
