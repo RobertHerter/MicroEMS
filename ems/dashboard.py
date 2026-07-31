@@ -2460,12 +2460,14 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --t0: 11px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #217a41; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
+        --netzladen: #8f1f1b;
         --surface: #f7f9fb;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #bcc7d3;
         --muted-2: #ccd6e0;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
         --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 28%;
+        --netzladen: #e96961;
         --surface: #202b36;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
  /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
@@ -3029,17 +3031,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     Kacheln. Vorher Blau, das im Diagramm fuer das Netz als GROESSE steht,
     nicht fuer die Bewertung. */
  .schedule-bar.charge, .schedule-bar.grid_charge {{ top: 8px;
-        background: var(--bad); }}
- .schedule-bar.pv_charge {{ top: 8px; background: #269b79; }}
- .schedule-bar.discharge {{ bottom: 10px; background: #dc7a27; }}
+        background: var(--netzladen); }}
+ .schedule-bar.pv_charge {{ top: 8px; background: #dc7a27; }}
+ .schedule-bar.discharge {{ bottom: 10px; background: #269b79; }}
  .schedule-bar.idle {{ top: 33px; background: #77818c; }}
  .schedule-bar.running {{ outline: 2px solid #1c2733; animation: schedulePulse 1.5s infinite; }}
  @keyframes schedulePulse {{ 50% {{ filter: brightness(1.18); }} }}
  .schedule-legend {{ display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s2);
         color: var(--muted); font-size: var(--t0); }}
- .schedule-legend .charge, .schedule-legend .grid_charge {{ color: var(--bad); }}
- .schedule-legend .pv_charge {{ color: #269b79; }}
- .schedule-legend .discharge {{ color: #dc7a27; }}
+ .schedule-legend .charge, .schedule-legend .grid_charge {{ color: var(--netzladen); }}
+ .schedule-legend .pv_charge {{ color: #b06a2c; }}
+ .schedule-legend .discharge {{ color: var(--ok); }}
  .schedule-legend .idle {{ color: var(--muted); }}
  .schedule-legend .now {{ color: #20252b; }}
  .schedule-list {{ display: grid; gap: var(--s2); margin-top: var(--s2); }}
