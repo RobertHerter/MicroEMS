@@ -24,7 +24,7 @@ influxdb>=5.3            # InfluxDB 1.x (InfluxQL)
 influxdb-client>=1.50.0    # InfluxDB 2.x (Flux)
 
 # MQTT-Ausgabe an Homey
-paho-mqtt>=1.6
+paho-mqtt>=2.1.0
 
 # Dashboard (selbst-enthaltenes interaktives HTML)
 plotly>=6.9.0
