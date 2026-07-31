@@ -269,6 +269,25 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             if not active[t]:
                 prob += on[t] == 0
 
+    # Oberhalb des GERAETEEIGENEN Abschaltpunkts kommt keine Waerme an: die
+    # Pumpe haelt ihr Thermostat dort aus, egal was das EMS freigibt. Ohne diese
+    # Schranke plante das Modell bis max_c weiter - real gemessen 660 W
+    # eingeplant bei 29,5 °C Pooltemperatur und 28,5 °C Abschaltpunkt, waehrend
+    # die Pumpe 3 W Standby zog. Der Plan rechnete damit 1,65 kWh PV-Aufnahme
+    # ein, die es nicht gab.
+    # Nur fuer Lasten mit eigenem Thermostat, und mit derselben Ableitung wie im
+    # Steuerpfad (ems/homey_mqtt._lane_command): expliziter Abschaltpunkt, sonst
+    # die Zieltemperatur. Sonst wuerden Modell und Steuerung wieder von
+    # verschiedenen Grenzen ausgehen.
+    if ld.thermostat:
+        cutoff = float(ld.thermostat_cutoff_c or ld.target_c)
+        spanne = max(0.0, t_ub - cutoff)
+        for st in ld.stages:
+            for t in range(N):
+                # Big-M ueber die verbleibende Temperaturspanne: laeuft die
+                # Stufe, muss T am Slotbeginn unter dem Abschaltpunkt liegen.
+                prob += T[t] <= cutoff + spanne * (1 - stage_on[st.name][t])
+
     for st in ld.stages:                       # Kopplung (z.B. groß nur mit klein)
         if st.requires and st.requires in stage_on:
             for t in range(N):
