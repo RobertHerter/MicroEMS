@@ -189,22 +189,17 @@ def test_the_scale_itself_is_a_scale(dark):
 
 
 @pytest.mark.parametrize("seite", ["ems/dashboard.py", "ems/archive.py"])
-def test_measured_values_use_the_instrument_face(seite):
-    """Messwerte tragen eine eigene Schrift, Beschriftungen nicht.
+def test_values_keep_a_fixed_digit_width_without_a_typewriter_face(seite):
+    """Feste Ziffernbreite ja, eigene Schriftfamilie nein.
 
-    Die Seite ist ein Instrument: Werte werden untereinander verglichen und
-    schreiben sich alle fuenf Sekunden neu. Traegt aber ALLES dieselbe
-    Schreibmaschinenschrift, wirkt sie wie ein Terminal statt wie ein
-    Messgeraet - deshalb prueft der Test auch die Gegenrichtung.
+    Die Werte schreiben sich alle fuenf Sekunden neu - ohne tabular-nums
+    springt die Breite bei jeder Aktualisierung sichtbar. Eine
+    Schreibmaschinenschrift dazu war zu viel: auf einer Seite mit vielen
+    Kacheln kippt das Bild Richtung Telemetrie-Auswurf. Der Test haelt beide
+    Haelften fest, damit weder die eine noch die andere zurueckkommt.
     """
     quelle = pathlib.Path(seite).read_text(encoding="utf-8")
-    assert "--font-num" in quelle, "kein Token für die Messwertschrift"
-    assert "tabular-nums slashed-zero" in quelle, \
-        "feste Ziffernbreite oder durchgestrichene Null fehlt"
-    # Der Fliesstext darf sie NICHT tragen.
-    for selektor in (" body {{", "body{"):
-        if selektor in quelle:
-            block = quelle[quelle.index(selektor):]
-            block = block[:block.index("}")]
-            assert "--font-num" not in block, \
-                f"{seite}: Messwertschrift auf dem gesamten Fliesstext"
+    assert "tabular-nums" in quelle, "feste Ziffernbreite fehlt"
+    assert "--font-num" in quelle, "kein Token fuer die Wertschrift"
+    assert "monospace" not in quelle, \
+        f"{seite}: Schreibmaschinenschrift ist zurueck"

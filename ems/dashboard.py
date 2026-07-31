@@ -2459,10 +2459,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
         --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
+        --flow-in: #2468a9; --flow-out: #b45f16;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
         --muted-2: #b6c2ce;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
+        --flow-in: #7fb4e8; --flow-out: #e6a56b;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
  /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
     verschwindet der Standardring des Browsers fast. Ohne sichtbaren Fokus
@@ -2492,13 +2494,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     bewusst in der Oberflaechenschrift - traegt beides dieselbe Schrift, wirkt
     die Seite wie ein Terminal statt wie ein Messgeraet.
     Ein Token, ein Rueckweg: --font-num auf 'inherit' stellen genuegt. */
- :root {{ --font-num: ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono',
-        'Roboto Mono', 'DejaVu Sans Mono', monospace; }}
+ /* Feste Ziffernbreite ja, eigene Schriftfamilie nein. Die Werte schreiben
+    sich alle fuenf Sekunden neu - ohne tabular-nums springt die Breite
+    sichtbar. Eine Schreibmaschinenschrift dazu war zu viel: auf einer Seite
+    mit vielen Kacheln kippt das Bild Richtung Telemetrie-Auswurf. */
+ :root {{ --font-num: inherit; }}
  .tile .v, #runtime-meta, .quality-value, .an-tile b, h1 .ts,
  .live-tiles .v, .decision-facts span {{
         font-family: var(--font-num);
-        font-variant-numeric: tabular-nums slashed-zero;
-        font-feature-settings: 'zero' 1; }}
+        font-variant-numeric: tabular-nums; }}
  .app-header {{ position: relative; display: flex; align-items: center;
         flex-wrap: wrap; gap: var(--s3); margin: 0 0 var(--s4); overflow: hidden;
         padding: var(--s3) var(--s4); background: var(--card); border: 1px solid var(--line);
@@ -2576,40 +2580,38 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-tiles .tile {{ max-width: 320px; }}
  .live-tiles .tile {{ transition: background-color .25s, border-color .25s,
         color .25s; }}
- .live-tiles .live-solar {{ background: #fff8d8; border-color: #efd86e; }}
- .live-tiles .live-solar .v {{ color: #9a6b00; }}
- .live-tiles .live-house {{ background: #f5f0ff; border-color: #d9c9f3; }}
- .live-tiles .live-house .v {{ color: #65439b; }}
- .live-tiles .live-soc {{ background: #eaf8f7; border-color: #b8dedb; }}
- .live-tiles .live-soc .v {{ color: #147a74; }}
- .live-tiles .live-wallbox {{ background: #eef5ff; border-color: #c5d9f5; }}
- .live-tiles .live-wallbox .v {{ color: #285f9e; }}
- .live-tiles .live-temp {{ background: #fff4ec; border-color: #f0cdb0; }}
- .live-tiles .live-temp .v {{ color: #b5642a; }}
- .live-tiles .daily-deviation.positive, .live-tiles .daily-balance.ok {{ background: #eaf8ee; border-color: #b8dfc3; }}
- .live-tiles .daily-deviation.positive .v, .live-tiles .daily-balance.ok .v {{ color: #237a3b; }}
- .live-tiles .daily-deviation.negative, .live-tiles .daily-balance.bad {{ background: #fff3dd; border-color: #eccb82; }}
- .live-tiles .daily-deviation.negative .v, .live-tiles .daily-balance.bad .v {{ color: #9a6100; }}
- .live-tiles .flow-import {{ background: #fdecec; border-color: #efb6b6; }}
- .live-tiles .flow-import .v {{ color: #b3261e; }}
- .live-tiles .flow-export {{ background: #eaf8ee; border-color: #b8dfc3; }}
- .live-tiles .flow-export .v {{ color: #237a3b; }}
- .live-tiles .flow-charge {{ background: #eaf3ff; border-color: #b8d2f2; }}
- .live-tiles .flow-charge .v {{ color: #2468a9; }}
- .live-tiles .flow-discharge {{ background: #fff1e5; border-color: #edc59f; }}
- .live-tiles .flow-discharge .v {{ color: #b45f16; }}
- .live-tiles .flow-idle {{ background: #f4f5f6; border-color: #d7dadd; }}
- .live-tiles .flow-idle .v {{ color: #62676d; }}
- .live-tiles .daily-import {{ background: #fdecec; border-color: #efb6b6; }}
- .live-tiles .daily-import .v {{ color: #b3261e; }}
- .live-tiles .daily-export {{ background: #eaf8ee; border-color: #b8dfc3; }}
- .live-tiles .daily-export .v {{ color: #237a3b; }}
- .live-tiles .daily-charge {{ background: #eaf3ff; border-color: #b8d2f2; }}
- .live-tiles .daily-charge .v {{ color: #2468a9; }}
- .live-tiles .daily-discharge {{ background: #edf9ef; border-color: #bddfc5; }}
- .live-tiles .daily-discharge .v {{ color: #287942; }}
- .live-tiles .daily-price {{ background: #eaf8f7; border-color: #b8dedb; }}
- .live-tiles .daily-price .v {{ color: #147a74; }}
+ .live-tiles .daily-deviation.positive .v, .live-tiles .daily-balance.ok .v {{ color: var(--ok); }}
+ .live-tiles .daily-deviation.negative .v, .live-tiles .daily-balance.bad .v {{ color: var(--warn); }}
+ .live-tiles .flow-import .v {{ color: var(--bad); }}
+ .live-tiles .flow-export .v {{ color: var(--ok); }}
+ .live-tiles .flow-charge .v {{ color: var(--flow-in); }}
+ .live-tiles .flow-discharge .v {{ color: var(--flow-out); }}
+ .live-tiles .flow-idle .v {{ color: var(--muted); }}
+ .live-tiles .daily-import .v {{ color: var(--bad); }}
+ .live-tiles .daily-export .v {{ color: var(--ok); }}
+ /* EINE Regel statt zwoelf Ausnahmen: Farbe bedeutet Zustand oder Richtung,
+    niemals blosse Zugehoerigkeit. Welche Groesse eine Kachel zeigt, steht in
+    ihrer Beschriftung - dafuer braucht es keine eingefaerbte Flaeche. Vorher
+    leuchteten 27 Kacheln in zwoelf Farbwelten gleichzeitig; wenn alles wichtig
+    aussieht, ist nichts wichtig. Die Zugehoerigkeit traegt jetzt eine schmale
+    Kante links. */
+ .tile {{ border-left: 3px solid var(--akzent, var(--line)); }}
+ .live-solar {{ --akzent: #d9a13b; }}
+ .live-house {{ --akzent: #8b5cf6; }}
+ .live-soc {{ --akzent: #17a2a2; }}
+ .live-wallbox {{ --akzent: var(--flow-in); }}
+ .live-temp {{ --akzent: #d97706; }}
+ .daily-price {{ --akzent: #17a2a2; }}
+ .daily-import {{ --akzent: var(--bad); }}
+ .daily-export {{ --akzent: var(--ok); }}
+ .daily-charge {{ --akzent: var(--flow-in); }}
+ .daily-discharge {{ --akzent: var(--flow-out); }}
+ .daily-deviation, .daily-balance {{ --akzent: var(--warn); }}
+ /* Rangfolge: was JETZT gilt, ist am groessten; Tageswerte und Kennzahlen
+    eine Stufe kleiner. Vorher trugen alle drei Reihen dieselbe Groesse. */
+ .tile .v {{ font-size: var(--t3); }}
+ .live-tiles .v {{ font-size: var(--t4); }}
+ .live-daily .v {{ font-size: var(--t3); }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
  /* Betriebsdiagnose/Pool-Rückkopplung/Prognosequalität nutzen jetzt den
@@ -3057,25 +3059,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .schedule-now {{ background: #f4f7fa; }}
  html.dark .schedule-legend .now {{ color: #f4f7fa; }}
  html.dark .controls button.schedule-delete {{ color: #ffc7c7; background: #40282b; border-color: #6e4045; }}
- html.dark .live-tiles .live-solar {{ background: #3a3319; border-color: #6d5e26; }}
- html.dark .live-tiles .live-house {{ background: #292238; border-color: #50436b; }}
- html.dark .live-tiles .live-soc {{ background: #173634; border-color: #2d615d; }}
- html.dark .live-tiles .live-wallbox, html.dark .live-tiles .flow-charge {{ background: #192d43; border-color: #31577e; }}
- html.dark .live-tiles .live-temp {{ background: #3a2a1c; border-color: #6e4d2f; }}
- html.dark .live-tiles .flow-import {{ background: #421f22; border-color: #74373a; }}
- html.dark .live-tiles .flow-export {{ background: #183522; border-color: #326541; }}
- html.dark .live-tiles .flow-discharge {{ background: #422b18; border-color: #75502e; }}
- html.dark .live-tiles .flow-idle {{ background: #252d35; border-color: #46515c; }}
- html.dark .live-tiles .daily-import {{ background: #421f22; border-color: #74373a; }}
- html.dark .live-tiles .daily-export, html.dark .live-tiles .daily-discharge {{ background: #183522; border-color: #326541; }}
- html.dark .live-tiles .daily-charge {{ background: #192d43; border-color: #31577e; }}
- html.dark .live-tiles .daily-price {{ background: #173634; border-color: #2d615d; }}
  html.dark .live-daily-panel > summary span {{ color: #aebbc8; }}
  html.dark #live-day-status[data-quality=current] {{ color: #73d595; }}
  html.dark #live-day-status[data-quality=warning] {{ color: #efd06d; }}
  html.dark #live-day-status[data-quality=stale] {{ color: #ff9691; }}
- html.dark .live-tiles .daily-deviation.positive, html.dark .live-tiles .daily-balance.ok {{ background: #183522; border-color: #326541; }}
- html.dark .live-tiles .daily-deviation.negative, html.dark .live-tiles .daily-balance.bad {{ background: #3a3219; border-color: #6d5e26; }}
  html.dark .control-channels span {{ background: #263b4d; color: #b9d9f3; }}
  html.dark .live-tiles .tile .v {{ filter: brightness(1.55) saturate(1.18); }}
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
