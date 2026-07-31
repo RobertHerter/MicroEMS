@@ -242,9 +242,11 @@ class HomeyMqttPublisher:
                                   "enabled": ld.enabled, "topic": st.control_topic,
                                   "thermostat": bool(ld.thermostat),
                                   "temp_signal": ld.temp_signal,
-                                  "target_c": float(ld.target_c),
                                   # max_c ist die Heizgrenze: bei einem Geraet
                                   # mit eigenem Thermostat sein Abschaltpunkt.
+                                  # target_c steht hier NICHT mehr - es hat die
+                                  # Freigabe seit der Umstellung nicht mehr
+                                  # beeinflusst und waere totes Beiwerk.
                                   "max_c": float(ld.max_c)})
             else:
                 lanes.append({"label": ld.name,
