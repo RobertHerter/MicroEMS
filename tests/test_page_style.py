@@ -394,3 +394,31 @@ def test_no_page_sets_its_own_width(seite):
     # eine Bildschirmgrenze, keine Layoutbreite.
     eigene = [m for m in re.findall(r"max-width:\s*(\d{4,})px", quelle)]
     assert not eigene, f"{seite}: eigene Seitenbreite {eigene}"
+
+
+def test_panel_headers_all_react_to_the_pointer():
+    """Nur EIN Panel reagierte auf den Mauszeiger.
+
+    Nicht weil den anderen die Hover-Regel fehlte - sie hatten sie -, sondern
+    weil eine ``html.dark``-Regel fuer dieselbe Kopfzeile hoehere Spezifitaet
+    hat (zwei Klassen plus zwei Elemente gegen zwei Klassen plus ein Element)
+    und den Hover damit ueberschrieb, unabhaengig von der Reihenfolge.
+    Auffaellig wurde es nur, weil bei einem Panel die Regel schon entfernt war.
+    """
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    stil = re.sub(r"/\*.*?\*/", " ",
+                  quelle[quelle.index("<style>"):quelle.index("</style>")],
+                  flags=re.S)
+    ueberschreibend = []
+    for block in stil.split("}}"):
+        if "{{" not in block:
+            continue
+        selektoren, regeln = block.rsplit("{{", 1)
+        selektoren = selektoren[selektoren.rfind("}") + 1:]
+        for teil in selektoren.split(","):
+            teil = " ".join(teil.split())
+            if (teil.startswith("html.dark") and teil.endswith("summary")
+                    and ":hover" not in teil and "background" in regeln):
+                ueberschreibend.append(teil[:60])
+    assert not ueberschreibend, (
+        f"Themenregel ueberschreibt den Hover der Kopfzeile: {ueberschreibend}")

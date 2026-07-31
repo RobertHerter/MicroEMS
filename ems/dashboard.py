@@ -3156,7 +3156,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .curve-box span {{ background: var(--card); border-color: var(--line);
         color: #e7edf4; }}
  html.dark .runtime-progress {{ background: #354352; }}
- html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .event time {{ color: #c3cdd8; }}
  html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
  html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}
@@ -3164,7 +3163,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .late-confidence {{ background: #2b3743; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
  html.dark .decision-facts span {{ background: #2a3947; color: #d9e3ed; }}
- html.dark .controls > summary, html.dark .load-card, html.dark .ctl-section,
+ html.dark .load-card, html.dark .ctl-section,
  html.dark .curve-box, html.dark .planner-badge {{ background: #202b36; border-color: #354352; }}
  html.dark .battery-planner {{ background: linear-gradient(150deg,#18232d,#202b36); border-color: #354352; }}
  html.dark .controls input, html.dark .controls textarea, html.dark .controls select {{ background: #111820; color: #eef3f8; border-color: #4b5b6b; }}
