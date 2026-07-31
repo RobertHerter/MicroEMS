@@ -2656,7 +2656,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  /* Fusszeile eines Panels. Die Klasse .hint stammt aus dem Archiv-Stylesheet
     und war hier nie gestaltet - der Satz erschien in voller Fliesstextgroesse
     und ohne Daempfung, also groesser als alles darueber. */
- .info-panel .hint {{ padding: 0 var(--s4) var(--s3); color: var(--muted);
+ .info-panel .hint {{ padding: 0 var(--s3) var(--s3); color: var(--muted);
         font-size: var(--t1); line-height: 1.45; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
@@ -2836,7 +2836,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .info-panel > summary small {{ margin-left: var(--s2); color: var(--muted); font-weight: 400; }}
  .analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); font-weight: 700; color: #55606a; }}
  .analysis-panel h4 small {{ margin-left: var(--s2); font-weight: 400; color: #8a949d; }}
- .analysis-panel .tiles {{ padding: 0 var(--s3); margin-bottom: var(--s1); }}
+ .info-panel .tiles, .decisions .tiles {{ padding: 0 var(--s3); }}
+ /* Folgt das Raster direkt auf die Kopfzeile, fehlt sonst der Abstand
+    nach oben - im Analyse-Panel liefern ihn die Zwischenueberschriften. */
+ .info-panel > summary + .tiles {{ padding-top: var(--s3); }}
+ .analysis-panel .tiles {{ margin-bottom: var(--s1); }}
  .analysis-panel .tiles:last-of-type {{ padding-bottom: var(--s4); }}
  .analysis-panel .an-hint {{ display: block; padding: var(--s0) var(--s3) var(--s3); color: #8a949d; font-size: var(--t1); }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
