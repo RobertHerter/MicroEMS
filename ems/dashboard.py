@@ -2462,8 +2462,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
         --surface: #f7f9fb;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
- html.dark {{ --line: #33414f; --card: #18212b; --muted: #a3b0bd;
-        --muted-2: #b6c2ce;
+ html.dark {{ --line: #33414f; --card: #18212b; --muted: #bcc7d3;
+        --muted-2: #ccd6e0;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
         --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 28%;
         --surface: #202b36;
