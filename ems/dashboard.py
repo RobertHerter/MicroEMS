@@ -2459,12 +2459,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
         --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
-        --flow-in: #2468a9; --flow-out: #b45f16;
+        --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
         --muted-2: #b6c2ce;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
-        --flow-in: #7fb4e8; --flow-out: #e6a56b;
+        --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 20%;
         --shadow: 0 1px 2px rgba(0,0,0,.30), 0 4px 16px rgba(0,0,0,.28); }}
  /* Tastaturbedienung: die Knoepfe tragen eigene Flaechen und Rahmen, darauf
     verschwindet der Standardring des Browsers fast. Ohne sichtbaren Fokus
@@ -2595,13 +2595,31 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     leuchteten 27 Kacheln in zwoelf Farbwelten gleichzeitig; wenn alles wichtig
     aussieht, ist nichts wichtig. Die Zugehoerigkeit traegt jetzt eine schmale
     Kante links. */
- .tile {{ border-left: 3px solid var(--akzent, var(--line)); }}
+ /* Die Flaeche traegt die Zugehoerigkeit wieder - aber leise. Der erste
+    Versuch machte alle Kacheln neutral, weil "die Beschriftung sagt ja, welche
+    Groesse es ist". Das war falsch gedacht: bei 19 Kacheln liest man keine
+    Beschriftungen, man sucht die Farbe. Sie ist hier kein Schmuck, sondern die
+    Fundstelle fuer Akku, Netz, Solar.
+    Der Unterschied zu vorher liegt in der Staerke: eine leichte Toenung aus
+    derselben Familienfarbe statt Vollton plus farbigem Rahmen plus farbigem
+    Wert. Wiedererkennbar, ohne dass zwoelf Flaechen um Aufmerksamkeit ringen.
+    Ohne --akzent mischt sich die Kartenfarbe mit sich selbst - neutrale
+    Kacheln bleiben neutral. */
+ .tile {{ border-left: 3px solid var(--akzent, var(--line));
+        background: color-mix(in srgb, var(--akzent, var(--card)) var(--tint),
+                              var(--card)); }}
  .live-solar {{ --akzent: #d9a13b; }}
  .live-house {{ --akzent: #8b5cf6; }}
  .live-soc {{ --akzent: #17a2a2; }}
- .live-wallbox {{ --akzent: var(--flow-in); }}
+ .live-wallbox {{ --akzent: #64748b; }}
  .live-temp {{ --akzent: #d97706; }}
- .daily-price {{ --akzent: #17a2a2; }}
+ /* Netz und Akku teilen die Klasse .live-flow, weil ihr WERT die Richtung
+    faerbt. Ihre Zugehoerigkeit braucht trotzdem eigene Farben - sonst sind
+    genau die beiden Kacheln nicht auffindbar, nach denen man am haeufigsten
+    sucht. */
+ #live-grid-tile {{ --akzent: #3f9e63; }}
+ #live-battery-tile {{ --akzent: #3b82f6; }}
+ .daily-price {{ --akzent: #b06a2c; }}
  .daily-import {{ --akzent: var(--bad); }}
  .daily-export {{ --akzent: var(--ok); }}
  .daily-charge {{ --akzent: var(--flow-in); }}
