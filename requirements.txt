@@ -20,7 +20,7 @@ highspy>=1.15.1
 holidays>=0.45
 
 # InfluxDB – beide Clients, je nach konfigurierter Version wird einer genutzt
-influxdb>=5.3            # InfluxDB 1.x (InfluxQL)
+influxdb>=5.3.2            # InfluxDB 1.x (InfluxQL)
 influxdb-client>=1.50.0    # InfluxDB 2.x (Flux)
 
 # MQTT-Ausgabe an Homey
