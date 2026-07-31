@@ -37,6 +37,45 @@ _MODE_COLOR = {"auto": "#f0f0f0", "peak": "#74c476", "late": "#20a39e",
                "grid_charge": "#1f77b4", "grid_discharge": "#9400d3"}
 # Legenden-Swatch: auto wäre auf Weiß unsichtbar
 _MODE_SWATCH = dict(_MODE_COLOR, auto="#c8c8c8")
+# Kurvenfarben fuer den Dunkelmodus. Auf dunklem Grund fallen fuenf der
+# verwendeten Familien unter 3:1 und sind kaum noch zu sehen - Trockner 1,75,
+# Pool 2,50, Preis 2,75, Waschmaschine 2 2,77, die schwarzen SoC-Linien 1,16.
+# Nachgefaerbt wurde bisher nur die letzte Gruppe, und zwar ueber eine Liste im
+# Browser, die den ANZEIGENAMEN als Schluessel benutzt: wird eine Kurve
+# umbenannt, faellt die Zuordnung stillschweigend aus.
+# Die Zuordnung steht jetzt hier, wird beim Bauen der Figur in Indizes
+# aufgeloest und im Browser nur noch angewandt. Ein Test prueft, dass sie
+# vollstaendig ist und keine toten Eintraege hat.
+_DARK_LINE_BY_NAME = {                     # gleiche Ausgangsfarbe, andere Rolle
+    "Haus-SoC (Ist)": "#f7fafc",
+    "Haus-SoC (Prog.)": "#d5e0ea",
+    "Akku-Leistung (Ist)": "#58d68d",
+}
+_DARK_LINE_BY_COLOR = {
+    "#5d4037": "#c8a99e", "#6f42c1": "#b39ddb", "#8c564b": "#c9a49a",
+    "#c2185b": "#f06292", "#d62728": "#ff7b78", "#1f77b4": "#6ab0e8",
+    "#00838f": "#4dd0d8", "#00897b": "#4db6ac", "#2ca02c": "#66d16a",
+    "#7f7f7f": "#a9d5ff", "#9467bd": "#c3a6e0", "#c49a94": "#dcbdb8",
+    "#e8710a": "#f5a55c", "#b06a2c": "#dcae7a",
+}
+
+
+def dark_line_colors(fig) -> dict:
+    """Kurvenindex -> Farbe im Dunkelmodus.
+
+    Ueber den INDEX statt ueber den Namen: der Index entsteht beim Bauen der
+    Figur und kann nicht durch eine Umbenennung verlorengehen.
+    """
+    zuordnung = {}
+    for i, spur in enumerate(fig.data):
+        name = getattr(spur, "name", None)
+        farbe = getattr(getattr(spur, "line", None), "color", None)
+        dunkel = _DARK_LINE_BY_NAME.get(name) or _DARK_LINE_BY_COLOR.get(farbe)
+        if dunkel:
+            zuordnung[i] = dunkel
+    return zuordnung
+
+
 _GROUPS = {"ist": "Ist", "prog": "Prognose", "progb": "Netz/Preis",
            "soc": "Ladezustand", "ctrl": "Steuerung"}
 # Spaltenreihenfolge der (nebeneinander stehenden) Legendengruppen. Die beiden
@@ -191,12 +230,6 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
                (day_start + pd.Timedelta(hours=48)).isoformat()],
     })
     return f"""
-<div class="desktop-horizon-toolbar" aria-label="Zeitraum der Plangrafik">
- <span>Zeitraum</span>
- <div class="horizon-switch desktop-horizon-switch">
-  <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
- </div>
-</div>
 <section class="mobile-plot-shell" aria-label="Prognose und Steuerung">
  <div class="mobile-plot-toolbar">
   <div class="mobile-plot-tabs" role="tablist">{buttons}</div>
@@ -516,6 +549,19 @@ def _runtime_block(controls_enabled: bool) -> str:
  window.emsRecalc=async function(){{if(btn)btn.disabled=true;try{{let r=await fetch('api/control/recalc',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:'{{}}'}});if(!r.ok)throw Error((await r.text()).slice(0,160));busy=true;emsRuntimePoll();}}catch(e){{if(btn)btn.disabled=false;document.getElementById('runtime-message').textContent='Neuberechnung fehlgeschlagen: '+e.message;}}}};
  emsRuntimePoll();setInterval(emsRuntimePoll,2000);
 }})();</script>"""
+
+
+def _horizon_toolbar() -> str:
+    """Zeitraumwahl der Plangrafik. Steht UEBER dem Diagramm: als Bedienung
+    gehoert sie vor das, was sie steuert - darunter fand man sie erst, nachdem
+    man an 1178 px Grafik vorbeigescrollt war."""
+    return """
+<div class="desktop-horizon-toolbar" aria-label="Zeitraum der Plangrafik">
+ <span>Zeitraum</span>
+ <div class="horizon-switch desktop-horizon-switch">
+  <button type="button" data-hours="24">24 h</button><button type="button" data-hours="48">48 h</button><button type="button" data-hours="all">Alles</button>
+ </div>
+</div>"""
 
 
 def _panel_state_block() -> str:
@@ -1677,6 +1723,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     thermal_calibration=None, auto_peak_basis=None,
                     load_bias=None, monitoring_status=None,
                     plan_status=None) -> str:
+    import json as _j_dark
+
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -2293,13 +2341,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # Farbtafel liest sich sonst wie eine Status-Anzeige.
     present = set(t["mode"].fillna("auto")) if "mode" in t.columns else {"auto"}
     present.add("auto")
-    mode_leg = "<b>Modus:</b>  " + "   ".join(
-        f"<span style='color:{_MODE_SWATCH[m]}'>■</span> "
-        f"{_MODE_LABEL[m].replace(' (kein Eingriff)', '')}"
-        for m in _MODES if m in present)
-    fig.add_annotation(xref="paper", yref="paper", x=0, y=-0.045,
-                       xanchor="left", yanchor="top", showarrow=False,
-                       text=mode_leg, font=dict(size=11, color="#606a75"))
+    # Die Modusfarben gehoeren in dieselbe Legendenspalte wie alles andere.
+    # Als Anmerkung unter der Grafik standen sie an einer Stelle, an der sonst
+    # keine Legende steht - und sie mussten dort eigenen Platz bekommen.
+    # Jede Farbe wird als leere Spur eingehaengt: sie zeichnet nichts, taucht
+    # aber in der Legende auf und wird von Plotly automatisch mit positioniert.
+    for m in _MODES:
+        if m not in present:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers", showlegend=True,
+            name=_MODE_LABEL[m].replace(" (kein Eingriff)", ""),
+            marker=dict(size=9, symbol="square", color=_MODE_SWATCH[m]),
+            hoverinfo="skip", legendgroup="mode", legendrank=60,
+            legendgrouptitle_text="Modus"), row=1, col=1)
     fig.update_layout(
         # Niedriger als zuvor (gemessen 1378 px): die Legende steht jetzt
         # rechts statt unter dem Diagramm, damit faellt der grosse Fussbereich
@@ -2400,6 +2455,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     tiles.append(_validation_tile(violations))
     tiles = [kachel for kachel in tiles if kachel]
 
+    dark_lines = _j_dark.dumps(dark_line_colors(fig))
     plot_html = fig.to_html(full_html=False, include_plotlyjs=False,
                             default_width="100%",
                             config={"responsive": True, "displaylogo": False,
@@ -2458,10 +2514,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
            hoechstens 1-2 px; der Gewinn liegt im gemeinsamen Rhythmus. */
         --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
         --t0: 11px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
-        --ok: #217a41; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
+        --ok: #217a41; --warn: #7f631b; --bad: #b52d28; --focus: #1769c2;
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
         --netzladen: #8f1f1b;
-        --surface: #f7f9fb;
+        --surface: #f1f4f8;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #bcc7d3;
         --muted-2: #ccd6e0;
@@ -3214,6 +3270,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {live_html}
 <div class="tiles">{''.join(tiles)}</div>
 {_control_banner(control_status)}
+{_horizon_toolbar()}
 <div class="desktop-plot">{plot_html}</div>
 {mobile_plot_html}
 {_slot_detail_block()}
@@ -3229,10 +3286,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 {_whatif_block(config)}
 {_events_block()}
 {report_html}
+<script>var EMS_DARK_LINES={dark_lines};</script>
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines={{'Haus-SoC (Ist)':['#111111','#f7fafc'],'Haus-SoC (Prog.)':['#111111','#d5e0ea'],'Akku-Leistung (Ist)':['#111111','#58d68d'],'Außentemperatur':['#7f7f7f','#a9d5ff']}};document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[t.name])Plotly.restyle(p,{{'line.color':lines[t.name][dark?1:0]}},[i]);if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0.0,'#263442'],[0.1428,'#263442'],[0.1429,'#329b4c'],[0.2856,'#329b4c'],[0.2857,'#596979'],[0.4285,'#596979'],[0.4286,'#987620'],[0.5713,'#987620'],[0.5714,'#3f5a7a'],[0.7142,'#3f5a7a'],[0.7143,'#a3134a'],[0.857,'#a3134a'],[0.8571,'#b85a08'],[0.9999,'#b85a08']]:[[0.0,'#e9ecef'],[0.1428,'#e9ecef'],[0.1429,'#2ca02c'],[0.2856,'#2ca02c'],[0.2857,'#adb5bd'],[0.4285,'#adb5bd'],[0.4286,'#d8a52a'],[0.5713,'#d8a52a'],[0.5714,'#8fa8c8'],[0.7142,'#8fa8c8'],[0.7143,'#c2185b'],[0.857,'#c2185b'],[0.8571,'#e8710a'],[0.9999,'#e8710a']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines=EMS_DARK_LINES;document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[i]!==undefined){{if(t._emsHell===undefined)t._emsHell=t.line&&t.line.color;Plotly.restyle(p,{{'line.color':dark?lines[i]:t._emsHell}},[i]);}}if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0.0,'#263442'],[0.1428,'#263442'],[0.1429,'#329b4c'],[0.2856,'#329b4c'],[0.2857,'#596979'],[0.4285,'#596979'],[0.4286,'#987620'],[0.5713,'#987620'],[0.5714,'#3f5a7a'],[0.7142,'#3f5a7a'],[0.7143,'#a3134a'],[0.857,'#a3134a'],[0.8571,'#b85a08'],[0.9999,'#b85a08']]:[[0.0,'#e9ecef'],[0.1428,'#e9ecef'],[0.1429,'#2ca02c'],[0.2856,'#2ca02c'],[0.2857,'#adb5bd'],[0.4285,'#adb5bd'],[0.4286,'#d8a52a'],[0.5713,'#d8a52a'],[0.5714,'#8fa8c8'],[0.7142,'#8fa8c8'],[0.7143,'#c2185b'],[0.857,'#c2185b'],[0.8571,'#e8710a'],[0.9999,'#e8710a']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});

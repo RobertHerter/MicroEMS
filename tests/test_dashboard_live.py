@@ -68,7 +68,9 @@ def test_mobile_plot_has_panel_tabs_and_24_48_hour_switch():
         assert f'data-panel="{panel}"' in html
     assert 'data-hours="24"' in html and 'data-hours="48"' in html
     assert 'data-hours="all"' in html               # "Alles"-Button
-    assert 'class="desktop-horizon-toolbar"' in html
+    # Die Schreibtisch-Zeitraumleiste steckt NICHT mehr im Mobilblock: sie
+    # steht jetzt ueber der Grafik, also frueher in der Seite.
+    assert 'class="desktop-horizon-toolbar"' not in html
     assert "desktopRange" in html and "Plotly.relayout" in html
     assert '"2026-07-17T00:00:00+02:00"' in html    # lokale 00:00, nicht UTC-Vortag
     assert "toISOString()" not in html

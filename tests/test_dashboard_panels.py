@@ -126,7 +126,11 @@ def test_all_traces_share_one_time_format(tmp_path):
     gegen alle anderen versetzt. Genau das passierte der Außentemperatur.
     """
     data, _ = _figure(_render_with_temperature(tmp_path))
-    achsen = [t["x"] for t in data if isinstance(t.get("x"), list) and t["x"]]
+    # Leere Spuren ueberspringen: die Modusfarben haengen nur als
+    # Legendeneintrag in der Figur und zeichnen nichts.
+    achsen = [t["x"] for t in data
+              if isinstance(t.get("x"), list) and t["x"]
+              and t["x"][0] is not None]
     assert len(achsen) >= 5, f"nur {len(achsen)} Spuren mit Zeitachse"
     iso = sorted({a[0] for a in achsen if "T" in str(a[0])})
     assert not iso, f"Spuren im alten ISO-Format: {iso}"
@@ -476,3 +480,84 @@ def test_every_panel_header_carries_a_status_dot(tmp_path):
             continue
         ohne.append(m.group(0)[:80])
     assert not ohne, f"Kopfzeilen ohne Ampelpunkt: {ohne}"
+
+
+def test_every_dark_curve_colour_is_visible_and_the_mapping_is_complete(tmp_path):
+    """Kurvenfarben mussten im Dunkelmodus nachgefaerbt werden - und wurden es
+    nur zum Teil.
+
+    Fuenf der verwendeten Familien fallen auf dunklem Grund unter 3:1 (Trockner
+    1,75, Pool 2,50, Preis 2,75, Waschmaschine 2 2,77, die schwarzen SoC-Linien
+    1,16). Nachgefaerbt wurde bisher nur die letzte Gruppe, ueber eine Liste im
+    Browser mit dem ANZEIGENAMEN als Schluessel: eine Umbenennung liess die
+    Zuordnung stillschweigend ausfallen. Genau das prueft dieser Test - er
+    rechnet den Kontrast nach und verlangt, dass jede zu dunkle Kurve eine
+    Entsprechung hat.
+    """
+    import json
+
+    def leuchtdichte(farbe: str) -> float:
+        farbe = farbe.lstrip("#")
+        kanaele = [int(farbe[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+        kanaele = [k / 12.92 if k <= 0.03928 else ((k + 0.055) / 1.055) ** 2.4
+                   for k in kanaele]
+        return 0.2126 * kanaele[0] + 0.7152 * kanaele[1] + 0.0722 * kanaele[2]
+
+    def kontrast(a: str, b: str) -> float:
+        h, d = leuchtdichte(a), leuchtdichte(b)
+        return (max(h, d) + 0.05) / (min(h, d) + 0.05)
+
+    html = _render_with_temperature(tmp_path)
+    data, _ = _figure(html)
+    zuordnung = json.loads(
+        re.search(r"var EMS_DARK_LINES=(\{.*?\});", html, re.S).group(1))
+    # Nicht gierig: [^;]* laeuft ueber das schliessende } hinaus bis zum
+    # naechsten Semikolon irgendwo im Skript danach. Auf der Testseite ging
+    # das zufaellig gut, auf der ausgelieferten Seite nicht.
+
+    DUNKEL = "#18212b"
+    ohne = []
+    for i, spur in enumerate(data):
+        farbe = (spur.get("line") or {}).get("color")
+        if not farbe or not farbe.startswith("#"):
+            continue
+        dunkel = zuordnung.get(str(i))
+        if dunkel:
+            assert kontrast(dunkel, DUNKEL) >= 4.5, (
+                f"{spur.get('name')}: Dunkelfarbe {dunkel} nur "
+                f"{kontrast(dunkel, DUNKEL):.2f}:1")
+        elif kontrast(farbe, DUNKEL) < 3.0:
+            ohne.append(f"{spur.get('name')} {farbe} "
+                        f"{kontrast(farbe, DUNKEL):.2f}:1")
+    assert not ohne, f"zu dunkle Kurven ohne Entsprechung: {ohne}"
+
+    # Bewusst KEINE Pruefung auf unbenutzte Eintraege: die Palette muss mehr
+    # abdecken als ein einzelner Aufbau zeigt - welche Kurven erscheinen, haengt
+    # an der Konfiguration (vier Geraete oder keines, Pool oder nicht).
+    assert zuordnung, "keine Zuordnung in der Seite"
+    for farbe in zuordnung.values():
+        assert kontrast(farbe, DUNKEL) >= 4.5, farbe
+
+
+def test_horizon_toolbar_sits_above_the_chart(tmp_path):
+    """Eine Bedienung gehoert vor das, was sie steuert.
+
+    Die Zeitraumwahl stand unter dem Diagramm - man fand sie erst, nachdem man
+    an 1178 px Grafik vorbeigescrollt war.
+    """
+    html = _render(tmp_path)
+    leiste = html.index('class="desktop-horizon-toolbar"')
+    grafik = html.index('<div class="desktop-plot">')
+    assert leiste < grafik, "Zeitraumwahl steht immer noch unter der Grafik"
+
+
+def test_mode_colours_are_a_legend_group_not_a_footnote(tmp_path):
+    """Die Modusfarben standen als Anmerkung UNTER dem Diagramm, waehrend jede
+    andere Legende rechts daneben steht - und sie brauchten dort eigenen Platz
+    im Fussbereich."""
+    data, layout = _figure(_render(tmp_path))
+    gruppen = {t.get("legendgroup") for t in data}
+    assert "mode" in gruppen, "Modusfarben nicht als Legendengruppe"
+    anmerkungen = [a.get("text", "") for a in layout.get("annotations", [])]
+    assert not [a for a in anmerkungen if "Modus:" in a], \
+        "Modus-Anmerkung unter dem Diagramm ist noch da"
