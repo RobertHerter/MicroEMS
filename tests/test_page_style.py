@@ -26,7 +26,12 @@ def _tokens(quelle: str, dark: bool) -> dict[str, str]:
     """Werte aus dem hellen bzw. dunklen Deklarationsblock einer Seite."""
     marke = "html.dark" if dark else ":root"
     start = quelle.index(marke, quelle.index("<style>"))
-    block = quelle[start:start + 700]
+    # Bis zur schliessenden Klammer lesen, NICHT ueber ein Fenster fester
+    # Laenge: der Block waechst mit jedem neuen Token, und ein zu kurzes
+    # Fenster liess die spaeteren Werte lautlos verschwinden. Ein zu langes
+    # waere schlimmer - es haette in den Dunkelblock hineingelesen und dessen
+    # Farben als die hellen gemeldet.
+    block = quelle[start:quelle.index("}", start)]
     gefunden = {}
     for token in TOKENS:
         m = re.search(re.escape(token) + r":\s*([^;}]+)", block)
@@ -141,3 +146,43 @@ def test_status_colours_stay_readable_on_their_own_background(dark):
         assert verhaeltnis >= 4.5, (
             f"{token} = {werte[token]} auf {grund}: "
             f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")
+
+
+# Grosse Einzelwerte sind Funktionsabstaende (Platz unter festen Fussleisten),
+# keine Rhythmusfrage - sie duerfen freihaendig bleiben.
+FUNKTIONSABSTAND_AB = 24
+
+
+@pytest.mark.parametrize("seite", SEITEN)
+def test_spacing_and_type_follow_a_scale(seite):
+    """Vorher war JEDE Ganzzahl von 1 bis 16 px als Abstand im Einsatz.
+
+    17 verschiedene Werte auf 312 Verwendungen, dazu zehn Schriftgrade - das
+    ist keine Skala, sondern Freihand, und genau daher kommt der unruhige
+    Eindruck. Ein neuer freihändiger Wert faellt hier auf, bevor er sich
+    einschleicht.
+    """
+    quelle = pathlib.Path(seite).read_text(encoding="utf-8")
+    frei = []
+    for m in re.finditer(r"\b(padding|margin|gap|row-gap|column-gap)"
+                         r"(-top|-bottom|-left|-right)?: *([^;}\n]+)", quelle):
+        for wert in re.findall(r"(\d+)px", m.group(3)):
+            if int(wert) < FUNKTIONSABSTAND_AB:
+                frei.append(f"{m.group(1)}: …{wert}px")
+    for m in re.finditer(r"font-size: ?(\d+)px", quelle):
+        frei.append(f"font-size: {m.group(1)}px")
+    assert not frei, f"{seite}: freihändige Werte statt Skala: {sorted(set(frei))}"
+
+
+@pytest.mark.parametrize("dark", [False, True], ids=["hell", "dunkel"])
+def test_the_scale_itself_is_a_scale(dark):
+    """Die Token muessen aufsteigend und ohne Dubletten sein - sonst waere die
+    Skala nur eine andere Schreibweise fuer Freihand."""
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    if dark:
+        pytest.skip("Groessen erben aus :root, der Dunkelblock aendert nur Farben")
+    for praefix, anzahl in (("--s", 6), ("--t", 5)):
+        werte = [int(re.search(r"(\d+)px", m).group(1)) for m in
+                 re.findall(rf"{praefix}\d: *\d+px", quelle)][:anzahl]
+        assert len(werte) == anzahl, f"{praefix}: {len(werte)} statt {anzahl} Stufen"
+        assert werte == sorted(set(werte)), f"{praefix} nicht aufsteigend: {werte}"

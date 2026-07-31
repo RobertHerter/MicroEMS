@@ -2448,6 +2448,14 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
            Warnung kam auf Weiss auf 2,1:1 - ausgerechnet der Warnzustand war
            der am schlechtesten lesbare. Diese Werte liegen in BEIDEN Themen
            ueber 4,5:1 und sind dieselben wie im Lauf-Archiv. */
+        /* Abstaende auf einem 4er-Raster, Schriftgrade in fuenf Stufen.
+           Vorher war JEDE Ganzzahl von 1 bis 16 px als Abstand im Einsatz
+           (17 Werte, 312 Verwendungen) und es gab zehn Schriftgrade - das
+           ist keine Skala, sondern Freihand, und genau daher kommt der
+           unruhige Eindruck. Die Zuordnung bewegt jeden Einzelwert um
+           hoechstens 1-2 px; der Gewinn liegt im gemeinsamen Rhythmus. */
+        --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+        --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
         --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
  html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
@@ -2471,7 +2479,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html {{ background: #eef2f6; }}
  html.dark {{ background: #10171e; }}
  body {{ font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
-        max-width: 1800px; margin: 0 auto; padding: 16px; color: #20252b;
+        max-width: 1800px; margin: 0 auto; padding: var(--s4); color: #20252b;
         background: none; }}
  /* Zahlen mit fester Ziffernbreite: die Live-Kacheln schreiben sich alle
     fuenf Sekunden neu, mit proportionalen Ziffern springt die Breite je
@@ -2479,27 +2487,27 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .tile .v, #runtime-meta, .quality-value, .an-tile b {{
         font-variant-numeric: tabular-nums; }}
  .app-header {{ position: relative; display: flex; align-items: center;
-        flex-wrap: wrap; gap: 12px; margin: 0 0 14px; overflow: hidden;
-        padding: 13px 16px; background: var(--card); border: 1px solid var(--line);
+        flex-wrap: wrap; gap: var(--s3); margin: 0 0 var(--s4); overflow: hidden;
+        padding: var(--s3) var(--s4); background: var(--card); border: 1px solid var(--line);
         border-radius: var(--r-card); box-shadow: var(--shadow); }}
- h1 {{ flex: 1; font-size: 22px; margin: 0; letter-spacing: -.2px;
+ h1 {{ flex: 1; font-size: var(--t4); margin: 0; letter-spacing: -.2px;
         min-width: 0; }}
- h1 .ts {{ color: var(--muted); font-weight: normal; font-size: 14px;
+ h1 .ts {{ color: var(--muted); font-weight: normal; font-size: var(--t2);
         font-variant-numeric: tabular-nums; }}
  .desktop-plot {{ background: var(--card); border: 1px solid var(--line);
         border-radius: var(--r-card); box-shadow: var(--shadow); }}
  html.dark .desktop-plot {{ background: #18212b; }}
- .header-actions {{ display: flex; gap: 7px; }}
- .lp-bars {{ display: flex; align-items: flex-end; gap: 1px; height: 34px;
-        margin-top: 6px; }}
+ .header-actions {{ display: flex; gap: var(--s2); }}
+ .lp-bars {{ display: flex; align-items: flex-end; gap: var(--s0); height: 34px;
+        margin-top: var(--s2); }}
  .lp-bars span {{ flex: 1; background: #3a86c8; border-radius: 1px 1px 0 0;
         min-width: 2px; }}
  .tile.warn {{ border-color: var(--warn); }}
- .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: 7px 10px;
+ .header-actions button, .header-actions a {{ min-width: 42px; min-height: 38px; padding: var(--s2) var(--s3);
         border: 1px solid var(--line); border-radius: var(--r-ctl); background: #f5f7f9;
-        color: #26313c; cursor: pointer; font: inherit; font-size: 13px;
+        color: #26313c; cursor: pointer; font: inherit; font-size: var(--t1);
         text-decoration: none; display: inline-flex; align-items: center;
-        justify-content: center; gap: 5px; transition: background .12s, border-color .12s; }}
+        justify-content: center; gap: var(--s1); transition: background .12s, border-color .12s; }}
  .header-actions button:hover, .header-actions a:hover {{ background: #e9eef3;
         border-color: #cbd4dd; }}
  #install-app {{ display: none; }}
@@ -2507,13 +2515,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     eine zweite Karte mit Rahmen, Schatten und Aussenabstand - auf dem Handy
     rund 120 px, bevor ein Messwert zu sehen war. Hier kostet er nur noch die
     Zeilenhoehe, die die Titelleiste ohnehin hat. */
- .runtime-strip {{ display: flex; align-items: center; gap: 10px; min-width: 0;
+ .runtime-strip {{ display: flex; align-items: center; gap: var(--s3); min-width: 0;
         flex: 1 1 240px; margin: 0; padding: 0; border: 0; background: none;
-        box-shadow: none; font-size: 12px; }}
+        box-shadow: none; font-size: var(--t1); }}
  .runtime-main > div {{ min-width: 0; overflow: hidden; white-space: nowrap;
         text-overflow: ellipsis; }}
- .runtime-main {{ display: flex; align-items: center; gap: 9px; min-width: 0; }}
- .runtime-main small {{ display: inline; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+ .runtime-main {{ display: flex; align-items: center; gap: var(--s2); min-width: 0; }}
+ .runtime-main small {{ display: inline; color: var(--muted); margin-top: var(--s0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
  .runtime-dot {{ width: 10px; height: 10px; border-radius: 50%; background: #7b8794; flex: 0 0 auto; }}
  .runtime-strip[data-state=ready] .runtime-dot {{ background: #2a9d55; }}
  .runtime-strip[data-state=running] .runtime-dot, .runtime-strip[data-state=queued] .runtime-dot {{ background: #2678c8; animation: runtimePulse 1.2s infinite; }}
@@ -2523,31 +2531,31 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         height: 3px; background: none; overflow: hidden; }}
  .runtime-progress i {{ display: block; width: 0; height: 100%; background: #2678c8; transition: width .25s; }}
  #runtime-meta {{ color: var(--muted); white-space: nowrap; }}
- #recalc-plan {{ padding: 7px 11px; border: 1px solid #a9bdd1; border-radius: var(--r-ctl); background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
+ #recalc-plan {{ padding: var(--s2) var(--s3); border: 1px solid #a9bdd1; border-radius: var(--r-ctl); background: #edf5fd; color: #155c9f; cursor: pointer; font: inherit; }}
  #recalc-plan:disabled {{ opacity: .55; cursor: wait; }}
- .tiles {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }}
+ .tiles {{ display: flex; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }}
  .tile {{ flex: 1 1 150px; background: var(--card); border: 1px solid var(--line);
-         border-radius: var(--r-card); padding: 11px 14px; box-shadow: var(--shadow); }}
- .tile .v {{ font-size: 22px; font-weight: 650; letter-spacing: -.3px; }}
- .tile .l {{ font-size: 12px; color: var(--muted-2); margin-top: 2px; }}
- .tile .s {{ font-size: 11px; color: var(--muted); }}
- .live-panel {{ margin-bottom: 12px; }}
+         border-radius: var(--r-card); padding: var(--s3) var(--s4); box-shadow: var(--shadow); }}
+ .tile .v {{ font-size: var(--t4); font-weight: 650; letter-spacing: -.3px; }}
+ .tile .l {{ font-size: var(--t1); color: var(--muted-2); margin-top: var(--s0); }}
+ .tile .s {{ font-size: var(--t1); color: var(--muted); }}
+ .live-panel {{ margin-bottom: var(--s3); }}
  .live-head {{ display: flex; justify-content: space-between; align-items: center;
-        margin: 2px 2px 7px; font-size: 14px; }}
- .live-head #live-status {{ color: #666; font-size: 12px; font-weight: normal; }}
- .live-daily-panel {{ margin-top: 10px; }}
- .live-daily-panel > summary {{ display: flex; align-items: baseline; gap: 8px;
-        margin: 0 2px 7px; cursor: pointer; list-style: none; }}
+        margin: var(--s0) var(--s0) var(--s2); font-size: var(--t2); }}
+ .live-head #live-status {{ color: #666; font-size: var(--t1); font-weight: normal; }}
+ .live-daily-panel {{ margin-top: var(--s3); }}
+ .live-daily-panel > summary {{ display: flex; align-items: baseline; gap: var(--s2);
+        margin: 0 var(--s0) var(--s2); cursor: pointer; list-style: none; }}
  .live-daily-panel > summary::-webkit-details-marker {{ display: none; }}
  .live-daily-panel > summary::after {{ content: '⌄'; margin-left: auto; color: #687582;
         transition: transform .2s; }}
  .live-daily-panel:not([open]) > summary::after {{ transform: rotate(-90deg); }}
- .live-daily-panel > summary span {{ color: #707983; font-size: 11px; }}
+ .live-daily-panel > summary span {{ color: #707983; font-size: var(--t1); }}
  #live-day-status[data-quality=current] {{ color: #247b45; }}
  #live-day-status[data-quality=warning] {{ color: #9a6b00; }}
  #live-day-status[data-quality=stale] {{ color: #b3261e; font-weight: 700; }}
  .live-tiles {{ margin-bottom: 0; }}
- .live-daily {{ display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; }}
+ .live-daily {{ display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: var(--s3); }}
  .live-daily .tile {{ max-width: none; }}
  /* Live-Kacheln nach oben begrenzen: volle Zeilen füllen weiter gleichmäßig,
     aber eine einzelne Kachel in der letzten Zeile wird nicht mehr über die ganze
@@ -2595,246 +2603,246 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     .info-panel-Look; die Statusfarbe steckt im .an-dot der Kopfzeile
     (wie beim Analyse-Panel). */
  .quality-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(175px,1fr));
-        gap: 7px; padding: 11px 13px 13px; }}
- .quality-item {{ position: relative; min-width: 0; padding: 8px 9px 8px 12px;
+        gap: var(--s2); padding: var(--s3) var(--s3) var(--s3); }}
+ .quality-item {{ position: relative; min-width: 0; padding: var(--s2) var(--s2) var(--s2) var(--s3);
         border: 1px solid #dfe5eb; border-left: 4px solid #999;
         border-radius: 8px; background: #f8fafb; }}
  .quality-item.current {{ border-left-color: #2ca02c; background: #f1faf4; }}
  .quality-item.partial {{ border-left-color: #e6a700; background: #fff9e8; }}
  .quality-item.replaced {{ border-left-color: #d62728; background: #fdf0ef; }}
- .quality-source {{ font-size: 12px; font-weight: 700; }}
- .quality-state {{ margin-top: 2px; font-size: 12px; font-weight: 650; }}
+ .quality-source {{ font-size: var(--t1); font-weight: 700; }}
+ .quality-state {{ margin-top: var(--s0); font-size: var(--t1); font-weight: 650; }}
  .quality-item.current .quality-state {{ color: #237a3b; }}
  .quality-item.partial .quality-state {{ color: #8a6d00; }}
  .quality-item.replaced .quality-state {{ color: #b3261e; }}
- .quality-detail {{ margin-top: 2px; color: #727c86; font-size: 10px;
+ .quality-detail {{ margin-top: var(--s0); color: #727c86; font-size: var(--t0);
         line-height: 1.3; }}
  .live-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-        margin-right: 4px; background: #999; }}
+        margin-right: var(--s1); background: #999; }}
  .live-dot.ok {{ background: #2ca02c; }}
  .live-dot.err {{ background: #d62728; }}
  .mobile-plot-shell {{ display: none; }}
  .desktop-horizon-toolbar {{ display: flex; align-items: center; justify-content: flex-end;
-        gap: 9px; margin: 6px 3px 4px; color: #687582; font-size: 12px; }}
- .horizon-switch {{ display: inline-grid; grid-template-columns: repeat(3, minmax(54px,auto)); gap: 5px; }}
- .horizon-switch button {{ min-height: 34px; padding: 5px 11px; border: 1px solid #cbd3db;
+        gap: var(--s2); margin: var(--s2) var(--s0) var(--s1); color: #687582; font-size: var(--t1); }}
+ .horizon-switch {{ display: inline-grid; grid-template-columns: repeat(3, minmax(54px,auto)); gap: var(--s1); }}
+ .horizon-switch button {{ min-height: 34px; padding: var(--s1) var(--s3); border: 1px solid #cbd3db;
         border-radius: 8px; background: #f4f6f8; color: #34404c; cursor: pointer;
-        font: inherit; font-size: 12px; }}
+        font: inherit; font-size: var(--t1); }}
  .horizon-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
  html.dark .desktop-horizon-toolbar {{ color: #aebbc8; }}
  html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .horizon-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
- .banner {{ border-radius: var(--r-ctl); padding: 9px 14px; margin-bottom: 10px;
-           font-size: 13px; border: 1px solid; }}
- .banner ul {{ margin: 6px 0 0; padding-left: 20px; }}
- .banner li {{ margin: 2px 0; }}
+ .banner {{ border-radius: var(--r-ctl); padding: var(--s2) var(--s4); margin-bottom: var(--s3);
+           font-size: var(--t1); border: 1px solid; }}
+ .banner ul {{ margin: var(--s2) 0 0; padding-left: var(--s5); }}
+ .banner li {{ margin: var(--s0) 0; }}
  .banner.ok {{ background: #eafaf0; border-color: #b6e2c6; color: #1e7e46; }}
  .banner.warn {{ background: #fff8e1; border-color: #f0d98a; color: #8a6d00; }}
  .banner.err {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e; }}
- .decisions {{ margin: 10px 0; background: var(--card);
+ .decisions {{ margin: var(--s3) 0; background: var(--card);
         border: 1px solid var(--line); border-radius: var(--r-card);
         overflow: hidden; box-shadow: var(--shadow); }}
- .decisions > summary {{ padding: 11px 13px; cursor: pointer;
+ .decisions > summary {{ padding: var(--s3) var(--s3); cursor: pointer;
         font-weight: 700; user-select: none; background: #f7f9fb; }}
  .decisions[open] > summary {{ border-bottom: 1px solid #e2e7ec; }}
  .decision-head b {{ font-weight: 700; }}
- .decision-head small {{ margin-left: 8px; color: #737c86; font-weight: 400; }}
- .decision-body {{ padding: 11px 14px 14px; }}
+ .decision-head small {{ margin-left: var(--s2); color: #737c86; font-weight: 400; }}
+ .decision-body {{ padding: var(--s3) var(--s4) var(--s4); }}
  .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
-        gap: 8px; }}
- .decision-item {{ position: relative; min-width: 0; padding: 10px 11px 10px 15px;
+        gap: var(--s2); }}
+ .decision-item {{ position: relative; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);
         border: 1px solid #e2e7ec; border-radius: 9px; background: #fafcfe; }}
  .decision-item:before {{ content: ''; position: absolute; left: 0; top: 0; bottom: 0;
         width: 5px; border-radius: 9px 0 0 9px; background: var(--decision-color); }}
- .decision-time {{ color: #66717c; font-size: 11px; }}
- .decision-name {{ font-weight: 750; margin: 2px 0 4px; }}
- .decision-reason {{ color: #4d5863; font-size: 12px; line-height: 1.35; }}
- .decision-facts {{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }}
- .decision-facts span {{ padding: 3px 6px; border-radius: 999px; background: #eef3f7;
-        color: #52606d; font-size: 10px; }}
- .decision-empty {{ color: #68737d; font-size: 12px; }}
- .report {{ margin: 4px 0 12px; }}
- .report button {{ font-size: 13px; padding: 7px 14px; border-radius: 7px;
+ .decision-time {{ color: #66717c; font-size: var(--t1); }}
+ .decision-name {{ font-weight: 750; margin: var(--s0) 0 var(--s1); }}
+ .decision-reason {{ color: #4d5863; font-size: var(--t1); line-height: 1.35; }}
+ .decision-facts {{ display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }}
+ .decision-facts span {{ padding: var(--s0) var(--s2); border-radius: 999px; background: #eef3f7;
+        color: #52606d; font-size: var(--t0); }}
+ .decision-empty {{ color: #68737d; font-size: var(--t1); }}
+ .report {{ margin: var(--s1) 0 var(--s3); }}
+ .report button {{ font-size: var(--t1); padding: var(--s2) var(--s4); border-radius: 7px;
         border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
  .report button.hot {{ background: #fdecea; border-color: #f5b5ae; color: #b3261e;
         font-weight: 600; }}
- .report .msg {{ margin-left: 10px; font-size: 12px; color: #555; }}
- .controls {{ margin: 10px 0; background: var(--card);
+ .report .msg {{ margin-left: var(--s3); font-size: var(--t1); color: #555; }}
+ .controls {{ margin: var(--s3) 0; background: var(--card);
         border: 1px solid var(--line); border-radius: var(--r-card);
         overflow: hidden; }}
- .controls > summary {{ padding: 11px 13px; cursor: pointer; user-select: none;
+ .controls > summary {{ padding: var(--s3) var(--s3); cursor: pointer; user-select: none;
         font-weight: 700; background: #f7f9fb; }}
  .controls[open] > summary {{ border-bottom: 1px solid #e4e7eb; }}
- .controls > summary small {{ margin-left: 8px; color: #75808a; font-size: 12px;
+ .controls > summary small {{ margin-left: var(--s2); color: #75808a; font-size: var(--t1);
         font-weight: 400; }}
- .controls .ctl-body {{ padding: 15px; font-size: 13px; }}
- .ctl-section-head {{ display: flex; flex-direction: column; margin: 0 0 9px 2px; }}
+ .controls .ctl-body {{ padding: var(--s4); font-size: var(--t1); }}
+ .ctl-section-head {{ display: flex; flex-direction: column; margin: 0 0 var(--s2) var(--s0); }}
  .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
-        font-weight: normal; margin-top: 2px; }}
- .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: 12px; }}
- .load-card {{ border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 13px;
+        font-weight: normal; margin-top: var(--s0); }}
+ .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: var(--s3); }}
+ .load-card {{ border: 1px solid var(--line); border-radius: var(--r-ctl); padding: var(--s3);
         background: #fbfcfe; min-width: 0; }}
  .load-head {{ display: flex; justify-content: space-between; align-items: flex-start;
-        padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #e9ecf0; }}
- .load-head b {{ font-size: 14px; }}
- .ctl-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: 9px; }}
- .ctl-field {{ color: #555e68; font-size: 11px; }}
- .ctl-field > span:first-child {{ display: block; margin-bottom: 4px; }}
- .ctl-input {{ display: flex; align-items: center; gap: 4px; }}
+        padding-bottom: var(--s3); margin-bottom: var(--s3); border-bottom: 1px solid #e9ecf0; }}
+ .load-head b {{ font-size: var(--t2); }}
+ .ctl-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: var(--s2); }}
+ .ctl-field {{ color: #555e68; font-size: var(--t1); }}
+ .ctl-field > span:first-child {{ display: block; margin-bottom: var(--s1); }}
+ .ctl-input {{ display: flex; align-items: center; gap: var(--s1); }}
  .controls input[type=number], .controls textarea {{ box-sizing: border-box; border: 1px solid #cfd5dc;
-        border-radius: 7px; background: #fff; color: #222; padding: 7px 8px; font: inherit; }}
+        border-radius: 7px; background: #fff; color: #222; padding: var(--s2) var(--s2); font: inherit; }}
  .controls input[type=number] {{ width: 100%; min-width: 65px; }}
  .ctl-input small {{ white-space: nowrap; color: #777f88; }}
- .profile-edit {{ margin-top: 12px; }}
- .profile-edit > label {{ display: flex; flex-direction: column; gap: 2px; margin-bottom: 5px; }}
+ .profile-edit {{ margin-top: var(--s3); }}
+ .profile-edit > label {{ display: flex; flex-direction: column; gap: var(--s0); margin-bottom: var(--s1); }}
  .profile-edit > label small {{ color: #7b828c; font-weight: normal; }}
  .profile-edit textarea {{ width: 100%; resize: vertical; line-height: 1.4; }}
- .curve-box {{ margin-top: 7px; border: 1px solid #e0e5eb; border-radius: 8px;
+ .curve-box {{ margin-top: var(--s2); border: 1px solid #e0e5eb; border-radius: 8px;
         overflow: hidden; background: #f7f9fc; }}
  .curve-box canvas {{ display: block; width: 100%; height: 92px; }}
- .curve-box span {{ display: block; padding: 5px 9px; color: #5e6874; background: #fff;
-        border-top: 1px solid #e5e8ec; font-size: 11px; }}
+ .curve-box span {{ display: block; padding: var(--s1) var(--s2); color: #5e6874; background: #fff;
+        border-top: 1px solid #e5e8ec; font-size: var(--t1); }}
  .curve-box span.bad {{ color: #b3261e; }}
- .load-actions {{ display: flex; justify-content: flex-end; margin-top: 11px; }}
- .controls button {{ font-size: 13px; padding: 7px 12px; border-radius: 7px;
+ .load-actions {{ display: flex; justify-content: flex-end; margin-top: var(--s3); }}
+ .controls button {{ font-size: var(--t1); padding: var(--s2) var(--s3); border-radius: 7px;
         border: 1px solid #c9d0d8; background: #f2f4f7; color: #30363d; cursor: pointer; }}
  .controls button:hover {{ background: #e8edf3; }}
  .controls button.primary {{ background: #1769c2; color: #fff; border-color: #1769c2; }}
  .controls button.mode.on {{ background: #0d6efd; color: #fff; border-color: #0d6efd; }}
  .controls button.mode {{ display: flex; flex-direction: column; align-items: flex-start;
-        gap: 2px; min-width: 155px; text-align: left; }}
- .controls button.mode small {{ color: #737c86; margin: 0; font-size: 10px; }}
+        gap: var(--s0); min-width: 155px; text-align: left; }}
+ .controls button.mode small {{ color: #737c86; margin: 0; font-size: var(--t0); }}
  .controls button.mode.on small {{ color: rgba(255,255,255,.82); }}
  .controls button.stop {{ color: #a22b25; border-color: #e2b6b3; background: #fff5f4; }}
- .ctl-section {{ display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
-        margin-top: 13px; padding: 12px 13px; border: 1px solid #e2e6eb;
+ .ctl-section {{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3);
+        margin-top: var(--s3); padding: var(--s3) var(--s3); border: 1px solid #e2e6eb;
         border-radius: 9px; background: #fafbfc; }}
  .ctl-section > div:first-child {{ min-width: 175px; margin-right: auto; }}
  .ctl-section label {{ color: #555e68; }}
- .ctl-section input {{ width: 75px !important; margin: 0 3px; }}
- .button-group {{ display: flex; flex-wrap: wrap; gap: 6px; }}
- .controls .ctl-msg {{ margin-top: 9px; font-size: 12px; color: #555; min-height: 1em; }}
- .plan-compare {{ display: block; margin-top: 12px; padding: 13px; border: 1px solid #dbe3eb;
+ .ctl-section input {{ width: 75px !important; margin: 0 var(--s0); }}
+ .button-group {{ display: flex; flex-wrap: wrap; gap: var(--s2); }}
+ .controls .ctl-msg {{ margin-top: var(--s2); font-size: var(--t1); color: #555; min-height: 1em; }}
+ .plan-compare {{ display: block; margin-top: var(--s3); padding: var(--s3); border: 1px solid #dbe3eb;
         border-radius: 9px; background: #f5f9fd; }}
- .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: 3px; }}
+ .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: var(--s0); }}
  .compare-result {{ color: #5e6872; }}
- .compare-chart-status {{ min-height: 16px; margin-top: 6px; color: #74808b; font-size: 10px; }}
+ .compare-chart-status {{ min-height: 16px; margin-top: var(--s2); color: #74808b; font-size: var(--t0); }}
  .compare-chart {{ display: none; width: 100%; min-height: 340px; }}
- .compare-note {{ margin-bottom: 7px; }}
- .mode-compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(205px,1fr)); gap: 8px; margin: 8px 0; }}
- .mode-compare-card {{ min-width: 0; padding: 10px; border: 1px solid #dfe6ed; border-radius: 9px; background: #fff; }}
+ .compare-note {{ margin-bottom: var(--s2); }}
+ .mode-compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(205px,1fr)); gap: var(--s2); margin: var(--s2) 0; }}
+ .mode-compare-card {{ min-width: 0; padding: var(--s3); border: 1px solid #dfe6ed; border-radius: 9px; background: #fff; }}
  .mode-compare-card.recommended {{ border-color: #62ad78; box-shadow: inset 0 3px #45a164; }}
  .mode-compare-card.active {{ border-color: #6ca6dc; }}
- .mode-compare-card header {{ display: flex; justify-content: space-between; gap: 5px; align-items: flex-start; margin-bottom: 8px; }}
+ .mode-compare-card header {{ display: flex; justify-content: space-between; gap: var(--s1); align-items: flex-start; margin-bottom: var(--s2); }}
  .mode-compare-card header b, .mode-compare-card header small {{ display: block; }}
- .mode-compare-card header small, .mode-metrics span {{ color: #74808b; font-size: 9px; }}
- .recommend-badge {{ padding: 2px 5px; border-radius: 999px; background: #e1f2e6; color: #27703e; font-size: 9px; }}
- .mode-metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }}
+ .mode-compare-card header small, .mode-metrics span {{ color: #74808b; font-size: var(--t0); }}
+ .recommend-badge {{ padding: var(--s0) var(--s1); border-radius: 999px; background: #e1f2e6; color: #27703e; font-size: var(--t0); }}
+ .mode-metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }}
  .mode-metrics > div {{ min-width: 0; }}
  .mode-metrics > div.wide {{ grid-column: 1/-1; }}
  .mode-metrics span, .mode-metrics b {{ display: block; }}
- .mode-metrics b {{ font-size: 11px; white-space: nowrap; }}
- .mode-validation {{ display: block; margin-top: 7px; color: #74808b; font-size: 9px; }}
- .late-confidence {{ margin-top: 9px; padding: 7px; border-radius: 7px; background: #f1f4f7; }}
+ .mode-metrics b {{ font-size: var(--t1); white-space: nowrap; }}
+ .mode-validation {{ display: block; margin-top: var(--s2); color: #74808b; font-size: var(--t0); }}
+ .late-confidence {{ margin-top: var(--s2); padding: var(--s2); border-radius: 7px; background: #f1f4f7; }}
  .late-confidence span, .late-confidence b, .late-confidence small {{ display: block; }}
- .late-confidence span, .late-confidence small {{ color: #6f7983; font-size: 9px; }}
- .late-confidence b {{ font-size: 11px; margin: 2px 0; }}
+ .late-confidence span, .late-confidence small {{ color: #6f7983; font-size: var(--t0); }}
+ .late-confidence b {{ font-size: var(--t1); margin: var(--s0) 0; }}
  .late-confidence.very_likely {{ background: #e6f4ea; color: #246b39; }}
  .late-confidence.expected_only {{ background: #fff3d8; color: #805a12; }}
  .late-confidence.p10_unreachable {{ background: #fbe7e5; color: #96342d; }}
- .mode-compare-card > button {{ width: 100%; margin-top: 8px; font-size: 10px; }}
- .shadow-apply {{ margin-top: 7px; }}
- .control-channels {{ display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }}
- .control-channels span {{ padding: 3px 7px; border-radius: 999px; background: #e7f0f8;
-        color: #315f83; font-size: 10px; }}
- .info-panel {{ margin: 10px 0; border: 1px solid var(--line);
+ .mode-compare-card > button {{ width: 100%; margin-top: var(--s2); font-size: var(--t0); }}
+ .shadow-apply {{ margin-top: var(--s2); }}
+ .control-channels {{ display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); }}
+ .control-channels span {{ padding: var(--s0) var(--s2); border-radius: 999px; background: #e7f0f8;
+        color: #315f83; font-size: var(--t0); }}
+ .info-panel {{ margin: var(--s3) 0; border: 1px solid var(--line);
         border-radius: var(--r-card); background: var(--card); overflow: hidden;
         box-shadow: var(--shadow); }}
- .info-panel > summary {{ padding: 12px 14px; cursor: pointer; font-weight: 650;
+ .info-panel > summary {{ padding: var(--s3) var(--s4); cursor: pointer; font-weight: 650;
         background: none; transition: background .12s; }}
  .info-panel > summary:hover {{ background: #f5f8fa; }}
  html.dark .info-panel > summary:hover {{ background: #1e2833; }}
  .info-panel[open] > summary {{ border-bottom: 1px solid var(--line); }}
- .info-panel > summary small {{ margin-left: 8px; color: var(--muted); font-weight: 400; }}
- .analysis-panel h4 {{ margin: 13px 12px 6px; font-size: 13px; font-weight: 700; color: #55606a; }}
- .analysis-panel h4 small {{ margin-left: 6px; font-weight: 400; color: #8a949d; }}
- .analysis-panel .tiles {{ padding: 0 12px; margin-bottom: 4px; }}
- .analysis-panel .tiles:last-of-type {{ padding-bottom: 14px; }}
- .analysis-panel .an-hint {{ display: block; padding: 2px 12px 10px; color: #8a949d; font-size: 12px; }}
+ .info-panel > summary small {{ margin-left: var(--s2); color: var(--muted); font-weight: 400; }}
+ .analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); font-weight: 700; color: #55606a; }}
+ .analysis-panel h4 small {{ margin-left: var(--s2); font-weight: 400; color: #8a949d; }}
+ .analysis-panel .tiles {{ padding: 0 var(--s3); margin-bottom: var(--s1); }}
+ .analysis-panel .tiles:last-of-type {{ padding-bottom: var(--s4); }}
+ .analysis-panel .an-hint {{ display: block; padding: var(--s0) var(--s3) var(--s3); color: #8a949d; font-size: var(--t1); }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-        margin-right: 7px; vertical-align: middle; background: var(--ok); }}
+        margin-right: var(--s2); vertical-align: middle; background: var(--ok); }}
  .an-dot.warn {{ background: var(--warn); }}
  .an-dot.bad {{ background: var(--bad); }}
  .an-dot.neutral {{ background: var(--muted); }}
- .sparkline {{ display: flex; align-items: flex-end; gap: 3px; height: 46px; padding: 0 12px 12px; }}
+ .sparkline {{ display: flex; align-items: flex-end; gap: var(--s0); height: 46px; padding: 0 var(--s3) var(--s3); }}
  .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
  .sparkline .bar.neg {{ background: #d1495b; }}
- .facc-trend {{ padding: 2px 12px 10px; }}
+ .facc-trend {{ padding: var(--s0) var(--s3) var(--s3); }}
  .facc-svg {{ width: 100%; height: 42px; display: block; }}
- .facc-legend {{ font-size: 11px; color: #8a949d; margin-top: 3px; }}
- .forecast-analysis-panel h4 {{ margin: 13px 12px 7px; font-size: 13px; color: #55606a; }}
- .forecast-analysis-panel h4 small {{ margin-left: 6px; color: #8a949d; font-weight: 400; }}
- .forecast-analysis-panel > .quality-grid {{ padding: 0 12px 3px; }}
- .forecast-accuracy-tiles {{ padding: 0 12px; }}
- .forecast-analysis-toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
-      padding: 11px 12px 2px; }}
- .forecast-analysis-toolbar label {{ display: flex; align-items: center; gap: 6px; font-size: 12px; }}
+ .facc-legend {{ font-size: var(--t1); color: #8a949d; margin-top: var(--s0); }}
+ .forecast-analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); color: #55606a; }}
+ .forecast-analysis-panel h4 small {{ margin-left: var(--s2); color: #8a949d; font-weight: 400; }}
+ .forecast-analysis-panel > .quality-grid {{ padding: 0 var(--s3) var(--s0); }}
+ .forecast-accuracy-tiles {{ padding: 0 var(--s3); }}
+ .forecast-analysis-toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
+      padding: var(--s3) var(--s3) var(--s0); }}
+ .forecast-analysis-toolbar label {{ display: flex; align-items: center; gap: var(--s2); font-size: var(--t1); }}
  .forecast-analysis-toolbar input, .forecast-analysis-toolbar button,
  .forecast-signal-switch button {{ min-height: 34px; border: 1px solid #cbd3db; border-radius: 7px;
-      background: #f7f9fb; color: #34404c; padding: 5px 9px; font: inherit; }}
- .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: #7b8792; font-size: 11px; }}
+      background: #f7f9fb; color: #34404c; padding: var(--s1) var(--s2); font: inherit; }}
+ .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: #7b8792; font-size: var(--t1); }}
  .forecast-analysis-toolbar button:disabled, .forecast-analysis-toolbar input:disabled {{
       cursor: wait; opacity: .62; }}
- .forecast-day-stage {{ position: relative; min-height: 332px; margin: 0 12px 10px; }}
+ .forecast-day-stage {{ position: relative; min-height: 332px; margin: 0 var(--s3) var(--s3); }}
  .forecast-day-stage .day-comparison-chart {{ margin: 0; }}
  .forecast-day-loading {{ position: absolute; inset: 0; z-index: 5; display: none;
-      align-items: center; justify-content: center; gap: 10px; border: 1px solid #d7e0e8;
-      border-radius: 9px; background: #f6f9fb; color: #596775; font-size: 12px; }}
+      align-items: center; justify-content: center; gap: var(--s3); border: 1px solid #d7e0e8;
+      border-radius: 9px; background: #f6f9fb; color: #596775; font-size: var(--t1); }}
  .forecast-day-loading i {{ width: 20px; height: 20px; border: 3px solid #cbd7e2;
       border-top-color: #287fd8; border-radius: 50%; animation: forecastSpin .75s linear infinite; }}
  .forecast-analysis-panel.loading .forecast-day-loading {{ display: flex; }}
  .forecast-analysis-panel.loading #fa-day-comparison {{ visibility: hidden; }}
  @keyframes forecastSpin {{ to {{ transform: rotate(360deg); }} }}
- .calibration-grid {{ display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px;
-      padding: 0 12px 8px; }}
- .calibration-card {{ min-width: 0; padding: 10px; border: 1px solid #dce3e9;
+ .calibration-grid {{ display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: var(--s2);
+      padding: 0 var(--s3) var(--s2); }}
+ .calibration-card {{ min-width: 0; padding: var(--s3); border: 1px solid #dce3e9;
       border-left: 4px solid #dfa82d; border-radius: 9px; background: #fafbfc; }}
  .calibration-card.current {{ border-left-color: #35a466; }}
- .calibration-card > header {{ display: flex; justify-content: space-between; gap: 7px; align-items: flex-start; }}
+ .calibration-card > header {{ display: flex; justify-content: space-between; gap: var(--s2); align-items: flex-start; }}
  .calibration-card header b, .calibration-card header small {{ display: block; }}
- .calibration-card header b {{ font-size: 12px; }}
- .calibration-card header small {{ margin-top: 2px; color: #77838e; font-size: 10px; }}
- .calibration-card header strong {{ color: #4d5964; font-size: 15px; white-space: nowrap; }}
- .calibration-bar {{ height: 5px; margin: 8px 0; border-radius: 5px; overflow: hidden; background: #e3e8ed; }}
+ .calibration-card header b {{ font-size: var(--t1); }}
+ .calibration-card header small {{ margin-top: var(--s0); color: #77838e; font-size: var(--t0); }}
+ .calibration-card header strong {{ color: #4d5964; font-size: var(--t2); white-space: nowrap; }}
+ .calibration-bar {{ height: 5px; margin: var(--s2) 0; border-radius: 5px; overflow: hidden; background: #e3e8ed; }}
  .calibration-bar i {{ display: block; height: 100%; background: #dda72e; border-radius: inherit; }}
  .calibration-card.current .calibration-bar i {{ background: #35a466; }}
- .calibration-card p {{ min-height: 31px; margin: 0 0 7px; color: #68747f; font-size: 10px; line-height: 1.45; }}
+ .calibration-card p {{ min-height: 31px; margin: 0 0 var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.45; }}
  .calibration-card dl {{ margin: 0; }}
- .calibration-card dl > div {{ display: flex; justify-content: space-between; gap: 5px;
-      border-top: 1px solid #e7ebef; padding: 5px 0; font-size: 10px; }}
+ .calibration-card dl > div {{ display: flex; justify-content: space-between; gap: var(--s1);
+      border-top: 1px solid #e7ebef; padding: var(--s1) 0; font-size: var(--t0); }}
  .calibration-card dt {{ color: #7a8690; }}
  .calibration-card dd {{ margin: 0; font-weight: 700; text-align: right; overflow-wrap: anywhere; }}
- .calibration-card footer {{ margin-top: 6px; color: #68747f; font-size: 9px; line-height: 1.35; }}
- .calibration-note {{ grid-column: 1/-1; color: #87929c; font-size: 10px; }}
- .forecast-heat-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px;
-      padding: 0 12px 8px; }}
+ .calibration-card footer {{ margin-top: var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.35; }}
+ .calibration-note {{ grid-column: 1/-1; color: #87929c; font-size: var(--t0); }}
+ .forecast-heat-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s3);
+      padding: 0 var(--s3) var(--s2); }}
  .forecast-heat-grid > div {{ min-width: 0; }}
  .forecast-heat-grid > div > b {{ display: none; }}
  .forecast-analysis-chart {{ min-height: 250px; border: 1px solid #e0e6ec; border-radius: 9px;
       overflow: hidden; }}
- .calibration-history-chart {{ margin: 0 12px 10px; }}
- .calibration-change-list {{ margin: -2px 12px 12px; display: grid; gap: 5px; }}
+ .calibration-history-chart {{ margin: 0 var(--s3) var(--s3); }}
+ .calibration-change-list {{ margin: -var(--s0) var(--s3) var(--s3); display: grid; gap: var(--s1); }}
  .calibration-change-list article {{ display: grid; grid-template-columns: minmax(125px,auto) 1fr;
-      gap: 9px; padding: 7px 9px; border: 1px solid #e2e7ec; border-radius: 7px;
-      background: #f8fafc; font-size: 11px; }}
+      gap: var(--s2); padding: var(--s2) var(--s2); border: 1px solid #e2e7ec; border-radius: 7px;
+      background: #f8fafc; font-size: var(--t1); }}
  .calibration-change-list time {{ color: #73808c; white-space: nowrap; }}
  .forecast-vintage-head {{ display: flex; align-items: center; justify-content: space-between;
-      padding-right: 12px; }}
- .forecast-signal-switch {{ display: flex; gap: 5px; }}
+      padding-right: var(--s3); }}
+ .forecast-signal-switch {{ display: flex; gap: var(--s1); }}
  .forecast-signal-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
- .vintage-chart {{ margin: 0 12px 13px; min-height: 350px; }}
+ .vintage-chart {{ margin: 0 var(--s3) var(--s3); min-height: 350px; }}
  html.dark .forecast-analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .forecast-analysis-panel h4 small, html.dark .forecast-analysis-toolbar #fa-status {{ color: #97a3ad; }}
  html.dark .forecast-analysis-toolbar input, html.dark .forecast-analysis-toolbar button,
@@ -2854,53 +2862,53 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .calibration-card header strong {{ color: #e7edf4; }}
  html.dark .calibration-bar {{ background: #3b4956; }}
  html.dark .calibration-card dl > div {{ border-color: #3b4956; }}
- .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 10px; padding: 12px; }}
- .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: 10px 11px; }}
- .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }}
- .pvconf-day {{ font-weight: 700; font-size: 13px; }}
- .mode-badge {{ font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }}
+ .pvconf-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: var(--s3); padding: var(--s3); }}
+ .pvconf-card {{ border: 1px solid #e0e5eb; border-radius: 9px; background: #f7f9fb; padding: var(--s3) var(--s3); }}
+ .pvconf-head {{ display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s2); }}
+ .pvconf-day {{ font-weight: 700; font-size: var(--t1); }}
+ .mode-badge {{ font-size: var(--t1); font-weight: 700; padding: var(--s0) var(--s2); border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }}
  .mode-badge.asap {{ background: #28a261; }} .mode-badge.peak {{ background: #e29a2d; }}
  .mode-badge.late {{ background: #9b6bd3; }} .mode-badge.auto {{ background: #6b7883; }}
- .pvconf-metrics {{ display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: #66707a; }}
- .pvconf-metrics span {{ display: inline-flex; gap: 5px; }}
+ .pvconf-metrics {{ display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); font-size: var(--t1); color: #66707a; }}
+ .pvconf-metrics span {{ display: inline-flex; gap: var(--s1); }}
  .pvconf-metrics b {{ color: #20252b; font-weight: 700; }}
- .pvconf-basis {{ margin-top: 7px; font-size: 11px; color: #75808a; }}
- .pvconf-note {{ margin: 0 12px 12px; font-size: 12px; color: #8a949d; }}
+ .pvconf-basis {{ margin-top: var(--s2); font-size: var(--t1); color: #75808a; }}
+ .pvconf-note {{ margin: 0 var(--s3) var(--s3); font-size: var(--t1); color: #8a949d; }}
  html.dark .pvconf-card {{ background: #202b36; border-color: #354352; }}
  html.dark .pvconf-metrics {{ color: #97a3ad; }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
  html.dark .pvconf-basis, html.dark .pvconf-note {{ color: #97a3ad; }}
- .whatif-form {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 12px; }}
- .wi-field {{ display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #66707a; }}
- .wi-field select, .wi-field input {{ padding: 6px 9px; border: 1px solid #cfd7df; border-radius: 7px; background: #fff; color: #20252b; font-size: 14px; }}
- .whatif-form button.primary {{ padding: 8px 16px; }}
- .whatif-result {{ padding: 0 12px 12px; }}
- .whatif-head {{ display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }}
+ .whatif-form {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); padding: var(--s3); }}
+ .wi-field {{ display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t1); color: #66707a; }}
+ .wi-field select, .wi-field input {{ padding: var(--s2) var(--s2); border: 1px solid #cfd7df; border-radius: 7px; background: #fff; color: #20252b; font-size: var(--t2); }}
+ .whatif-form button.primary {{ padding: var(--s2) var(--s4); }}
+ .whatif-result {{ padding: 0 var(--s3) var(--s3); }}
+ .whatif-head {{ display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s2); }}
  .whatif-head small {{ color: #75808a; }} .wi-bad {{ color: #d1495b; }}
  html.dark .wi-field {{ color: #97a3ad; }}
  html.dark .wi-field select, html.dark .wi-field input {{ background: #202b36; border-color: #354352; color: #e7edf4; }}
  html.dark .whatif-head small {{ color: #97a3ad; }}
- .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 7px; padding: 12px; }}
- .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 4px; }}
- .detail-grid > div {{ padding: 8px 9px; border-radius: 7px; background: #f4f7fa; }}
+ .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: var(--s2); padding: var(--s3); }}
+ .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 var(--s1); }}
+ .detail-grid > div {{ padding: var(--s2) var(--s2); border-radius: 7px; background: #f4f7fa; }}
  .detail-grid span, .detail-grid b {{ display: block; }}
- .detail-grid span {{ color: #74808b; font-size: 10px; }}
- .events-list {{ max-height: 360px; overflow: auto; padding: 6px 12px 11px; }}
- .events-filter {{ display: flex; gap: 6px; padding: 9px 12px 2px; }}
- .events-filter button {{ flex: 0 0 auto; font-size: 12px; padding: 4px 11px;
+ .detail-grid span {{ color: #74808b; font-size: var(--t0); }}
+ .events-list {{ max-height: 360px; overflow: auto; padding: var(--s2) var(--s3) var(--s3); }}
+ .events-filter {{ display: flex; gap: var(--s2); padding: var(--s2) var(--s3) var(--s0); }}
+ .events-filter button {{ flex: 0 0 auto; font-size: var(--t1); padding: var(--s1) var(--s3);
         border-radius: 7px; border: 1px solid #cfd6dd; background: #f2f5f8;
         color: #7a8590; cursor: pointer; }}
  .events-filter button.info.on {{ background: #eef6f0; border-color: #4a9d6a; color: #237a3b; }}
  .events-filter button.warn.on {{ background: #fdf4e2; border-color: #d9a441; color: #8a6d00; }}
  .events-filter button.err.on {{ background: #fdecec; border-color: #d1746e; color: #bd302a; }}
- .event {{ display: grid; grid-template-columns: 118px 1fr; gap: 10px; align-items: center;
-        padding: 8px 3px; border-bottom: 1px solid #edf0f3; }}
+ .event {{ display: grid; grid-template-columns: 118px 1fr; gap: var(--s3); align-items: center;
+        padding: var(--s2) var(--s0); border-bottom: 1px solid #edf0f3; }}
  .event time {{ color: #55606b; font-size: 12.5px; white-space: nowrap; }}
- .event > span {{ display: flex; align-items: center; gap: 7px; }}
- .ev-ic {{ font-style: normal; flex: 0 0 auto; font-size: 13px; line-height: 1; }}
+ .event > span {{ display: flex; align-items: center; gap: var(--s2); }}
+ .ev-ic {{ font-style: normal; flex: 0 0 auto; font-size: var(--t1); line-height: 1; }}
  .event.error span {{ color: #bd302a; font-weight: 600; }}
  .event.warn span, .event.warning span {{ color: #9a6b00; }}
  .event.k-switch span {{ color: #2f6f9e; }}
- .switch {{ display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }}
+ .switch {{ display: inline-flex; align-items: center; gap: var(--s2); cursor: pointer; }}
  .switch input {{ position: absolute; opacity: 0; pointer-events: none; }}
  .switch span {{ width: 34px; height: 19px; border-radius: 999px; background: #b9bec5;
         position: relative; transition: background .2s; }}
@@ -2909,41 +2917,41 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         box-shadow: 0 1px 3px rgba(0,0,0,.25); }}
  .switch input:checked + span {{ background: #278445; }}
  .switch input:checked + span:after {{ transform: translateX(15px); }}
- .switch em {{ font-style: normal; font-size: 11px; color: #68707a; }}
- .battery-planner {{ margin-top: 13px; padding: 14px; border: 1px solid var(--line);
+ .switch em {{ font-style: normal; font-size: var(--t1); color: #68707a; }}
+ .battery-planner {{ margin-top: var(--s3); padding: var(--s4); border: 1px solid var(--line);
         border-radius: var(--r-ctl); background: linear-gradient(150deg,#fbfdff,#f3f7fc); }}
  .planner-head {{ display: flex; align-items: flex-start; justify-content: space-between;
-        gap: 10px; margin-bottom: 12px; }}
- .planner-head small {{ display: block; color: #737c87; margin-top: 2px; }}
- .planner-badge {{ padding: 5px 9px; border-radius: 999px; background: #edf0f3;
-        color: #68717a; font-size: 11px; white-space: nowrap; }}
+        gap: var(--s3); margin-bottom: var(--s3); }}
+ .planner-head small {{ display: block; color: #737c87; margin-top: var(--s0); }}
+ .planner-badge {{ padding: var(--s1) var(--s2); border-radius: 999px; background: #edf0f3;
+        color: #68717a; font-size: var(--t1); white-space: nowrap; }}
  .planner-badge.active {{ background: #dcecff; color: #155aa4; font-weight: 700; }}
  .planner-form {{ display: grid; grid-template-columns: 1fr 1.6fr 1fr 1fr auto;
-        align-items: end; gap: 9px; }}
- .planner-form > label {{ display: flex; flex-direction: column; gap: 4px;
-        color: #59636e; font-size: 11px; }}
+        align-items: end; gap: var(--s2); }}
+ .planner-form > label {{ display: flex; flex-direction: column; gap: var(--s1);
+        color: #59636e; font-size: var(--t1); }}
  .controls select, .controls input[type=datetime-local] {{ box-sizing: border-box;
         width: 100%; border: 1px solid #cfd5dc; border-radius: 7px; background: #fff;
-        color: #222; padding: 7px 8px; font: inherit; min-height: 34px; }}
- .planner-actions {{ display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }}
+        color: #222; padding: var(--s2) var(--s2); font: inherit; min-height: 34px; }}
+ .planner-actions {{ display: flex; flex-wrap: wrap; gap: var(--s2); justify-content: flex-end; }}
  .planner-actions button {{ min-height: 35px; white-space: nowrap; }}
  .controls button.instant {{ background: #e8f2ff; border-color: #a9c8ea; color: #165d9f; }}
- .schedule-msg {{ min-height: 18px; margin: 7px 1px 0; font-size: 12px; color: #59636e; }}
- .schedule-chart-wrap {{ margin-top: 4px; padding: 12px 12px 8px; background: #fff;
+ .schedule-msg {{ min-height: 18px; margin: var(--s2) var(--s0) 0; font-size: var(--t1); color: #59636e; }}
+ .schedule-chart-wrap {{ margin-top: var(--s1); padding: var(--s3) var(--s3) var(--s2); background: #fff;
         border: 1px solid #dfe5eb; border-radius: 9px; overflow: hidden; }}
- .schedule-axis {{ position: relative; height: 20px; margin: 0 5px; color: #77818c;
-        font-size: 10px; }}
+ .schedule-axis {{ position: relative; height: 20px; margin: 0 var(--s1); color: #77818c;
+        font-size: var(--t0); }}
  .schedule-axis span {{ position: absolute; transform: translateX(-50%); white-space: nowrap; }}
  .schedule-axis span:first-child {{ transform: none; }}
  .schedule-axis span:last-child {{ transform: translateX(-100%); }}
- .schedule-chart {{ position: relative; height: 94px; margin: 0 5px; border-radius: 6px;
+ .schedule-chart {{ position: relative; height: 94px; margin: 0 var(--s1); border-radius: 6px;
         background: linear-gradient(to bottom,#edf5ff 0,#edf5ff 48%,#fff4e9 52%,#fff4e9 100%); overflow: hidden; }}
  .schedule-grid, .schedule-now {{ position: absolute; top: 0; bottom: 0; width: 1px;
         background: rgba(80,95,115,.18); }}
  .schedule-now {{ width: 2px; background: #20252b; z-index: 4; }}
  .schedule-bar {{ position: absolute; height: 29px; border-radius: 5px; color: #fff;
-        padding: 6px 7px; box-sizing: border-box; overflow: hidden; white-space: nowrap;
-        text-overflow: ellipsis; font-size: 10px; font-weight: 700; z-index: 3;
+        padding: var(--s2) var(--s2); box-sizing: border-box; overflow: hidden; white-space: nowrap;
+        text-overflow: ellipsis; font-size: var(--t0); font-weight: 700; z-index: 3;
         min-width: 4px; box-shadow: 0 1px 4px rgba(0,0,0,.18); }}
  .schedule-bar.charge, .schedule-bar.grid_charge {{ top: 8px; background: #397fd0; }}
  .schedule-bar.pv_charge {{ top: 8px; background: #269b79; }}
@@ -2951,29 +2959,29 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .schedule-bar.idle {{ top: 33px; background: #77818c; }}
  .schedule-bar.running {{ outline: 2px solid #1c2733; animation: schedulePulse 1.5s infinite; }}
  @keyframes schedulePulse {{ 50% {{ filter: brightness(1.18); }} }}
- .schedule-legend {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px;
-        color: #737c86; font-size: 10px; }}
+ .schedule-legend {{ display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s2);
+        color: #737c86; font-size: var(--t0); }}
  .schedule-legend .charge, .schedule-legend .grid_charge {{ color: #397fd0; }}
  .schedule-legend .pv_charge {{ color: #269b79; }}
  .schedule-legend .discharge {{ color: #dc7a27; }}
  .schedule-legend .idle {{ color: #77818c; }}
  .schedule-legend .now {{ color: #20252b; }}
- .schedule-list {{ display: grid; gap: 6px; margin-top: 9px; }}
- .schedule-item {{ display: flex; align-items: center; gap: 9px; padding: 8px 9px;
+ .schedule-list {{ display: grid; gap: var(--s2); margin-top: var(--s2); }}
+ .schedule-item {{ display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2);
         border: 1px solid #e0e5ea; border-radius: 8px; background: #fff; }}
  .schedule-item > div {{ flex: 1; min-width: 120px; }}
- .schedule-item small {{ display: block; color: #747d87; margin-top: 2px; }}
+ .schedule-item small {{ display: block; color: #747d87; margin-top: var(--s0); }}
  .schedule-color {{ width: 9px; height: 30px; border-radius: 5px; flex: 0 0 auto; }}
  .schedule-color.charge, .schedule-color.grid_charge {{ background: #397fd0; }}
  .schedule-color.pv_charge {{ background: #269b79; }}
  .schedule-color.discharge {{ background: #dc7a27; }}
  .schedule-color.idle {{ background: #77818c; }}
- .schedule-state {{ color: #68717a; font-size: 11px; text-align: right; }}
+ .schedule-state {{ color: #68717a; font-size: var(--t1); text-align: right; }}
  .schedule-item.running {{ border-color: #85addb; background: #f1f7ff; }}
  .schedule-item.cancelled, .schedule-item.completed, .schedule-item.skipped {{ opacity: .68; }}
- .controls button.mini {{ padding: 4px 8px; font-size: 11px; }}
+ .controls button.mini {{ padding: var(--s1) var(--s2); font-size: var(--t1); }}
  .controls button.schedule-delete {{ color: #6b4b4b; background: #f7eeee; border-color: #e8cece; }}
- .schedule-empty {{ color: #7c858e; text-align: center; padding: 12px; font-size: 12px; }}
+ .schedule-empty {{ color: #7c858e; text-align: center; padding: var(--s3); font-size: var(--t1); }}
  .plotly-graph-div {{ border-radius: var(--r-card); }}
  html.dark {{ color-scheme: dark; }}
  html.dark body {{ color: #e7edf4; background: linear-gradient(145deg,#111820,#17212b); }}
@@ -3072,42 +3080,42 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .banner.warn {{ background: #3a3219; border-color: #6a5925; color: #e1c96b; }}
  html.dark .banner.err {{ background: #402124; border-color: #73383d; color: #f1a29c; }}
  @media (max-width: 620px) {{
-   body {{ padding: 8px; }}
-   .app-header {{ padding: 10px 11px; margin-bottom: 8px; position: relative; }}
-   h1 {{ font-size: 17px; line-height: 1.25; }}
-   h1 .ts {{ display: block; font-size: 11px; margin-top: 2px; }}
+   body {{ padding: var(--s2); }}
+   .app-header {{ padding: var(--s3) var(--s3); margin-bottom: var(--s2); position: relative; }}
+   h1 {{ font-size: var(--t3); line-height: 1.25; }}
+   h1 .ts {{ display: block; font-size: var(--t1); margin-top: var(--s0); }}
    .header-actions button, .header-actions a {{ min-width: 44px; min-height: 44px; font-size: 0; padding: 0; }}
    /* Alle Kopfknoepfe gleich behandelt: mobil nur das Symbol. Vorher trugen
       zwei von ihnen ihr Zeichen ueber ein :after-Pseudoelement, weil sie im
       Markup gar keines hatten - jetzt steht es bei allen im Markup und die
       Regel gilt einheitlich. */
-   .header-actions .config-icon {{ font-size: 21px; }}
+   .header-actions .config-icon {{ font-size: var(--t4); }}
    .header-actions .config-label {{ display: none; }}
-   .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }}
+   .tiles {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s2); }}
    .live-daily {{ grid-template-columns: repeat(2,minmax(0,1fr)); }}
-   .tile {{ min-width: 0; padding: 9px 10px; overflow: hidden; }}
-   .tile .v {{ font-size: 17px; line-height: 1.2; overflow-wrap: anywhere; }}
-   .tile .l {{ font-size: 11px; }}
-   .tile .s {{ font-size: 10px; line-height: 1.25; }}
+   .tile {{ min-width: 0; padding: var(--s2) var(--s3); overflow: hidden; }}
+   .tile .v {{ font-size: var(--t3); line-height: 1.2; overflow-wrap: anywhere; }}
+   .tile .l {{ font-size: var(--t1); }}
+   .tile .s {{ font-size: var(--t0); line-height: 1.25; }}
    .live-head {{ margin-top: 0; }}
-   .live-daily-panel > summary {{ min-height: 42px; align-items: center; margin-bottom: 2px; }}
+   .live-daily-panel > summary {{ min-height: 42px; align-items: center; margin-bottom: var(--s0); }}
    .desktop-plot {{ display: none; }}
    .desktop-horizon-toolbar {{ display: none; }}
    .mobile-plot-shell {{ display: block; background: var(--card);
         border: 1px solid var(--line); border-radius: var(--r-card);
-        margin: 10px 0 13px; overflow: hidden; box-shadow: var(--shadow); }}
+        margin: var(--s3) 0 var(--s3); overflow: hidden; box-shadow: var(--shadow); }}
    html.dark .mobile-plot-shell {{ background: #18212b; border-color: #354352; }}
-   .mobile-plot-toolbar {{ display: flex; flex-direction: column; gap: 7px; padding: 9px;
+   .mobile-plot-toolbar {{ display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2);
         border-bottom: 1px solid #e2e7ec; }}
    html.dark .mobile-plot-toolbar {{ border-color: #354352; }}
-   .mobile-plot-tabs {{ display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }}
+   .mobile-plot-tabs {{ display: flex; gap: var(--s1); overflow-x: auto; scrollbar-width: none; }}
    .mobile-plot-tabs button, .horizon-switch button {{ flex: 0 0 auto; min-height: 40px;
-        padding: 7px 11px; border: 1px solid #cbd3db; border-radius: 8px;
-        background: #f4f6f8; color: #34404c; font: inherit; font-size: 12px; }}
+        padding: var(--s2) var(--s3); border: 1px solid #cbd3db; border-radius: 8px;
+        background: #f4f6f8; color: #34404c; font: inherit; font-size: var(--t1); }}
    .mobile-plot-tabs button.on, .horizon-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
    html.dark .mobile-plot-tabs button, html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
    html.dark .mobile-plot-tabs button.on, html.dark .horizon-switch button.on {{ background: #287fd8; }}
-   .horizon-switch {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }}
+   .horizon-switch {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s1); }}
    #mobile-plot {{ min-height: 420px; }}
    .controls .ctl-summary {{ display: none; }}
    .controls > summary {{ min-height: 44px; box-sizing: border-box; }}
@@ -3125,32 +3133,32 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
       Telefon nicht mehr lesbar. Die Meldung bleibt sichtbar (nur einzeilig
       gekuerzt): sie traegt im Fehlerfall den Grund, den sonst niemand sieht. */
    .runtime-strip {{ flex: 1 1 100%; order: 3; }}
-   .runtime-main small {{ margin-left: 7px; }}
+   .runtime-main small {{ margin-left: var(--s2); }}
    #runtime-meta {{ display: none; }}
-   #recalc-plan {{ min-height: 34px; padding: 5px 10px; margin-left: auto; }}
+   #recalc-plan {{ min-height: 34px; padding: var(--s1) var(--s3); margin-left: auto; }}
    .recalc-label {{ display: none; }}
    .mode-compare-grid {{ grid-template-columns: 1fr; }}
-   .compare-chart {{ min-height: 380px; margin: 0 -5px; width: calc(100% + 10px); }}
-   .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 6px 8px; }}
-   .calibration-grid {{ grid-template-columns: 1fr; padding: 0 7px 8px; }}
+   .compare-chart {{ min-height: 380px; margin: 0 -var(--s1); width: calc(100% + 10px); }}
+   .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 var(--s2) var(--s2); }}
+   .calibration-grid {{ grid-template-columns: 1fr; padding: 0 var(--s2) var(--s2); }}
    .calibration-card p {{ min-height: 0; }}
    .forecast-analysis-toolbar {{ align-items: stretch; }}
    .forecast-analysis-toolbar label {{ width: 100%; }}
    .forecast-analysis-toolbar input {{ flex: 1; min-height: 42px; }}
    .forecast-analysis-toolbar button {{ min-height: 42px; }}
    .forecast-analysis-toolbar #fa-status {{ width: 100%; margin-left: 0; }}
-   .forecast-vintage-head {{ align-items: flex-start; padding-right: 7px; }}
-   .forecast-vintage-head h4 {{ margin-right: 4px; }}
+   .forecast-vintage-head {{ align-items: flex-start; padding-right: var(--s2); }}
+   .forecast-vintage-head h4 {{ margin-right: var(--s1); }}
    .forecast-signal-switch button {{ min-height: 40px; }}
-   .day-comparison-chart, .calibration-history-chart {{ margin: 0 6px 10px; }}
-   .calibration-change-list article {{ grid-template-columns: 1fr; gap: 3px; }}
-   .vintage-chart {{ margin: 0 6px 10px; }}
+   .day-comparison-chart, .calibration-history-chart {{ margin: 0 var(--s2) var(--s3); }}
+   .calibration-change-list article {{ grid-template-columns: 1fr; gap: var(--s0); }}
+   .vintage-chart {{ margin: 0 var(--s2) var(--s3); }}
    .event {{ grid-template-columns: 90px 1fr; }}
  }}
- .chips {{ font-size: 12px; color: var(--muted-2); margin: -2px 0 10px; }}
- .chips .chip {{ margin-right: 14px; white-space: nowrap; }}
+ .chips {{ font-size: var(--t1); color: var(--muted-2); margin: -var(--s0) 0 var(--s3); }}
+ .chips .chip {{ margin-right: var(--s4); white-space: nowrap; }}
  .chips .dot {{ display: inline-block; width: 8px; height: 8px;
-        border-radius: 50%; margin-right: 4px; }}
+        border-radius: 50%; margin-right: var(--s1); }}
 </style></head><body>
 <header class="app-header"><h1>E3DC EMS Steuerung
  <span class="ts">{now.strftime('%Y-%m-%d %H:%M')}</span></h1>
