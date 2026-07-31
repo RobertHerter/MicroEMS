@@ -18,8 +18,8 @@ import pytest
 SEITEN = ["ems/dashboard.py", "ems/archive.py", "ems/config_editor.py"]
 # Nur die Größen, die seitenübergreifend gleich aussehen MÜSSEN. Farben wie
 # --blue oder --danger darf jede Seite für sich führen.
-TOKENS = ["--r-card", "--r-ctl", "--line", "--muted", "--card",
-          "--ok", "--warn", "--bad", "--focus"]
+TOKENS = ["--r-card", "--r-ctl", "--line", "--muted", "--muted-2",
+          "--card", "--surface", "--ok", "--warn", "--bad", "--focus"]
 
 
 def _tokens(quelle: str, dark: bool) -> dict[str, str]:
@@ -140,12 +140,15 @@ def test_status_colours_stay_readable_on_their_own_background(dark):
     """
     quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
     werte = _tokens(quelle, dark)
-    grund = werte["--card"] if werte["--card"].startswith("#") else "#ffffff"
-    for token in ("--ok", "--warn", "--bad", "--muted"):
-        verhaeltnis = _kontrast(werte[token], grund)
-        assert verhaeltnis >= 4.5, (
-            f"{token} = {werte[token]} auf {grund}: "
-            f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")
+    # Gegen BEIDE Untergruende: Karten stehen auf --card, die Karten INNERHALB
+    # der Panels auf --surface. Geprueft wurde vorher nur --card - und genau
+    # auf der Panelflaeche kam das gedaempfte Grau nur auf 4,49:1.
+    for grund in (werte["--card"], werte["--surface"]):
+        for token in ("--ok", "--warn", "--bad", "--muted", "--muted-2"):
+            verhaeltnis = _kontrast(werte[token], grund)
+            assert verhaeltnis >= 4.5, (
+                f"{token} = {werte[token]} auf {grund}: "
+                f"{verhaeltnis:.2f}:1, nötig sind 4,5:1")
 
 
 # Grosse Einzelwerte sind Funktionsabstaende (Platz unter festen Fussleisten),

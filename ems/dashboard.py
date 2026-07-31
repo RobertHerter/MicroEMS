@@ -2444,7 +2444,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     lagen zudem unter der Lesbarkeitsschwelle von 4,5:1 und liessen die Seite
     ausgewaschen wirken. */
  :root {{ --r-card: 14px; --r-ctl: 9px;
-        --line: #e3e8ee; --card: #fff; --muted: #6b7480; --muted-2: #59616b;
+        --line: #e3e8ee; --card: #fff; --muted: #656e79; --muted-2: #59616b;
         /* Statusfarben JE THEMA. Vorher standen sie als feste Hexwerte in den
            Kacheln und wechselten mit hell/dunkel nicht mit: das Gelb der
            Warnung kam auf Weiss auf 2,1:1 - ausgerechnet der Warnzustand war
@@ -2458,11 +2458,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
            hoechstens 1-2 px; der Gewinn liegt im gemeinsamen Rhythmus. */
         --s0: 2px; --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
         --t0: 10px; --t1: 12px; --t2: 14px; --t3: 17px; --t4: 22px;
-        --ok: #258448; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
+        --ok: #217a41; --warn: #8a6d1f; --bad: #b52d28; --focus: #1769c2;
         --flow-in: #2468a9; --flow-out: #b45f16; --tint: 11%;
         --surface: #f7f9fb;
         --shadow: 0 1px 2px rgba(20,35,55,.05), 0 4px 16px rgba(20,35,55,.06); }}
- html.dark {{ --line: #33414f; --card: #18212b; --muted: #9aa7b4;
+ html.dark {{ --line: #33414f; --card: #18212b; --muted: #a3b0bd;
         --muted-2: #b6c2ce;
         --ok: #75ce91; --warn: #e5cb74; --bad: #ff8c87; --focus: #4ea1f0;
         --flow-in: #7fb4e8; --flow-out: #e6a56b; --tint: 28%;
@@ -2566,10 +2566,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-daily-panel > summary {{ display: flex; align-items: baseline; gap: var(--s2);
         margin: 0 var(--s0) var(--s2); cursor: pointer; list-style: none; }}
  .live-daily-panel > summary::-webkit-details-marker {{ display: none; }}
- .live-daily-panel > summary::after {{ content: '⌄'; margin-left: auto; color: #687582;
+ .live-daily-panel > summary::after {{ content: '⌄'; margin-left: auto; color: var(--muted);
         transition: transform .2s; }}
  .live-daily-panel:not([open]) > summary::after {{ transform: rotate(-90deg); }}
- .live-daily-panel > summary span {{ color: #707983; font-size: var(--t1); }}
+ .live-daily-panel > summary span {{ color: var(--muted); font-size: var(--t1); }}
  #live-day-status[data-quality=current] {{ color: #247b45; }}
  #live-day-status[data-quality=warning] {{ color: #9a6b00; }}
  #live-day-status[data-quality=stale] {{ color: #b3261e; font-weight: 700; }}
@@ -2678,7 +2678,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .quality-item.current .quality-state {{ color: #237a3b; }}
  .quality-item.partial .quality-state {{ color: #8a6d00; }}
  .quality-item.replaced .quality-state {{ color: #b3261e; }}
- .quality-detail {{ margin-top: var(--s0); color: #727c86; font-size: var(--t0);
+ .quality-detail {{ margin-top: var(--s0); color: var(--muted); font-size: var(--t0);
         line-height: 1.3; }}
  .live-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
         margin-right: var(--s1); background: #999; }}
@@ -2686,13 +2686,12 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .live-dot.err {{ background: #d62728; }}
  .mobile-plot-shell {{ display: none; }}
  .desktop-horizon-toolbar {{ display: flex; align-items: center; justify-content: flex-end;
-        gap: var(--s2); margin: var(--s2) var(--s0) var(--s1); color: #687582; font-size: var(--t1); }}
+        gap: var(--s2); margin: var(--s2) var(--s0) var(--s1); color: var(--muted); font-size: var(--t1); }}
  .horizon-switch {{ display: inline-grid; grid-template-columns: repeat(3, minmax(54px,auto)); gap: var(--s1); }}
  .horizon-switch button {{ min-height: 34px; padding: var(--s1) var(--s3); border: 1px solid #cbd3db;
         border-radius: 8px; background: #f4f6f8; color: #34404c; cursor: pointer;
         font: inherit; font-size: var(--t1); }}
  .horizon-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
- html.dark .desktop-horizon-toolbar {{ color: #aebbc8; }}
  html.dark .horizon-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .horizon-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
  .banner {{ border-radius: var(--r-ctl); padding: var(--s2) var(--s4); margin-bottom: var(--s3);
@@ -2716,19 +2715,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .decisions > summary:hover {{ background: #1e2833; }}
  .decisions[open] > summary {{ border-bottom: 1px solid var(--line); }}
  .decision-head b {{ font-weight: 700; }}
- .decision-head small {{ margin-left: var(--s2); color: #737c86; font-weight: 400; }}
+ .decision-head small {{ margin-left: var(--s2); color: var(--muted); font-weight: 400; }}
  .decision-body {{ padding: var(--s3) var(--s4) var(--s4); }}
  .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
         gap: var(--s2); }}
  .decision-item {{ position: relative; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);; }}
  .decision-item {{ --akzent: var(--decision-color); }}
- .decision-time {{ color: #66717c; font-size: var(--t1); }}
+ .decision-time {{ color: var(--muted); font-size: var(--t1); }}
  .decision-name {{ font-weight: 750; margin: var(--s0) 0 var(--s1); }}
- .decision-reason {{ color: #4d5863; font-size: var(--t1); line-height: 1.35; }}
+ .decision-reason {{ color: var(--muted-2); font-size: var(--t1); line-height: 1.35; }}
  .decision-facts {{ display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }}
  .decision-facts span {{ padding: var(--s0) var(--s2); border-radius: 999px; background: #eef3f7;
-        color: #52606d; font-size: var(--t0); }}
- .decision-empty {{ color: #68737d; font-size: var(--t1); }}
+        color: var(--muted-2); font-size: var(--t0); }}
+ .decision-empty {{ color: var(--muted); font-size: var(--t1); }}
  .report {{ margin: var(--s1) 0 var(--s3); }}
  .report button {{ font-size: var(--t1); padding: var(--s2) var(--s4); border-radius: 7px;
         border: 1px solid #c9ccd1; background: #f0f1f3; cursor: pointer; }}
@@ -2741,11 +2740,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .controls > summary {{ padding: var(--s3) var(--s3); cursor: pointer; user-select: none;
         font-weight: 700; background: #f7f9fb; }}
  .controls[open] > summary {{ border-bottom: 1px solid var(--line); }}
- .controls > summary small {{ margin-left: var(--s2); color: #75808a; font-size: var(--t1);
+ .controls > summary small {{ margin-left: var(--s2); color: var(--muted); font-size: var(--t1);
         font-weight: 400; }}
  .controls .ctl-body {{ padding: var(--s4); font-size: var(--t1); }}
  .ctl-section-head {{ display: flex; flex-direction: column; margin: 0 0 var(--s2) var(--s0); }}
- .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: #7b828c;
+ .ctl-section-head small, .ctl-section small, .load-head small {{ display: block; color: var(--muted);
         font-weight: normal; margin-top: var(--s0); }}
  .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: var(--s3); }}
  .load-card {{ padding: var(--s3); min-width: 0;; }}
@@ -2753,21 +2752,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         padding-bottom: var(--s3); margin-bottom: var(--s3); border-bottom: 1px solid var(--line); }}
  .load-head b {{ font-size: var(--t2); }}
  .ctl-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: var(--s2); }}
- .ctl-field {{ color: #555e68; font-size: var(--t1); }}
+ .ctl-field {{ color: var(--muted-2); font-size: var(--t1); }}
  .ctl-field > span:first-child {{ display: block; margin-bottom: var(--s1); }}
  .ctl-input {{ display: flex; align-items: center; gap: var(--s1); }}
  .controls input[type=number], .controls textarea {{ box-sizing: border-box; border: 1px solid #cfd5dc;
         border-radius: 7px; background: #fff; color: #222; padding: var(--s2) var(--s2); font: inherit; }}
  .controls input[type=number] {{ width: 100%; min-width: 65px; }}
- .ctl-input small {{ white-space: nowrap; color: #777f88; }}
+ .ctl-input small {{ white-space: nowrap; color: var(--muted); }}
  .profile-edit {{ margin-top: var(--s3); }}
  .profile-edit > label {{ display: flex; flex-direction: column; gap: var(--s0); margin-bottom: var(--s1); }}
- .profile-edit > label small {{ color: #7b828c; font-weight: normal; }}
+ .profile-edit > label small {{ color: var(--muted); font-weight: normal; }}
  .profile-edit textarea {{ width: 100%; resize: vertical; line-height: 1.4; }}
  .curve-box {{ margin-top: var(--s2);
         overflow: hidden;; }}
  .curve-box canvas {{ display: block; width: 100%; height: 92px; }}
- .curve-box span {{ display: block; padding: var(--s1) var(--s2); color: #5e6874; background: #fff;
+ .curve-box span {{ display: block; padding: var(--s1) var(--s2); color: var(--muted); background: #fff;
         border-top: 1px solid var(--line); font-size: var(--t1); }}
  .curve-box span.bad {{ color: #b3261e; }}
  .load-actions {{ display: flex; justify-content: flex-end; margin-top: var(--s3); }}
@@ -2783,20 +2782,20 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .controls button.mode.on {{ background: #0d6efd; color: #fff; border-color: #0d6efd; }}
  .controls button.mode {{ display: flex; flex-direction: column; align-items: flex-start;
         gap: var(--s0); min-width: 155px; text-align: left; }}
- .controls button.mode small {{ color: #737c86; margin: 0; font-size: var(--t0); }}
+ .controls button.mode small {{ color: var(--muted); margin: 0; font-size: var(--t0); }}
  .controls button.mode.on small {{ color: rgba(255,255,255,.82); }}
  .controls button.stop {{ color: #a22b25; border-color: #e2b6b3; background: #fff5f4; }}
  .ctl-section {{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3);
         margin-top: var(--s3); padding: var(--s3) var(--s3);; }}
  .ctl-section > div:first-child {{ min-width: 175px; margin-right: auto; }}
- .ctl-section label {{ color: #555e68; }}
+ .ctl-section label {{ color: var(--muted-2); }}
  .ctl-section input {{ width: 75px !important; margin: 0 var(--s0); }}
  .button-group {{ display: flex; flex-wrap: wrap; gap: var(--s2); }}
  .controls .ctl-msg {{ margin-top: var(--s2); font-size: var(--t1); color: #555; min-height: 1em; }}
  .plan-compare {{ display: block; margin-top: var(--s3); padding: var(--s3);; }}
- .plan-compare > div:first-child small {{ display: block; color: #6f7983; margin-top: var(--s0); }}
- .compare-result {{ color: #5e6872; }}
- .compare-chart-status {{ min-height: 16px; margin-top: var(--s2); color: #74808b; font-size: var(--t0); }}
+ .plan-compare > div:first-child small {{ display: block; color: var(--muted); margin-top: var(--s0); }}
+ .compare-result {{ color: var(--muted); }}
+ .compare-chart-status {{ min-height: 16px; margin-top: var(--s2); color: var(--muted); font-size: var(--t0); }}
  .compare-chart {{ display: none; width: 100%; min-height: 340px; }}
  .compare-note {{ margin-bottom: var(--s2); }}
  .mode-compare-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(205px,1fr)); gap: var(--s2); margin: var(--s2) 0; }}
@@ -2805,17 +2804,17 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .mode-compare-card.active {{ border-color: #6ca6dc; }}
  .mode-compare-card header {{ display: flex; justify-content: space-between; gap: var(--s1); align-items: flex-start; margin-bottom: var(--s2); }}
  .mode-compare-card header b, .mode-compare-card header small {{ display: block; }}
- .mode-compare-card header small, .mode-metrics span {{ color: #74808b; font-size: var(--t0); }}
+ .mode-compare-card header small, .mode-metrics span {{ color: var(--muted); font-size: var(--t0); }}
  .recommend-badge {{ padding: var(--s0) var(--s1); border-radius: 999px; background: #e1f2e6; color: #27703e; font-size: var(--t0); }}
  .mode-metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: var(--s2); }}
  .mode-metrics > div {{ min-width: 0; }}
  .mode-metrics > div.wide {{ grid-column: 1/-1; }}
  .mode-metrics span, .mode-metrics b {{ display: block; }}
  .mode-metrics b {{ font-size: var(--t1); white-space: nowrap; }}
- .mode-validation {{ display: block; margin-top: var(--s2); color: #74808b; font-size: var(--t0); }}
+ .mode-validation {{ display: block; margin-top: var(--s2); color: var(--muted); font-size: var(--t0); }}
  .late-confidence {{ margin-top: var(--s2); padding: var(--s2); border-radius: 7px; background: #f1f4f7; }}
  .late-confidence span, .late-confidence b, .late-confidence small {{ display: block; }}
- .late-confidence span, .late-confidence small {{ color: #6f7983; font-size: var(--t0); }}
+ .late-confidence span, .late-confidence small {{ color: var(--muted); font-size: var(--t0); }}
  .late-confidence b {{ font-size: var(--t1); margin: var(--s0) 0; }}
  .late-confidence.very_likely {{ background: #e6f4ea; color: #246b39; }}
  .late-confidence.expected_only {{ background: #fff3d8; color: #805a12; }}
@@ -2834,17 +2833,16 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .info-panel > summary:hover {{ background: #1e2833; }}
  .info-panel[open] > summary {{ border-bottom: 1px solid var(--line); }}
  .info-panel > summary small {{ margin-left: var(--s2); color: var(--muted); font-weight: 400; }}
- .analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); font-weight: 700; color: #55606a; }}
- .analysis-panel h4 small {{ margin-left: var(--s2); font-weight: 400; color: #8a949d; }}
+ .analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); font-weight: 700; color: var(--muted-2); }}
+ .analysis-panel h4 small {{ margin-left: var(--s2); font-weight: 400; color: var(--muted); }}
  .info-panel .tiles, .decisions .tiles {{ padding: 0 var(--s3); }}
  /* Folgt das Raster direkt auf die Kopfzeile, fehlt sonst der Abstand
     nach oben - im Analyse-Panel liefern ihn die Zwischenueberschriften. */
  .info-panel > summary + .tiles {{ padding-top: var(--s3); }}
  .analysis-panel .tiles {{ margin-bottom: var(--s1); }}
  .analysis-panel .tiles:last-of-type {{ padding-bottom: var(--s4); }}
- .analysis-panel .an-hint {{ display: block; padding: var(--s0) var(--s3) var(--s3); color: #8a949d; font-size: var(--t1); }}
+ .analysis-panel .an-hint {{ display: block; padding: var(--s0) var(--s3) var(--s3); color: var(--muted); font-size: var(--t1); }}
  html.dark .analysis-panel h4 {{ color: #d3dbe3; }}
- html.dark .analysis-panel h4 small, html.dark .analysis-panel .an-hint {{ color: #97a3ad; }}
  .an-dot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%;
         margin-right: var(--s2); vertical-align: middle; background: var(--ok); }}
  .an-dot.warn {{ background: var(--warn); }}
@@ -2867,9 +2865,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         border-radius: 0 0 2px 2px; }}
  .facc-trend {{ padding: var(--s0) var(--s3) var(--s3); }}
  .facc-svg {{ width: 100%; height: 42px; display: block; }}
- .facc-legend {{ font-size: var(--t1); color: #8a949d; margin-top: var(--s0); }}
- .forecast-analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); color: #55606a; }}
- .forecast-analysis-panel h4 small {{ margin-left: var(--s2); color: #8a949d; font-weight: 400; }}
+ .facc-legend {{ font-size: var(--t1); color: var(--muted); margin-top: var(--s0); }}
+ .forecast-analysis-panel h4 {{ margin: var(--s3) var(--s3) var(--s2); font-size: var(--t1); color: var(--muted-2); }}
+ .forecast-analysis-panel h4 small {{ margin-left: var(--s2); color: var(--muted); font-weight: 400; }}
  .forecast-analysis-panel > .quality-grid {{ padding: 0 var(--s3) var(--s0); }}
  .forecast-accuracy-tiles {{ padding: 0 var(--s3); }}
  .forecast-analysis-toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
@@ -2878,13 +2876,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-analysis-toolbar input, .forecast-analysis-toolbar button,
  .forecast-signal-switch button {{ min-height: 34px; border: 1px solid #cbd3db; border-radius: 7px;
       background: #f7f9fb; color: #34404c; padding: var(--s1) var(--s2); font: inherit; }}
- .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: #7b8792; font-size: var(--t1); }}
+ .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: var(--muted); font-size: var(--t1); }}
  .forecast-analysis-toolbar button:disabled, .forecast-analysis-toolbar input:disabled {{
       cursor: wait; opacity: .62; }}
  .forecast-day-stage {{ position: relative; min-height: 332px; margin: 0 var(--s3) var(--s3); }}
  .forecast-day-stage .day-comparison-chart {{ margin: 0; }}
  .forecast-day-loading {{ position: absolute; inset: 0; z-index: 5; display: none;
-      align-items: center; justify-content: center; gap: var(--s3); color: #596775; font-size: var(--t1);; }}
+      align-items: center; justify-content: center; gap: var(--s3); color: var(--muted); font-size: var(--t1);; }}
  .forecast-day-loading i {{ width: 20px; height: 20px; border: 3px solid #cbd7e2;
       border-top-color: #287fd8; border-radius: 50%; animation: forecastSpin .75s linear infinite; }}
  .forecast-analysis-panel.loading .forecast-day-loading {{ display: flex; }}
@@ -2897,19 +2895,19 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .calibration-card > header {{ display: flex; justify-content: space-between; gap: var(--s2); align-items: flex-start; }}
  .calibration-card header b, .calibration-card header small {{ display: block; }}
  .calibration-card header b {{ font-size: var(--t1); }}
- .calibration-card header small {{ margin-top: var(--s0); color: #77838e; font-size: var(--t0); }}
- .calibration-card header strong {{ color: #4d5964; font-size: var(--t2); white-space: nowrap; }}
+ .calibration-card header small {{ margin-top: var(--s0); color: var(--muted); font-size: var(--t0); }}
+ .calibration-card header strong {{ color: var(--muted-2); font-size: var(--t2); white-space: nowrap; }}
  .calibration-bar {{ height: 5px; margin: var(--s2) 0; border-radius: 5px; overflow: hidden; background: #e3e8ed; }}
  .calibration-bar i {{ display: block; height: 100%; background: #dda72e; border-radius: inherit; }}
  .calibration-card.current .calibration-bar i {{ background: #35a466; }}
- .calibration-card p {{ min-height: 31px; margin: 0 0 var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.45; }}
+ .calibration-card p {{ min-height: 31px; margin: 0 0 var(--s2); color: var(--muted); font-size: var(--t0); line-height: 1.45; }}
  .calibration-card dl {{ margin: 0; }}
  .calibration-card dl > div {{ display: flex; justify-content: space-between; gap: var(--s1);
       border-top: 1px solid var(--line); padding: var(--s1) 0; font-size: var(--t0); }}
- .calibration-card dt {{ color: #7a8690; }}
+ .calibration-card dt {{ color: var(--muted); }}
  .calibration-card dd {{ margin: 0; font-weight: 700; text-align: right; overflow-wrap: anywhere; }}
- .calibration-card footer {{ margin-top: var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.35; }}
- .calibration-note {{ grid-column: 1/-1; color: #87929c; font-size: var(--t0); }}
+ .calibration-card footer {{ margin-top: var(--s2); color: var(--muted); font-size: var(--t0); line-height: 1.35; }}
+ .calibration-note {{ grid-column: 1/-1; color: var(--muted); font-size: var(--t0); }}
  .forecast-heat-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s3);
       padding: 0 var(--s3) var(--s2); }}
  .forecast-heat-grid > div {{ min-width: 0; }}
@@ -2920,14 +2918,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .calibration-change-list {{ margin: -var(--s0) var(--s3) var(--s3); display: grid; gap: var(--s1); }}
  .calibration-change-list article {{ display: grid; grid-template-columns: minmax(125px,auto) 1fr;
       gap: var(--s2); padding: var(--s2) var(--s2); font-size: var(--t1);; }}
- .calibration-change-list time {{ color: #73808c; white-space: nowrap; }}
+ .calibration-change-list time {{ color: var(--muted); white-space: nowrap; }}
  .forecast-vintage-head {{ display: flex; align-items: center; justify-content: space-between;
       padding-right: var(--s3); }}
  .forecast-signal-switch {{ display: flex; gap: var(--s1); }}
  .forecast-signal-switch button.on {{ color: #fff; background: #1769c2; border-color: #1769c2; }}
  .vintage-chart {{ margin: 0 var(--s3) var(--s3); min-height: 350px; }}
  html.dark .forecast-analysis-panel h4 {{ color: #d3dbe3; }}
- html.dark .forecast-analysis-panel h4 small, html.dark .forecast-analysis-toolbar #fa-status {{ color: #97a3ad; }}
  html.dark .forecast-analysis-toolbar input, html.dark .forecast-analysis-toolbar button,
  html.dark .forecast-signal-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .forecast-signal-switch button.on {{ background: #287fd8; border-color: #287fd8; }}
@@ -2935,12 +2932,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .forecast-day-loading {{ color: #c1ccd6; background: #202b36;
       border-color: #43515f; }}
  html.dark .forecast-day-loading i {{ border-color: #465869; border-top-color: #58a6e7; }}
- html.dark .calibration-change-list time {{ color: #aebbc8; }}
  html.dark .calibration-card {{ background: #202b36; border-color: #43515f; border-left-color: #d9b83f; }}
  html.dark .calibration-card.current {{ border-left-color: #58b879; }}
- html.dark .calibration-card header small, html.dark .calibration-card p,
- html.dark .calibration-card footer, html.dark .calibration-card dt,
- html.dark .calibration-note {{ color: #aebbc8; }}
  html.dark .calibration-card header strong {{ color: #e7edf4; }}
  html.dark .calibration-bar {{ background: #3b4956; }}
  html.dark .calibration-card dl > div {{ border-color: #3b4956; }}
@@ -2951,39 +2944,35 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .mode-badge {{ font-size: var(--t1); font-weight: 700; padding: var(--s0) var(--s2); border-radius: 999px; color: #fff; text-transform: uppercase; letter-spacing: .3px; }}
  .mode-badge.asap {{ background: #28a261; }} .mode-badge.peak {{ background: #e29a2d; }}
  .mode-badge.late {{ background: #9b6bd3; }} .mode-badge.auto {{ background: #6b7883; }}
- .pvconf-metrics {{ display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); font-size: var(--t1); color: #66707a; }}
+ .pvconf-metrics {{ display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); font-size: var(--t1); color: var(--muted); }}
  .pvconf-metrics span {{ display: inline-flex; gap: var(--s1); }}
  .pvconf-metrics b {{ color: #20252b; font-weight: 700; }}
- .pvconf-basis {{ margin-top: var(--s2); font-size: var(--t1); color: #75808a; }}
- .pvconf-note {{ margin: 0 var(--s3) var(--s3); font-size: var(--t1); color: #8a949d; }}
- html.dark .pvconf-metrics {{ color: #97a3ad; }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
- html.dark .pvconf-basis, html.dark .pvconf-note {{ color: #97a3ad; }}
+ .pvconf-basis {{ margin-top: var(--s2); font-size: var(--t1); color: var(--muted); }}
+ .pvconf-note {{ margin: 0 var(--s3) var(--s3); font-size: var(--t1); color: var(--muted); }} html.dark .pvconf-metrics b {{ color: #e7edf4; }}
  .whatif-form {{ display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3); padding: var(--s3); }}
- .wi-field {{ display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t1); color: #66707a; }}
+ .wi-field {{ display: flex; flex-direction: column; gap: var(--s1); font-size: var(--t1); color: var(--muted); }}
  .wi-field select, .wi-field input {{ padding: var(--s2) var(--s2); border: 1px solid #cfd7df; border-radius: 7px; background: #fff; color: #20252b; font-size: var(--t2); }}
  .whatif-form button.primary {{ padding: var(--s2) var(--s4); }}
  .whatif-result {{ padding: 0 var(--s3) var(--s3); }}
  .whatif-head {{ display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s2); }}
- .whatif-head small {{ color: #75808a; }} .wi-bad {{ color: #d1495b; }}
- html.dark .wi-field {{ color: #97a3ad; }}
+ .whatif-head small {{ color: var(--muted); }} .wi-bad {{ color: #d1495b; }}
  html.dark .wi-field select, html.dark .wi-field input {{ background: #202b36; border-color: #354352; color: #e7edf4; }}
- html.dark .whatif-head small {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: var(--s2); padding: var(--s3); }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 var(--s1); }}
  .detail-grid > div {{ padding: var(--s2) var(--s3); }}
  .detail-grid span, .detail-grid b {{ display: block; }}
- .detail-grid span {{ color: #74808b; font-size: var(--t0); }}
+ .detail-grid span {{ color: var(--muted); font-size: var(--t0); }}
  .events-list {{ max-height: 360px; overflow: auto; padding: var(--s2) var(--s3) var(--s3); }}
  .events-filter {{ display: flex; gap: var(--s2); padding: var(--s2) var(--s3) var(--s0); }}
  .events-filter button {{ flex: 0 0 auto; font-size: var(--t1); padding: var(--s1) var(--s3);
         border-radius: 7px; border: 1px solid #cfd6dd; background: #f2f5f8;
-        color: #7a8590; cursor: pointer; }}
+        color: var(--muted); cursor: pointer; }}
  .events-filter button.info.on {{ background: #eef6f0; border-color: #4a9d6a; color: #237a3b; }}
  .events-filter button.warn.on {{ background: #fdf4e2; border-color: #d9a441; color: #8a6d00; }}
  .events-filter button.err.on {{ background: #fdecec; border-color: #d1746e; color: #bd302a; }}
  .event {{ display: grid; grid-template-columns: 118px 1fr; gap: var(--s3); align-items: center;
         padding: var(--s2) var(--s0); border-bottom: 1px solid var(--line); }}
- .event time {{ color: #55606b; font-size: 12.5px; white-space: nowrap; }}
+ .event time {{ color: var(--muted); font-size: 12.5px; white-space: nowrap; }}
  .event > span {{ display: flex; align-items: center; gap: var(--s2); }}
  .ev-ic {{ font-style: normal; flex: 0 0 auto; font-size: var(--t1); line-height: 1; }}
  .event.error span {{ color: #bd302a; font-weight: 600; }}
@@ -2998,28 +2987,28 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         box-shadow: 0 1px 3px rgba(0,0,0,.25); }}
  .switch input:checked + span {{ background: #278445; }}
  .switch input:checked + span:after {{ transform: translateX(15px); }}
- .switch em {{ font-style: normal; font-size: var(--t1); color: #68707a; }}
+ .switch em {{ font-style: normal; font-size: var(--t1); color: var(--muted); }}
  .battery-planner {{ margin-top: var(--s3); padding: var(--s4);; }}
  .planner-head {{ display: flex; align-items: flex-start; justify-content: space-between;
         gap: var(--s3); margin-bottom: var(--s3); }}
- .planner-head small {{ display: block; color: #737c87; margin-top: var(--s0); }}
+ .planner-head small {{ display: block; color: var(--muted); margin-top: var(--s0); }}
  .planner-badge {{ padding: var(--s1) var(--s2); border-radius: 999px; background: #edf0f3;
-        color: #68717a; font-size: var(--t1); white-space: nowrap; }}
+        color: var(--muted); font-size: var(--t1); white-space: nowrap; }}
  .planner-badge.active {{ background: #dcecff; color: #155aa4; font-weight: 700; }}
  .planner-form {{ display: grid; grid-template-columns: 1fr 1.6fr 1fr 1fr auto;
         align-items: end; gap: var(--s2); }}
  .planner-form > label {{ display: flex; flex-direction: column; gap: var(--s1);
-        color: #59636e; font-size: var(--t1); }}
+        color: var(--muted); font-size: var(--t1); }}
  .controls select, .controls input[type=datetime-local] {{ box-sizing: border-box;
         width: 100%; border: 1px solid #cfd5dc; border-radius: 7px; background: #fff;
         color: #222; padding: var(--s2) var(--s2); font: inherit; min-height: 34px; }}
  .planner-actions {{ display: flex; flex-wrap: wrap; gap: var(--s2); justify-content: flex-end; }}
  .planner-actions button {{ min-height: 35px; white-space: nowrap; }}
  .controls button.instant {{ background: #e8f2ff; border-color: #a9c8ea; color: #165d9f; }}
- .schedule-msg {{ min-height: 18px; margin: var(--s2) var(--s0) 0; font-size: var(--t1); color: #59636e; }}
+ .schedule-msg {{ min-height: 18px; margin: var(--s2) var(--s0) 0; font-size: var(--t1); color: var(--muted); }}
  .schedule-chart-wrap {{ margin-top: var(--s1); padding: var(--s3) var(--s3) var(--s2); background: #fff;
         border: 1px solid #dfe5eb; border-radius: 9px; overflow: hidden; }}
- .schedule-axis {{ position: relative; height: 20px; margin: 0 var(--s1); color: #77818c;
+ .schedule-axis {{ position: relative; height: 20px; margin: 0 var(--s1); color: var(--muted);
         font-size: var(--t0); }}
  .schedule-axis span {{ position: absolute; transform: translateX(-50%); white-space: nowrap; }}
  .schedule-axis span:first-child {{ transform: none; }}
@@ -3040,27 +3029,27 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .schedule-bar.running {{ outline: 2px solid #1c2733; animation: schedulePulse 1.5s infinite; }}
  @keyframes schedulePulse {{ 50% {{ filter: brightness(1.18); }} }}
  .schedule-legend {{ display: flex; flex-wrap: wrap; gap: var(--s4); margin-top: var(--s2);
-        color: #737c86; font-size: var(--t0); }}
+        color: var(--muted); font-size: var(--t0); }}
  .schedule-legend .charge, .schedule-legend .grid_charge {{ color: #397fd0; }}
  .schedule-legend .pv_charge {{ color: #269b79; }}
  .schedule-legend .discharge {{ color: #dc7a27; }}
- .schedule-legend .idle {{ color: #77818c; }}
+ .schedule-legend .idle {{ color: var(--muted); }}
  .schedule-legend .now {{ color: #20252b; }}
  .schedule-list {{ display: grid; gap: var(--s2); margin-top: var(--s2); }}
  .schedule-item {{ display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2);; }}
  .schedule-item > div {{ flex: 1; min-width: 120px; }}
- .schedule-item small {{ display: block; color: #747d87; margin-top: var(--s0); }}
+ .schedule-item small {{ display: block; color: var(--muted); margin-top: var(--s0); }}
  .schedule-color {{ width: 9px; height: 30px; border-radius: 5px; flex: 0 0 auto; }}
  .schedule-color.charge, .schedule-color.grid_charge {{ background: #397fd0; }}
  .schedule-color.pv_charge {{ background: #269b79; }}
  .schedule-color.discharge {{ background: #dc7a27; }}
  .schedule-color.idle {{ background: #77818c; }}
- .schedule-state {{ color: #68717a; font-size: var(--t1); text-align: right; }}
+ .schedule-state {{ color: var(--muted); font-size: var(--t1); text-align: right; }}
  .schedule-item.running {{ border-color: #85addb; background: #f1f7ff; }}
  .schedule-item.cancelled, .schedule-item.completed, .schedule-item.skipped {{ opacity: .68; }}
  .controls button.mini {{ padding: var(--s1) var(--s2); font-size: var(--t1); }}
  .controls button.schedule-delete {{ color: #6b4b4b; background: #f7eeee; border-color: #e8cece; }}
- .schedule-empty {{ color: #7c858e; text-align: center; padding: var(--s3); font-size: var(--t1); }}
+ .schedule-empty {{ color: var(--muted); text-align: center; padding: var(--s3); font-size: var(--t1); }}
  .plotly-graph-div {{ border-radius: var(--r-card); }}
  html.dark {{ color-scheme: dark; }}
  html.dark body {{ color: #e7edf4; }}
@@ -3075,13 +3064,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .schedule-chart-wrap, html.dark .schedule-item,
  html.dark .curve-box span {{ background: var(--card); border-color: var(--line);
         color: #e7edf4; }}
- html.dark .runtime-main small, html.dark #runtime-meta {{ color: #b6c2ce; }}
  html.dark .runtime-progress {{ background: #354352; }}
  html.dark #recalc-plan {{ background: #1d3c59; border-color: #3c6f9d; color: #9fd0ff; }}
  html.dark .info-panel > summary {{ background: #202b36; color: #e7edf4; }}
- html.dark .detail-grid span {{ color: #aebbc8; }}
  html.dark .event time {{ color: #c3cdd8; }}
- html.dark .compare-chart-status {{ color: #aebbc8; }}
  html.dark .event.error span {{ color: #f1a29c; }}
  html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
  html.dark .event.k-switch span {{ color: #8fc0e8; }}
@@ -3091,14 +3077,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .events-filter button.err.on {{ background: #402124; border-color: #df6c68; color: #f1a29c; }}
  html.dark .mode-compare-card.recommended {{ border-color: #4d9b67; box-shadow: inset 0 3px #4d9b67; }}
  html.dark .mode-compare-card.active {{ border-color: #4e86b9; }}
- html.dark .mode-compare-card header small, html.dark .mode-metrics span {{ color: #aebbc8; }}
- html.dark .mode-validation {{ color: #aebbc8; }}
  html.dark .recommend-badge {{ background: #254a32; color: #9bd5ad; }}
  html.dark .late-confidence {{ background: #2b3743; }}
  html.dark .late-confidence.very_likely {{ background: #244332; color: #a7d9b7; }}
  html.dark .late-confidence.expected_only {{ background: #4b4026; color: #f1d18a; }}
  html.dark .late-confidence.p10_unreachable {{ background: #4b2d2c; color: #efaaa5; }}
- html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
  html.dark .decision-facts span {{ background: #2a3947; color: #d9e3ed; }}
  html.dark .controls > summary, html.dark .load-card, html.dark .ctl-section,
@@ -3114,18 +3097,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .report button:hover {{ background: #304253; }}
  html.dark .report button.hot {{ background: #432529; color: #ffaaa4; border-color: #75454a; }}
  html.dark .tile .l, html.dark .chips, html.dark .report .msg {{ color: #c2ccd6; }}
- html.dark .tile .s, html.dark .controls > summary small,
- html.dark .ctl-section-head small, html.dark .ctl-section small,
- html.dark .load-head small {{ color: #97a5b4; }}
- html.dark .ctl-field, html.dark .ctl-section label, html.dark .planner-form > label,
- html.dark .schedule-msg, html.dark .schedule-state, html.dark .schedule-axis,
- html.dark .schedule-legend, html.dark .schedule-item small {{ color: #b7c2ce; }}
  html.dark .schedule-chart {{ background: linear-gradient(to bottom,#172d42 0,#172d42 48%,#3a291c 52%,#3a291c 100%); }}
  html.dark .schedule-grid {{ background: rgba(205,220,235,.2); }}
  html.dark .schedule-now {{ background: #f4f7fa; }}
  html.dark .schedule-legend .now {{ color: #f4f7fa; }}
  html.dark .controls button.schedule-delete {{ color: #ffc7c7; background: #40282b; border-color: #6e4045; }}
- html.dark .live-daily-panel > summary span {{ color: #aebbc8; }}
  html.dark #live-day-status[data-quality=current] {{ color: #73d595; }}
  html.dark #live-day-status[data-quality=warning] {{ color: #efd06d; }}
  html.dark #live-day-status[data-quality=stale] {{ color: #ff9691; }}
@@ -3133,8 +3109,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .live-tiles .tile .v {{ filter: brightness(1.55) saturate(1.18); }}
  html.dark .live-head, html.dark .live-head #live-status {{ color: #dbe5ef; }}
  html.dark .live-tiles .tile .l {{ color: #e0e7ef; }}
- html.dark .live-tiles .tile .s {{ color: #aebbc8; }}
- html.dark .quality-head small, html.dark .quality-detail {{ color: #aebbc8; }}
 
  html.dark .quality-item.current .quality-state {{ color: #8fd7a9; }}
  html.dark .quality-item.partial .quality-state {{ color: #e1c96b; }}
