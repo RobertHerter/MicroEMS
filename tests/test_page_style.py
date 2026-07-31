@@ -270,3 +270,34 @@ def test_all_cards_share_one_recipe():
                 eigene.append(f"{name}: {' '.join(regeln.split())[:44]}")
     assert gemeinsam, "keine gemeinsame Kartenregel gefunden"
     assert not eigene, f"Karten mit eigenem Rezept: {eigene}"
+
+
+def test_no_page_hardcodes_a_divider_or_surface_colour():
+    """Fest verdrahtete Grautoene werden im Dunkelmodus zu weissen Linien.
+
+    Die Planentscheidungen waren eine Parallelkonstruktion zu .info-panel mit
+    eigenen Farben: ihre Trennlinie stand auf einem hellen Grau und leuchtete
+    im Dunkeln als weisse Linie, ihre Kopfzeile trug einen anderen Grund als
+    alle uebrigen Panels. Solche Werte fallen nur im jeweils ANDEREN Thema auf.
+    """
+    quelle = pathlib.Path("ems/dashboard.py").read_text(encoding="utf-8")
+    stil = re.sub(r"/\*.*?\*/", " ",
+                  quelle[quelle.index("<style>"):quelle.index("</style>")],
+                  flags=re.S)
+    verdaechtig = []
+    for block in stil.split("}}"):
+        if "{{" not in block:
+            continue
+        selektoren, regeln = block.rsplit("{{", 1)
+        selektoren = " ".join(selektoren[selektoren.rfind("}") + 1:].split())
+        if "html.dark" in selektoren:
+            continue
+        for m in re.finditer(r"(border-bottom|border-top)"
+                             r"\s*:\s*[^;]*?#([0-9a-fA-F]{6})", regeln):
+            kanaele = [int(m.group(2)[i:i + 2], 16) for i in (0, 2, 4)]
+            # Nur NEUTRALE Linien: eine Akzentfarbe auf einem Knopf oder Banner
+            # ist gewollt, ein Grauton als Trennlinie gehoert an --line.
+            if max(kanaele) - min(kanaele) < 24:
+                verdaechtig.append(f"{selektoren[:40]} -> {m.group(0)[:44]}")
+    assert not verdaechtig, \
+        f"feste Farbe fuer Trennlinien statt --line: {verdaechtig}"

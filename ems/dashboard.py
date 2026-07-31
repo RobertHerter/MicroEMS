@@ -644,7 +644,7 @@ def _analysis_block(headline=None) -> str:
  function fail(id,msg){var e=g(id);if(e)e.innerHTML='<span class="an-hint">'+msg+'</span>';}
  function spark(weekly){var wk=(weekly||[]).slice(-12);if(!wk.length){g('an-spark').innerHTML='<span class="an-hint">noch keine Wochendaten</span>';return;}
   var mx=Math.max(1,...wk.map(x=>Math.abs(x.saved_eur)||0));
-  g('an-spark').innerHTML=wk.map(x=>'<span class="bar'+((x.saved_eur||0)<0?' neg':'')+'" style="height:'+Math.max(4,Math.round(100*Math.abs(x.saved_eur||0)/mx))+'%" title="'+x.period+': '+eur(x.saved_eur)+' €"></span>').join('');}
+  g('an-spark').innerHTML=wk.map(x=>'<span class="bar'+((x.saved_eur||0)<0?' neg':'')+'" title="'+x.period+': '+eur(x.saved_eur)+' €"><i style="--h:'+Math.max(3,Math.round(46*Math.abs(x.saved_eur||0)/mx))+'%"></i></span>').join('');}
  async function savings(){try{let r=await fetch('api/savings-history.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;let d=await r.json();let days=d.days||0,avg=days?d.total_saved_eur/days:null,wk=(d.weekly||[]).slice(-1)[0],dr=d.drivers||{};
   g('an-savings').innerHTML=tile(eur(d.total_saved_eur)+' €','Gesamt',days+' validierte Tage')
    +tile(eur(avg)+' €','Ø je Tag','')
@@ -2646,6 +2646,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         background: var(--surface); border: 1px solid var(--line);
         border-left: 3px solid var(--akzent, var(--line));
         border-radius: var(--r-ctl); }}
+ /* Kacheln INNERHALB eines Panels sind Karten, keine Kennzahlen der
+    Kopfzeile: gleicher Flaechenton und Radius wie die uebrigen Panelkarten.
+    Betrifft die gelernten Lastprofile und die vier Raster im Analyse-Panel -
+    sie trugen bisher die Optik der grossen KPI-Kacheln und standen dadurch
+    sichtbar neben allem anderen im selben Panel. */
+ .info-panel .tile, .decisions .tile {{ background: var(--surface);
+        border-radius: var(--r-ctl); }}
+ /* Fusszeile eines Panels. Die Klasse .hint stammt aus dem Archiv-Stylesheet
+    und war hier nie gestaltet - der Satz erschien in voller Fliesstextgroesse
+    und ohne Daempfung, also groesser als alles darueber. */
+ .info-panel .hint {{ padding: 0 var(--s4) var(--s3); color: var(--muted);
+        font-size: var(--t1); line-height: 1.45; }}
  .live-panel.stale .live-tiles {{ opacity: .62; }}
  /* Rahmen/Kopf wie .info-panel – die Statusfarbe bleibt als Punkt im Kopf. */
  /* Betriebsdiagnose/Pool-Rückkopplung/Prognosequalität nutzen jetzt den
@@ -2693,17 +2705,23 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .decisions {{ margin: var(--s3) 0; background: var(--card);
         border: 1px solid var(--line); border-radius: var(--r-card);
         overflow: hidden; box-shadow: var(--shadow); }}
- .decisions > summary {{ padding: var(--s3) var(--s3); cursor: pointer;
-        font-weight: 700; user-select: none; background: #f7f9fb; }}
- .decisions[open] > summary {{ border-bottom: 1px solid #e2e7ec; }}
+ /* Gleiches Verhalten wie .info-panel statt eigener Farben: die
+    Trennlinie stand auf einem hellen Grau und wurde im Dunkelmodus zur
+    weissen Linie, und die Kopfzeile trug einen anderen Grund als alle
+    uebrigen Panels. */
+ .decisions > summary {{ padding: var(--s3) var(--s4); cursor: pointer;
+        font-weight: 650; user-select: none; background: none;
+        transition: background .12s; }}
+ .decisions > summary:hover {{ background: #f5f8fa; }}
+ html.dark .decisions > summary:hover {{ background: #1e2833; }}
+ .decisions[open] > summary {{ border-bottom: 1px solid var(--line); }}
  .decision-head b {{ font-weight: 700; }}
  .decision-head small {{ margin-left: var(--s2); color: #737c86; font-weight: 400; }}
  .decision-body {{ padding: var(--s3) var(--s4) var(--s4); }}
  .decision-list {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(260px,1fr));
         gap: var(--s2); }}
  .decision-item {{ position: relative; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);; }}
- .decision-item:before {{ content: ''; position: absolute; left: 0; top: 0; bottom: 0;
-        width: 5px; border-radius: 9px 0 0 9px; background: var(--decision-color); }}
+ .decision-item {{ --akzent: var(--decision-color); }}
  .decision-time {{ color: #66717c; font-size: var(--t1); }}
  .decision-name {{ font-weight: 750; margin: var(--s0) 0 var(--s1); }}
  .decision-reason {{ color: #4d5863; font-size: var(--t1); line-height: 1.35; }}
@@ -2722,7 +2740,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         overflow: hidden; }}
  .controls > summary {{ padding: var(--s3) var(--s3); cursor: pointer; user-select: none;
         font-weight: 700; background: #f7f9fb; }}
- .controls[open] > summary {{ border-bottom: 1px solid #e4e7eb; }}
+ .controls[open] > summary {{ border-bottom: 1px solid var(--line); }}
  .controls > summary small {{ margin-left: var(--s2); color: #75808a; font-size: var(--t1);
         font-weight: 400; }}
  .controls .ctl-body {{ padding: var(--s4); font-size: var(--t1); }}
@@ -2732,7 +2750,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .load-cards {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(330px,1fr)); gap: var(--s3); }}
  .load-card {{ padding: var(--s3); min-width: 0;; }}
  .load-head {{ display: flex; justify-content: space-between; align-items: flex-start;
-        padding-bottom: var(--s3); margin-bottom: var(--s3); border-bottom: 1px solid #e9ecf0; }}
+        padding-bottom: var(--s3); margin-bottom: var(--s3); border-bottom: 1px solid var(--line); }}
  .load-head b {{ font-size: var(--t2); }}
  .ctl-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: var(--s2); }}
  .ctl-field {{ color: #555e68; font-size: var(--t1); }}
@@ -2750,13 +2768,18 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         overflow: hidden;; }}
  .curve-box canvas {{ display: block; width: 100%; height: 92px; }}
  .curve-box span {{ display: block; padding: var(--s1) var(--s2); color: #5e6874; background: #fff;
-        border-top: 1px solid #e5e8ec; font-size: var(--t1); }}
+        border-top: 1px solid var(--line); font-size: var(--t1); }}
  .curve-box span.bad {{ color: #b3261e; }}
  .load-actions {{ display: flex; justify-content: flex-end; margin-top: var(--s3); }}
  .controls button {{ font-size: var(--t1); padding: var(--s2) var(--s3); border-radius: 7px;
         border: 1px solid #c9d0d8; background: #f2f4f7; color: #30363d; cursor: pointer; }}
  .controls button:hover {{ background: #e8edf3; }}
- .controls button.primary {{ background: #1769c2; color: #fff; border-color: #1769c2; }}
+ /* NICHT auf .controls beschraenken: der Knopf 'Simulieren' in der
+    What-if-Simulation trug class="primary", lag aber ausserhalb des
+    Steuerpanels - die Klasse tat dort nichts, und der ausloesende Knopf
+    sah aus wie ein beliebiger Sekundaerknopf. */
+ button.primary {{ background: var(--focus); color: #fff;
+        border-color: var(--focus); }}
  .controls button.mode.on {{ background: #0d6efd; color: #fff; border-color: #0d6efd; }}
  .controls button.mode {{ display: flex; flex-direction: column; align-items: flex-start;
         gap: var(--s0); min-width: 155px; text-align: left; }}
@@ -2823,9 +2846,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .an-dot.warn {{ background: var(--warn); }}
  .an-dot.bad {{ background: var(--bad); }}
  .an-dot.neutral {{ background: var(--muted); }}
- .sparkline {{ display: flex; align-items: flex-end; gap: var(--s0); height: 46px; padding: 0 var(--s3) var(--s3); }}
- .sparkline .bar {{ flex: 1; min-height: 4px; background: #28a261; border-radius: 2px 2px 0 0; }}
- .sparkline .bar.neg {{ background: #d1495b; }}
+ /* Balken an einer Nulllinie statt alle von unten. Vorher wuchs auch ein
+    negativer Wert nach OBEN und unterschied sich nur durch die Farbe -
+    drei Verlustwochen sahen aus wie drei volle Balken. Jetzt liegt das
+    Vorzeichen in der Richtung und die Groesse im Ausschlag. */
+ .sparkline {{ position: relative; display: flex; align-items: stretch;
+        gap: var(--s0); height: 52px; padding: 0 var(--s3) var(--s3); }}
+ .sparkline:before {{ content: ''; position: absolute; left: var(--s3);
+        right: var(--s3); top: calc(50% - var(--s2) / 2);
+        border-top: 1px solid var(--line); }}
+ .sparkline .bar {{ flex: 1; position: relative; }}
+ .sparkline .bar i {{ position: absolute; left: 0; right: 0; bottom: 50%;
+        height: var(--h, 4px); min-height: 3px; background: var(--ok);
+        border-radius: 2px 2px 0 0; }}
+ .sparkline .bar.neg i {{ top: 50%; bottom: auto; background: var(--bad);
+        border-radius: 0 0 2px 2px; }}
  .facc-trend {{ padding: var(--s0) var(--s3) var(--s3); }}
  .facc-svg {{ width: 100%; height: 42px; display: block; }}
  .facc-legend {{ font-size: var(--t1); color: #8a949d; margin-top: var(--s0); }}
@@ -2866,7 +2901,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .calibration-card p {{ min-height: 31px; margin: 0 0 var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.45; }}
  .calibration-card dl {{ margin: 0; }}
  .calibration-card dl > div {{ display: flex; justify-content: space-between; gap: var(--s1);
-      border-top: 1px solid #e7ebef; padding: var(--s1) 0; font-size: var(--t0); }}
+      border-top: 1px solid var(--line); padding: var(--s1) 0; font-size: var(--t0); }}
  .calibration-card dt {{ color: #7a8690; }}
  .calibration-card dd {{ margin: 0; font-weight: 700; text-align: right; overflow-wrap: anywhere; }}
  .calibration-card footer {{ margin-top: var(--s2); color: #68747f; font-size: var(--t0); line-height: 1.35; }}
@@ -2931,7 +2966,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .whatif-head small {{ color: #97a3ad; }}
  .detail-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: var(--s2); padding: var(--s3); }}
  .detail-grid h3, .detail-grid p {{ grid-column: 1/-1; margin: 0 0 var(--s1); }}
- .detail-grid > div {{ padding: var(--s2) var(--s2);; }}
+ .detail-grid > div {{ padding: var(--s2) var(--s3); }}
  .detail-grid span, .detail-grid b {{ display: block; }}
  .detail-grid span {{ color: #74808b; font-size: var(--t0); }}
  .events-list {{ max-height: 360px; overflow: auto; padding: var(--s2) var(--s3) var(--s3); }}
@@ -2943,7 +2978,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .events-filter button.warn.on {{ background: #fdf4e2; border-color: #d9a441; color: #8a6d00; }}
  .events-filter button.err.on {{ background: #fdecec; border-color: #d1746e; color: #bd302a; }}
  .event {{ display: grid; grid-template-columns: 118px 1fr; gap: var(--s3); align-items: center;
-        padding: var(--s2) var(--s0); border-bottom: 1px solid #edf0f3; }}
+        padding: var(--s2) var(--s0); border-bottom: 1px solid var(--line); }}
  .event time {{ color: #55606b; font-size: 12.5px; white-space: nowrap; }}
  .event > span {{ display: flex; align-items: center; gap: var(--s2); }}
  .ev-ic {{ font-style: normal; flex: 0 0 auto; font-size: var(--t1); line-height: 1; }}
@@ -3043,7 +3078,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .detail-grid span {{ color: #aebbc8; }}
  html.dark .event time {{ color: #c3cdd8; }}
  html.dark .compare-chart-status {{ color: #aebbc8; }}
- html.dark .event {{ border-color: #303e4b; }}
  html.dark .event.error span {{ color: #f1a29c; }}
  html.dark .event.warn span, html.dark .event.warning span {{ color: #e1c96b; }}
  html.dark .event.k-switch span {{ color: #8fc0e8; }}
@@ -3060,7 +3094,6 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  html.dark .late-confidence.very_likely {{ background: #244332; color: #a7d9b7; }}
  html.dark .late-confidence.expected_only {{ background: #4b4026; color: #f1d18a; }}
  html.dark .late-confidence.p10_unreachable {{ background: #4b2d2c; color: #efaaa5; }}
- html.dark .decisions > summary {{ background: #202b36; color: #e7edf4; }}
  html.dark .decision-time, html.dark .decision-head small {{ color: #aebbc8; }}
  html.dark .decision-reason, html.dark .decision-empty {{ color: #d1dae4; }}
  html.dark .decision-facts span {{ background: #2a3947; color: #d9e3ed; }}
@@ -3132,7 +3165,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         margin: var(--s3) 0 var(--s3); overflow: hidden; box-shadow: var(--shadow); }}
    html.dark .mobile-plot-shell {{ background: #18212b; border-color: #354352; }}
    .mobile-plot-toolbar {{ display: flex; flex-direction: column; gap: var(--s2); padding: var(--s2);
-        border-bottom: 1px solid #e2e7ec; }}
+        border-bottom: 1px solid var(--line); }}
    html.dark .mobile-plot-toolbar {{ border-color: #354352; }}
    .mobile-plot-tabs {{ display: flex; gap: var(--s1); overflow-x: auto; scrollbar-width: none; }}
    .mobile-plot-tabs button, .horizon-switch button {{ flex: 0 0 auto; min-height: 40px;
