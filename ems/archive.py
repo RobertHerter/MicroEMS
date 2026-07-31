@@ -222,8 +222,19 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
 
 
 def archive_html() -> bytes:
-    """Eigenstaendige Seite ``/archiv``: Lauf auswaehlen, Plan + Ist zeichnen."""
-    return _ARCHIVE_HTML.encode("utf-8")
+    """Eigenstaendige Seite ``/archiv``: Lauf auswaehlen, Plan + Ist zeichnen.
+
+    Die Farbfamilien kommen aus ``ems.dashboard`` - beide Seiten zeigen
+    dieselben Groessen, und wer zwischen ihnen wechselt, soll die Farben nicht
+    neu lernen muessen. Vorher fuehrte jede Seite ihre eigene Palette.
+    """
+    import json
+
+    from .dashboard import CURVE_FAMILIES
+    return _ARCHIVE_HTML.replace(
+        "__CURVES__", json.dumps({k: list(v)
+                                  for k, v in CURVE_FAMILIES.items()})
+    ).encode("utf-8")
 
 
 # Die Kurven werden im Browser gezeichnet (plotly.min.js liegt lokal neben der
@@ -308,6 +319,7 @@ gestrichelt erscheint nur dort etwas, wo er zur Planung noch nicht
 veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></div>
 </main>
 <script src="plotly.min.js"></script>
+<script>var EMS_CURVES=__CURVES__;</script>
 <script>(function(){
  const g=id=>document.getElementById(id);
  const sel=g('run');
@@ -317,6 +329,9 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
   document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');
   if(window.LAST)draw(window.LAST);};
  function css(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
+ // Farbfamilie je Thema. Dieselbe Zuordnung wie im Dashboard - sie kommt
+ // aus derselben Quelle, damit die beiden Seiten nicht wieder auseinanderlaufen.
+ function fam(name){return EMS_CURVES[name][document.documentElement.classList.contains('dark')?1:0];}
  function tile(v,l,s,cls){return '<div class="tile'+(cls?' '+cls:'')+'"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';}
  function label(r){
   const t=(r.ts_local||r.generated||'').replace('T',' ').slice(0,16);
@@ -446,17 +461,17 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
   }
   const P=d.plan||{},A=d.actual||{};
   if(deltaMode){
-   addDelta(P.pv_w,A.pv_w,'PV','#e8a33d',1,'W');
-   addDelta(P.house_w,A.house_w,'Last','#c1554f',1,'W');
-   addDelta(P.battery_w,A.battery_w,'Akku','#2f8f4e',1,'W');
-   addDelta(P.grid_w,A.grid_w,'Netz','#6c7a89',1,'W');
-   addDelta(P.soc_percent,A.soc_percent,'SoC','#1769c2',2,'%');
+   addDelta(P.pv_w,A.pv_w,'PV',fam('pv'),1,'W');
+   addDelta(P.house_w,A.house_w,'Last',fam('last'),1,'W');
+   addDelta(P.battery_w,A.battery_w,'Akku',fam('akku'),1,'W');
+   addDelta(P.grid_w,A.grid_w,'Netz',fam('netz'),1,'W');
+   addDelta(P.soc_percent,A.soc_percent,'SoC',fam('soc'),2,'%');
   }else{
-   add(P.pv_w,'PV Plan','#e8a33d',1,null,'W');        add(A.pv_w,'PV Ist','#e8a33d',1,'dot','W');
-   add(P.house_w,'Last Plan','#c1554f',1,null,'W');   add(A.house_w,'Last Ist','#c1554f',1,'dot','W');
-   add(P.battery_w,'Akku Plan','#2f8f4e',1,null,'W'); add(A.battery_w,'Akku Ist','#2f8f4e',1,'dot','W');
-   add(P.grid_w,'Netz Plan','#6c7a89',1,null,'W');    add(A.grid_w,'Netz Ist','#6c7a89',1,'dot','W');
-   add(P.soc_percent,'SoC Plan','#1769c2',2,null,'%');add(A.soc_percent,'SoC Ist','#1769c2',2,'dot','%');
+   add(P.pv_w,'PV Plan',fam('pv'),1,null,'W');        add(A.pv_w,'PV Ist',fam('pv'),1,'dot','W');
+   add(P.house_w,'Last Plan',fam('last'),1,null,'W');   add(A.house_w,'Last Ist',fam('last'),1,'dot','W');
+   add(P.battery_w,'Akku Plan',fam('akku'),1,null,'W'); add(A.battery_w,'Akku Ist',fam('akku'),1,'dot','W');
+   add(P.grid_w,'Netz Plan',fam('netz'),1,null,'W');    add(A.grid_w,'Netz Ist',fam('netz'),1,'dot','W');
+   add(P.soc_percent,'SoC Plan',fam('soc'),2,null,'%');add(A.soc_percent,'SoC Ist',fam('soc'),2,'dot','%');
   }
   // Preis wie im Dashboard: EINE durchgezogene Linie mit dem tatsaechlichen
   // Boersenpreis. Wo er zur Planung schon veroeffentlicht war, ist das der
@@ -474,14 +489,14 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
   // Durchgezogen NUR echter Boersenpreis: bekannt zur Laufzeit (dann ist der
   // Planwert genau dieser Preis) oder inzwischen veroeffentlicht.
   if(deltaMode){
-   addDelta(pp,ap,'Preis','#7d5ba6',3,'ct/kWh');
+   addDelta(pp,ap,'Preis',fam('preis'),3,'ct/kWh');
   }else{
    add(pp.map((v,i)=>real(i)!==null?real(i):(guessed(i)?null:v)),
-       'Börsenpreis','#7d5ba6',3,null,'ct/kWh');
+       'Börsenpreis',fam('preis'),3,null,'ct/kWh');
    if(pp.some((v,i)=>guessed(i)))
     // Der Uebergangsslot gehoert mit dazu, sonst klafft eine Luecke.
     add(pp.map((v,i)=>(guessed(i)||(i+1<pp.length&&guessed(i+1)))?v:null),
-        'Preis (Schätzung)','#b58fd6',3,'dash','ct/kWh');
+        'Preis (Schätzung)',fam('preis_schaetzung'),3,'dash','ct/kWh');
   }
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im

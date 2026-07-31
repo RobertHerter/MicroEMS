@@ -46,6 +46,24 @@ _MODE_SWATCH = dict(_MODE_COLOR, auto="#c8c8c8")
 # Die Zuordnung steht jetzt hier, wird beim Bauen der Figur in Indizes
 # aufgeloest und im Browser nur noch angewandt. Ein Test prueft, dass sie
 # vollstaendig ist und keine toten Eintraege hat.
+# Farbfamilien der Kurven, EINMAL fuer beide Seiten. Dashboard und Lauf-Archiv
+# hatten je eine eigene Palette: Netz blau gegen grau, Ladezustand schwarz gegen
+# blau, Preis braun gegen violett - und selbst PV unterschied sich im Ton. Wer
+# zwischen den Seiten wechselt, muss die Farben neu lernen.
+# Je Familie ein Paar (hell, dunkel). Zusammengehoerige Groessen teilen sich die
+# Farbe und unterscheiden sich durch die Strichart: Plan durchgezogen, Ist
+# gepunktet.
+CURVE_FAMILIES = {
+    "pv": ("#ff7f0e", "#ffa64d"),
+    "pv_alt": ("#cc6600", "#ffc078"),      # zweite PV-Quelle, gleiche Familie
+    "last": ("#d62728", "#ff7b78"),
+    "netz": ("#1f77b4", "#6ab0e8"),
+    "akku": ("#2ca02c", "#66d16a"),
+    "soc": ("#111111", "#f7fafc"),
+    "preis": ("#8c564b", "#c9a49a"),
+    "preis_schaetzung": ("#c49a94", "#dcbdb8"),
+}
+
 _DARK_LINE_BY_NAME = {                     # gleiche Ausgangsfarbe, andere Rolle
     "Haus-SoC (Ist)": "#f7fafc",
     "Haus-SoC (Prog.)": "#d5e0ea",
@@ -53,6 +71,7 @@ _DARK_LINE_BY_NAME = {                     # gleiche Ausgangsfarbe, andere Rolle
 }
 _DARK_LINE_BY_COLOR = {
     "#5d4037": "#c8a99e", "#6f42c1": "#b39ddb", "#8c564b": "#c9a49a",
+    "#cc6600": "#ffc078",
     "#c2185b": "#f06292", "#d62728": "#ff7b78", "#1f77b4": "#6ab0e8",
     "#00838f": "#4dd0d8", "#00897b": "#4db6ac", "#2ca02c": "#66d16a",
     "#7f7f7f": "#a9d5ff", "#9467bd": "#c3a6e0", "#c49a94": "#dcbdb8",
@@ -1863,7 +1882,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         if pvc.notna().any():
             fig.add_trace(go.Scatter(
                 x=xp, y=pvc, name="PV (Model)", mode="lines",
-                line=dict(color="#8c564b", width=2, dash="dot"),
+                line=dict(color=CURVE_FAMILIES["pv_alt"][0], width=2,
+                          dash="dot"),
                 hovertemplate=HOVER_W, legendgroup="prog",
                 legendgrouptitle_text=_GROUPS["prog"]), row=1, col=1)
     line("actual_load_w", "Verbrauch (Ist)", "#d62728", 1, "ist",

@@ -366,3 +366,31 @@ def test_archive_header_uses_a_house_for_the_dashboard():
     html = archive_html().decode("utf-8")
     assert "⌂ <span class=\"button-label\">Dashboard</span>" in html
     assert "↩" not in html
+
+
+def test_archive_and_dashboard_use_the_same_curve_colours():
+    """Beide Seiten zeigen dieselben Groessen - in verschiedenen Farben.
+
+    Netz war blau gegen grau, Ladezustand schwarz gegen blau, Preis braun gegen
+    violett, und selbst PV unterschied sich im Ton. Wer zwischen den Seiten
+    wechselt, musste die Farben neu lernen. Sie kommen jetzt aus einer Quelle.
+    """
+    import json
+    import re
+
+    from ems.dashboard import CURVE_FAMILIES
+
+    html = archive_html().decode("utf-8")
+    eingesetzt = json.loads(
+        re.search(r"var EMS_CURVES=(\{.*?\});", html, re.S).group(1))
+    assert eingesetzt == {k: list(v) for k, v in CURVE_FAMILIES.items()}
+    assert "__CURVES__" not in html, "Platzhalter nicht ersetzt"
+
+    # Keine eigenen Kurvenfarben mehr im Archiv-Skript.
+    zeichnen = html[html.index("function add("):html.index("const ax=")]
+    eigene = re.findall(r"'#[0-9a-fA-F]{6}'", zeichnen)
+    assert not eigene, f"Archiv fuehrt eigene Kurvenfarben: {sorted(set(eigene))}"
+
+    # Jede Familie hat eine helle UND eine dunkle Fassung.
+    for name, (hell, dunkel) in CURVE_FAMILIES.items():
+        assert hell != dunkel, f"{name}: gleiche Farbe fuer beide Themen"
