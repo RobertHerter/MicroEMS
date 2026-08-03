@@ -211,7 +211,9 @@ Type=oneshot
 User=ems
 WorkingDirectory=/opt/ems
 ExecStart=/opt/ems/.venv/bin/python -m kalibrierung --config /opt/ems/config.yaml --lookback-days 730 --test-days 365
+ExecStart=/opt/ems/.venv/bin/python -m ems.pool_calibration --config /opt/ems/config.yaml --apply
 ExecStart=/opt/ems/.venv/bin/python -m ems.battery_calibration --config /opt/ems/config.yaml --apply
+ExecStart=/opt/ems/.venv/bin/python -m ems.load_learning --config /opt/ems/config.yaml --apply
 UNIT
 
 sudo tee /etc/systemd/system/ems-kalibrierung.timer >/dev/null <<'UNIT'
@@ -228,6 +230,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ems-kalibrierung.tim
 ```
 
 Geschriebene Werte landen im Overlay `config_overrides.yaml`, `config.yaml` bleibt unangetastet.
+Die Schritte 2–4 sind nur nötig, wenn eine thermische Last, ein Akku bzw. Geräte
+mit `power_topic` konfiguriert sind – ohne passende Daten melden sie das und
+schreiben nichts. Was jeder Schritt misst und wann er etwas übernimmt, steht in
+[kalibrierung.md](kalibrierung.md).
 
 ## Zuerst nachmessen
 

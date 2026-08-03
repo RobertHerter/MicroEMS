@@ -247,14 +247,19 @@ neu, läuft gehärtet als Benutzer `ems` (Port 80 über `CAP_NET_BIND_SERVICE`,
 Schreibzugriff nur auf `/opt/ems`) und mit **systemd-Watchdog** (Neustart, wenn das
 Lebenszeichen ausbleibt). Die Timer:
 
-- **`ems-kalibrierung.timer`** (So 03:00): Verbrauchs-/PV-Kalibrierung
-  (`kalibrierung.py`) inkl. Champion-/Challenger-Prüfung, pvlib-p10/p90-
-  Bandkalibrierung und Pool-Thermomodell (`ems.pool_calibration --apply`).
+- **`ems-kalibrierung.timer`** (So 03:00): vier Schritte nacheinander –
+  Verbrauchs-/PV-Kalibrierung (`kalibrierung.py`) inkl. Champion-/Challenger-
+  Prüfung und pvlib-p10/p90-Bandkalibrierung, Pool-Thermomodell
+  (`ems.pool_calibration --apply`), Entladewirkungsgrad
+  (`ems.battery_calibration --apply`) und Lastprofile
+  (`ems.load_learning --apply`).
   PV-Korrektur, Lastkorrektur und PV-Band werden getrennt auf einem ausgesparten
   Holdout bewertet; nur belastbar bessere Challenger werden übernommen.
-  Korrekturprofil, PV-Band und Poolparameter werden spätestens im nächsten
-  EMS-Zyklus ohne Dienstneustart übernommen. Eine schreibfreie Vorschau liefert
-  `python kalibrierung.py --config config.yaml --dry-run`.
+  Alles Übernommene landet im Overlay `config_overrides.yaml` und greift
+  spätestens im nächsten EMS-Zyklus ohne Dienstneustart. Eine schreibfreie
+  Vorschau liefert `python kalibrierung.py --config config.yaml --dry-run`.
+  Was jeder Schritt misst und wann er etwas übernimmt:
+  [docs/kalibrierung.md](docs/kalibrierung.md).
 - **`ems-savings.timer`** (täglich 02:45): validiert die Vortags-Ersparnis gegen
   die echten E3DC-Zähler (`savings_check.py --persist`).
 - **`ems-backup.timer`** (wöchentlich): sichert die unversionierten Dateien

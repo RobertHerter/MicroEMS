@@ -44,11 +44,91 @@ def _json_values(series: pd.Series) -> list:
             for value in series]
 
 
+_VARIANT_LABELS = {
+    "final": "Endergebnis",
+    "base": "ohne Temperatur-Residual",
+}
+
+
+def _load_variants(snapshots: list) -> list:
+    """Vergleichbare Last-Reihen aus den Snapshot-Spalten ableiten.
+
+    Reihenfolge vom fertigen Produkt zurück zur Grundlinie: was in den Plan
+    ging, dann das Ensemble vor dem Temperatur-Residual, dann die rohen
+    Einzelmodelle. Die Differenz zwischen zwei Stufen IST der Beitrag der
+    dazwischenliegenden Korrekturschicht.
+    """
+    available: set = set()
+    for _issue, frame in snapshots:
+        available.update(frame.columns)
+    variants = [("final", _VARIANT_LABELS["final"], "house_load_w")]
+    if "house_load_base_w" in available:
+        variants.append(("base", _VARIANT_LABELS["base"], "house_load_base_w"))
+    prefix, suffix = "house_load_candidate_", "_w"
+    for column in sorted(available):
+        if column.startswith(prefix) and column.endswith(suffix):
+            key = column[len(prefix):-len(suffix)]
+            variants.append((key, f"{key} (roh)", column))
+    return variants
+
+
+def _empty_cells() -> list:
+    return [[([], []) for _hour in range(24)] for _bucket in _LEAD_BUCKETS]
+
+
+def _lead_bucket(issue, target, start, now):
+    """Index des Vorlauf-Buckets, oder None wenn der Zielslot nicht zählt."""
+    if target < start or target >= now:
+        return None
+    lead_h = (target - issue).total_seconds() / 3600.0
+    return next((i for i, (low, high, _label) in enumerate(_LEAD_BUCKETS)
+                 if low <= lead_h < high), None)
+
+
+def _heat_grid(cells: list) -> dict:
+    """Zellen zu WAPE-/Bias-Gittern verdichten, plus Gesamt-WAPE.
+
+    Der Gesamtwert wird über ALLE Paare gerechnet, nicht als Mittel der
+    Zell-WAPEs - sonst zöge eine Zelle mit drei Nachtwerten genauso stark wie
+    eine mit dreihundert.
+    """
+    wape, bias, counts = [], [], []
+    total_error = total_actual = 0.0
+    for bucket in cells:
+        w_row, b_row, n_row = [], [], []
+        for measured, predicted in bucket:
+            metrics = _metrics(measured, predicted)
+            w_row.append(metrics["wape_pct"] if metrics["n"] else None)
+            b_row.append(metrics["bias_w"] if metrics["n"] else None)
+            n_row.append(metrics["n"])
+            if metrics["n"]:
+                a = np.asarray(measured, dtype=float)
+                p = np.asarray(predicted, dtype=float)
+                total_error += float(np.sum(np.abs(p - a)))
+                total_actual += float(np.sum(np.abs(a)))
+        wape.append(w_row)
+        bias.append(b_row)
+        counts.append(n_row)
+    return {
+        "hours": [f"{hour:02d}" for hour in range(24)],
+        "lead_buckets": [label for _low, _high, label in _LEAD_BUCKETS],
+        "wape": wape, "bias_w": bias, "n": counts,
+        "samples": int(sum(sum(row) for row in counts)),
+        "wape_overall": (round(100.0 * total_error / total_actual, 1)
+                         if total_actual > 1e-6 else None),
+    }
+
+
 def _forecast_error_heatmaps(config, snapshots: list, start, now) -> dict:
     """Produktive Prognosefehler nach lokaler Zielstunde und Vorlaufzeit.
 
     Jeder 6-h-Origin wird einmal gewertet. Dadurch dominieren die viertel-
     stündlichen Replan-Läufe nicht künstlich die Statistik.
+
+    Für die Last kommen zusätzlich die archivierten Vorstufen dazu (Ensemble
+    ohne Residual, rohe Einzelmodelle). Die werden STRIKT GEPAART gewertet -
+    nur Zielslots, für die jede Variante einen Wert hat. Sonst verglichen wir
+    verschiedene Stichproben und der Vergleich wäre wertlos.
     """
     from .local_history import read_actual, read_house_load
 
@@ -57,11 +137,11 @@ def _forecast_error_heatmaps(config, snapshots: list, start, now) -> dict:
         "pv": read_actual(db, "pv_w", start, now, tz),
         "load": read_house_load(db, start, now, tz),
     }
-    cells = {
-        signal: [[([], []) for _hour in range(24)] for _bucket in _LEAD_BUCKETS]
-        for signal in ("pv", "load")
-    }
     columns = {"pv": "pv_w", "load": "house_load_w"}
+    cells = {signal: _empty_cells() for signal in columns}
+    variants = _load_variants(snapshots)
+    variant_cells = {key: _empty_cells() for key, _label, _column in variants}
+
     for issue, frame in snapshots:
         for signal, column in columns.items():
             if column not in frame or actual[signal].empty:
@@ -69,12 +149,7 @@ def _forecast_error_heatmaps(config, snapshots: list, start, now) -> dict:
             predictions = pd.to_numeric(frame[column], errors="coerce")
             targets = predictions.index.intersection(actual[signal].index)
             for target in targets:
-                if target < start or target >= now:
-                    continue
-                lead_h = (target - issue).total_seconds() / 3600.0
-                bucket = next((i for i, (low, high, _label)
-                               in enumerate(_LEAD_BUCKETS)
-                               if low <= lead_h < high), None)
+                bucket = _lead_bucket(issue, target, start, now)
                 if bucket is None:
                     continue
                 pred, measured = predictions.loc[target], actual[signal].loc[target]
@@ -88,25 +163,40 @@ def _forecast_error_heatmaps(config, snapshots: list, start, now) -> dict:
                 a_values.append(float(measured))
                 p_values.append(float(pred))
 
-    result = {}
-    for signal in ("pv", "load"):
-        wape, bias, counts = [], [], []
-        for bucket in cells[signal]:
-            w_row, b_row, n_row = [], [], []
-            for measured, predicted in bucket:
-                metrics = _metrics(measured, predicted)
-                w_row.append(metrics["wape_pct"] if metrics["n"] else None)
-                b_row.append(metrics["bias_w"] if metrics["n"] else None)
-                n_row.append(metrics["n"])
-            wape.append(w_row)
-            bias.append(b_row)
-            counts.append(n_row)
-        result[signal] = {
-            "hours": [f"{hour:02d}" for hour in range(24)],
-            "lead_buckets": [label for _low, _high, label in _LEAD_BUCKETS],
-            "wape": wape, "bias_w": bias, "n": counts,
-            "samples": int(sum(sum(row) for row in counts)),
-        }
+        if actual["load"].empty or len(variants) < 2:
+            continue
+        series, targets = {}, actual["load"].index
+        for key, _label, column in variants:
+            if column not in frame:
+                series = {}
+                break
+            values = pd.to_numeric(frame[column], errors="coerce")
+            series[key] = values
+            targets = targets.intersection(values.index)
+        if not series:
+            continue
+        for target in targets:
+            bucket = _lead_bucket(issue, target, start, now)
+            if bucket is None:
+                continue
+            measured = actual["load"].loc[target]
+            predicted = {key: values.loc[target]
+                         for key, values in series.items()}
+            if not np.isfinite(measured) or not all(
+                    np.isfinite(value) for value in predicted.values()):
+                continue
+            for key, value in predicted.items():
+                a_values, p_values = variant_cells[key][bucket][target.hour]
+                a_values.append(float(measured))
+                p_values.append(float(value))
+
+    result = {signal: _heat_grid(cells[signal]) for signal in columns}
+    grids = [dict(_heat_grid(variant_cells[key]), key=key, label=label)
+             for key, label, _column in variants]
+    # Ein einzelner Eintrag ist kein Vergleich, und ohne Paare gibt es nichts
+    # zu zeigen - dann bleibt das Feld weg und das UI blendet den Umschalter aus.
+    if len(grids) > 1 and grids[0]["samples"]:
+        result["load"]["variants"] = grids
     return result
 
 

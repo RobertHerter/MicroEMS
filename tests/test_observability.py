@@ -330,3 +330,96 @@ def test_calibration_maturity_reports_samples_coverage_and_active_values(tmp_pat
     assert out["history"][0]["pv_factor"] == 0.95
     assert out["history"][1]["pv_factor"] == 0.91
     assert out["history"][1]["changes"][0]["label"] == "PV-Faktor"
+
+
+def _variant_snapshots(tmp_path, ml_gap_slots=0):
+    """Historie mit archivierten Prognose-Vorstufen aufbauen.
+
+    ``ml_gap_slots`` streicht dem ml-Kandidaten die ersten n Slots - damit
+    lässt sich prüfen, dass eine Lücke in EINER Variante alle anderen auf
+    denselben Zielslots mitschrumpfen lässt.
+    """
+    from ems.local_history import (write_house_load,
+                                   write_optimizer_forecast_archive)
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    tz = cfg.general.timezone
+    day = pd.Timestamp("2026-07-28", tz=tz)
+    end = day + pd.DateOffset(days=1)
+    index = pd.date_range(day, end, freq="15min", inclusive="left")
+    write_house_load(cfg.e3dc_rscp.history_db_path, {
+        stamp.tz_convert("UTC").isoformat(): 500.0 for stamp in index})
+    ml = pd.Series(525.0, index=index)          # 5 % - bestes Einzelmodell
+    if ml_gap_slots:
+        ml.iloc[:ml_gap_slots] = float("nan")
+    forecasts = {
+        "house_load_w": pd.Series(550.0, index=index),              # 10 %
+        "house_load_base_w": pd.Series(600.0, index=index),          # 20 %
+        "house_load_candidate_ml_w": ml,
+        "house_load_candidate_similar_days_w":
+            pd.Series(650.0, index=index),                           # 30 %
+    }
+    for offset in (pd.Timedelta(hours=-12), pd.Timedelta(hours=6)):
+        write_optimizer_forecast_archive(
+            cfg.e3dc_rscp.history_db_path, day + offset, forecasts)
+    return cfg, end
+
+
+def test_heatmap_variants_expose_baselines_behind_the_final_forecast(tmp_path):
+    """Die Heatmap zeigt das Endergebnis, bietet aber die Vorstufen an."""
+    cfg, end = _variant_snapshots(tmp_path)
+    result = forecast_analysis(cfg, days=30, target_day="2026-07-28", now=end)
+    load = result["heatmaps"]["load"]
+
+    assert load["wape_overall"] == 10.0          # unverändert: house_load_w
+    variants = load["variants"]
+    assert [v["key"] for v in variants] == [
+        "final", "base", "ml", "similar_days"]
+    assert [v["wape_overall"] for v in variants] == [10.0, 20.0, 5.0, 30.0]
+    # Das Endergebnis ist hier schlechter als sein bester Kandidat - genau der
+    # Fall, den der Vergleich sichtbar machen soll.
+    assert variants[2]["wape_overall"] < variants[0]["wape_overall"]
+
+
+def test_heatmap_variants_are_scored_on_identical_slots(tmp_path):
+    """Fehlt EINER Variante ein Wert, fällt der Zielslot bei ALLEN raus.
+
+    Sonst verglichen die Zahlen verschiedene Stichproben und wären wertlos.
+    """
+    cfg, end = _variant_snapshots(tmp_path, ml_gap_slots=48)
+    result = forecast_analysis(cfg, days=30, target_day="2026-07-28", now=end)
+    load = result["heatmaps"]["load"]
+    variants = load["variants"]
+
+    samples = {v["key"]: v["samples"] for v in variants}
+    assert len(set(samples.values())) == 1, samples
+    # ... und die Paarung kostet wirklich etwas: die ungepaarte Karte oben
+    # bleibt vollständig, der Vergleich darunter schrumpft.
+    assert 0 < variants[0]["samples"] < load["samples"]
+    # Die WAPE-Werte bleiben exakt, weil auf den verbliebenen Slots dieselben
+    # Konstanten stehen - eine verschobene Stichprobe würde sie verzerren.
+    assert [v["wape_overall"] for v in variants] == [10.0, 20.0, 5.0, 30.0]
+
+
+def test_heatmap_without_archived_baselines_has_no_variant_switch(tmp_path):
+    """Ältere Historie ohne Vorstufen: kein Umschalter, keine leere Auswahl."""
+    from ems.local_history import (write_house_load,
+                                   write_optimizer_forecast_archive)
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    tz = cfg.general.timezone
+    day = pd.Timestamp("2026-07-28", tz=tz)
+    end = day + pd.DateOffset(days=1)
+    index = pd.date_range(day, end, freq="15min", inclusive="left")
+    write_house_load(cfg.e3dc_rscp.history_db_path, {
+        stamp.tz_convert("UTC").isoformat(): 500.0 for stamp in index})
+    write_optimizer_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, day - pd.Timedelta(hours=12),
+        {"house_load_w": pd.Series(550.0, index=index)})
+
+    load = forecast_analysis(
+        cfg, days=30, target_day="2026-07-28", now=end)["heatmaps"]["load"]
+    assert load["samples"] > 0
+    assert "variants" not in load

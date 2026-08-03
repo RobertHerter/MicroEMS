@@ -842,7 +842,7 @@ def _forecast_analysis_block(forecast_quality=None,
  <h4>Fehler-Heatmap <small>WAPE · Hover zeigt Bias und Stichprobe · letzte 30 Tage</small></h4>
  <div class="forecast-heat-grid">
   <div><b>PV-Prognose</b><div id="fa-heat-pv" class="forecast-analysis-chart"></div></div>
-  <div><b>Lastprognose</b><div id="fa-heat-load" class="forecast-analysis-chart"></div></div>
+  <div><b>Lastprognose</b><div class="forecast-variant-switch" id="fa-heat-load-switch"></div><div id="fa-heat-load" class="forecast-analysis-chart"></div></div>
  </div>
  <div class="forecast-vintage-head">
   <h4>Prognose-Vintages <small>produktiver Optimierereingang gegen Ist</small></h4>
@@ -855,7 +855,7 @@ def _forecast_analysis_block(forecast_quality=None,
 </details>
 <script>(function(){
  const panel=document.getElementById('forecast-analysis-panel'),day=document.getElementById('fa-day'),status=document.getElementById('fa-status'),todayBtn=document.getElementById('fa-today'),refreshBtn=document.getElementById('fa-refresh');
- let payload=null,signal='pv',loaded=false,pending=0,requestId=0,readyStatus='wird beim Aufklappen geladen';
+ let payload=null,signal='pv',loadVariant='final',loaded=false,pending=0,requestId=0,readyStatus='wird beim Aufklappen geladen';
  const dark=()=>document.documentElement.classList.contains('dark');
  const colors=()=>dark()?{text:'#e7edf4',grid:'#3b4a59',paper:'rgba(0,0,0,0)',actual:'#ffffff'}:{text:'#28323c',grid:'#e2e7ec',paper:'rgba(0,0,0,0)',actual:'#111827'};
  const config={responsive:true,displaylogo:false,modeBarButtonsToRemove:['lasso2d','select2d']};
@@ -895,6 +895,23 @@ def _forecast_analysis_block(forecast_quality=None,
    colorscale:[[0,'#2f9e63'],[.35,'#b5c94a'],[.65,'#efb447'],[1,'#d14b57']],colorbar:{title:'WAPE %',thickness:12},
    hovertemplate:'Zielstunde %{x}:00<br>Vorlauf %{y}<br>WAPE %{z:.1f} %<br>Bias %{customdata[0]:.0f} W<br>n=%{customdata[1]}<extra></extra>'}],
    {...layout(title+' · '+h.samples+' Paare',270),hovermode:'closest',yaxis:{gridcolor:colors().grid,autorange:'reversed'}},config);
+ }
+ // Last-Heatmap mit Umschalter über die archivierten Vorstufen. Alle Varianten
+ // sind auf DENSELBEN Zielslots gewertet, die Zahlen auf den Knöpfen also
+ // direkt vergleichbar - dafür weniger Paare als die ungepaarte PV-Karte.
+ function loadHeat(){
+  const h=payload&&payload.heatmaps&&payload.heatmaps.load,sw=document.getElementById('fa-heat-load-switch'),vs=(h&&h.variants)||[];
+  if(vs.length<2){sw.innerHTML='';heat('fa-heat-load',h,'Last');return;}
+  if(!vs.some(v=>v.key===loadVariant))loadVariant=vs[0].key;
+  const ref=vs[0];
+  sw.innerHTML=vs.map(function(v){
+   const d=(typeof v.wape_overall==='number'&&typeof ref.wape_overall==='number'&&v.key!==ref.key)?(v.wape_overall-ref.wape_overall):null;
+   const badge=(d===null)?'':' <i class="'+(d<0?'better':d>0?'worse':'')+'">'+(d>0?'+':'')+num(d)+' pp</i>';
+   return '<button type="button" data-variant="'+esc(v.key)+'"'+(v.key===loadVariant?' class="on"':'')+' title="'+esc(v.label)+' · WAPE '+num(v.wape_overall)+' % über '+v.samples+' Paare">'+esc(v.label)+' <b>'+num(v.wape_overall)+' %</b>'+badge+'</button>';
+  }).join('')+'<small class="an-hint">Gleiche Zielslots je Variante · Abweichung gegen „'+esc(ref.label)+'“</small>';
+  sw.querySelectorAll('button').forEach(b=>b.addEventListener('click',function(){loadVariant=this.dataset.variant;loadHeat();}));
+  const sel=vs.find(v=>v.key===loadVariant)||vs[0];
+  heat('fa-heat-load',sel,'Last · '+sel.label);
  }
  function dayComparison(d){
   const el=document.getElementById('fa-day-comparison');
@@ -954,7 +971,7 @@ def _forecast_analysis_block(forecast_quality=None,
   lo.xaxis={gridcolor:colors().grid,tickformat:'%H:%M'};
   Plotly.react(el,traces,lo,config);
  }
- function render(){if(!payload)return;dayComparison(payload.day_comparison);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');heat('fa-heat-load',payload.heatmaps&&payload.heatmaps.load,'Last');vintages(payload.vintages);}
+ function render(){if(!payload)return;dayComparison(payload.day_comparison);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');loadHeat();vintages(payload.vintages);}
  async function load(){
   const own=++requestId;busy(1);
   try{let q=day.value?'?day='+encodeURIComponent(day.value):'';let r=await fetch('api/forecast-analysis.json'+q+(q?'&':'?')+'_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let next=await r.json();if(own!==requestId)return;
@@ -2959,7 +2976,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
       padding: var(--s3) var(--s3) var(--s0); }}
  .forecast-analysis-toolbar label {{ display: flex; align-items: center; gap: var(--s2); font-size: var(--t1); }}
  .forecast-analysis-toolbar input, .forecast-analysis-toolbar button,
- .forecast-signal-switch button {{ min-height: 34px; border: 1px solid var(--control-line); border-radius: 7px;
+ .forecast-signal-switch button, .forecast-variant-switch button {{ min-height: 34px; border: 1px solid var(--control-line); border-radius: 7px;
       background: #f7f9fb; color: #34404c; padding: var(--s1) var(--s2); font: inherit; }}
  .forecast-analysis-toolbar #fa-status {{ margin-left: auto; color: var(--muted); font-size: var(--t1); }}
  .forecast-analysis-toolbar button:disabled, .forecast-analysis-toolbar input:disabled {{
@@ -2995,7 +3012,14 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .calibration-note {{ grid-column: 1/-1; color: var(--muted); font-size: var(--t0); }}
  .forecast-heat-grid {{ display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: var(--s3);
       padding: 0 var(--s3) var(--s2); }}
- .forecast-heat-grid > div {{ min-width: 0; }}
+ /* Beide Spalten teilen sich die Rasterzeilen (display: contents), damit die
+    Variantenleiste ueber der Lastkarte nicht nur diese eine nach unten schiebt. */
+ .forecast-heat-grid > div {{ display: contents; }}
+ .forecast-heat-grid > div > * {{ min-width: 0; }}
+ .forecast-heat-grid > div:first-child > * {{ grid-column: 1; }}
+ .forecast-heat-grid > div:last-child > * {{ grid-column: 2; }}
+ .forecast-heat-grid .forecast-variant-switch {{ grid-row: 1; margin: 0; }}
+ .forecast-heat-grid .forecast-analysis-chart {{ grid-row: 2; }}
  .forecast-heat-grid > div > b {{ display: none; }}
  .forecast-analysis-chart {{ min-height: 250px; border: 1px solid var(--line); border-radius: 9px;
       overflow: hidden; }}
@@ -3007,11 +3031,21 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
  .forecast-vintage-head {{ display: flex; align-items: center; justify-content: space-between;
       padding-right: var(--s3); }}
  .forecast-signal-switch {{ display: flex; gap: var(--s1); }}
- .forecast-signal-switch button.on {{ color: #fff; background: var(--accent); border-color: var(--accent); }}
+ .forecast-signal-switch button.on, .forecast-variant-switch button.on {{ color: #fff; background: var(--accent); border-color: var(--accent); }}
+ .forecast-variant-switch {{ display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1);
+      margin: 0 var(--s3) var(--s2); }}
+ .forecast-variant-switch button {{ font-size: var(--t1); }}
+ .forecast-variant-switch button b {{ font-weight: 600; }}
+ .forecast-variant-switch button i {{ font-style: normal; opacity: .85; }}
+ .forecast-variant-switch button i.better {{ color: var(--ok); }}
+ .forecast-variant-switch button i.worse {{ color: var(--bad); }}
+ .forecast-variant-switch button.on i {{ color: #fff; }}
+ .forecast-variant-switch .an-hint {{ flex-basis: 100%; color: var(--muted);
+      font-size: var(--t1); }}
  .vintage-chart {{ margin: 0 var(--s3) var(--s3); min-height: 350px; }}
  html.dark .forecast-analysis-panel h4 {{ color: #d3dbe3; }}
  html.dark .forecast-analysis-toolbar input, html.dark .forecast-analysis-toolbar button,
- html.dark .forecast-signal-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
+ html.dark .forecast-signal-switch button, html.dark .forecast-variant-switch button {{ color: #e7edf4; background: #263442; border-color: #4b5b6b; }}
  html.dark .forecast-analysis-chart {{ border-color: #354352; }}
  html.dark .forecast-day-loading {{ color: #c1ccd6; background: #202b36;
       border-color: #43515f; }}
@@ -3237,6 +3271,10 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .mode-compare-grid {{ grid-template-columns: 1fr; }}
    .compare-chart {{ min-height: 380px; margin: 0 -var(--s1); width: calc(100% + 10px); }}
    .forecast-heat-grid {{ grid-template-columns: 1fr; padding: 0 var(--s2) var(--s2); }}
+   /* Gestapelt gibt es nichts auszurichten - Spalten wieder als Bloecke, sonst
+      landeten die Lastkarte und ihre Leiste in einer zweiten Rasterspalte. */
+   .forecast-heat-grid > div {{ display: block; }}
+   .forecast-heat-grid .forecast-variant-switch {{ margin-bottom: var(--s2); }}
    .calibration-grid {{ grid-template-columns: 1fr; padding: 0 var(--s2) var(--s2); }}
    .calibration-card p {{ min-height: 0; }}
    .forecast-analysis-toolbar {{ align-items: stretch; }}
@@ -3246,7 +3284,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
    .forecast-analysis-toolbar #fa-status {{ width: 100%; margin-left: 0; }}
    .forecast-vintage-head {{ align-items: flex-start; padding-right: var(--s2); }}
    .forecast-vintage-head h4 {{ margin-right: var(--s1); }}
-   .forecast-signal-switch button {{ min-height: 40px; }}
+   .forecast-signal-switch button, .forecast-variant-switch button {{ min-height: 40px; }}
    .day-comparison-chart, .calibration-history-chart {{ margin: 0 var(--s2) var(--s3); }}
    .calibration-change-list article {{ grid-template-columns: 1fr; gap: var(--s0); }}
    .vintage-chart {{ margin: 0 var(--s2) var(--s3); }}
