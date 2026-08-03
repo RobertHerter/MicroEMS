@@ -178,3 +178,51 @@ def test_calibration_overrides_are_reloaded_without_restart(tmp_path):
 
     assert running.pv_model.p10_uncertainty == 0.511
     assert running.pv_model.p90_uncertainty == 0.293
+
+
+def test_calibration_reload_updates_learned_load_profile_and_battery(monkeypatch):
+    """Extern gelernte Profile und Batterieparameter erreichen den laufenden
+    Config-Baum und damit auch das Steuerungs-Panel ohne Dienstneustart."""
+    from types import SimpleNamespace
+
+    import ems.config as config_module
+    from ems.dashboard import _controls_block
+    from ems.main import _reload_calibration_overrides
+
+    def load(profile, runtime, eta):
+        return SimpleNamespace(
+            dashboard=SimpleNamespace(controls_enabled=True),
+            optimization=SimpleNamespace(charge_strategy="auto"),
+            e3dc_rscp=SimpleNamespace(control_enabled=True),
+            mqtt=SimpleNamespace(enabled=True),
+            pv_model=SimpleNamespace(p10_uncertainty=0.2,
+                                     p90_uncertainty=0.2),
+            house_battery=SimpleNamespace(
+                discharge_efficiency=eta,
+                max_dc_charge_w=12000,
+                max_discharge_w=12000,
+            ),
+            controllable_loads=[SimpleNamespace(
+                name="Spuelmaschine", type="deferrable", enabled=False,
+                power_w=2000.0, power_profile_w=profile,
+                runtime_minutes=runtime, window_from_hour=8,
+                window_to_hour=22, deadline_hours=24,
+            )],
+        )
+
+    running = load([2000, 300, 150], 120, 0.85)
+    running._source_path = "/tmp/config.yaml"
+    running._overrides_mtime = 1.0
+    learned = load([2076.6, 45.5, 63.3, 55.7], 60, 0.863)
+    monkeypatch.setattr(config_module, "_overrides_path",
+                        lambda _path: "/tmp/config_overrides.yaml")
+    monkeypatch.setattr(config_module, "load_config", lambda _path: learned)
+    monkeypatch.setattr(os.path, "getmtime", lambda _path: 2.0)
+
+    _reload_calibration_overrides(running)
+
+    dishwasher = running.controllable_loads[0]
+    assert dishwasher.power_profile_w == [2076.6, 45.5, 63.3, 55.7]
+    assert dishwasher.runtime_minutes == 60
+    assert running.house_battery.discharge_efficiency == 0.863
+    assert "2076.6, 45.5, 63.3, 55.7" in _controls_block(running)

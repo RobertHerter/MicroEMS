@@ -3106,7 +3106,7 @@ def _read_load_state(config, publisher):
 
 
 def _reload_calibration_overrides(config) -> None:
-    """Extern kalibrierte Laufzeitwerte ohne Neustart übernehmen."""
+    """Extern kalibrierte Modellwerte ohne Neustart übernehmen."""
     path = getattr(config, "_source_path", None)
     if not path:
         return
@@ -3124,11 +3124,26 @@ def _reload_calibration_overrides(config) -> None:
         if old != new:
             setattr(config.pv_model, field, new)
             changes.append(f"pv_model.{field}={new}")
-    by_name = {ld.name: ld for ld in fresh.controllable_loads
-               if ld.type == "thermal"}
+    old_eta = config.house_battery.discharge_efficiency
+    new_eta = fresh.house_battery.discharge_efficiency
+    if old_eta != new_eta:
+        config.house_battery.discharge_efficiency = new_eta
+        changes.append(f"house_battery.discharge_efficiency={new_eta}")
+    by_name = {ld.name: ld for ld in fresh.controllable_loads}
     for current in config.controllable_loads:
         newer = by_name.get(current.name)
-        if current.type != "thermal" or newer is None:
+        if newer is None or current.type != newer.type:
+            continue
+        if current.type == "deferrable":
+            for field in ("power_profile_w", "runtime_minutes"):
+                old, new = getattr(current, field), getattr(newer, field)
+                if old != new:
+                    if field == "power_profile_w" and new is not None:
+                        new = list(new)
+                    setattr(current, field, new)
+                    changes.append(f"{current.name}.{field}={new}")
+            continue
+        if current.type != "thermal":
             continue
         for field in ("loss_w_per_k", "solar_absorption"):
             old, new = getattr(current, field), getattr(newer, field)
