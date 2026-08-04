@@ -423,3 +423,75 @@ def test_heatmap_without_archived_baselines_has_no_variant_switch(tmp_path):
         cfg, days=30, target_day="2026-07-28", now=end)["heatmaps"]["load"]
     assert load["samples"] > 0
     assert "variants" not in load
+
+
+# --------------------------------------------------------------------------- #
+# Haltedauer eines Prognosewerts in der Tagesdarstellung
+# --------------------------------------------------------------------------- #
+def _stamps(minutes, n=6):
+    idx = pd.date_range("2026-07-28 06:00", periods=n,
+                        freq=f"{minutes}min", tz="Europe/Berlin")
+    return pd.Series(range(n), index=idx, dtype="float64")
+
+
+def test_hold_follows_the_source_cadence_not_a_fixed_number():
+    """Solcast taktet viertelstuendlich, pvlib stuendlich.
+
+    Ein fester 30-min-Deckel liess die stuendliche Quelle nur zwei von vier
+    Slots belegen - im Diagramm sah das aus wie eine gestrichelte Linie.
+    """
+    from ems.observability import _source_hold_slots
+
+    assert _source_hold_slots(_stamps(15), 15) == 0      # schon dicht
+    assert _source_hold_slots(_stamps(30), 15) == 1
+    assert _source_hold_slots(_stamps(60), 15) == 3      # deckt die Stunde ab
+
+
+def test_hold_is_capped_so_real_outages_stay_visible():
+    """Wer seltener als stuendlich liefert, bekommt eine sichtbare Luecke -
+    eine durchgezogene Linie waere dort eine Behauptung ueber Daten, die es
+    nicht gibt."""
+    from ems.observability import MAX_HOLD_MINUTES, _source_hold_slots
+
+    deckel = MAX_HOLD_MINUTES // 15 - 1
+    assert _source_hold_slots(_stamps(180), 15) == deckel
+    assert _source_hold_slots(_stamps(360), 15) == deckel
+
+
+def test_hold_needs_two_points_to_infer_a_cadence():
+    from ems.observability import _source_hold_slots
+
+    assert _source_hold_slots(pd.Series(dtype="float64"), 15) == 0
+    assert _source_hold_slots(_stamps(60, n=1), 15) == 0
+
+
+def test_day_comparison_draws_an_hourly_source_without_holes(tmp_path):
+    """Integrationsprobe: eine stuendlich archivierte pvlib-Quelle muss im
+    Tagesverlauf jeden Slot belegen."""
+    from ems.config import PvArray
+    from ems.local_history import write_house_load, write_pv_forecast_archive
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.solcast.sources = []
+    cfg.pv_model.arrays = [
+        PvArray(name="Dach", kwp=10.0, tilt=25.0, azimuth=180.0)]
+    tz = cfg.general.timezone
+    day = pd.Timestamp("2026-07-28", tz=tz)
+    end = day + pd.DateOffset(days=1)
+    viertel = pd.date_range(day, end, freq="15min", inclusive="left")
+    write_house_load(cfg.e3dc_rscp.history_db_path, {
+        stamp.tz_convert("UTC").isoformat(): 500.0 for stamp in viertel})
+    # NUR stuendliche Prognosewerte - so archiviert pvlib wirklich.
+    stuendlich = pd.date_range(day, end, freq="60min", inclusive="left")
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "pvmodel:Dach",
+        day - pd.Timedelta(hours=12),
+        {stamp.tz_convert("UTC").isoformat(): (1000.0, 800.0, 1200.0)
+         for stamp in stuendlich})
+
+    d = forecast_analysis(cfg, days=30, target_day="2026-07-28",
+                          now=end)["day_comparison"]
+    werte = d["pvlib_w"]
+    assert len(werte) == 96
+    assert all(v is not None for v in werte), "Loecher zwischen den Stundenwerten"

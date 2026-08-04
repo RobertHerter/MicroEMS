@@ -119,6 +119,30 @@ def _heat_grid(cells: list) -> dict:
     }
 
 
+# Obergrenze fuers Halten eines Prognosewerts in der Darstellung. Wer seltener
+# als stuendlich archiviert, bekommt eine sichtbar unterbrochene Linie - das ist
+# dann eine ehrliche Aussage ueber die Datenlage.
+MAX_HOLD_MINUTES = 60
+
+
+def _source_hold_slots(values: pd.Series, slot_minutes: int) -> int:
+    """Wie viele Slots ein archivierter Wert nachwirken darf.
+
+    Abgeleitet aus dem TATSAECHLICHEN Takt der Quelle (Median der Abstaende),
+    damit stuendliche und viertelstuendliche Provider gleich sauber gezeichnet
+    werden, ohne echte Luecken zu kaschieren.
+    """
+    if values is None or values.empty:
+        return 0
+    stamps = values.dropna().index
+    if len(stamps) < 2:
+        return 0
+    takt_min = float(pd.Series(stamps).diff().dropna()
+                     .dt.total_seconds().median()) / 60.0
+    takt_min = min(max(takt_min, float(slot_minutes)), float(MAX_HOLD_MINUTES))
+    return max(0, int(round(takt_min / slot_minutes)) - 1)
+
+
 def _forecast_error_heatmaps(config, snapshots: list, start, now) -> dict:
     """Produktive Prognosefehler nach lokaler Zielstunde und Vorlaufzeit.
 
@@ -286,10 +310,13 @@ def _forecast_day_comparison(config, snapshots: list, day, now) -> dict:
             return pd.Series(index=index, dtype="float64")
         values = pv_eval.read_group_asof(
             db, source_ids, day, end, tz, slot, "pv")
-        # Manche Provider archivieren 30-min-Werte. Für die reine Darstellung
-        # darf genau ein Zwischen-Slot gehalten werden; größere Lücken bleiben
-        # sichtbar und werden nicht kaschiert.
-        limit = max(0, 30 // slot - 1)
+        # Ein Wert darf so lange gehalten werden, wie die Quelle SELBST taktet -
+        # nicht länger. Solcast archiviert viertelstündlich, pvlib stündlich;
+        # ein fester 30-min-Deckel riss die pvlib-Kurve deshalb in Zweiergruppen
+        # auseinander (48 von 96 Slots belegt), was im Diagramm wie eine
+        # gestrichelte Linie aussah. Echte Ausfälle bleiben sichtbar: gehalten
+        # wird höchstens bis MAX_HOLD_MINUTES.
+        limit = max(0, _source_hold_slots(values, slot))
         if limit and not values.empty:
             values = values.reindex(index).ffill(limit=limit)
         return values.reindex(index)
