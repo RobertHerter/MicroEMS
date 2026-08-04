@@ -504,3 +504,108 @@ def test_confirmed_alarm_ignores_provisional_live_rows(tmp_path):
         assert _m._execution_alarm["failed"] is False
     finally:
         _m._execution_alarm["failed"] = previous
+
+
+# --------------------------------------------------------------------------- #
+# Slot-Istwerte aus der 5-s-Historie (settle_actual_slots)
+# --------------------------------------------------------------------------- #
+def _live_slot(db, slot, *, seconds=900, step=5, pv=lambda s: 1000.0):
+    """5-s-Livewerte ueber einen Slot schreiben; pv(s) = Wert nach s Sekunden."""
+    from ems.local_history import write_live_sample
+    for offset in range(0, seconds + 1, step):
+        ts = slot + pd.Timedelta(seconds=offset)
+        write_live_sample(db, ts, {"pv_w": pv(offset), "house_load_w": 500.0,
+                                   "grid_w": -100.0, "battery_w": 400.0})
+
+
+def test_settle_replaces_the_snapshot_with_the_slot_mean(tmp_path):
+    """Der Momentanwert vom Slotanfang weicht dem zeitgewichteten Slotmittel.
+
+    Auf einer Rampe ist der Einzelpunkt systematisch daneben - hier steigt PV
+    linear von 0 auf 8000 W, der Slotanfang misst 0, das Mittel sind 4000.
+    """
+    from ems.local_history import (read_actual, read_live_slot_averages,
+                                   settle_actual_slots, write_actuals)
+
+    db = str(tmp_path / "hist.sqlite")
+    tz = "Europe/Berlin"
+    slot = pd.Timestamp("2026-08-04 08:00", tz=tz)
+    write_actuals(db, slot, {"pv_w": 0.0, "house_load_w": 500.0, "grid_w": -100.0,
+                             "battery_w": 400.0, "soc_percent": 42.0})
+    _live_slot(db, slot, pv=lambda s: 8000.0 * s / 900.0)
+
+    avg = read_live_slot_averages(db, slot, slot + pd.Timedelta(minutes=15),
+                                  tz, 15, 180.0, 30.0)
+    assert settle_actual_slots(db, avg) >= 1
+
+    pv = read_actual(db, "pv_w", slot, slot + pd.Timedelta(minutes=15), tz)
+    assert pv.iloc[0] == pytest.approx(4000.0, abs=50.0)
+
+
+def test_settle_never_touches_the_soc(tmp_path):
+    """SoC ist ein Zustand am Slotanfang, kein Intervallmittel.
+
+    Wuerde er mitgemittelt, verschoebe er sich um einen halben Slot - genau
+    gegen die Ausrichtung, die quality.planned_soc_on_measurement_axis
+    herstellt. In live_samples steht er ohnehin nicht.
+    """
+    from ems.local_history import (read_actual, read_live_slot_averages,
+                                   settle_actual_slots, write_actuals)
+
+    db = str(tmp_path / "hist.sqlite")
+    tz = "Europe/Berlin"
+    slot = pd.Timestamp("2026-08-04 08:00", tz=tz)
+    write_actuals(db, slot, {"pv_w": 0.0, "house_load_w": 500.0, "grid_w": -100.0,
+                             "battery_w": 400.0, "soc_percent": 42.0})
+    _live_slot(db, slot, pv=lambda s: 8000.0 * s / 900.0)
+    avg = read_live_slot_averages(db, slot, slot + pd.Timedelta(minutes=15),
+                                  tz, 15, 180.0, 30.0)
+    settle_actual_slots(db, avg)
+
+    soc = read_actual(db, "soc", slot, slot + pd.Timedelta(minutes=15), tz)
+    assert soc.iloc[0] == pytest.approx(42.0)
+
+
+def test_settle_is_idempotent(tmp_path):
+    """Jeder Zyklus ruft das auf - zweimal darf nichts anderes herauskommen."""
+    from ems.local_history import (read_actual, read_live_slot_averages,
+                                   settle_actual_slots, write_actuals)
+
+    db = str(tmp_path / "hist.sqlite")
+    tz = "Europe/Berlin"
+    slot = pd.Timestamp("2026-08-04 08:00", tz=tz)
+    write_actuals(db, slot, {"pv_w": 0.0, "house_load_w": 500.0, "grid_w": -100.0,
+                             "battery_w": 400.0, "soc_percent": 42.0})
+    _live_slot(db, slot, pv=lambda s: 8000.0 * s / 900.0)
+    avg = read_live_slot_averages(db, slot, slot + pd.Timedelta(minutes=15),
+                                  tz, 15, 180.0, 30.0)
+
+    settle_actual_slots(db, avg)
+    einmal = read_actual(db, "pv_w", slot, slot + pd.Timedelta(minutes=15), tz).iloc[0]
+    settle_actual_slots(db, avg)
+    zweimal = read_actual(db, "pv_w", slot, slot + pd.Timedelta(minutes=15), tz).iloc[0]
+    assert einmal == pytest.approx(zweimal)
+
+
+def test_settle_leaves_a_barely_started_slot_alone(tmp_path):
+    """Unter min_coverage_seconds bleibt der Momentanwert stehen.
+
+    Das ist die Absicherung dafuer, dass auch der LAUFENDE Slot nachgezogen
+    werden darf: ein Teilmittel aus zwei Messpunkten waere schlechter als der
+    Snapshot, deshalb liefert der Aggregator ihn erst gar nicht.
+    """
+    from ems.local_history import (read_actual, read_live_slot_averages,
+                                   settle_actual_slots, write_actuals)
+
+    db = str(tmp_path / "hist.sqlite")
+    tz = "Europe/Berlin"
+    slot = pd.Timestamp("2026-08-04 08:00", tz=tz)
+    write_actuals(db, slot, {"pv_w": 777.0, "house_load_w": 500.0, "grid_w": -100.0,
+                             "battery_w": 400.0, "soc_percent": 42.0})
+    _live_slot(db, slot, seconds=60, pv=lambda s: 8000.0)   # nur 1 min Abdeckung
+
+    avg = read_live_slot_averages(db, slot, slot + pd.Timedelta(minutes=15),
+                                  tz, 15, 180.0, 30.0)
+    settle_actual_slots(db, avg)
+    pv = read_actual(db, "pv_w", slot, slot + pd.Timedelta(minutes=15), tz)
+    assert pv.iloc[0] == pytest.approx(777.0)

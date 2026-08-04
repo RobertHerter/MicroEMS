@@ -34,7 +34,8 @@ import pandas as pd
 
 from .config import Config
 from .quality import (BIAS_CONVENTION, bias_direction, enough,
-                      guard_report, shortfall_note)
+                      guard_report, planned_soc_on_measurement_axis,
+                      shortfall_note)
 
 log = logging.getLogger("ems.drift")
 
@@ -99,6 +100,10 @@ class DriftMonitor:
             return None
         if pred is None or pred.empty or actual.empty:
             return None
+        # Slotende-Plan gegen Slotanfang-Messung waere um einen Slot versetzt
+        # und blaehte MAE wie Bias auf - und daran haengt hier eine Schwelle.
+        pred = planned_soc_on_measurement_axis(
+            pred, self.cfg.general.slot_minutes)
         df = pd.DataFrame({"pred": pred, "act": actual}).dropna()
         if len(df) < 4:
             return None

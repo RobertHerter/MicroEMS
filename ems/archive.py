@@ -20,6 +20,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .quality import planned_soc_on_measurement_axis
+
 log = logging.getLogger("ems.archive")
 
 # Ist-Signal -> Kurvenname der Ansicht. Die Vorzeichen folgen der Konvention der
@@ -148,8 +150,15 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
         "price_estimated": price_estimated,
         "battery_w": None if battery is None else _series(battery, index),
         "grid_w": None if grid is None else _series(grid, index),
+        # SoC des Plans liegt am SlotENDE, das Ist am Slotanfang - ohne
+        # Ausrichtung waeren die Kurven um einen Slot versetzt und der Plan
+        # sähe beim Laden zu hoch aus (quality.planned_soc_on_measurement_axis).
         "soc_percent": (None if plan_col("house_soc_percent") is None
-                        else _series(plan_col("house_soc_percent"), index)),
+                        else _series(planned_soc_on_measurement_axis(
+                            pd.Series(plan_col("house_soc_percent")[:len(index)],
+                                      index=index),
+                            step.total_seconds() / 60.0).reindex(index).values,
+                            index)),
     }
 
     # Ist-Werte auf das Raster des Laufs bringen (nur vorhandene Slots).

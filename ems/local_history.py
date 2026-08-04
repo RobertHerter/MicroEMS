@@ -890,6 +890,51 @@ def write_live_sample(path: str, ts, live: dict) -> None:
     con.close()
 
 
+def settle_actual_slots(path: str, averages: "pd.DataFrame") -> int:
+    """Abgeschlossene Slots in ``actuals`` auf die 5-s-Mittel nachziehen.
+
+    ``write_actuals`` legt je Zyklus EINEN Momentanwert beim Slotzeitstempel ab.
+    Leistung ist aber eine Intervallgroesse: auf einer steilen Flanke liegt die
+    Stichprobe am Slotanfang systematisch unter dem Slotmittel (PV-Vormittag)
+    bzw. darueber (Nachmittag) - eine Verzerrung mit Richtung, kein Rauschen.
+    Das Dashboard legt deshalb laengst die Slotmittel darueber; alles, was
+    ``read_actual`` direkt liest (Archiv, Kalibrierung, Drift, Heatmaps,
+    Planwert), sah bisher weiter den Momentanwert.
+
+    Nachgezogen werden nur die LEISTUNGEN. ``soc`` bleibt unberuehrt: der ist
+    ein Zustand am Slotanfang, ein Slotmittel wuerde ihn um einen halben Slot
+    verschieben und genau die Ausrichtung zerstoeren, die
+    ``quality.planned_soc_on_measurement_axis`` herstellt. In ``live_samples``
+    steht er ohnehin nicht.
+
+    Nur BESTEHENDE Zeilen werden aktualisiert - fuer einen Slot ohne Zyklus
+    gaebe es keinen SoC, und eine Zeile mit halben Daten waere schlechter als
+    keine. Idempotent: mehrfach aufgerufen aendert sich nichts.
+    """
+    if averages is None or averages.empty:
+        return 0
+    columns = (("pv_w", "pv_w"), ("house_w", "house_w"),
+               ("grid_w", "grid_w"), ("battery_w", "battery_w"))
+    rows = []
+    for stamp, row in averages.iterrows():
+        values = [(None if pd.isna(row.get(src)) else float(row[src]))
+                  for src, _target in columns]
+        if all(value is None for value in values):
+            continue
+        rows.append((*values, pd.Timestamp(stamp).tz_convert("UTC").isoformat()))
+    if not rows:
+        return 0
+    assignments = ", ".join(
+        f"{target}=COALESCE(?, {target})" for _src, target in columns)
+    con = _con(path)
+    cur = con.executemany(
+        f"UPDATE actuals SET {assignments} WHERE ts=?", rows)
+    con.commit()
+    count = int(cur.rowcount if cur.rowcount is not None else 0)
+    con.close()
+    return count
+
+
 def prune_live_samples(path: str, before) -> int:
     """Alte 5-s-Werte begrenzen; wird nur je Optimierungszyklus aufgerufen."""
     stamp = pd.Timestamp(before)

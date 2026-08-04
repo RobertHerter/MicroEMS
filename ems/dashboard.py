@@ -919,7 +919,7 @@ def _forecast_analysis_block(forecast_quality=None,
   const specs=[
    ['pv_actual_w','PV Ist',dark()?'#ffd166':'#e87917','solid',2.8],
    ['solcast_w','Solcast','#4c9be8','solid',1.8],
-   ['pvlib_w','pvlib','#43a66b','dash',1.8],
+   ['pvlib_w','pvlib','#43a66b','solid',1.8],
    ['load_forecast_w','Last-Soll','#d95f59','dot',1.8],
    ['load_actual_w','Last Ist','#d95f59','solid',2.2]
   ];
@@ -2039,12 +2039,23 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                       annotation_font=dict(color="#2ca02c", size=11))
 
     # ---------- Panel 2: SoC (eigenes Panel, keine Doppelachse) ----------
+    # Plan gegen Ist nur auf der ausgerichteten Spalte: der Optimierer schreibt
+    # je Slot den SoC am SlotENDE, gemessen wird am Slotanfang. Ungefiltert
+    # laegen die Kurven um einen Slot versetzt - beim Laden sichtbar als
+    # scheinbare Abweichung in Hoehe eines ganzen Slot-Hubs.
+    soc_plan_col = ("planned_soc_aligned_percent"
+                    if "planned_soc_aligned_percent" in t.columns
+                    else "house_soc_percent")
     line("actual_soc_percent", "Haus-SoC (Ist)", "#111111", 2, "soc", width=3,
-         hover=HOVER_PCT, compare_col="house_soc_percent", compare_unit="%",
+         hover=HOVER_PCT, compare_col=soc_plan_col, compare_unit="%",
          compare_decimals=0)
-    line("house_soc_percent", "Haus-SoC (Prog.)", "#111111", 2, "soc",
+    line(soc_plan_col, "Haus-SoC (Prog.)", "#111111", 2, "soc",
          dash="dash", width=2.5, hover=HOVER_PCT)
-    line("car_soc_percent", "Auto-SoC", "#9467bd", 2, "soc", dash="dot",
+    # Auto-SoC ist derselbe Fall wie der Haus-SoC (Wert am SlotENDE) und liegt
+    # im selben Panel - ungerichtet staenden die beiden Kurven 15 min versetzt.
+    line(("planned_car_soc_aligned_percent"
+          if "planned_car_soc_aligned_percent" in t.columns
+          else "car_soc_percent"), "Auto-SoC", "#9467bd", 2, "soc", dash="dot",
          hover=HOVER_PCT)
 
     # ---------- Panel 3: Preis + Vergütung ----------

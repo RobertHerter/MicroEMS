@@ -7,6 +7,7 @@ SoC-Energie nie einem einzelnen Slot zugeordnet wird.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from ems.quality import (BIAS_CONVENTION, BOUNDS, MIN_SAMPLES, bias_direction,
@@ -182,3 +183,44 @@ def test_guard_report_marks_an_inactive_check():
     idle = guard_report("segment_degradation", 0, skipped=4)
     assert idle["active"] is False
     assert "inaktiv" in idle["detail"] and idle["skipped"] == 4
+
+
+def test_planned_soc_lands_one_slot_later_than_it_was_stored():
+    """Der Plan-SoC eines Slots ist der Wert am SlotENDE.
+
+    Der Optimierer schreibt ``soc[t+1]`` unter Slot t. Gemessen wird am
+    Slotanfang. Ohne Verschiebung liegen beide Reihen um einen Slot versetzt -
+    beim Laden sieht der Plan dann zu hoch aus, beim Entladen zu tief.
+    """
+    from ems.quality import planned_soc_on_measurement_axis
+
+    index = pd.date_range("2026-08-04 07:00", periods=4, freq="15min",
+                          tz="Europe/Berlin")
+    planned = pd.Series([12.0, 15.0, 18.0, 21.0], index=index)
+    out = planned_soc_on_measurement_axis(planned, 15)
+
+    assert list(out.values) == [12.0, 15.0, 18.0, 21.0]   # Werte unveraendert
+    assert list(out.index) == list(index + pd.Timedelta(minutes=15))
+    # Der zum Slot 07:00 geplante Wert gehoert an 07:15.
+    assert out.loc[index[0] + pd.Timedelta(minutes=15)] == 12.0
+
+
+def test_perfectly_executed_plan_shows_no_soc_deviation():
+    """Die Invariante, um die es geht: laeuft der Akku exakt wie geplant,
+    muss die Abweichung null sein - nicht ein Slot-Hub."""
+    from ems.quality import planned_soc_on_measurement_axis
+
+    index = pd.date_range("2026-08-04 07:00", periods=5, freq="15min",
+                          tz="Europe/Berlin")
+    # Steiler Ladevormittag: 3 pp je Slot.
+    planned = pd.Series([15.0, 18.0, 21.0, 24.0, 27.0], index=index)
+    # Perfekte Ausfuehrung: der am Slotende geplante Wert wird zum Anfang des
+    # NAECHSTEN Slots gemessen.
+    measured = pd.Series([12.0, 15.0, 18.0, 21.0, 24.0], index=index)
+
+    roh = (measured - planned).abs().mean()
+    aligned = planned_soc_on_measurement_axis(planned, 15).reindex(index)
+    korrigiert = (measured - aligned).abs().dropna()
+
+    assert roh == pytest.approx(3.0)          # voller Slot-Hub aus dem Nichts
+    assert korrigiert.max() == pytest.approx(0.0)

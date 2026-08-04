@@ -40,6 +40,7 @@ from .homey_mqtt import HomeyMqttPublisher
 from .influx import make_repository
 from .optimizer import (Optimizer, OptimizerInputs, SolverCancelled,
                         request_solver_cancel, solver_is_running)
+from .quality import planned_soc_on_measurement_axis
 from .tariff import read_price_signal
 from . import solcast
 from .validate import summarize, validate_plan
@@ -1538,6 +1539,39 @@ def _signed_plan_total(frame: pd.DataFrame, positive: tuple[str, ...],
     return pd.concat(parts, axis=1).sum(axis=1, min_count=1)
 
 
+def _settle_actual_slots(config, now) -> int:
+    """Leistungs-Istwerte in ``actuals`` auf die 5-s-Mittel nachziehen.
+
+    Gegenstueck zu ``_overlay_live_slot_actuals``: das Dashboard legt die
+    Slotmittel nur fuer die Anzeige darueber, hier wandern sie dauerhaft in die
+    Tabelle. Davon leben alle, die ``read_actual`` direkt lesen - Lauf-Archiv,
+    Akku-Kalibrierung, Drift-Monitor, Fehler-Heatmaps, Planwert.
+
+    Der LAUFENDE Slot ist ausdruecklich dabei. Sein Mittel ist zwar erst ein
+    Teilmittel, aber es schaetzt das Slotmittel besser als ein einzelner
+    Momentanwert vom Slotanfang - auf einer Flanke liegt der Einzelpunkt
+    systematisch daneben, das Teilmittel nur unvollstaendig. Zu frueh im Slot
+    passiert nichts: ``read_live_slot_averages`` gibt einen Slot erst ab
+    ``min_coverage_seconds`` heraus, und mit jedem Zyklus reift der Wert nach,
+    bis der Slot vorbei ist.
+
+    Der Blick zurueck geht ueber eine Stunde, damit ein Neustart oder ein
+    ausgefallener Zyklus die Luecke beim naechsten Mal von selbst schliesst.
+    """
+    from .local_history import read_live_slot_averages, settle_actual_slots
+
+    slot = pd.Timedelta(minutes=config.general.slot_minutes)
+    current = pd.Timestamp(now).floor(f"{config.general.slot_minutes}min")
+    averages = read_live_slot_averages(
+        config.e3dc_rscp.history_db_path, current - pd.Timedelta(hours=1),
+        current + slot, config.general.timezone, config.general.slot_minutes,
+        config.forecast.live_nowcast_min_coverage_seconds,
+        config.forecast.live_nowcast_max_gap_seconds)
+    if averages is None or averages.empty:
+        return 0
+    return settle_actual_slots(config.e3dc_rscp.history_db_path, averages)
+
+
 def _overlay_live_slot_actuals(frame: pd.DataFrame,
                                live_slots: pd.DataFrame,
                                past_mask) -> pd.DataFrame:
@@ -1923,6 +1957,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                                     write_live_sample)
                         write_live_sample(
                             config.e3dc_rscp.history_db_path, now, live)
+                        _settle_actual_slots(config, now)
                         prune_live_samples(
                             config.e3dc_rscp.history_db_path,
                             now - pd.Timedelta(
@@ -3575,6 +3610,19 @@ def _build_display_frame(repo, config, now, history, result,
                                    .where(past_mask).ffill().where(past_mask))
         except Exception:  # pragma: no cover
             pass
+    # Plan-SoC auf die Messachse legen (Slotende vs. Slotanfang, siehe
+    # quality.planned_soc_on_measurement_axis). Eigene Spalte: die rohe
+    # house_soc_percent bleibt unangetastet, an ihr haengen Archiv und
+    # Ersparnisrechnung.
+    for raw_col, aligned_col in (("house_soc_percent",
+                                 "planned_soc_aligned_percent"),
+                                ("car_soc_percent",
+                                 "planned_car_soc_aligned_percent")):
+        if raw_col in df.columns:
+            df[aligned_col] = planned_soc_on_measurement_axis(
+                pd.to_numeric(df[raw_col], errors="coerce"),
+                config.general.slot_minutes).reindex(df.index)
+
     # Explizite Soll-Ist-Differenzen für API, Slot-Details und weitere
     # Auswertungen. Positiv bedeutet: Istwert liegt über der damaligen Prognose.
     for actual_col, planned_col, deviation_col in (
@@ -3582,7 +3630,8 @@ def _build_display_frame(repo, config, now, history, result,
             ("actual_pv_w", "pv_w", "pv_deviation_w"),
             ("actual_grid_w", "planned_grid_w", "grid_deviation_w"),
             ("actual_battery_w", "planned_battery_w", "battery_deviation_w"),
-            ("actual_soc_percent", "house_soc_percent", "soc_deviation_percent")):
+            ("actual_soc_percent", "planned_soc_aligned_percent",
+             "soc_deviation_percent")):
         if actual_col in df.columns and planned_col in df.columns:
             actual = pd.to_numeric(df[actual_col], errors="coerce")
             planned = pd.to_numeric(df[planned_col], errors="coerce")

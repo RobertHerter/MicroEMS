@@ -278,7 +278,8 @@ def test_soc_drift_works_without_influxdb(tmp_path):
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
     cfg.e3dc_rscp.history_source = True
     cfg.monitoring.drift_window_hours = 12.0
-    # Plan faellt von 80 % auf 68 %, real nur auf 74 % -> 3 pp mittlerer Fehler.
+    # Plan faellt von 80 % auf 68 %, real nur auf 74 % -> der Plan entlaedt
+    # doppelt so schnell wie die Wirklichkeit.
     idx = _seed_soc_plan(cfg.e3dc_rscp.history_db_path,
                          planned=lambda k: 80.0 - 0.5 * k,
                          actual=lambda k: 80.0 - 0.25 * k)
@@ -287,17 +288,30 @@ def test_soc_drift_works_without_influxdb(tmp_path):
                                   None, None) is None
     mae = DriftMonitor(cfg).check(repo, idx[-1] + pd.Timedelta(minutes=15))
     assert mae is not None, "ohne InfluxDB muss die Pruefung trotzdem laufen"
-    assert mae == pytest.approx(2.875, abs=0.1)
+    # Der Plan eines Slots ist der SoC am SlotENDE und wird deshalb gegen den
+    # Istwert des FOLGESLOTS gehalten (quality.planned_soc_on_measurement_axis):
+    #   |Fehler(k)| = |(80 - 0.5k) - (80 - 0.25(k+1))| = 0.25 * |k - 1|
+    # ueber die 23 verbleibenden Paare also 58/23. Direkt Slot gegen Slot kaeme
+    # 2.875 heraus - der Aufschlag waere reiner Zeitversatz, kein Drift.
+    assert mae == pytest.approx(58.0 / 23.0, abs=0.01)
 
 
 def test_soc_drift_is_quiet_when_the_plan_holds(tmp_path):
+    """Laeuft der Akku exakt wie geplant, darf keine Drift uebrig bleiben.
+
+    "Wie geplant" heisst: der fuer Slot k geplante SoC (Slotende) wird zu
+    Beginn von Slot k+1 gemessen. Der Ist-Verlauf liegt deshalb um einen
+    halben Prozentpunkt ueber dem Plan derselben Slotnummer - genau um den
+    Hub eines Slots. Setzte man hier beide gleich, wuerde der Test den
+    Zeitversatz als Normalfall festschreiben.
+    """
     from ems.drift import DriftMonitor
     cfg = make_config()
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
     cfg.e3dc_rscp.history_source = True
     idx = _seed_soc_plan(cfg.e3dc_rscp.history_db_path,
                          planned=lambda k: 80.0 - 0.5 * k,
-                         actual=lambda k: 80.0 - 0.5 * k)
+                         actual=lambda k: 80.5 - 0.5 * k)
     mae = DriftMonitor(cfg).check(_noinflux_repo(cfg),
                                   idx[-1] + pd.Timedelta(minutes=15))
     assert mae == pytest.approx(0.0, abs=0.01)

@@ -394,3 +394,54 @@ def test_archive_and_dashboard_use_the_same_curve_colours():
     # Jede Familie hat eine helle UND eine dunkle Fassung.
     for name, (hell, dunkel) in CURVE_FAMILIES.items():
         assert hell != dunkel, f"{name}: gleiche Farbe fuer beide Themen"
+
+
+def test_run_detail_puts_the_plan_soc_on_the_measurement_axis(tmp_path):
+    """Plan-SoC gehoert einen Slot spaeter als gespeichert.
+
+    Der Optimierer legt unter Slot t den SoC am SlotENDE ab, das Ist wird am
+    Slotanfang gemessen. Ungerichtet laufen die beiden Kurven im Archiv um
+    einen Slot versetzt - beim Laden sieht der Plan dadurch zu niedrig aus.
+    """
+    cfg, index, gen = _seed(tmp_path)
+    d = run_detail(cfg, gen.isoformat())
+    roh = list(np.linspace(50.0, 80.0, len(index)))     # wie in _snapshot
+    soc = d["plan"]["soc_percent"]
+
+    assert len(soc) == len(index)
+    assert soc[0] is None                                # davor gab es nichts
+    # Jeder Wert ist um genau einen Slot nach hinten gerueckt.
+    for k in range(1, len(index)):
+        assert soc[k] == pytest.approx(round(roh[k - 1], 2))
+
+
+def test_run_detail_soc_alignment_makes_a_perfectly_executed_plan_exact(tmp_path):
+    """Gegenprobe mit einem Akku, der GENAU wie geplant laeuft.
+
+    Der zu Slot t geplante SoC (Slotende) wird zu Beginn von Slot t+1
+    gemessen. Richtig ausgerichtet muss die Abweichung dann null sein - roh
+    bleibt genau ein Slot-Hub uebrig, und der ist bei steilem Laden gross.
+    """
+    cfg = _cfg(tmp_path)
+    n = 32
+    index = pd.date_range(pd.Timestamp("2026-07-20 06:00", tz=TZ),
+                          periods=n, freq="15min")
+    write_debug_snapshot(cfg.e3dc_rscp.history_db_path,
+                         _snapshot(index, generated=index[0]))
+    roh = list(np.linspace(50.0, 80.0, n))
+    hub = roh[1] - roh[0]
+    # Perfekte Ausfuehrung: Ist(Slot k) == Plan(Slot k-1).
+    for k in range(1, 9):
+        write_actuals(cfg.e3dc_rscp.history_db_path, index[k], {
+            "pv_w": 300.0 * k, "house_load_w": 1100.0, "grid_w": -200.0,
+            "battery_w": 1000.0, "soc_percent": roh[k - 1]})
+
+    d = run_detail(cfg, index[0].isoformat())
+    plan, ist = d["plan"]["soc_percent"], d["actual"]["soc_percent"]
+    paare = [k for k in range(n) if ist[k] is not None and plan[k] is not None]
+
+    assert paare, "ohne Paare prueft der Test nichts"
+    gerichtet = [abs(ist[k] - plan[k]) for k in paare]
+    versetzt = [abs(ist[k] - round(roh[k], 2)) for k in paare]
+    assert max(gerichtet) == pytest.approx(0.0, abs=0.01)
+    assert min(versetzt) == pytest.approx(hub, abs=0.01)

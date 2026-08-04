@@ -165,6 +165,32 @@ def min_soc_window_wh(capacity_wh: float) -> float:
     return soc_step_wh(capacity_wh) * MIN_SOC_STEPS_PER_WINDOW
 
 
+def planned_soc_on_measurement_axis(planned, slot_minutes: float):
+    """Plan-SoC auf die Zeitachse der MESSUNG legen.
+
+    Der Optimierer schreibt je Slot den SoC am ENDE des Slots
+    (``soc_v = val(soc[t + 1])`` in ``ems/optimizer.py``), gemessen wird am
+    ANFANG. Beide Reihen unbesehen auf denselben Index zu legen verschiebt sie
+    um genau einen Slot gegeneinander: beim Laden erscheint der Plan zu hoch,
+    beim Entladen zu tief, und das Vorzeichen kippt genau dort, wo der Akku
+    von Entladen auf Laden umschaltet.
+
+    Sichtbar wird das mit der Steilheit der Kurve. An einem Sommermorgen mit
+    3 pp Hub je Slot entsteht so eine scheinbare Abweichung von 3 pp aus dem
+    Nichts - gemessen am 04.08.2026 sank der MAE gegen die Messung von 1,24 pp
+    auf 0,43 pp, sobald die Reihen richtig lagen.
+
+    Der Planwert von Slot t gehoert an den Zeitpunkt t+1. Verschoben wird
+    deshalb der PLAN, nicht die Messung: die gespeicherte Spalte bleibt
+    unangetastet (Historie, Ersparnisrechnung und Archiv haengen daran).
+    """
+    if planned is None or len(planned) == 0:
+        return planned
+    shifted = pd.Series(planned).copy()
+    shifted.index = shifted.index + pd.Timedelta(minutes=float(slot_minutes))
+    return shifted
+
+
 def soc_energy_wh(soc_start_percent: float, soc_end_percent: float,
                   capacity_wh: float) -> float:
     """SoC-Differenz zweier ENDPUNKTE in Wh (positiv = Entnahme).
