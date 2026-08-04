@@ -81,6 +81,10 @@ def median_bias_w(actual, predicted) -> float:
 BOUNDS: dict[str, Tuple[float, float]] = {
     # ems/battery_calibration.py - Entladewirkungsgrad (gemessen 0.79)
     "discharge_efficiency": (0.55, 0.98),
+    # ems/battery_calibration.py - gealterte Energiekapazitaet. Grobe
+    # Geraetespanne; die eigentliche Absicherung ist der Schrittdeckel
+    # (Alterung geht langsam) und die Vertraeglichkeit mit der Entladeseite.
+    "battery_capacity_wh": (1000.0, 100000.0),
     # ems/pool_calibration.py - Thermomodell
     "pool_loss_w_per_k": (30.0, 3000.0),
     "pool_solar_absorption": (0.05, 1.0),

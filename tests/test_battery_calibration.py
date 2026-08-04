@@ -380,3 +380,184 @@ def test_load_bias_reports_its_sign_convention(tmp_path):
     from ems.quality import BIAS_CONVENTION
     assert out["sign_convention"] == BIAS_CONVENTION
     assert out["median_w"] < 0 and out["direction"] == "Prognose zu niedrig"
+
+
+# --------------------------------------------------------------------------- #
+# Kapazitaet aus Ladephasen
+# --------------------------------------------------------------------------- #
+def _ladephase(start, *, soc_start, soc_end, slots, capacity, eta=0.99,
+               quantise=True):
+    """Ladephase mit BEKANNTER Kapazitaet erzeugen.
+
+    Die Leistung folgt aus der Slotzahl, nicht umgekehrt - sonst rundete die
+    Slotzahl die zugefuehrte Energie und der "bekannte" Wert waere es nicht.
+    """
+    energie = capacity * (soc_end - soc_start) / 100.0 / eta
+    power_w = energie / (slots * DT)
+    index = pd.date_range(start, periods=slots + 1, freq="15min", tz=TZ)
+    soc = soc_start + np.arange(slots + 1) * (soc_end - soc_start) / slots
+    if quantise:
+        soc = np.round(soc)
+    return pd.DataFrame({"battery_w": [power_w] * slots + [0.0], "soc": soc},
+                        index=index)
+
+
+def test_capacity_fit_recovers_a_known_capacity():
+    """Der Anker ist charge_efficiency; daraus muss die Kapazitaet folgen."""
+    from ems.battery_calibration import fit_capacity
+
+    echt = 19000.0
+    frame = pd.concat([
+        _ladephase(f"2026-07-{tag:02d} 08:00", soc_start=25.0, soc_end=85.0,
+                   slots=12, capacity=echt)
+        for tag in (20, 21, 22, 23, 24)])
+    fit = fit_capacity(frame, DT, 0.99)
+
+    assert fit.n_windows == 5
+    assert fit.capacity_wh == pytest.approx(echt, rel=0.02)
+
+
+def test_capacity_fit_would_be_wrong_with_the_nameplate_value():
+    """Gegenprobe: mit zu hoher Kapazitaet kaeme ein Ladewirkungsgrad > 1.
+
+    Genau dieser unmoegliche Wert war der Anlass fuer die Kalibrierung.
+    """
+    from ems.battery_calibration import fit_capacity
+
+    echt, nennwert = 19000.0, 20600.0
+    frame = pd.concat([
+        _ladephase(f"2026-07-{tag:02d} 08:00", soc_start=25.0, soc_end=85.0,
+                   slots=12, capacity=echt)
+        for tag in (20, 21, 22, 23, 24)])
+    fit = fit_capacity(frame, DT, 0.99)
+
+    # Was ein Beobachter mit dem Nennwert gemessen haette:
+    eta_scheinbar = 0.99 * nennwert / fit.capacity_wh
+    assert eta_scheinbar > 1.0
+
+
+def _ladung_bis_voll(start, *, capacity, knick=90.0, faktor=2.0, eta=0.99):
+    """DURCHGEHENDE Ladung von 25 % auf 100 %, ohne Unterbrechung.
+
+    Oberhalb ``knick`` braucht ein Prozentpunkt ``faktor``-mal so viel Energie -
+    so verhaelt sich der Speicher real, wenn der E3DC abregelt und das BMS
+    balanciert. Genau dieser Teil darf nicht in die Kapazitaet eingehen.
+    """
+    soc, power = [25.0], []
+    while soc[-1] < 100.0 - 1e-9:
+        schritt = min(1.0, 100.0 - soc[-1])
+        energie = (capacity * schritt / 100.0 / eta
+                   * (faktor if soc[-1] >= knick else 1.0))
+        power.append(energie / DT)
+        soc.append(soc[-1] + schritt)
+    index = pd.date_range(start, periods=len(soc), freq="15min", tz=TZ)
+    return pd.DataFrame({"battery_w": power + [0.0], "soc": np.round(soc)},
+                        index=index)
+
+
+def test_capacity_fit_clips_at_the_top_of_the_band():
+    """Der volle Bereich darf nicht mitzaehlen.
+
+    Die Ladung laeuft durchgehend von 25 % auf 100 % - ohne Beschneidung am
+    Band wuerde die Kapazitaet um den zusaetzlichen Energiebedarf der letzten
+    zehn Prozentpunkte zu gross gemessen.
+    """
+    from ems.battery_calibration import fit_capacity
+
+    echt = 19000.0
+    fit = fit_capacity(_ladung_bis_voll("2026-07-20 06:00", capacity=echt),
+                       DT, 0.99)
+
+    assert fit.n_windows == 1
+    assert fit.capacity_wh == pytest.approx(echt, rel=0.05)
+
+
+def test_capacity_needs_a_real_swing():
+    """Kurze Ladehuepfer werden von der 1-%-Quantisierung dominiert."""
+    from ems.battery_calibration import charge_windows
+
+    frame = _ladephase("2026-07-20 08:00", soc_start=40.0, soc_end=48.0,
+                       slots=10, capacity=19000.0)
+    assert charge_windows(frame, DT) == []
+
+
+def _cap_fit(capacity_wh, n_windows=8, dispersion=0.03):
+    from ems.battery_calibration import CapacityFit
+    return CapacityFit(capacity_wh, n_windows, 40.0, 80.0, 400.0, 500.0,
+                       dispersion, [])
+
+
+def test_capacity_rejects_a_scattered_sample():
+    """Der energiegewichtete Fit ist nicht robust - wenige verzogene Phasen mit
+    viel Energie ziehen ihn mit. Streuen die Einzelphasen zu stark, tragen die
+    Ist-Werte die Messung nicht und es wird GAR NICHTS uebernommen.
+
+    Verworfen wird der ganze Lauf, nicht der obere Rand: ein einseitiger Filter
+    schnitte eine Seite der Fehlerverteilung ab und verzerrte nach unten.
+    """
+    from ems.battery_calibration import (CAPACITY_MAX_DISPERSION,
+                                         maybe_apply_capacity)
+
+    cfg = make_config()
+    cfg.house_battery.capacity_wh = 20600.0
+    zu_streuend = CAPACITY_MAX_DISPERSION + 0.01
+    assert maybe_apply_capacity(
+        _cap_fit(19000.0, dispersion=zu_streuend), cfg) is None
+    # Knapp darunter geht durch - sonst waere das Gate nur ein Verbot.
+    assert maybe_apply_capacity(
+        _cap_fit(19000.0, dispersion=CAPACITY_MAX_DISPERSION - 0.01),
+        cfg) is not None
+
+
+def test_capacity_dispersion_separates_snapshot_from_slot_mean_data():
+    """Die Streuung erkennt genau den Unterschied, um den es geht.
+
+    Momentanwerte je Slot erzeugen Einzelphasen von 15 bis 28 kWh - die 28 lägen
+    ueber der Nennkapazitaet. Slotmittel liefern ein enges Buendel.
+    """
+    from ems.battery_calibration import (CAPACITY_MAX_DISPERSION, fit_capacity)
+
+    echt = 19000.0
+    eng = pd.concat([
+        _ladephase(f"2026-07-{tag:02d} 08:00", soc_start=25.0, soc_end=85.0,
+                   slots=12, capacity=echt * f)
+        for tag, f in zip((20, 21, 22, 23, 24),
+                          (0.98, 1.01, 0.99, 1.02, 1.0))])
+    weit = pd.concat([
+        _ladephase(f"2026-07-{tag:02d} 08:00", soc_start=25.0, soc_end=85.0,
+                   slots=12, capacity=echt * f)
+        for tag, f in zip((20, 21, 22, 23, 24),
+                          (0.79, 1.15, 0.85, 1.30, 1.0))])
+
+    assert fit_capacity(eng, DT, 0.99).dispersion <= CAPACITY_MAX_DISPERSION
+    assert fit_capacity(weit, DT, 0.99).dispersion > CAPACITY_MAX_DISPERSION
+
+
+def test_capacity_step_cap_rejects_an_implausible_jump():
+    """Alterung geht langsam - ein Sprung ist ein Signalfehler, keine Messung."""
+    from ems.battery_calibration import maybe_apply_capacity
+
+    cfg = make_config()
+    cfg.house_battery.capacity_wh = 20600.0
+    assert maybe_apply_capacity(_cap_fit(12000.0), cfg) is None
+
+
+def test_capacity_is_damped_like_the_other_calibrations():
+    from ems.battery_calibration import APPLY_BLEND, maybe_apply_capacity
+
+    cfg = make_config()
+    cfg.house_battery.capacity_wh = 20600.0
+    out = maybe_apply_capacity(_cap_fit(18800.0), cfg)
+    assert out is not None
+    assert out["capacity_wh"] == pytest.approx(
+        APPLY_BLEND * 18800.0 + (1 - APPLY_BLEND) * 20600.0)
+
+
+def test_capacity_needs_enough_phases():
+    from ems.battery_calibration import (CAPACITY_MIN_WINDOWS,
+                                         maybe_apply_capacity)
+
+    cfg = make_config()
+    cfg.house_battery.capacity_wh = 20600.0
+    assert maybe_apply_capacity(
+        _cap_fit(19000.0, n_windows=CAPACITY_MIN_WINDOWS - 1), cfg) is None
