@@ -243,7 +243,12 @@ Der eine Wert, den ich jedem empfehle nach ein bis zwei Wochen zu prüfen:
 .venv/bin/python -m ems.battery_calibration --config config.yaml --days 30
 ```
 
-Er vergleicht den konfigurierten Entladewirkungsgrad mit dem gemessenen. Auf meiner Anlage standen 0,93 in der Config, gemessen waren es 0,786 – über eine Nacht sind das zweistellige Prozentpunkte Fehler im geplanten SoC-Verlauf.
+Er prüft beide Werte des Akkumodells gegen die Messung:
+
+* **Entladewirkungsgrad** – wie viel SoC eine ans Haus gelieferte kWh kostet. Auf meiner Anlage standen 0,93 in der Config, gemessen waren es 0,786; über eine Nacht sind das zweistellige Prozentpunkte Fehler im geplanten SoC-Verlauf.
+* **Nutzbare Kapazität** – aus den Ladephasen. Konfiguriert steht meist der Nennwert des Datenblatts, nicht die gealterte Kapazität. Bei mir 20,6 kWh gegen 18,6 kWh gemessen: der Plan lässt den SoC beim Laden dann zu langsam steigen.
+
+Beide hängen zusammen (im Modell zählt ihr Produkt), deshalb misst der Lauf sie in einem Durchgang und in der richtigen Reihenfolge.
 
 ## Was ohne InfluxDB fehlt
 
@@ -263,7 +268,7 @@ Plattenplatz. Wer sie weglassen will, installiert von Hand:
 ## Optional
 
 * **MQTT ans Smart Home:** `mqtt.enabled: true` mit Broker-Daten. Läuft parallel zur RSCP-Steuerung.
-* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.3.0`; die Kalibrierungs-Timer sind im Container enthalten.
+* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.4.0`; die Kalibrierungs-Timer sind im Container enthalten.
 * **Konfiguration im Browser:** `dashboard.controls_enabled: true` schaltet den Editor unter `/config` frei (mit Prüfung, Backup und Neustart).
 
 

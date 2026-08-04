@@ -14,7 +14,7 @@ Der Lauf dauert auf dem Pi rund 4 Minuten CPU-Zeit und besteht aus vier
 |---|-------|-------|-----------|
 | 1 | `kalibrierung` | PV- und Lastprognose | teils automatisch, teils Empfehlung |
 | 2 | `ems.pool_calibration --apply` | Pool-Thermomodell | automatisch (gedämpft) |
-| 3 | `ems.battery_calibration --apply` | Entladewirkungsgrad | automatisch (gedämpft) |
+| 3 | `ems.battery_calibration --apply` | Kapazität und Entladewirkungsgrad | automatisch (gedämpft) |
 | 4 | `ems.load_learning --apply` | Lastprofile der Geräte | automatisch |
 
 Alles, was automatisch übernommen wird, landet im Overlay
@@ -106,13 +106,31 @@ Datenblattwerten in der `config.yaml` abweichen.
 Zuletzt: 1104 Fenster, R² = 0,78, `loss_w_per_k` 175 gemessen gegen 164 im
 Modell, Solar-Koeffizient 3,57 gegen 3,64.
 
-## Schritt 3 – Entladewirkungsgrad
+## Schritt 3 – Akkumodell: Kapazität und Entladewirkungsgrad
 
 ```
 python -m ems.battery_calibration --config config.yaml --apply
 ```
 
-Misst über 30 Tage, wie viel SoC eine ans Haus gelieferte kWh wirklich kostet.
+Misst über 30 Tage beide Werte des Akkumodells. Sie hängen zusammen – im
+Optimierer zählt ihr Produkt –, deshalb laufen sie in einem Durchgang: erst die
+Kapazität, dann der Entladewirkungsgrad mit dem neuen Wert.
+
+**Nutzbare Kapazität** aus den Ladephasen. Konfiguriert steht meist der Nennwert
+des Datenblatts; die gealterte Kapazität liegt darunter, und `capacity_wh` war
+bis dahin der einzige Modellwert ohne Kalibrierpfad. Kapazität und Wirkungsgrad
+sind aus SoC-Daten nicht trennbar – gemessen wird nur ihr Produkt. Der Anker ist
+deshalb `charge_efficiency`: ein DC-Pfad ohne Wechselrichter, der kaum altert.
+Die gemessene Kapazität skaliert exakt proportional mit ihm.
+
+Gewertet wird nur der Teil einer Ladung im Band 20–90 %: nahe 100 % regelt der
+Wechselrichter ab und das BMS balanciert, dort bildet der SoC die Energie nicht
+mehr linear ab. Eine Ladung von 12 % auf 100 % wird beschnitten, nicht verworfen.
+Streuen die Einzelphasen zu stark (MAD/Median über 0,07), wird der ganze Lauf
+verworfen – ein Filter auf einzelne Ausreißer schnitte nur eine Seite der
+Fehlerverteilung ab.
+
+**Entladewirkungsgrad**: wie viel SoC eine ans Haus gelieferte kWh wirklich kostet.
 Entscheidend ist die Methodik: gemessen wird über **zusammenhängende
 Entladephasen**, nicht je Slot. Der SoC kommt nur in ganzen Prozent (bei 22 kWh
 sind das ~223 Wh) – eine slotweise Zuordnung greift genau die Slots heraus, in
@@ -202,7 +220,8 @@ der alte Wert stehen und das Log sagt warum.
 | Schritt | Mindest-Stichprobe | Güte | Grenzen |
 |---------|-------------------|------|---------|
 | Pool | 96 Fenster | R² ≥ 0,5 | Verlust 30–3000 W/K · Absorption 0,05–1,0 · Stufe 300–30000 W |
-| Akku | 6 Phasen, 40 h | – | Wirkungsgrad 0,55–0,98 |
+| Akku · Kapazität | 4 Ladephasen | Streuung MAD/Median ≤ 0,07 | Schritt ≤ 25 % · verträglich mit der Entladeseite |
+| Akku · Entladen | 6 Phasen, 40 h | – | Wirkungsgrad 0,55–0,98 |
 | Lastprofil | 3 Läufe | – | 15–720 min · 0,05–30 kWh |
 
 Zwei Sicherungen ziehen sich durch alle drei:
