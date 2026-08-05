@@ -135,10 +135,27 @@ def compute(config, maps: dict) -> dict:
     temp_air = series("temperature_2m").interpolate(limit=6).fillna(15.0)
     wind = series("wind_speed_10m").fillna(1.0).clip(lower=0.0)
 
+    # Open-Meteo liefert INTERVALL-MITTELWERTE, gestempelt auf den Intervall-
+    # ANFANG. Die Sonnenposition gehoert deshalb in die Intervall-MITTE, nicht
+    # auf die Zeitmarke - sonst wird ein Stundenmittel mit dem Sonnenstand vom
+    # Stundenbeginn transponiert.
+    #
+    # Die Folge ist keine Streuung, sondern ein Versatz mit Richtung: morgens
+    # steht die Sonne zum Intervallbeginn tiefer als im Mittel (Ertrag zu
+    # niedrig), nachmittags hoeher (zu hoch). Der Energieschwerpunkt wandert um
+    # eine halbe Intervalllaenge nach hinten. Gemessen am 05.08.2026 ueber sieben
+    # Tage: Ist 13,0 h, Solcast 13,0 h, pvlib 13,6 h - bei einer Ost/West-Anlage,
+    # deren Schwerpunkt per Konstruktion beim Sonnenhoechststand liegen muss.
+    schritt = pd.Series(idx).diff().median()
+    if pd.isna(schritt) or schritt <= pd.Timedelta(0):
+        schritt = pd.Timedelta(hours=1)
+    mitte = idx + schritt / 2
     solpos = pvlib.solarposition.get_solarposition(
-        idx, config.general.latitude, config.general.longitude,
-        temperature=temp_air)
-    dni_extra = pvlib.irradiance.get_extra_radiation(idx)
+        mitte, config.general.latitude, config.general.longitude,
+        temperature=temp_air.to_numpy())
+    solpos.index = idx          # zurueck auf das Raster der Einstrahlung
+    dni_extra = pvlib.irradiance.get_extra_radiation(mitte)
+    dni_extra.index = idx
 
     out = {}
     for array in cfg.arrays:
