@@ -65,11 +65,31 @@ def _season_mask(load, md_list) -> np.ndarray:
 
 
 def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag, initial_on=None):
+    """Malus je Schaltvorgang (Anti-Takten).
+
+    Innerhalb des Plans wird nur das EINSCHALTEN bestraft - Ausschalten am Ende
+    einer Laufzeit ist der Normalfall und soll nichts kosten.
+
+    Am Slot 0 gilt das nicht: dort wird gegen den TATSÄCHLICHEN Zustand
+    verglichen, und die Abweichung kostet in BEIDE Richtungen. Grund ist die
+    Neuplanung alle 15 Minuten. Ohne den Rückwärts-Malus war es gratis, eine
+    LAUFENDE Heizphase abzubrechen - der Optimierer plante am 01.08.2026 abends
+    fünfmal eine Stunde Laufzeit und verwarf sie jeweils nach 30 Minuten:
+
+        Lauf 19:00  AN AN AN AN
+        Lauf 19:15  AN AN AN AN
+        Lauf 19:30   .  .  .  .
+
+    Der Plan wollte also nie kurze Läufe. Vier von zehn Einschaltungen dauerten
+    trotzdem höchstens eine halbe Stunde. Der Malus bremste das Anfangen, nicht
+    das Aufgeben.
+    """
     if pen_ct <= 0:
         return
     if initial_on is not None and N:
         sw = pulp.LpVariable(f"{tag}_sw_0", 0)
         prob += sw >= on[0] - int(bool(initial_on))
+        prob += sw >= int(bool(initial_on)) - on[0]
         cost_terms.append(pen_ct * sw)
     for t in range(1, N):
         sw = pulp.LpVariable(f"{tag}_sw_{t}", 0)

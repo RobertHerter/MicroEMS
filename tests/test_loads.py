@@ -685,3 +685,64 @@ def test_heating_stays_possible_below_the_limit():
     assert res.status == "Optimal", res.status
     assert res.table["load_Pool_gross_w"].sum() > 0.0, \
         "unter der Heizgrenze wird gar nicht mehr geheizt"
+
+
+# --------------------------------------------------------------------------- #
+# Neuplanung: begonnene Laufzeit nicht aufgeben
+# --------------------------------------------------------------------------- #
+def _pool_run(*, laeuft: bool, malus: float = 5.0, start_c: float = 27.8,
+              aussen: float = 22.0):
+    """Einen Slot-0-Zustand vorgeben und den Plan der ersten Slots liefern.
+
+    Die Vorgaben sind nicht beliebig: Der Pool startet ÜBER dem Sollwert (28.0)
+    und die Außentemperatur ist mild. Damit ist Weiterheizen wirtschaftlich
+    knapp - genau die Lage, in der die Entscheidung zwischen zwei Neuplanungen
+    kippte. Bei kaltem Wetter ist Heizen ohnehin zwingend und der Malus
+    entscheidet nichts; ein Test dort würde nichts beweisen (erst gemessen,
+    dann diese Werte gewählt).
+    """
+    cfg = make_config()
+    last = _pool_load()
+    last.switch_penalty_ct = malus
+    last.max_c = 28.5
+    cfg.controllable_loads = [last]
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=0.0, price=30.0,
+                  ambient_temp_c=np.full(len(idx), aussen),
+                  load_state={"pool": start_c},
+                  load_feedback={"pool/klein": bool(laeuft),
+                                 "pool/gross": False})
+    res = Optimizer(cfg).solve(inp)
+    return [1 if v > 10 else 0
+            for v in res.table["load_pool_klein_w"].to_numpy()[:4]]
+
+
+def test_running_stage_is_not_dropped_on_replan():
+    """Der Malus bremste nur das Einschalten - eine LAUFENDE Phase abzubrechen
+    war gratis. Der Optimierer plante deshalb wiederholt eine Stunde Laufzeit
+    und verwarf sie 30 Minuten spaeter (gemessen 01.08.2026 abends, fuenfmal).
+    """
+    laufend = _pool_run(laeuft=True)
+    assert laufend[0] == 1, "laufende Stufe wird sofort abgeschaltet"
+    # Ohne Malus faellt die Entscheidung rein wirtschaftlich - und dann waere
+    # Abschalten guenstiger. Das belegt, dass der Test die Schutzwirkung prueft
+    # und nicht bloss eine ohnehin eindeutige Lage.
+    assert _pool_run(laeuft=True, malus=0.0)[0] == 0, \
+        "Szenario ist nicht knapp - der Test wuerde nichts beweisen"
+
+
+def test_the_penalty_still_resists_starting():
+    """Die Gegenrichtung darf nicht verloren gehen: aus dem Stand einzuschalten
+    kostet weiterhin - sonst waere aus dem Anti-Takt-Malus ein Anschalt-Anreiz
+    geworden."""
+    aus_ohne = _pool_run(laeuft=False, malus=0.0)
+    aus_mit = _pool_run(laeuft=False, malus=5000.0)
+    assert sum(aus_mit) <= sum(aus_ohne), "hoher Malus startet MEHR"
+
+
+def test_hard_limit_still_wins_over_the_penalty():
+    """Oberhalb von max_c muss abgeschaltet werden, auch wenn die Stufe laeuft
+    und der Malus dagegen haelt - sonst haette der Rueckwaerts-Malus die harte
+    Grenze aufgeweicht."""
+    plan = _pool_run(laeuft=True, malus=5000.0, start_c=29.5)
+    assert plan[0] == 0, "harte Grenze durch den Malus ausgehebelt"
