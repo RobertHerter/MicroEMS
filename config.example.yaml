@@ -179,9 +179,14 @@ pv_model:
   ensemble_min_weight: 0.05
   # azimuth in pvlib-Konvention: 0=Nord, 90=Ost, 180=Süd, 270=West.
   # tilt = Neigung gegen die Horizontale (0=flach, 90=senkrecht).
+  # string_index (optional): Index des DC-Strangs, der GENAU dieses Feld misst
+  # (RSCP-PVI, Tabelle pv_strings). Damit wird die Prognosegüte JE FELD messbar -
+  # ohne die Zuordnung sieht man nur die Summe und weiß nicht, welches Feld
+  # daneben liegt. Welcher Index zu welchem Feld gehört, zeigt ein Blick am
+  # Morgen: der Strang mit der höheren Leistung ist das Ostfeld.
   arrays:
-    - {name: "Ost",  kwp: 5.0, tilt: 30, azimuth: 90}
-    - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270}
+    - {name: "Ost",  kwp: 5.0, tilt: 30, azimuth: 90,  string_index: 0}
+    - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270, string_index: 1}
   temp_coeff_per_c: -0.0035   # PVWatts-Temperaturkoeffizient der Leistung (1/°C)
   system_loss: 0.14           # pauschale Systemverluste (Verkabelung/WR/Schmutz)
   # Nur Fallback, solange das Ensemble noch nicht genügend echte Residuen hat.

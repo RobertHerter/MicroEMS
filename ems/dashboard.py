@@ -834,6 +834,8 @@ def _forecast_analysis_block(forecast_quality=None,
   </div>
   <div id="fa-day-comparison" class="forecast-analysis-chart day-comparison-chart"></div>
  </div>
+ <h4>Prognosegüte je PV-Feld <small>DC-Strang gegen die Feld-Prognose · letzte 14 Tage</small></h4>
+ <div class="tiles forecast-accuracy-tiles" id="fa-arrays"><span class="an-hint">wird beim Aufklappen gemessen …</span></div>
  <h4>Kalibrierungsreife <small>Datenmenge · zeitliche Abdeckung · aktive und empfohlene Werte</small></h4>
  <div id="fa-calibration" class="calibration-grid"><span class="an-hint">wird geladen …</span></div>
  <h4>Kalibrierungsverlauf <small>Faktoren und Bandparameter nach Erstellungszeit</small></h4>
@@ -913,6 +915,21 @@ def _forecast_analysis_block(forecast_quality=None,
   const sel=vs.find(v=>v.key===loadVariant)||vs[0];
   heat('fa-heat-load',sel,'Last · '+sel.label);
  }
+ // Prognosegüte je Feld. Die Summenkurve sagt nur, DASS die PV-Prognose
+ // daneben liegt; der zugeordnete DC-Strang sagt, WELCHES Feld. "Form" ist der
+ // Fehler nach Herausrechnen des besten Gesamtfaktors - er trennt "falsch
+ // skaliert" von "falsch modelliert" (Ausrichtung, Verschattung).
+ function arrays(a){
+  const el=document.getElementById('fa-arrays'),liste=(a&&a.arrays)||[];
+  if(!liste.length){el.innerHTML='<span class="an-hint">'+esc((a&&a.note)||'Keine Feld-Auswertung verfügbar.')+'</span>';return;}
+  el.innerHTML=liste.map(function(f){
+   if(!f.n||f.wape_pct==null)
+    return tile('–',esc(f.name)+' WAPE','noch zu wenige Messwerte ('+(f.n||0)+')');
+   const skala=(typeof f.scale==='number')?((f.scale-1)*100):null;
+   return tile(num(f.wape_pct)+' %',esc(f.name)+' WAPE',
+    'Form '+num(f.wape_scaled_pct)+' % · Höhe '+(skala>0?'+':'')+num(skala,0)+' % · n='+f.n);
+  }).join('');
+ }
  function dayComparison(d){
   const el=document.getElementById('fa-day-comparison');
   if(!d){el.innerHTML='<span class="an-hint">Für diesen Tag sind noch keine Vergleichsdaten vorhanden.</span>';return;}
@@ -971,7 +988,7 @@ def _forecast_analysis_block(forecast_quality=None,
   lo.xaxis={gridcolor:colors().grid,tickformat:'%H:%M'};
   Plotly.react(el,traces,lo,config);
  }
- function render(){if(!payload)return;dayComparison(payload.day_comparison);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');loadHeat();vintages(payload.vintages);}
+ function render(){if(!payload)return;dayComparison(payload.day_comparison);arrays(payload.arrays);calibration(payload.calibration);calibrationHistory(payload.calibration);heat('fa-heat-pv',payload.heatmaps&&payload.heatmaps.pv,'PV');loadHeat();vintages(payload.vintages);}
  async function load(){
   const own=++requestId;busy(1);
   try{let q=day.value?'?day='+encodeURIComponent(day.value):'';let r=await fetch('api/forecast-analysis.json'+q+(q?'&':'?')+'_='+Date.now(),{cache:'no-store'});if(!r.ok)throw Error(r.status);let next=await r.json();if(own!==requestId)return;

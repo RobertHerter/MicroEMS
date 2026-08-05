@@ -827,17 +827,74 @@ def _audit_execution(config, now, live, e3dc=None):
     return audit
 
 
+# Abstand zweier Strang-Abfragen. Der Watchdog laeuft alle 5 s; ein PVI-Aufruf
+# kostet ~60 ms und wird dort nicht gebraucht - fuer ein Slotmittel reichen
+# 15 Proben je Viertelstunde reichlich.
+STRING_SAMPLE_S = 60.0
+
+
 class _LiveExecutionMonitor:
     """Schnelle, vorlaeufige Planpruefung aus geglaetteten E3/DC-Livewerten."""
 
     def __init__(self, config, publisher, e3dc):
         self.config, self.publisher, self.e3dc = config, publisher, e3dc
         self.samples = []
+        # Strangleistungen: eigener RSCP-Aufruf (~60 ms), deshalb NICHT im
+        # 5-s-Takt. Einmal je Minute reicht fuer ein belastbares Slotmittel und
+        # belastet den Watchdog nicht, der nebenher den Akkumodus halten muss.
+        self.string_samples = []
+        self._string_last = 0.0
+        self._string_slot = None
         self.slot = None
         self.bad_count = self.good_count = 0
         self.alarm = False
         self.last_state = None
         self.last_write = None
+
+    def _sample_strings(self, now) -> None:
+        """Strangleistungen sammeln und beim Slotwechsel als Mittel schreiben.
+
+        Der Sammler erkennt den Slot selbst - so braucht die Zyklusschleife
+        nichts davon zu wissen, und ein uebersprungener Zyklus verliert nur die
+        Proben seines eigenen Slots.
+
+        Mittel statt letzter Wert: eine Stichprobe am Slotanfang liegt auf der
+        Vormittagsflanke systematisch daneben - derselbe Fehler, den die
+        Leistungs-Istwerte hatten.
+        """
+        slot = pd.Timestamp(now).floor(f"{self.config.general.slot_minutes}min")
+        if self._string_slot is not None and slot != self._string_slot:
+            self._flush_strings(self._string_slot)
+        self._string_slot = slot
+
+        jetzt = _time.monotonic()
+        if jetzt - self._string_last < STRING_SAMPLE_S:
+            return
+        self._string_last = jetzt
+        try:
+            werte = self.e3dc.read_strings()
+        except Exception as exc:                        # pragma: no cover
+            log.debug("Strangwerte nicht lesbar (%s).", exc)
+            return
+        if werte:
+            self.string_samples.append(werte)
+
+    def _flush_strings(self, slot) -> int:
+        proben, self.string_samples = self.string_samples, []
+        if not proben:
+            return 0
+        summe: dict = {}
+        for probe in proben:
+            for index, watt in probe.items():
+                summe.setdefault(index, []).append(watt)
+        mittel = {i: float(np.mean(w)) for i, w in summe.items() if w}
+        try:
+            from .local_history import write_pv_strings
+            return write_pv_strings(
+                self.config.e3dc_rscp.history_db_path, slot, mittel)
+        except Exception as exc:                        # pragma: no cover
+            log.debug("Strangwerte nicht archivierbar (%s).", exc)
+            return 0
 
     @staticmethod
     def _interpolated_median(samples, field: str, window_s: float,
@@ -922,6 +979,7 @@ class _LiveExecutionMonitor:
                     self.config.e3dc_rscp.history_db_path, now, live)
             except Exception as exc:
                 log.debug("E3DC-Livewert nicht archivierbar (%s).", exc)
+        self._sample_strings(now)
         if not audit_enabled:
             return live
         from .local_history import (read_execution_plan_slot,

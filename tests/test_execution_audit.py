@@ -609,3 +609,100 @@ def test_settle_leaves_a_barely_started_slot_alone(tmp_path):
     settle_actual_slots(db, avg)
     pv = read_actual(db, "pv_w", slot, slot + pd.Timedelta(minutes=15), tz)
     assert pv.iloc[0] == pytest.approx(777.0)
+
+
+# --------------------------------------------------------------------------- #
+# Strangleistungen (pv_strings)
+# --------------------------------------------------------------------------- #
+class _StringStub:
+    """E3DC-Ersatz, der bei jedem Abruf den naechsten Messwertsatz liefert."""
+
+    def __init__(self, folge):
+        self.folge = list(folge)
+        self.aufrufe = 0
+
+    def read_strings(self):
+        self.aufrufe += 1
+        return self.folge[min(self.aufrufe - 1, len(self.folge) - 1)]
+
+    def read_live(self, force=False):
+        return {"pv_w": 1000.0, "soc_percent": 50.0}
+
+
+def _monitor(tmp_path, stub):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    return _m._LiveExecutionMonitor(cfg, None, stub), cfg
+
+
+def test_strings_are_stored_as_the_slot_mean(tmp_path):
+    """Nicht der letzte Wert, sondern das Mittel.
+
+    Eine Stichprobe am Slotanfang liegt auf der Vormittagsflanke systematisch
+    daneben - genau der Fehler, den die Leistungs-Istwerte hatten.
+    """
+    from ems.local_history import read_pv_strings
+
+    stub = _StringStub([{0: 1000.0, 1: 500.0},
+                        {0: 2000.0, 1: 1000.0},
+                        {0: 3000.0, 1: 1500.0}])
+    mon, cfg = _monitor(tmp_path, stub)
+    slot = pd.Timestamp("2026-08-05 08:00", tz=TZ)
+    for k in range(3):
+        mon._string_last = 0.0          # Minutensperre fuer den Test loesen
+        mon._sample_strings(slot + pd.Timedelta(minutes=k))
+    mon._sample_strings(slot + pd.Timedelta(minutes=15))   # Slotwechsel -> Flush
+
+    d = read_pv_strings(cfg.e3dc_rscp.history_db_path, slot,
+                        slot + pd.Timedelta(minutes=15), TZ)
+    assert list(d.columns) == ["string_0", "string_1"]
+    assert d.iloc[0]["string_0"] == pytest.approx(2000.0)   # Mittel, nicht 3000
+    assert d.iloc[0]["string_1"] == pytest.approx(1000.0)
+
+
+def test_strings_are_not_polled_every_five_seconds(tmp_path):
+    """Ein PVI-Aufruf kostet ~60 ms; der Watchdog laeuft alle 5 s und muss
+    nebenher den Akkumodus halten."""
+    stub = _StringStub([{0: 1000.0}])
+    mon, _ = _monitor(tmp_path, stub)
+    slot = pd.Timestamp("2026-08-05 08:00", tz=TZ)
+    for _ in range(20):
+        mon._sample_strings(slot)
+    assert stub.aufrufe == 1, "Minutensperre greift nicht"
+
+
+def test_strings_survive_a_device_without_them(tmp_path):
+    """Anlagen ohne PVI-Strangwerte duerfen nicht stolpern."""
+    from ems.local_history import read_pv_strings
+
+    class Leer:
+        def read_strings(self):
+            return {}
+
+    mon, cfg = _monitor(tmp_path, Leer())
+    slot = pd.Timestamp("2026-08-05 08:00", tz=TZ)
+    mon._sample_strings(slot)
+    mon._sample_strings(slot + pd.Timedelta(minutes=15))
+    assert read_pv_strings(cfg.e3dc_rscp.history_db_path, slot,
+                           slot + pd.Timedelta(minutes=30), TZ).empty
+
+
+def test_string_reader_sums_multiple_inverters():
+    """Mehrere Wechselrichter mit gleicher Strangnummer werden addiert."""
+    from ems.rscp import E3DCLink
+
+    class Fake(E3DCLink):
+        def __init__(self):
+            import threading
+            self._lock = threading.Lock()
+
+        def _connect(self):
+            class E:
+                @staticmethod
+                def get_pvis_data(keepAlive=True):
+                    return [{"strings": {"0": {"power": 1000.0},
+                                         "1": {"power": 500.0}}},
+                            {"strings": {"0": {"power": 250.0}}}]
+            return E()
+
+    assert Fake().read_strings() == {0: 1250.0, 1: 500.0}

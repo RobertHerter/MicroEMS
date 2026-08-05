@@ -35,6 +35,7 @@ import threading
 import time
 from typing import Dict, Optional
 
+import numpy as np
 import pandas as pd
 
 from .config import Config
@@ -271,6 +272,38 @@ class E3DCLink:
         except Exception as exc:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
             return None
+
+    def read_strings(self) -> dict:
+        """DC-Leistung je PV-Strang, ``{Index: Watt}``. Leer, wenn das Geraet
+        keine Strangwerte liefert.
+
+        ``poll()`` fasst alle Straenge zu einem Wert zusammen
+        (``production.solar``). Getrennt sind sie nur ueber die PVI-Daten zu
+        bekommen - und erst getrennt lassen sich Ausrichtung und Neigung je Feld
+        bestimmen. Aus der Summenkurve ist das unterbestimmt: sechs Parameter
+        gegen eine Kurve, jeder Tag liefert eine andere Geometrie.
+
+        Kostet einen eigenen RSCP-Aufruf (~60 ms), deshalb NICHT im 5-s-Takt des
+        Watchdogs aufrufen.
+        """
+        try:
+            with self._lock:
+                daten = self._connect().get_pvis_data(keepAlive=True)
+        except Exception as exc:
+            log.debug("RSCP-Strangwerte nicht lesbar (%s).", exc)
+            return {}
+        out: dict = {}
+        for pvi in (daten if isinstance(daten, list) else [daten]):
+            if not isinstance(pvi, dict):
+                continue
+            for key, wert in (pvi.get("strings") or {}).items():
+                try:
+                    index, leistung = int(key), float(wert.get("power"))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if np.isfinite(leistung):
+                    out[index] = out.get(index, 0.0) + leistung
+        return out
 
     def read_system_limits(self) -> dict:
         """Statische Anlagengrenzen vom E3DC (einmalig beim Start) – nur die

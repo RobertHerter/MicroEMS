@@ -2,6 +2,7 @@
 und Prognosegüte – reine Leser/Aggregatoren über die lokale Historie."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -495,3 +496,141 @@ def test_day_comparison_draws_an_hourly_source_without_holes(tmp_path):
     werte = d["pvlib_w"]
     assert len(werte) == 96
     assert all(v is not None for v in werte), "Loecher zwischen den Stundenwerten"
+
+
+# --------------------------------------------------------------------------- #
+# Prognosegüte je PV-Feld
+# --------------------------------------------------------------------------- #
+def _seed_array_quality(tmp_path, *, ist_faktor=1.0, form_fehler=0.0):
+    """Feld-Prognose und zugeordnete Strangmessung anlegen.
+
+    ``ist_faktor`` skaliert die Messung gegen die Prognose (Hoehenfehler),
+    ``form_fehler`` verschiebt sie tageszeitabhaengig (Formfehler).
+    """
+    from ems.config import PvArray
+    from ems.local_history import write_pv_forecast_archive, write_pv_strings
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.pv_model.arrays = [
+        PvArray(name="Ost", kwp=8.0, tilt=20, azimuth=90, string_index=0)]
+    tz = cfg.general.timezone
+    ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
+    start = ende - pd.Timedelta(days=3)
+    index = pd.date_range(start, ende, freq="1h", inclusive="left")
+
+    soll, ist = {}, {}
+    for stamp in index:
+        stunde = stamp.hour
+        basis = max(0.0, 5000.0 * np.sin(np.pi * (stunde - 6) / 12)) \
+            if 6 <= stunde <= 18 else 0.0
+        if basis <= 0:
+            continue
+        soll[stamp.tz_convert("UTC").isoformat()] = (basis, basis * .8, basis * 1.2)
+        kipp = 1.0 + form_fehler * (stunde - 12) / 6.0
+        ist[stamp] = basis * ist_faktor * kipp
+    write_pv_forecast_archive(cfg.e3dc_rscp.history_db_path, "pvmodel:Ost",
+                              start - pd.Timedelta(hours=12), soll)
+    for stamp, wert in ist.items():
+        write_pv_strings(cfg.e3dc_rscp.history_db_path, stamp, {0: wert})
+    return cfg, ende
+
+
+def test_array_quality_needs_a_string_mapping(tmp_path):
+    """Ohne string_index gibt es keine Feld-Auswertung - und einen Hinweis."""
+    from ems.observability import array_forecast_quality
+
+    cfg, ende = _seed_array_quality(tmp_path)
+    cfg.pv_model.arrays[0].string_index = None
+    out = array_forecast_quality(cfg, days=3, now=ende)
+    assert out["arrays"] == []
+    assert "string_index" in out["note"]
+
+
+def test_array_quality_separates_height_from_shape(tmp_path):
+    """Der Kern der Kennzahl: ein reiner HOEHENfehler darf den Formfehler nicht
+    aufblaehen. Der Strang misst DC, die Prognose ist nach system_loss gerechnet
+    - ohne die Trennung waere jede Auswertung von diesem Sockel dominiert."""
+    from ems.observability import array_forecast_quality
+
+    cfg, ende = _seed_array_quality(tmp_path, ist_faktor=1.20)
+    feld = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+
+    assert feld["n"] > 24
+    assert feld["scale"] == pytest.approx(1.20, abs=0.02)
+    # WAPE normiert auf den IST-Wert, nicht auf die Prognose: bei Ist = 1,2*Soll
+    # sind das 0,2/1,2 = 16,67 % - nicht die 20 %, die man von der Prognose aus
+    # rechnen wuerde.
+    assert feld["wape_pct"] == pytest.approx(100.0 * 0.2 / 1.2, abs=0.5)
+    # Nach Herausrechnen der Hoehe bleibt praktisch nichts uebrig.
+    assert feld["wape_scaled_pct"] == pytest.approx(0.0, abs=0.5)
+
+
+def test_array_quality_keeps_a_real_shape_error(tmp_path):
+    """Ein tageszeitabhaengiger Fehler darf NICHT wegskaliert werden - genau den
+    soll die Kennzahl finden (Ausrichtung, Verschattung)."""
+    from ems.observability import array_forecast_quality
+
+    cfg, ende = _seed_array_quality(tmp_path, form_fehler=0.30)
+    feld = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+
+    assert feld["scale"] == pytest.approx(1.0, abs=0.05)
+    assert feld["wape_scaled_pct"] > 5.0, "Formfehler verschwunden"
+
+
+def test_array_quality_ignores_curtailed_slots(tmp_path):
+    """Bei Abregelung liegt die Messung unter dem Moeglichen - das ist kein
+    Prognosefehler und darf die Kennzahl nicht verderben."""
+    from ems.local_history import write_execution_plan
+    from ems.observability import array_forecast_quality
+
+    cfg, ende = _seed_array_quality(tmp_path)
+    ohne = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+
+    # Halbe Historie als abgeregelt markieren.
+    index = pd.date_range(ende - pd.Timedelta(days=3), ende, freq="15min",
+                          inclusive="left")
+    plan = pd.DataFrame({"pv_curtail_w": 500.0}, index=index[:len(index) // 2])
+    write_execution_plan(cfg.e3dc_rscp.history_db_path, index[0], plan)
+    mit = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+    assert mit["n"] < ohne["n"], "abgeregelte Slots wurden nicht ausgeschlossen"
+
+
+def test_array_quality_uses_each_field_own_string(tmp_path):
+    """Jedes Feld wird an SEINEM Strang gemessen.
+
+    Eine Verwechslung der Zuordnung bliebe sonst unbemerkt und wuerde genau die
+    Frage falsch beantworten, um die es geht: welches Feld liegt daneben.
+    """
+    from ems.config import PvArray
+    from ems.local_history import write_pv_forecast_archive, write_pv_strings
+    from ems.observability import array_forecast_quality
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.pv_model.arrays = [
+        PvArray(name="Ost", kwp=8.0, tilt=20, azimuth=90, string_index=0),
+        PvArray(name="West", kwp=8.0, tilt=20, azimuth=270, string_index=1)]
+    tz = cfg.general.timezone
+    ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
+    start = ende - pd.Timedelta(days=3)
+    index = [t for t in pd.date_range(start, ende, freq="1h", inclusive="left")
+             if 8 <= t.hour <= 16]
+
+    soll = {t.tz_convert("UTC").isoformat(): (2000.0, 1600.0, 2400.0)
+            for t in index}
+    for name in ("Ost", "West"):
+        write_pv_forecast_archive(cfg.e3dc_rscp.history_db_path,
+                                  f"pvmodel:{name}",
+                                  start - pd.Timedelta(hours=12), soll)
+    # Strang 0 trifft die Prognose, Strang 1 liegt um die Haelfte daneben.
+    for t in index:
+        write_pv_strings(cfg.e3dc_rscp.history_db_path, t,
+                         {0: 2000.0, 1: 3000.0})
+
+    felder = {f["name"]: f for f in
+              array_forecast_quality(cfg, days=3, now=ende)["arrays"]}
+    assert felder["Ost"]["string"] == "string_0"
+    assert felder["West"]["string"] == "string_1"
+    assert felder["Ost"]["scale"] == pytest.approx(1.0, abs=0.02)
+    assert felder["West"]["scale"] == pytest.approx(1.5, abs=0.02)

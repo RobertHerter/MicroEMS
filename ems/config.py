@@ -766,6 +766,11 @@ class PvArray:
     kwp: float
     tilt: float
     azimuth: float
+    # Index des DC-Strangs, der GENAU dieses Feld misst (RSCP-PVI, Tabelle
+    # pv_strings). Nur damit ist die Prognosegüte je Feld messbar - ohne die
+    # Zuordnung sieht man nur die Summe und weiss nicht, welches Feld daneben
+    # liegt. None = kein Strang zugeordnet, Feld wird nicht einzeln bewertet.
+    string_index: Optional[int] = None
 
 
 @dataclass
@@ -1645,7 +1650,10 @@ def load_config(path: str) -> Config:
         shadow=bool(pm.get("shadow", False)),
         arrays=[PvArray(name=str(a.get("name", f"array{i}")),
                         kwp=float(a["kwp"]), tilt=float(a["tilt"]),
-                        azimuth=float(a["azimuth"]))
+                        azimuth=float(a["azimuth"]),
+                        string_index=(int(a["string_index"])
+                                      if a.get("string_index") is not None
+                                      else None))
                 for i, a in enumerate(pm.get("arrays") or [])],
         temp_coeff_per_c=float(pm.get("temp_coeff_per_c", -0.0035)),
         system_loss=float(pm.get("system_loss", 0.14)),

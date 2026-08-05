@@ -45,6 +45,16 @@ def _con(path: str) -> sqlite3.Connection:
                 " battery_w REAL, wallbox_w REAL)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_live_samples_ts "
                 "ON live_samples(ts)")
+    # DC-Leistung je PV-Strang, als SLOTMITTEL. poll() fasst alle Straenge zu
+    # einem Wert zusammen; getrennt lassen sich Ausrichtung und Neigung je Feld
+    # bestimmen (aus der Summe ist das unterbestimmt) und die Prognoseguete je
+    # Feld messen. Bewusst Slotmittel statt Momentanwerte - eine Stichprobe am
+    # Slotanfang liegt auf der Vormittagsflanke systematisch daneben.
+    con.execute("CREATE TABLE IF NOT EXISTS pv_strings ("
+                " ts TEXT NOT NULL, idx INTEGER NOT NULL, power_w REAL,"
+                " PRIMARY KEY (ts, idx))")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_pv_strings_ts "
+                "ON pv_strings(ts)")
     # Stündliche Temperatur (Open-Meteo) für die Prognose-Gewichtung.
     con.execute("CREATE TABLE IF NOT EXISTS temperature ("
                 " ts TEXT PRIMARY KEY, temp_c REAL NOT NULL)")
@@ -933,6 +943,46 @@ def settle_actual_slots(path: str, averages: "pd.DataFrame") -> int:
     count = int(cur.rowcount if cur.rowcount is not None else 0)
     con.close()
     return count
+
+
+def write_pv_strings(path: str, ts, werte: dict) -> int:
+    """Slotmittel je Strang ablegen. ``werte``: {Strang-Index: Watt}."""
+    if not werte:
+        return 0
+    stamp = pd.Timestamp(ts)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    key = stamp.tz_convert("UTC").isoformat()
+    zeilen = [(key, int(i), float(w)) for i, w in werte.items()
+              if w is not None and pd.notna(w)]
+    if not zeilen:
+        return 0
+    con = _con(path)
+    con.executemany(
+        "INSERT INTO pv_strings(ts, idx, power_w) VALUES(?,?,?) "
+        "ON CONFLICT(ts, idx) DO UPDATE SET power_w=excluded.power_w", zeilen)
+    con.commit()
+    con.close()
+    return len(zeilen)
+
+
+def read_pv_strings(path: str, start, end, tz: str) -> "pd.DataFrame":
+    """Strangleistungen als Frame (Spalte je Strang) im lokalen Zeitraster."""
+    begin = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    finish = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    con = _con(path)
+    rows = con.execute(
+        "SELECT ts, idx, power_w FROM pv_strings WHERE ts>=? AND ts<? "
+        "ORDER BY ts", (begin, finish)).fetchall()
+    con.close()
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows, columns=["ts", "idx", "power_w"])
+    frame["ts"] = pd.to_datetime(frame["ts"], utc=True, format="ISO8601")
+    out = frame.pivot(index="ts", columns="idx", values="power_w")
+    out.index = out.index.tz_convert(tz)
+    out.columns = [f"string_{i}" for i in out.columns]
+    return out.sort_index()
 
 
 def prune_live_samples(path: str, before) -> int:

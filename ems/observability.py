@@ -11,7 +11,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from .quality import bias_w, enough, shortfall_note
+from .quality import MIN_SAMPLES, bias_w, enough, shortfall_note
 
 
 def _wape(actual, pred) -> float:
@@ -651,6 +651,104 @@ def calibration_maturity(config, now=None) -> dict:
     }
 
 
+def array_forecast_quality(config, days: int = 14, now=None) -> dict:
+    """Prognosegüte JE PV-FELD aus den DC-Strangleistungen.
+
+    Die Summenkurve sagt nur, DASS die PV-Prognose daneben liegt, nicht welches
+    Feld. pvlib rechnet Ost und West längst getrennt und archiviert beide
+    (``pvmodel:<Name>``); gemessen wird sie über den zugeordneten DC-Strang
+    (``pv_strings``, Zuordnung über ``PvArray.string_index``).
+
+    Zwei Kennzahlen, und die Trennung ist der Punkt:
+
+    * ``wape_pct`` – der rohe Fehler. Er enthält einen SYSTEMATISCHEN Anteil,
+      denn der Strang misst DC, die Prognose ist nach ``system_loss`` gerechnet.
+    * ``wape_scaled_pct`` – derselbe Fehler, nachdem der beste Gesamtfaktor
+      herausgerechnet ist. Das ist der FORMfehler: was übrig bleibt, wenn man
+      dem Modell die richtige Höhe schenkt. Genau das trennt "Feld falsch
+      skaliert" von "Feld falsch modelliert" (Ausrichtung, Verschattung).
+
+    Slots mit geplanter Abregelung fallen heraus - dort liegt die Messung unter
+    dem Möglichen und würde als Prognosefehler erscheinen.
+    """
+    from .local_history import read_execution_plan_range, read_pv_strings
+    from . import pv_eval
+
+    tz = config.general.timezone
+    current = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz=tz)
+    if current.tzinfo is None:
+        current = current.tz_localize(tz)
+    else:
+        current = current.tz_convert(tz)
+    felder = [a for a in (getattr(config.pv_model, "arrays", None) or [])
+              if getattr(a, "string_index", None) is not None]
+    out = {"lookback_days": int(days), "arrays": [], "note": ""}
+    if not felder:
+        out["note"] = ("Kein Feld einem DC-Strang zugeordnet "
+                       "(pv_model.arrays[].string_index).")
+        return out
+
+    db = config.e3dc_rscp.history_db_path
+    # Auf das Slotraster runden: read_group_asof baut sein Raster ab ``start``,
+    # ein schiefer Anfang trifft die archivierten Stundenwerte nie.
+    raster = f"{config.general.slot_minutes}min"
+    current = current.floor(raster)
+    start = (current - pd.Timedelta(days=max(1, int(days)))).floor(raster)
+    try:
+        straenge = read_pv_strings(db, start, current, tz)
+    except Exception:                                   # pragma: no cover
+        straenge = pd.DataFrame()
+    if straenge.empty:
+        out["note"] = "Noch keine Strangmessungen aufgezeichnet."
+        return out
+
+    # Geplante Abregelung ausschliessen - dort ist die Messung gedeckelt.
+    abgeregelt = pd.Series(dtype=bool)
+    try:
+        plan = read_execution_plan_range(db, start, current, tz)
+        if plan is not None and "pv_curtail_w" in plan:
+            abgeregelt = pd.to_numeric(plan["pv_curtail_w"],
+                                       errors="coerce").fillna(0.0) > 1.0
+    except Exception:                                   # pragma: no cover
+        pass
+
+    for feld in felder:
+        spalte = f"string_{int(feld.string_index)}"
+        if spalte not in straenge.columns:
+            continue
+        prognose = pv_eval.read_group_asof(
+            db, [f"pvmodel:{feld.name}"], start, current, tz,
+            config.general.slot_minutes, "pv")
+        paar = pd.DataFrame({"ist": straenge[spalte],
+                             "soll": prognose}).dropna()
+        if not abgeregelt.empty:
+            # astype(bool) ist nicht kosmetisch: reindex+fillna auf einer leeren
+            # oder gemischten Reihe liefert object-dtype, und "~" invertiert
+            # dann BITWEISE (True -> -2) statt logisch.
+            maske = abgeregelt.reindex(paar.index).fillna(False).astype(bool)
+            paar = paar.loc[~maske]
+        paar = paar[paar["ist"] > 100.0]
+        if len(paar) < MIN_SAMPLES.get("pv_band", 24):
+            out["arrays"].append({
+                "name": feld.name, "string": spalte, "n": int(len(paar)),
+                "wape_pct": None, "wape_scaled_pct": None,
+                "scale": None, "bias_w": None})
+            continue
+        ist, soll = paar["ist"].to_numpy(), paar["soll"].to_numpy()
+        skala = float(ist.sum() / soll.sum()) if soll.sum() > 0 else None
+        out["arrays"].append({
+            "name": feld.name, "string": spalte, "n": int(len(paar)),
+            "wape_pct": _wape(ist, soll),
+            "wape_scaled_pct": (_wape(ist, soll * skala)
+                                if skala else None),
+            "scale": (round(skala, 3) if skala else None),
+            "bias_w": round(bias_w(ist, soll), 1),
+        })
+    if not out["arrays"]:
+        out["note"] = "Zugeordnete Straenge liefern noch keine Messwerte."
+    return out
+
+
 def forecast_analysis(config, days: int = 30, target_day=None, now=None) -> dict:
     """Heatmaps und Forecast-Vintages aus echten Produktions-Snapshots.
 
@@ -696,6 +794,7 @@ def forecast_analysis(config, days: int = 30, target_day=None, now=None) -> dict
         "generated": current.isoformat(),
         "lookback_days": max(1, min(int(days), 90)),
         "calibration": calibration_maturity(config, current),
+        "arrays": array_forecast_quality(config, days=14, now=current),
         "day_comparison": _forecast_day_comparison(
             config, vintage_snapshots, day, current),
         "heatmaps": _forecast_error_heatmaps(
