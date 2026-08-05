@@ -82,8 +82,10 @@ solcast:
 pv_model:
   enabled: true
   arrays:
-    - {name: "Ost",  kwp: 5.0, tilt: 30, azimuth: 90}
-    - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270}
+    # string_index (optional): der DC-Strang, der genau dieses Feld misst.
+    # Damit wird die Prognosegüte je Feld messbar statt nur für die Summe.
+    - {name: "Ost",  kwp: 5.0, tilt: 30, azimuth: 90,  string_index: 0}
+    - {name: "West", kwp: 5.0, tilt: 30, azimuth: 270, string_index: 1}
   system_loss: 0.14
 
 # --- kein Smart Home nötig ---
@@ -268,7 +270,7 @@ Plattenplatz. Wer sie weglassen will, installiert von Hand:
 ## Optional
 
 * **MQTT ans Smart Home:** `mqtt.enabled: true` mit Broker-Daten. Läuft parallel zur RSCP-Steuerung.
-* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.4.0`; die Kalibrierungs-Timer sind im Container enthalten.
+* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.5.0`; die Kalibrierungs-Timer sind im Container enthalten.
 * **Konfiguration im Browser:** `dashboard.controls_enabled: true` schaltet den Editor unter `/config` frei (mit Prüfung, Backup und Neustart).
 
 

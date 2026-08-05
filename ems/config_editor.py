@@ -195,6 +195,7 @@ FIELD_DESCRIPTIONS = {
     "pv_model.arrays[].kwp": "Installierte Leistung dieses Teilgenerators in kWp.",
     "pv_model.arrays[].tilt": "Neigung der Module in Grad (0 = waagerecht).",
     "pv_model.arrays[].azimuth": "Ausrichtung in Grad (180 = Süden).",
+    "pv_model.arrays[].string_index": "DC-Strang, der genau dieses Feld misst (leer = keine Zuordnung). Nur damit ist die Prognosegüte je Feld messbar statt nur für die Summe.",
     "pv_model.weather_models[]": "Wettermodelle, die unabhängig gerechnet und danach gewichtet kombiniert werden.",
     "pv_model.ensemble_min_samples": "Nötige Vergleichswerte, bevor die Modellgewichte angepasst werden.",
     "pv_model.ensemble_horizon_hours[]": "Vorlaufzeit-Grenzen für getrennt gelernte Modellgewichte.",
