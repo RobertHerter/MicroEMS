@@ -91,6 +91,8 @@ LOAD_DESCRIPTIONS = {
     "controllable_loads[].no_grid_import": "Netzstrom für diese thermische Last stark vermeiden.",
     "controllable_loads[].temp_signal": "MQTT-Topic der gemessenen Temperatur.",
     "controllable_loads[].decision_minutes": "Zeitabstand thermischer Schaltentscheidungen.",
+    "controllable_loads[].min_on_minutes": "Mindestlaufzeit nach dem Einschalten; gilt auch über Neuberechnungen und Neustarts hinweg.",
+    "controllable_loads[].min_off_minutes": "Mindeststillstandszeit nach dem Ausschalten; gilt auch über Neuberechnungen und Neustarts hinweg.",
     "controllable_loads[].binary_horizon_hours": "Binärer Planungshorizont; fernere Slots als Duty-Cycle.",
     "controllable_loads[].season.from": "Saisonbeginn als MM-DD.",
     "controllable_loads[].season.to": "Saisonende als MM-DD.",
@@ -320,6 +322,8 @@ LOAD_TEMPLATES = {
         # Abschaltpunkt des Geraets; 0 = wie target_c (siehe Beschreibung).
         "no_grid_import": False,
         "decision_minutes": 60,
+        "min_on_minutes": 60,
+        "min_off_minutes": 30,
         "binary_horizon_hours": 12,
         "switch_penalty_ct": 5,
         "temp_signal": "",

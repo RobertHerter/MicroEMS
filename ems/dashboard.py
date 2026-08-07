@@ -1116,13 +1116,16 @@ def _controls_block(config) -> str:
     for ld in getattr(config, "controllable_loads", []):
         sg = _lslug(ld.name)
         if ld.type == "thermal":
-            keys = ["target_c", "min_c", "max_c", "surface_m2", "solar_absorption"]
+            keys = ["target_c", "min_c", "max_c", "surface_m2", "solar_absorption",
+                    "min_on_minutes", "min_off_minutes"]
             fields = (f"<div class='ctl-grid'>"
                       f"{_num(f'p_{sg}_target_c', ld.target_c, 'Zieltemperatur', '0.1', '°C')}"
                       f"{_num(f'p_{sg}_min_c', ld.min_c, 'Minimum', '0.1', '°C')}"
                       f"{_num(f'p_{sg}_max_c', ld.max_c, 'Maximum', '0.1', '°C')}"
                       f"{_num(f'p_{sg}_surface_m2', ld.surface_m2, 'Solarfläche', '0.1', 'm²')}"
                       f"{_num(f'p_{sg}_solar_absorption', ld.solar_absorption, 'Solar-Wirkungsgrad', '0.05')}"
+                      f"{_num(f'p_{sg}_min_on_minutes', ld.min_on_minutes, 'Mindestlaufzeit', '15', 'min')}"
+                      f"{_num(f'p_{sg}_min_off_minutes', ld.min_off_minutes, 'Mindeststillstand', '15', 'min')}"
                       f"</div>")
             type_label = "Thermische Last"
         else:

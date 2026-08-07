@@ -691,7 +691,7 @@ def test_heating_stays_possible_below_the_limit():
 # Neuplanung: begonnene Laufzeit nicht aufgeben
 # --------------------------------------------------------------------------- #
 def _pool_run(*, laeuft: bool, malus: float = 5.0, start_c: float = 27.8,
-              aussen: float = 22.0):
+              aussen: float = 22.0, target_c: float = 28.0):
     """Einen Slot-0-Zustand vorgeben und den Plan der ersten Slots liefern.
 
     Die Vorgaben sind nicht beliebig: Der Pool startet ÜBER dem Sollwert (28.0)
@@ -704,6 +704,7 @@ def _pool_run(*, laeuft: bool, malus: float = 5.0, start_c: float = 27.8,
     cfg = make_config()
     last = _pool_load()
     last.switch_penalty_ct = malus
+    last.target_c = target_c
     last.max_c = 28.5
     cfg.controllable_loads = [last]
     idx = _day_index("2026-06-10")
@@ -722,12 +723,14 @@ def test_running_stage_is_not_dropped_on_replan():
     war gratis. Der Optimierer plante deshalb wiederholt eine Stunde Laufzeit
     und verwarf sie 30 Minuten spaeter (gemessen 01.08.2026 abends, fuenfmal).
     """
-    laufend = _pool_run(laeuft=True)
+    # target_c=min_c deaktiviert hier gezielt die neue thermische Hysterese:
+    # Dieser Test isoliert weiterhin allein die Wirkung des Schaltmalus.
+    laufend = _pool_run(laeuft=True, target_c=27.0)
     assert laufend[0] == 1, "laufende Stufe wird sofort abgeschaltet"
     # Ohne Malus faellt die Entscheidung rein wirtschaftlich - und dann waere
     # Abschalten guenstiger. Das belegt, dass der Test die Schutzwirkung prueft
     # und nicht bloss eine ohnehin eindeutige Lage.
-    assert _pool_run(laeuft=True, malus=0.0)[0] == 0, \
+    assert _pool_run(laeuft=True, malus=0.0, target_c=27.0)[0] == 0, \
         "Szenario ist nicht knapp - der Test wuerde nichts beweisen"
 
 
@@ -746,3 +749,83 @@ def test_hard_limit_still_wins_over_the_penalty():
     Grenze aufgeweicht."""
     plan = _pool_run(laeuft=True, malus=5000.0, start_c=29.5)
     assert plan[0] == 0, "harte Grenze durch den Malus ausgehebelt"
+
+
+def test_minimum_on_time_survives_rolling_replanning():
+    """Eine begonnene WP-Phase darf nicht durch den naechsten 15-min-Lauf
+    beendet werden, obwohl dessen thermische Entscheidungsbloecke neu beginnen."""
+    cfg = make_config()
+    pool = _pool_load()
+    pool.decision_minutes = 15
+    pool.min_on_minutes = 60
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    inp = _inputs(
+        idx, pv=0.0, price=30.0,
+        ambient_temp_c=np.full(len(idx), 22.0),
+        load_state={"pool": 27.8},
+        load_feedback={"pool/klein": True, "pool/gross": False},
+        load_run_state={
+            "pool/klein": {"on": True, "minutes": 15.0},
+            "pool/gross": {"on": False, "minutes": 120.0},
+        })
+
+    res = Optimizer(cfg).solve(inp)
+
+    assert list((res.table["load_pool_klein_w"].iloc[:3] > 10).astype(int)) \
+        == [1, 1, 1]
+
+
+def test_minimum_off_time_survives_rolling_replanning():
+    cfg = make_config()
+    pool = _pool_load()
+    pool.decision_minutes = 15
+    pool.min_off_minutes = 30
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    inp = _inputs(
+        idx, pv=9000.0, price=30.0,
+        ambient_temp_c=np.full(len(idx), 20.0),
+        load_state={"pool": 25.5},
+        load_feedback={"pool/klein": False, "pool/gross": False},
+        load_run_state={
+            "pool/klein": {"on": False, "minutes": 15.0},
+            "pool/gross": {"on": False, "minutes": 120.0},
+        })
+
+    res = Optimizer(cfg).solve(inp)
+
+    assert res.table["load_pool_klein_w"].iloc[0] < 10
+
+
+def test_running_thermal_load_heats_towards_target_not_only_minimum():
+    """Zwischen min_c und target_c bleibt eine bereits laufende Heizphase
+    aktiv; sonst pendelt der Regler in kurzen Takten direkt um min_c."""
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.decision_minutes = 15
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    inp = _inputs(
+        idx, pv=9000.0, price=30.0,
+        ambient_temp_c=np.full(len(idx), 22.0),
+        load_state={"pool": 27.2},
+        load_feedback={"pool/klein": True, "pool/gross": False},
+        load_run_state={
+            "pool/klein": {"on": True, "minutes": 60.0},
+            "pool/gross": {"on": False, "minutes": 120.0},
+        })
+
+    res = Optimizer(cfg).solve(inp)
+
+    assert res.table["load_pool_klein_w"].iloc[0] > 10
+
+
+def test_thermal_decision_blocks_are_aligned_to_wall_clock():
+    from ems.loads import _decision_block_positions
+
+    idx = pd.date_range("2026-06-10 10:15", periods=7, freq="15min",
+                        tz="Europe/Berlin")
+    positions = _decision_block_positions(idx, 60)
+
+    assert positions == [0, 0, 0, 1, 1, 1, 1]

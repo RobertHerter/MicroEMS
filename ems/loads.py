@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 
 import numpy as np
+import pandas as pd
 import pulp
 
 # Komfort-Malus je K·Slot Bandverletzung. GRÖSSENORDNUNG MIT BEDACHT: 1 K eine
@@ -62,6 +63,26 @@ def _season_mask(load, md_list) -> np.ndarray:
     for i, cur in enumerate(md_list):
         out[i] = (lo <= cur <= hi) if lo <= hi else (cur >= lo or cur <= hi)
     return out
+
+
+def _decision_block_positions(index, decision_minutes: int) -> list[int]:
+    """Blocknummer je Slot, an festen UTC-Wandzeitgrenzen ausgerichtet.
+
+    Damit bleibt beispielsweise der 08:00-09:00-Block auch im Folgelauf um
+    08:15 derselbe Zeitraum, statt als neuer 08:15-09:15-Block zu starten.
+    """
+    period_ns = max(1, int(decision_minutes)) * 60 * 1_000_000_000
+    keys, positions, by_key = [], [], {}
+    for raw in index:
+        ts = pd.Timestamp(raw)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("UTC")
+        keys.append(int(ts.value // period_ns))
+    for key in keys:
+        if key not in by_key:
+            by_key[key] = len(by_key)
+        positions.append(by_key[key])
+    return positions
 
 
 def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag, initial_on=None):
@@ -213,6 +234,19 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         return
     T0 = float(state.get(ld.name, ld.target_c))
     T0 = min(max(T0, ld.min_c - 5.0), ld.max_c + 5.0)
+    feedback = inp.load_feedback or {}
+    run_state = inp.load_run_state or {}
+    running = any(
+        bool(feedback.get(f"{ld.name}/{st.name}"))
+        or bool((run_state.get(f"{ld.name}/{st.name}") or {}).get("on"))
+        for st in ld.stages)
+    # Thermische Hysterese: Unter min_c beginnt eine Heizphase; solange sie
+    # laeuft und target_c noch nicht erreicht ist, wird target_c als weiches
+    # Komfortziel verwendet. no_grid_import bleibt hoeher priorisiert, weil die
+    # Zielverletzung weich ist. Ohne laufende Phase gilt weiter nur min_c.
+    target = min(max(float(ld.target_c), float(ld.min_c)), float(ld.max_c))
+    heat_floor = target if (T0 < ld.min_c or (running and T0 < target)) \
+        else float(ld.min_c)
     Tamb = amb if amb is not None else np.full(N, ld.target_c)
     # Solar-Einstrahlung (W/m²) -> Wärmeeintrag = Fläche * Wirkungsgrad * Strahlung.
     # surface_m2=0 (Default) -> Term entfällt, unverändertes Verhalten wie bisher.
@@ -244,7 +278,7 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     heat_ok = np.asarray(active, dtype=bool)
     T_on = _free_run(np.where(heat_ok, all_heat, 0.0))
     unavoid_hi = float(np.clip(T_off - ld.max_c, 0.0, None).sum())
-    unavoid_lo = float(np.clip(ld.min_c - T_on, 0.0, None).sum())
+    unavoid_lo = float(np.clip(heat_floor - T_on, 0.0, None).sum())
 
     # Temperatur darf das Band nach OBEN verlassen: die Stufen können nur HEIZEN,
     # nicht kühlen. An heißen Tagen (Tamb > T) gewinnt der Pool auch mit allen WP
@@ -266,7 +300,8 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     # Zwischenstände (seltsame Sperren)". Schont zudem die WP-Kompressoren.
     dm = ld.decision_minutes or 60
     blk = max(1, int(round(dm / (dt * 60.0))))
-    n_blocks = (N + blk - 1) // blk
+    block_pos = _decision_block_positions(inp.index[:N], dm)
+    n_blocks = max(block_pos, default=-1) + 1
     binary_h = max(0.0, float(getattr(ld, "binary_horizon_hours", 12.0)))
     binary_blocks = (n_blocks if binary_h <= 0.0 else min(
         n_blocks, int(np.ceil(binary_h / (blk * dt)))))
@@ -282,12 +317,32 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             f"cl_{sg}_{ssg}_b{b}", 0, 1,
             cat="Binary" if b < binary_blocks else "Continuous")
             for b in range(n_blocks)]
-        on = [blk_var[t // blk] for t in range(N)]     # je Slot -> Block-Variable
+        on = [blk_var[block_pos[t]] for t in range(N)]
         stage_on[st.name] = on
         on_by_key[f"{ld.name}/{st.name}"] = on
         for t in range(N):
             if not active[t]:
                 prob += on[t] == 0
+
+    # Echte Mindestlauf-/Stillstandszeit ueber Neuplanungen hinweg. Der Zustand
+    # stammt aus der persistenten Historie der tatsaechlich publizierten
+    # Befehle. Die Heiz-Obergrenze bleibt ein harter Sicherheitsvorrang.
+    slot_minutes = dt * 60.0
+    for st in ld.stages:
+        label = f"{ld.name}/{st.name}"
+        previous = run_state.get(label) or {}
+        if "on" not in previous:
+            continue
+        was_on = bool(previous["on"])
+        minimum = float(ld.min_on_minutes if was_on else ld.min_off_minutes)
+        elapsed = max(0.0, float(previous.get("minutes", 0.0) or 0.0))
+        remaining = max(0.0, minimum - elapsed)
+        if remaining <= 0.0 or (was_on and T0 >= ld.max_c):
+            continue
+        lock_slots = min(N, int(np.ceil(remaining / slot_minutes)))
+        for t in range(lock_slots):
+            if active[t]:
+                prob += stage_on[st.name][t] == int(was_on)
 
     # Oberhalb von max_c wird nie geheizt - hart, nicht nur ueber den Malus.
     # max_c ist die Temperatur, bis zu der diese Last geheizt werden kann und
@@ -339,9 +394,9 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         cl_power[t] = cl_power[t] + elec
         loss = ld.loss_w_per_k * (T[t] - float(Tamb[t]))
         prob += T[t + 1] == T[t] + (heat - loss) * dt / C
-        prob += T[t] + slack[t] >= ld.min_c
+        prob += T[t] + slack[t] >= heat_floor
         prob += T[t] - slack_hi[t] <= ld.max_c
-    prob += T[N] + slack[N] >= ld.min_c
+    prob += T[N] + slack[N] >= heat_floor
     prob += T[N] - slack_hi[N] <= ld.max_c
     # Komfort-Malus NUR auf den VERMEIDBAREN Teil der Bandverletzung: die
     # unvermeidbare Verletzung (Wasser wärmer als max_c und nicht kühlbar, bzw.

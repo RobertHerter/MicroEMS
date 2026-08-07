@@ -64,6 +64,10 @@ class OptimizerInputs:
     # Tatsächlich rückgemeldeter Stufenzustand {"Pool/WP": bool}; dient als
     # Anfangszustand für Schaltkosten und verhindert unnötiges Takten.
     load_feedback: Optional[dict] = None
+    # Laufuebergreifender Zustand publizierter Stufenbefehle:
+    # {"Pool/WP": {"on": bool, "minutes": Laufdauer}}. Daraus erzwingt das
+    # Thermomodell Mindest-Ein-/Aus-Zeiten auch nach einer Neuplanung.
+    load_run_state: Optional[dict] = None
     # Unveränderter Börsenpreis. Nur dieser entscheidet über
     # zero_at_negative_price; None hält alte Debug-Snapshots kompatibel.
     spot_price_ct_kwh: Optional[np.ndarray] = None

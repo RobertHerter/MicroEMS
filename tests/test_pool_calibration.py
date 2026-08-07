@@ -209,6 +209,23 @@ def test_load_cmd_roundtrip(tmp_path):
     assert read_load_cmd(db, "Sauna", base, base + pd.Timedelta(hours=1), TZ).empty
 
 
+def test_load_stage_run_state_survives_restarts(tmp_path):
+    from ems.local_history import (read_load_stage_run_state,
+                                   write_load_stage_cmd)
+    db = str(tmp_path / "cmd.sqlite")
+    base = pd.Timestamp("2026-08-07 08:00", tz=TZ)
+    write_load_stage_cmd(db, base, "Pool", "WP", 0)
+    write_load_stage_cmd(db, base + pd.Timedelta(minutes=15),
+                         "Pool", "WP", 1)
+    write_load_stage_cmd(db, base + pd.Timedelta(minutes=30),
+                         "Pool", "WP", 1)
+
+    state = read_load_stage_run_state(
+        db, "Pool", "WP", base + pd.Timedelta(minutes=45), 15)
+
+    assert state == {"on": True, "minutes": 30.0}
+
+
 def test_real_stage_feedback_roundtrip(tmp_path):
     from ems.local_history import (read_load_actual_on, read_load_stage_on,
                                    write_load_feedback)

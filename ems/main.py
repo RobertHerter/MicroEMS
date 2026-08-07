@@ -1741,6 +1741,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # werden. Dieselben Werte gehen später unverändert in den Optimierer.
         load_feedback, load_feedback_status = _read_load_feedback(
             config, publisher, now)
+        load_run_state = _read_load_run_state(config, now)
         # Konfigurierten Horizont modellieren; optional kontrolliert bis zur
         # nächsten Mitternacht erweitern. Ohne Option bleiben es konstant 48 h.
         opt_index = _optimization_index(config, now)
@@ -2307,6 +2308,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         if solar_safe is not None else None),
             load_state=load_state,
             load_feedback=load_feedback,
+            load_run_state=load_run_state,
             spot_price_ct_kwh=spot_price.values.astype(float),
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
@@ -3296,6 +3298,23 @@ def _read_load_feedback(config, publisher, now):
     return state or None, statuses
 
 
+def _read_load_run_state(config, now):
+    """Publizierte Laufdauer thermischer Stufen aus SQLite wiederherstellen."""
+    from .local_history import read_load_stage_run_state
+
+    out = {}
+    for ld in getattr(config, "controllable_loads", []):
+        if ld.type != "thermal" or not ld.enabled:
+            continue
+        for stage in ld.stages:
+            state = read_load_stage_run_state(
+                config.e3dc_rscp.history_db_path, ld.name, stage.name, now,
+                config.general.slot_minutes)
+            if state is not None:
+                out[f"{ld.name}/{stage.name}"] = state
+    return out or None
+
+
 def _price_series(repo, config, index, now, return_estimated=False):
     """Strompreis über `index`: Ist-Werte wo vorhanden, sonst Ähnliche-Tage-
     Prognose für noch fehlende (Folgetag-)Preise – statt einer flachen ffill-Linie.
@@ -3916,7 +3935,8 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
     # Kernparameter, die im Dashboard je Lasttyp editierbar sind (Whitelist).
     _LOAD_PARAMS = {
         "thermal": {"target_c": float, "min_c": float, "max_c": float,
-                   "surface_m2": float, "solar_absorption": float},
+                   "surface_m2": float, "solar_absorption": float,
+                   "min_on_minutes": int, "min_off_minutes": int},
         "deferrable": {"power_w": float, "runtime_minutes": float,
                        "window_from_hour": int, "window_to_hour": int,
                        "deadline_hours": float,

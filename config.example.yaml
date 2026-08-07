@@ -256,7 +256,7 @@ controllable_loads: []
   #   type: "thermal"
   #   volume_l: 7000
   #   target_c: 28
-  #   min_c: 27            # der Optimierer hält die Temperatur >= min_c
+  #   min_c: 27            # darunter starten; laufende Phase heizt bis target_c
   #   # max_c ist die Heiz-Obergrenze. Bei thermostat: true MUSS sie der
   #   # Abschalttemperatur des GERÄTS entsprechen - am Gerät ablesen, nicht
   #   # raten: eine Pool-WP heizt z.B. bis 28.5 °C, obwohl target_c 28 sagt.
@@ -271,6 +271,8 @@ controllable_loads: []
   #   # Entscheidungsraster (min): WP-Schaltentscheidungen nur alle X Minuten
   #   # (weniger Binärvariablen -> Solver deutlich schneller); Default 60.
   #   decision_minutes: 60
+  #   min_on_minutes: 60    # Mindestlaufzeit auch ueber Neuberechnungen hinweg
+  #   min_off_minutes: 30   # Mindeststillstand vor erneutem Einschalten
   #   binary_horizon_hours: 12  # fernere Thermik als Duty-Cycle (0 = alles binär)
   #   # Thermostat-Semantik: das EMS-Signal ist eine Heiz-FREIGABE. Sie bleibt
   #   # nur AN, solange die WP per eigenem Thermostat wirklich aus hält.

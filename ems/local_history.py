@@ -1237,6 +1237,46 @@ def write_load_stage_cmd(path: str, ts, name: str, stage: str,
     con.close()
 
 
+def read_load_stage_run_state(path: str, name: str, stage: str, now,
+                              slot_minutes: int) -> Optional[dict]:
+    """Aktuellen publizierten Stufenzustand und seine zusammenhaengende Dauer.
+
+    Die Schalthistorie liegt auf dem EMS-Slotraster und ueberlebt einen
+    Dienstneustart. Eine Luecke groesser als ein Slot macht den Zustand bewusst
+    unbekannt; eine alte Freigabe darf keine neue Planung sperren.
+    """
+    slot = pd.Timedelta(minutes=max(1, int(slot_minutes)))
+    current = pd.Timestamp(now)
+    if current.tzinfo is None:
+        current = current.tz_localize("UTC")
+    cutoff = current.floor(f"{max(1, int(slot_minutes))}min").tz_convert("UTC")
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts,commanded_on FROM load_stage_cmd "
+            "WHERE name=? AND stage=? AND ts<=? ORDER BY ts DESC LIMIT 512",
+            (str(name), str(stage), cutoff.isoformat())).fetchall()
+        con.close()
+    except Exception:
+        rows = []
+    if not rows:
+        return None
+    latest_ts = pd.Timestamp(rows[0][0])
+    if cutoff - latest_ts > slot * 1.5:
+        return None
+    state = bool(rows[0][1])
+    earliest = latest_ts
+    newer = latest_ts
+    for raw_ts, raw_state in rows[1:]:
+        ts = pd.Timestamp(raw_ts)
+        if bool(raw_state) != state or newer - ts > slot * 1.5:
+            break
+        earliest = ts
+        newer = ts
+    minutes = max(0.0, (cutoff - earliest).total_seconds() / 60.0)
+    return {"on": state, "minutes": minutes}
+
+
 def read_load_actual_on(path: str, name: str, stages: list[str], start, end,
                         tz: str) -> pd.Series:
     """Realer Gesamt-Heizstatus; nur Slots mit Rückmeldung ALLER Stufen."""

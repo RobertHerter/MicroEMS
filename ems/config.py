@@ -269,10 +269,10 @@ class ControllableLoad:
     # es wirtschaftlich ist. (YAML-Alias: pv_surplus_only, ältere Configs.)
     no_grid_import: bool = False
     # Last hat einen EIGENEN Thermostat-Cutoff (z.B. Pool-WP): das EMS-Signal ist
-    # dann eine Heiz-FREIGABE, kein Zwang. Bei Ist-Temperatur >= target_c bleibt
+    # dann eine Heiz-FREIGABE, kein Zwang. Bei Ist-Temperatur >= max_c bleibt
     # die Freigabe AN (der Thermostat hält die WP ohnehin aus) - weniger Schalt-
     # spiele, und bei unerwartetem Temperaturabfall heizt die WP sofort. "Aus"
-    # wird nur gesendet, wenn Heizen aktiv verhindert werden soll (T < target_c
+    # wird nur gesendet, wenn Heizen aktiv verhindert werden soll (T < max_c
     # und kein Heiz-Slot geplant). false = Signal folgt 1:1 dem Heizplan.
     thermostat: bool = False
     # Temperatur, ab der das GERAET selbst abschaltet. Das ist NICHT zwingend
@@ -290,6 +290,12 @@ class ControllableLoad:
     # 60 min viertelt die Binärvariablen (Solver-Laufzeit!) und schont die WP-
     # Kompressoren. 0 = Default (thermal 60, deferrable = Slotraster).
     decision_minutes: int = 0
+    # Mindestlauf- und Mindeststillstandszeit ueber Rolling-Horizon-Laeufe
+    # hinweg. Anders als decision_minutes wirken diese Werte auch dann weiter,
+    # wenn der Optimierer 15 Minuten spaeter mit einem neuen Horizont startet.
+    # 0 = keine laufuebergreifende Sperre.
+    min_on_minutes: int = 0
+    min_off_minutes: int = 0
     # Rolling-Horizon für thermische Lasten: nur die nächsten X Stunden werden
     # als echte Ein/Aus-Binärentscheidungen modelliert. Weiter entfernte Blöcke
     # sind ein mittlerer Duty-Cycle [0..1]; sie werden vor ihrer Ausführung bei
@@ -1102,6 +1108,8 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             season_to=(str(w.get("season_to") or seas.get("to"))
                        if (w.get("season_to") or seas.get("to")) else None),
             decision_minutes=int(w.get("decision_minutes", 0)),
+            min_on_minutes=max(0, int(w.get("min_on_minutes", 0))),
+            min_off_minutes=max(0, int(w.get("min_off_minutes", 0))),
             binary_horizon_hours=float(w.get("binary_horizon_hours", 12.0)),
             feedback_required=bool(w.get("feedback_required", False)),
             feedback_max_age_minutes=float(
@@ -1118,6 +1126,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                         "power_profile_w",
                         "runtime_minutes", "window_from_hour", "window_to_hour",
                         "surface_m2", "solar_absorption", "deadline_hours",
+                        "min_on_minutes", "min_off_minutes",
                         # von der Thermomodell-Kalibrierung geschrieben
                         # (ems/pool_calibration.py --apply)
                         "loss_w_per_k"}
