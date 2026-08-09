@@ -57,6 +57,9 @@ class DriftMonitor:
             config.monitoring, "load_bias_window_days", 7.0))
         self.load_alert_w = float(getattr(
             config.monitoring, "load_bias_alert_w", 100.0))
+        # Entprellung der Lastprognose-Warnung: zuletzt gemeldete Stufe
+        # (Vielfaches der Schwelle), None = kein Alarm.
+        self._load_bias_level = None
 
     def _planned_soc(self, repo, start, end) -> Optional[pd.Series]:
         """Geplanter SoC-Verlauf je Slot - bevorzugt aus der lokalen SQLite.
@@ -311,7 +314,19 @@ class DriftMonitor:
         night_sided = (max(float((night > 0).mean()),
                            1.0 - float((night > 0).mean()))
                        if len(night) >= 24 else 0.0)
-        day_trigger = abs(median_w) > self.load_alert_w and one_sided >= 0.65
+        # Ausgeloest wird ueber die NACHT, nicht ueber den Gesamtmedian.
+        #
+        # Gemessen am 09.08.2026 ueber acht Tage: Gesamtmedian +134 W (Alarm),
+        # Nacht +68 W (unauffaellig) - bei einer Tagesstreuung von -454 bis
+        # +176 W. Der Gesamtmedian meldete damit ein Rauschen als Befund, und
+        # der Hinweistext schickte zur Ursachensuche ausgerechnet in die Nacht,
+        # die in Ordnung war.
+        #
+        # Nachts entscheidet sich, ob der Akku bis zum Morgen reicht; tagsuebre
+        # deckt die PV den Fehler ohnehin. Der Tagesmedian bleibt in der
+        # Ausgabe stehen - als Information, nicht als Ausloeser.
+        day_trigger = False
+        day_bias_w = median_w if abs(median_w) > self.load_alert_w else None
         night_trigger = (night_w is not None
                          and abs(night_w) > self.load_alert_w
                          and night_sided >= 0.65)
@@ -344,11 +359,30 @@ class DriftMonitor:
                "sign_convention": BIAS_CONVENTION,
                "direction": bias_direction(median_w),
                "diagnostic": diagnostic,
+               "day_bias_w": (None if day_bias_w is None
+                              else round(day_bias_w, 1)),
                "guard": guard_report(
                    "load_bias", len(deltas), skipped=0,
                    detail=("Nachtfenster geprueft" if night_w is not None
-                           else "Nachtfenster zu duenn - nur Tagesmedian")),
+                           else "Nachtfenster zu duenn - kein Ausloeser")),
                "alert": bool(day_trigger or night_trigger)}
+        # Entprellen: der Check laeuft in JEDEM Zyklus, also alle 15 min. Ohne
+        # Gedaechtnis wiederholte er dieselbe Warnung endlos, bis sie niemand
+        # mehr las. Gemeldet wird nur der Wechsel - und die Entwarnung ebenso,
+        # damit ein stilles Verschwinden nicht mit "noch offen" verwechselt wird.
+        stufe = None if not out["alert"] else int(
+            abs(night_w or median_w) // max(1.0, self.load_alert_w))
+        neu_melden = stufe != self._load_bias_level
+        self._load_bias_level = stufe
+        if not out["alert"]:
+            if neu_melden:
+                log.info("Lastprognose-Versatz wieder im Rahmen "
+                         "(nachts %+.0f W, Schwelle %.0f W).",
+                         night_w if night_w is not None else 0.0,
+                         self.load_alert_w)
+            return out
+        if not neu_melden:
+            return out
         if out["alert"]:
             log.warning(
                 "Lastprognose-Versatz: Median %+.0f W über %d Slots "

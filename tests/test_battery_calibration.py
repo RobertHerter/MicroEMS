@@ -561,3 +561,55 @@ def test_capacity_needs_enough_phases():
     cfg.house_battery.capacity_wh = 20600.0
     assert maybe_apply_capacity(
         _cap_fit(19000.0, n_windows=CAPACITY_MIN_WINDOWS - 1), cfg) is None
+
+
+def test_load_bias_ignores_a_daytime_only_offset(tmp_path):
+    """Der Gesamtmedian ist KEIN Ausloeser mehr.
+
+    Gemessen am 09.08.2026 ueber acht Tage: Gesamtmedian +134 W (Alarm),
+    Nachtwert +68 W (unauffaellig) - bei einer Tagesstreuung von -454 bis
+    +176 W. Der Alarm meldete damit Rauschen, und sein Hinweistext schickte
+    ausgerechnet in die Nacht, die in Ordnung war. Tagsueber deckt die PV den
+    Fehler; nachts entscheidet er, ob der Akku bis zum Morgen reicht.
+    """
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    tz = cfg.general.timezone
+    # Nacht sauber, Tag um 400 W zu hoch.
+    _seed_load_bias(cfg.e3dc_rscp.history_db_path, tz,
+                    forecast_w=lambda t: 800.0 if t.hour < 6 else 1600.0,
+                    actual_w=lambda t: 800.0 if t.hour < 6 else 1200.0)
+    out = DriftMonitor(cfg).check_load_bias(
+        pd.Timestamp("2026-01-13 12:00", tz=tz))
+    assert out is not None
+    assert out["median_w"] > 100.0, "Szenario ist nicht auffaellig genug"
+    assert out["alert"] is False, "Tagesversatz loest wieder aus"
+    assert out["day_bias_w"] is not None, "Tageswert fehlt in der Ausgabe"
+
+
+def test_load_bias_warns_only_on_change(tmp_path, caplog):
+    """Der Check laeuft in JEDEM Zyklus - alle 15 Minuten. Ohne Gedaechtnis
+    wiederholte er dieselbe Warnung endlos, bis sie niemand mehr las."""
+    import logging
+    from ems.drift import DriftMonitor
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    tz = cfg.general.timezone
+    _seed_load_bias(cfg.e3dc_rscp.history_db_path, tz,
+                    forecast_w=lambda t: 400.0 if t.hour < 6 else 1200.0,
+                    actual_w=1200.0)
+    monitor = DriftMonitor(cfg)
+    now = pd.Timestamp("2026-01-13 12:00", tz=tz)
+
+    def warnungen():
+        return [r for r in caplog.records
+                if r.levelno >= logging.WARNING
+                and "Lastprognose-Versatz" in r.getMessage()]
+
+    with caplog.at_level(logging.INFO, logger="ems.drift"):
+        assert monitor.check_load_bias(now)["alert"] is True
+        assert len(warnungen()) == 1
+        for _ in range(5):
+            monitor.check_load_bias(now)
+        assert len(warnungen()) == 1, "Warnung wiederholt sich"
