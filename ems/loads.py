@@ -340,9 +340,27 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         if remaining <= 0.0 or (was_on and T0 >= ld.max_c):
             continue
         lock_slots = min(N, int(np.ceil(remaining / slot_minutes)))
+        ssg = _slug(st.name)
         for t in range(lock_slots):
-            if active[t]:
-                prob += stage_on[st.name][t] == int(was_on)
+            if not active[t]:
+                continue
+            # WEICH, nicht hart. Als harte Bedingung widersprach die Sperre der
+            # ebenfalls harten Heiz-Obergrenze weiter unten: laeuft die Stufe,
+            # muss T <= max_c gelten. Steigt die Temperatur WAEHREND der Sperre
+            # darueber - am 07.08.2026 trieb die Sonne den Pool von 28,1 ueber
+            # 28,5 Grad -, sind beide unerfuellbar und der GESAMTE Plan kippt.
+            # Die Pruefung "T0 >= max_c" oben sieht nur den Startwert.
+            #
+            # Die Rangfolge ist eindeutig: die Mindestlaufzeit schont den
+            # Verdichter, die Obergrenze ist Physik (darueber heizt das Geraet
+            # ohnehin nicht). Also weicht die Vorgabe, nicht der Plan. Dieselbe
+            # Bauart wie die Laufzeit der verschiebbaren Lasten weiter oben.
+            fehlt = pulp.LpVariable(f"cl_{sg}_{ssg}_lock_{t}", 0)
+            if was_on:
+                prob += stage_on[st.name][t] + fehlt >= 1
+            else:
+                prob += stage_on[st.name][t] - fehlt <= 0
+            cost_terms.append(_RUNTIME_PEN * fehlt)
 
     # Oberhalb von max_c wird nie geheizt - hart, nicht nur ueber den Malus.
     # max_c ist die Temperatur, bis zu der diese Last geheizt werden kann und

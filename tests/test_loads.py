@@ -829,3 +829,58 @@ def test_thermal_decision_blocks_are_aligned_to_wall_clock():
     positions = _decision_block_positions(idx, 60)
 
     assert positions == [0, 0, 0, 1, 1, 1, 1]
+
+
+# --------------------------------------------------------------------------- #
+# Mindestlaufzeit gegen Heiz-Obergrenze
+# --------------------------------------------------------------------------- #
+def _pool_lock(*, min_on=60.0, gelaufen=0.0, start_c=28.1, max_c=28.5,
+               solar=520.0):
+    """Laufende Mindestlaufzeit bei steigender Pooltemperatur.
+
+    Die Vorgaben stammen aus dem realen Fall vom 07.08.2026: Pool 28,1 Grad,
+    Obergrenze 28,5, kraeftige Einstrahlung. Die Sonne treibt die Temperatur
+    innerhalb der Sperrstunde ueber die Grenze.
+    """
+    cfg = make_config()
+    ld = _pool_load()
+    ld.max_c = max_c
+    ld.surface_m2, ld.solar_absorption = 7.0, 0.52
+    ld.min_on_minutes = min_on
+    cfg.controllable_loads = [ld]
+    idx = _day_index("2026-08-07")[:48]
+    inp = _inputs(idx, pv=3000.0, price=30.0,
+                  ambient_temp_c=np.full(len(idx), 26.5),
+                  solar_w_m2=np.full(len(idx), solar),
+                  load_state={"pool": start_c},
+                  load_run_state={"pool/klein": {"on": True,
+                                                 "minutes": gelaufen}})
+    return Optimizer(cfg).solve(inp)
+
+
+def test_minimum_runtime_never_makes_the_plan_infeasible():
+    """Zwei harte Bedingungen widersprachen sich und kippten den GESAMTEN Plan.
+
+    Die Sperre nagelte die Stufe fest (stage_on == 1), die Heiz-Obergrenze
+    verlangt gleichzeitig T <= max_c solange sie laeuft. Steigt die Temperatur
+    WAEHREND der Sperre darueber, ist beides unerfuellbar - am 07.08.2026 real
+    passiert, mit ausgesetzter Steuerung als Folge. Die Pruefung auf T0 sah nur
+    den Startwert.
+    """
+    assert _pool_lock().status == "Optimal"
+
+
+def test_the_heating_limit_wins_over_the_minimum_runtime():
+    """Rangfolge: die Mindestlaufzeit schont den Verdichter, die Obergrenze ist
+    Physik. Also weicht die Vorgabe - und zwar sichtbar, nicht heimlich."""
+    res = _pool_lock()
+    temp = res.table["load_pool_temp_c"].to_numpy()
+    an = res.table["load_pool_klein_w"].to_numpy() > 10
+    ueber = temp > 28.5 + 1e-6
+    assert not (an & ueber).any(), "Stufe laeuft oberhalb der Obergrenze"
+    assert ueber.any(), "Szenario erreicht die Grenze nie - prueft nichts"
+
+# Die Gegenrichtung - dass die Sperre ueberhaupt wirkt - decken bereits
+# test_minimum_on_time_survives_rolling_replanning und das Gegenstueck fuer die
+# Stillstandszeit ab. Ein eigener Test dafuer bestand auch OHNE die Sperre und
+# haette nur Sicherheit vorgetaeuscht.
