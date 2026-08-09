@@ -270,7 +270,7 @@ Plattenplatz. Wer sie weglassen will, installiert von Hand:
 ## Optional
 
 * **MQTT ans Smart Home:** `mqtt.enabled: true` mit Broker-Daten. Läuft parallel zur RSCP-Steuerung.
-* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.5.0`; die Kalibrierungs-Timer sind im Container enthalten.
+* **Docker statt systemd:** `docker compose up -d` mit dem Multi-Arch-Image `ghcr.io/robertherter/microems:3.5.1`; die Kalibrierungs-Timer sind im Container enthalten.
 * **Konfiguration im Browser:** `dashboard.controls_enabled: true` schaltet den Editor unter `/config` frei (mit Prüfung, Backup und Neustart).
 
 
