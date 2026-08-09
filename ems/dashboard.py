@@ -2155,8 +2155,15 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         mode_hover = []
         for i, m in enumerate(modes):
             text = _MODE_LABEL.get(m, m)
-            reason = (str(t.iloc[i].get("decision_reason", "") or "")
-                      if "decision_reason" in t.columns else "")
+            # pd.NA hat keinen Wahrheitswert - "wert or ''" wirft dort einen
+            # TypeError und riss den ganzen Zyklus mit. Und .get(key, default)
+            # greift nur bei fehlendem SCHLUESSEL, nicht bei fehlendem WERT:
+            # der Fallback-Plan eines unloesbaren Laufs laesst diese Spalte
+            # leer, weshalb der Absturz genau dann kam, wenn das Dashboard am
+            # wichtigsten gewesen waere.
+            grund = (t.iloc[i].get("decision_reason")
+                     if "decision_reason" in t.columns else None)
+            reason = "" if pd.isna(grund) else str(grund)
             e = t.iloc[i].get("decision_energy_kwh", float("nan"))
             v = t.iloc[i].get("decision_value_ct", float("nan"))
             if reason:
