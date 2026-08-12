@@ -1,5 +1,7 @@
 version: 2
 
+# Aenderungen an dieser Datei stossen einen frischen Dependabot-Lauf an.
+
 updates:
   - package-ecosystem: "pip"
     directory: "/"
