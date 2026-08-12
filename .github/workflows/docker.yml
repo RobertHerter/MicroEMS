@@ -39,7 +39,7 @@ jobs:
       # Nur wenn wirklich gepusht wird (nicht bei PRs aus Forks o.ä.).
       - name: Bei GHCR anmelden
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
