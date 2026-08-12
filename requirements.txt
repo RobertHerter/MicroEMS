@@ -33,6 +33,6 @@ plotly>=6.9.0
 scikit-learn>=1.9.0
 
 # Optionale E3DC-Anbindung per RSCP
-pye3dc>=0.7
+pye3dc>=0.10.0
 # Optional: freie PV-Ertragsprognose (ems/pvforecast.py, Alternative zu Solcast)
 pvlib>=0.15.2
