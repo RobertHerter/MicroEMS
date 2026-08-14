@@ -130,3 +130,55 @@ def test_a_more_expensive_slot_never_gets_more_grid_import():
     assert bezug_teuer <= bezug_billig + 1.0, (
         f"teurer Slot zieht MEHR: {bezug_teuer:.0f} W statt "
         f"hoechstens {bezug_billig:.0f} W")
+
+
+def test_terminal_value_can_buy_energy_when_no_penalty_masks_it():
+    """Der Terminalwert wirkt - er wird nur vom Malus-Stapel verdeckt.
+
+    Januar, keine PV, flacher Preis 25 ct: der einzige Hebel fuer einen hohen
+    End-SoC ist Netzbezug statt Entladung. Mit den ausgelieferten Mali
+    (battery_hold_penalty 5 ct/kWh, Zyklus, Schalten) bleibt der Plan bei jedem
+    Terminalwert gleich; ohne sie treibt der Wert den SoC ans Maximum. Wer den
+    Parameter drehen will, dreht in Wahrheit am Verhaeltnis zu diesen Mali.
+    """
+    idx = _tag("2026-01-15")
+
+    def loese(tv, mali):
+        cfg = make_config()
+        cfg.optimization.charge_strategy = "asap"
+        cfg.optimization.terminal_soc_value = tv
+        if not mali:
+            for name in ("battery_hold_penalty_ct_kwh", "cycle_penalty_ct_kwh",
+                         "battery_switch_penalty_ct",
+                         "mode_prefill_penalty_ct_kwh"):
+                setattr(cfg.optimization, name, 0.0)
+            cfg.optimization.solver_mip_gap = 0.0
+            cfg.optimization.solver_mip_gap_abs_ct = 0.0
+        inp = OptimizerInputs(
+            index=idx, house_load_w=np.full(len(idx), 900.0),
+            pv_w=np.zeros(len(idx)), price_ct_kwh=np.full(len(idx), 25.0),
+            feedin_ct_kwh=np.full(len(idx), 8.0),
+            initial_house_soc_wh=9000.0)
+        res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+        assert not res.infeasible
+        return (float(res.table["house_soc_percent"].iloc[-1]),
+                float(res.table["batt_ac_charge_w"].sum()))
+
+    # ohne Mali: der Wert kauft Energie ein und faehrt den SoC ans Maximum
+    soc_ohne_wert, ac_ohne_wert = loese(0.0, mali=False)
+    soc_mit_wert, ac_mit_wert = loese(100.0, mali=False)
+    assert soc_ohne_wert < 15.0 and ac_ohne_wert == pytest.approx(0.0, abs=1.0)
+    assert soc_mit_wert > 99.0, f"End-SoC nur {soc_mit_wert:.1f} %"
+    assert ac_mit_wert > 0.0, "Terminalwert loest kein Netzladen aus"
+
+    # mit den ausgelieferten Mali verdeckt: hundertfacher Wert, praktisch
+    # derselbe Plan - kein Netzladen und der End-SoC bewegt sich um Zehntel
+    soc_klein, ac_klein = loese(2.0, mali=True)
+    soc_gross, ac_gross = loese(200.0, mali=True)
+    assert ac_klein == pytest.approx(0.0, abs=1.0)
+    assert ac_gross == pytest.approx(0.0, abs=1.0), (
+        "mit Mali darf der Terminalwert kein Netzladen ausloesen")
+    assert abs(soc_gross - soc_klein) < 1.0, (
+        f"hundertfacher Terminalwert verschiebt den End-SoC nur von "
+        f"{soc_klein:.2f} auf {soc_gross:.2f} % - erwartet war genau diese "
+        "Wirkungslosigkeit")
