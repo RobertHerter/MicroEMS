@@ -103,6 +103,31 @@ def _pv_factors(res: dict) -> dict:
     }
 
 
+def _pv_source_summary(res: dict, rolle: str, entscheid: dict) -> dict:
+    """Kompakte Guete je Quellgruppe fuer den Bericht.
+
+    Ohne das beantwortet kalibrierung.yaml nur "wie gut ist die produktive
+    Quelle" - die Schattenquelle liesse sich nur ueber einen Handaufruf von
+    pv_eval.compare_sources beurteilen, obwohl der Wochenlauf sie ohnehin
+    vermisst hat.
+    """
+    fm = res.get("fit_metrics") or {}
+    return {
+        "rolle": rolle,
+        "forecast_source": res.get("forecast_source"),
+        "n": fm.get("n"),
+        "nmae_pct": fm.get("nmae_pct"),
+        "rmse_W": fm.get("rmse_W"),
+        "bias_W": fm.get("bias_W"),
+        "corr": fm.get("corr"),
+        "scale_actual_over_pred": fm.get("scale_actual_over_pred"),
+        "hourly": res.get("hourly"),
+        "monthly": res.get("monthly"),
+        "promotion": {k: entscheid.get(k)
+                      for k in ("promote", "status", "reason", "n")},
+    }
+
+
 def pv_source_groups(cfg) -> dict:
     """Verfuegbare PV-Quellgruppen als {Name: [Archiv-IDs]}. Jede bekommt ein
     eigenes Korrekturprofil, sonst tritt im Quellenvergleich eine korrigierte
@@ -806,6 +831,14 @@ def main():
         if _entscheid.get("promote") or not _champion:
             quellen_profile[_name] = _kandidat
 
+    pv_quellen_bericht = {}
+    if pv and pv_aktiv:
+        pv_quellen_bericht[pv_aktiv] = _pv_source_summary(
+            pv, "produktiv", quellen_wettbewerb.get(pv_aktiv) or {})
+    for _name, _res in pv_schatten.items():
+        pv_quellen_bericht[_name] = _pv_source_summary(
+            _res, "Schattenmodell", quellen_wettbewerb.get(_name) or {})
+
     competition = {
         "enabled": bool(cc.champion_challenger_enabled),
         "promotion_days": int(cc.promotion_days),
@@ -970,6 +1003,7 @@ def main():
         "lookback_days": args.lookback_days,
         "test_days": args.test_days,
         "pv_forecast": pv,
+        "pv_forecast_sources": pv_quellen_bericht,
         "load_forecast": load,
         "forecast_validation": validation,
         "pv_band": band,

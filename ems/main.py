@@ -979,7 +979,10 @@ class _LiveExecutionMonitor:
         if last_ist is not None and plan_last is not None:
             d_last = float(last_ist) - float(plan_last)
             rest = delta + d_last
-            if abs(rest) <= float(mon.execution_battery_tolerance_w):
+            # Der Rest wird ENGER geprueft als die Abweichung selbst: mit der
+            # vollen Toleranz koennte sich eine echte Regelabweichung von bis zu
+            # 1500 W hinter einem Lastsprung verstecken.
+            if abs(rest) <= 0.5 * float(mon.execution_battery_tolerance_w):
                 return (f"unprognostizierter Lastsprung {d_last:+.0f} W "
                         f"(ungeklaerter Rest nur {rest:+.0f} W)")
         soc = self.samples[-1][1].get("soc_percent") if self.samples else None

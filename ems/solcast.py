@@ -110,15 +110,19 @@ def fetch_hours(config) -> int:
     sc = config.solcast
     stunden = int(config.general.forecast_horizon_hours)
     start_h, end_h, full_day, window_secs = _window(sc)
-    if not full_day:
-        je_key: Dict[str, int] = {}
-        for quelle in (sc.sources or []):
-            je_key[quelle.api_key] = je_key.get(quelle.api_key, 0) + 1
-        je_quelle = max(1, sc.calls_per_key_per_day // max(je_key.values() or [1]))
-        pause_h = (24 - end_h) + start_h
-        abstand_h = (window_secs / je_quelle) / 3600.0
-        stunden += int(math.ceil(pause_h + abstand_h))
-    return max(1, min(_MAX_FETCH_HOURS, stunden))
+    je_key: Dict[str, int] = {}
+    for quelle in (sc.sources or []):
+        je_key[quelle.api_key] = je_key.get(quelle.api_key, 0) + 1
+    # Der Key mit den MEISTEN Quellen bestimmt den laengsten Abrufabstand.
+    je_quelle = max(1, sc.calls_per_key_per_day // max(je_key.values() or [1]))
+    # Der Abstand zaehlt IMMER: die Abdeckung altert zwischen zwei Abrufen,
+    # das Horizontende steht bis Mitternacht fest. Bei rund-um-die-Uhr-Abruf
+    # (distribution "24h") blieben sonst bis zu 7 Slots unbesetzt - dieselbe
+    # Fehlerklasse, nur kleiner als die Nachtpause.
+    abstand_h = (window_secs / je_quelle) / 3600.0
+    pause_h = 0.0 if full_day else (24 - end_h) + start_h
+    return max(1, min(_MAX_FETCH_HOURS,
+                      stunden + int(math.ceil(pause_h + abstand_h))))
 
 
 def refresh(config) -> None:

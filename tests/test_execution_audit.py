@@ -804,3 +804,20 @@ def test_unexplained_deviation_still_warns(tmp_path):
     assert len(alerts.items) == 1
     assert alerts.items[0][0] == "warning"
     assert "Vorläufige EMS-Live-Abweichung" in alerts.items[0][1]
+
+
+def test_a_partly_explained_deviation_still_warns(tmp_path):
+    """Der Restfehler wird ENGER geprueft als die Abweichung selbst. Sonst
+    koennte sich eine echte Regelabweichung von fast einer ganzen Toleranz
+    hinter einem Lastsprung verstecken."""
+    cfg = _cause_cfg(tmp_path)          # Toleranz 1500 W -> Restschranke 750 W
+    _plan_abend(cfg)
+    alerts = _Alerts()
+    # Lastsprung erklaert 3408 W, die Akkuabweichung betraegt 2408 W:
+    # 1000 W bleiben ungeklaert - unter der Toleranz, aber ueber der Schranke.
+    monitor = _m._LiveExecutionMonitor(
+        cfg, alerts, _CauseLink(-3338.0, 4338.0, soc_percent=55.0))
+    _dreimal(monitor)
+
+    assert len(alerts.items) == 1
+    assert alerts.items[0][0] == "warning", alerts.items[0][1]

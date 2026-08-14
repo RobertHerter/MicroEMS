@@ -245,3 +245,38 @@ def test_fetch_horizon_stays_within_the_api_limit():
     cfg.solcast.enabled = True
     cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="r")]
     assert solcast.fetch_hours(cfg) == solcast._MAX_FETCH_HOURS
+
+
+def test_fetch_horizon_also_reserves_for_round_the_clock_fetching():
+    """Auch ohne Nachtpause altert die Abdeckung um einen Abrufabstand, waehrend
+    das Horizontende bis Mitternacht feststeht. Ohne Reserve blieben bei
+    distribution="24h" bis zu 7 Slots unbesetzt."""
+    from tests.test_synthetic import make_config
+    from ems.main import _optimization_index
+    cfg = make_config()
+    cfg.general.forecast_horizon_hours = 72
+    cfg.general.optimization_horizon_hours = 48
+    cfg.general.optimization_horizon_round_to_midnight = True
+    cfg.solcast.enabled = True
+    cfg.solcast.distribution = "24h"
+    cfg.solcast.calls_per_key_per_day = 10
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="r")]
+    tz = cfg.general.timezone
+    stunden = solcast.fetch_hours(cfg)
+    abstand = pd.Timedelta(hours=24 / 10)
+
+    # Jeden Abrufzeitpunkt des Abends gegen jeden Lauf bis zum naechsten Abruf
+    schlimmster = 0.0
+    abruf = pd.Timestamp("2026-08-13 20:00", tz=tz)
+    while abruf < pd.Timestamp("2026-08-14 00:00", tz=tz):
+        abdeckung = abruf + pd.Timedelta(hours=stunden)
+        lauf = abruf.ceil("15min")
+        while lauf < abruf + abstand * 0.9:
+            ende = _optimization_index(cfg, lauf)[-1]
+            schlimmster = max(
+                schlimmster, (ende - abdeckung).total_seconds() / 3600.0)
+            lauf += pd.Timedelta(minutes=15)
+        abruf += pd.Timedelta(minutes=15)
+    assert schlimmster <= 0.0, f"{schlimmster:.2f} h unbesetzt"
+    # ohne jede Reserve waere genau das die Luecke
+    assert stunden > cfg.general.forecast_horizon_hours
