@@ -216,3 +216,39 @@ def test_calibrate_band_from_residuals(tmp_path):
     assert 0.0 <= band["recommended_p90_uncertainty"] <= 3.0
     # und weichen vom Heuristik-Festwert ab (Ist == Prognose -> Band ~0)
     assert band["recommended_p10_uncertainty"] < cfg.pv_model.p10_uncertainty
+
+
+def _profil(tmp_path, cfg, inhalt):
+    import yaml
+    pfad = tmp_path / "pv_profile.yaml"
+    pfad.write_text(yaml.safe_dump(inhalt), encoding="utf-8")
+    cfg.calibration.enabled = True
+    cfg.calibration.pv_profile = str(pfad)
+    return cfg
+
+
+def test_each_source_is_measured_with_its_own_profile(tmp_path):
+    """Der Quellenvergleich entscheidet die automatische Umschaltung. Trifft
+    eine korrigierte auf eine rohe Prognose, misst er die Kalibrierung statt
+    der Prognosequalitaet."""
+    db = str(tmp_path / "hist.sqlite")
+    _seed(db, solcast_bias=1.35, pvlib_bias=1.30)
+    cfg = _profil(tmp_path, _cfg(db), {
+        "pv_global": round(1 / 1.35, 4),
+        "pv_sources": {"solcast": {"pv_global": round(1 / 1.35, 4)},
+                       "pvlib": {"pv_global": round(1 / 1.30, 4)}}})
+    g = pv_eval.compare_sources(cfg, lookback_days=6, now=NOW)["groups"]
+    assert g["solcast"]["wape_pct"] < 2.0
+    # ohne eigenes pvlib-Profil blieben hier die rohen ~30 % stehen
+    assert g["pvlib"]["wape_pct"] < 2.0
+
+
+def test_a_flat_profile_is_never_applied_to_the_other_source(tmp_path):
+    """Altes Profilformat: die flachen Faktoren gehoeren der produktiven
+    Quelle. Auf pvlib angewandt waeren sie schlechter als gar nichts."""
+    db = str(tmp_path / "hist.sqlite")
+    _seed(db, solcast_bias=1.35, pvlib_bias=1.30)
+    cfg = _profil(tmp_path, _cfg(db), {"pv_global": round(1 / 1.35, 4)})
+    g = pv_eval.compare_sources(cfg, lookback_days=6, now=NOW)["groups"]
+    assert g["solcast"]["wape_pct"] < 2.0
+    assert g["pvlib"]["wape_pct"] > 20.0

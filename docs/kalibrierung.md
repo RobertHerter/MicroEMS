@@ -72,6 +72,27 @@ Lastkorrektur    ÜBERNEHMEN           n=1336 · WAPE verbessert sich um 2.0 %
 PV-Band          NOCH NICHT BEWERTBAR n= 175 · zu wenig getrennte Residuen
 ```
 
+**Ein Profil je PV-Quelle.** Solcast und das freie pvlib-Modell bekommen
+getrennte Korrekturfaktoren, jedes mit eigener Champion-/Challenger-Prüfung:
+
+```
+PV-Korrektur je Quelle (Grundlage des Quellenvergleichs):
+  solcast (produktiv) CHAMPION HALTEN      n= 813 · global=0.9051
+  pvlib               ÜBERNEHMEN           n= 210 · global=0.9864
+```
+
+Sie stehen im Profil unter `pv_sources:`; die flachen Schlüssel `pv_global`,
+`pv_hour`, `pv_month`, `pv_month_hour` bleiben als Profil der produktiven
+Quelle erhalten, damit ältere Installationen unverändert weiterlaufen.
+
+Das ist die Voraussetzung für die automatische Quellenumschaltung. Vorher wurde
+nur die produktive Quelle kalibriert – im Vergleich trat also eine korrigierte
+gegen eine rohe Prognose an, und das Ergebnis maß, wer kalibriert ist, nicht wer
+besser prognostiziert. Das fremde Profil einfach mitzubenutzen ist keine
+Lösung: über 14 Tage kam pvlib mit Solcasts Faktoren auf **WAPE 22,2 %** statt
+16,0 % roh. Jede Quelle wird deshalb nur mit *ihrem eigenen* Profil korrigiert –
+oder gar nicht.
+
 Zwei Dateien fallen dabei an, und die Unterscheidung ist wichtig:
 
 * **`kalibrierung_profil.yaml`** – das *produktive* Korrekturprofil. Wird live

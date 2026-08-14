@@ -1898,9 +1898,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .calibration import load_profile
             cal_profile = load_profile(config.calibration.pv_profile)
         calibration_source = "solcast" if config.solcast.enabled else "pvlib"
-        cal_profile_active = (cal_profile if
-                              solcast.selected_source(config) == calibration_source
-                              else None)
+        # Seit es Profile je Quellgruppe gibt, bekommt auch eine Ausweichquelle
+        # ihre eigene Korrektur. Fremde Faktoren bleiben ausgeschlossen.
+        from .calibration import pv_profile_for_source
+        cal_profile_active = pv_profile_for_source(
+            cal_profile, solcast.selected_source(config), calibration_source)
 
         pv_missing_slots = {}
         pv_without_nowcast = {}
@@ -2200,12 +2202,15 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     f"{profile_name} · PV-Korrektur wird derzeit nicht angewandt")
             elif cal_profile_active is None:
                 cal_level, cal_state = "partial", "für aktive Quelle ausgesetzt"
+                vorhanden = ", ".join(
+                    (cal_profile.get("pv_sources") or {})) or calibration_source
                 cal_detail = (
-                    f"{profile_name} gehört zu {calibration_source}; aktiv ist "
-                    f"{solcast.selected_source(config)}")
+                    f"{profile_name} hat kein Profil für "
+                    f"{solcast.selected_source(config)} (vorhanden: {vorhanden})")
             else:
                 cal_level, cal_state = "current", "aktiv"
-                cal_detail = f"{profile_name} · angewandt auf {calibration_source}"
+                cal_detail = (f"{profile_name} · angewandt auf "
+                              f"{solcast.selected_source(config)}")
             forecast_quality.append({
                 "name": "PV-Kalibrierung", "state": cal_state,
                 "level": cal_level, "detail": cal_detail,
@@ -2860,8 +2865,12 @@ def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
             act_pv = read_actual_signal(config, repo, "pv_generation", pv_start, now)
             pred_pv = solcast.read_pv_signal(config, repo, "pv_forecast", pv_start, now)
             if config.calibration.enabled:
-                from .calibration import apply_pv_correction, load_profile
-                prof = load_profile(config.calibration.pv_profile)
+                from .calibration import (apply_pv_correction, load_profile,
+                                          pv_profile_for_source)
+                prof = pv_profile_for_source(
+                    load_profile(config.calibration.pv_profile),
+                    solcast.selected_source(config),
+                    "solcast" if config.solcast.enabled else "pvlib")
                 if prof:
                     pred_pv = apply_pv_correction(pred_pv, prof,
                                                   config.general.timezone)
@@ -3414,12 +3423,13 @@ def _build_display_frame(repo, config, now, history, result,
     except Exception as exc:  # pragma: no cover
         log.warning("Verbrauchsprognose fürs Dashboard fehlgeschlagen: %s", exc)
     try:
-        from .calibration import apply_pv_correction, load_profile
-        prof = (load_profile(config.calibration.pv_profile)
-                if config.calibration.enabled else None)
-        calibration_source = "solcast" if config.solcast.enabled else "pvlib"
-        if solcast.selected_source(config) != calibration_source:
-            prof = None
+        from .calibration import (apply_pv_correction, load_profile,
+                                  pv_profile_for_source)
+        prof = pv_profile_for_source(
+            load_profile(config.calibration.pv_profile)
+            if config.calibration.enabled else None,
+            solcast.selected_source(config),
+            "solcast" if config.solcast.enabled else "pvlib")
         for col, signal in (("pv_w", "pv_forecast"),
                             ("pv10_w", "pv_forecast_p10"),
                             ("pv90_w", "pv_forecast_p90")):

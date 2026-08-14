@@ -36,6 +36,27 @@ def load_profile(path: str) -> Optional[dict]:
         return None
 
 
+def pv_profile_for_source(profile: Optional[dict], source: Optional[str],
+                          active: Optional[str] = None) -> Optional[dict]:
+    """Das PV-Korrekturprofil GENAU dieser Quellgruppe.
+
+    Kein Treffer heisst None statt "dann eben das flache Profil": das gehoert
+    der produktiven Quelle und macht fremd angewandt alles schlimmer - auf
+    dieser Anlage stieg der WAPE von pvlib mit Solcasts Profil von 16,0 auf
+    22,2 (14 Tage, 14.08.2026). Alte Profile ohne ``pv_sources`` behalten ihre
+    Bedeutung: flach = die damals aktive Quelle.
+    """
+    if not profile:
+        return None
+    je_quelle = profile.get("pv_sources")
+    if isinstance(je_quelle, dict) and je_quelle:
+        eintrag = je_quelle.get(str(source))
+        return eintrag if isinstance(eintrag, dict) else None
+    if active is not None and source is not None and str(source) != str(active):
+        return None
+    return profile
+
+
 def _get(d: dict, key):
     """Holt Wert aus dict, egal ob Schlüssel int oder str ist."""
     if d is None:

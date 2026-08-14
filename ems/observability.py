@@ -713,21 +713,24 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
         pass
 
     # Bevorzugt die PRODUKTIVE Quelle: Solcast liefert je Feld eine eigene
-    # Ressource, wenn sie benannt ist. Das pvlib-Modell laeuft hier nur im
-    # Schattenbetrieb und bekommt keine Stundenkorrektur - die gehoert der
-    # produktiven Quelle -, sieht also systematisch schlechter aus, ohne dass
-    # das den Plan beträfe.
-    # Das Stundenprofil gehoert der produktiven Quelle. Ohne es misst die
-    # Kennzahl den ROHEN Archivstand und damit einen Fehler, den die Planung
-    # gar nicht sieht - an dieser Anlage rund -9 % Solcast-Ueberschaetzung, die
-    # das Profil laengst herausrechnet.
-    korrektur = None
+    # Ressource, wenn sie benannt ist; sonst misst die Kachel das pvlib-Modell
+    # im Schattenbetrieb.
+    # Jede Quelle wird MIT IHREM EIGENEN Stundenprofil gemessen. Ohne Profil
+    # waere es der ROHE Archivstand und damit ein Fehler, den die Planung gar
+    # nicht sieht - an dieser Anlage rund -9 % Solcast-Ueberschaetzung, die das
+    # Profil laengst herausrechnet. Mit dem FREMDEN Profil waere es schlimmer
+    # als ohne.
+    korrekturen = {}
     if config.calibration.enabled:
         try:
-            from .calibration import load_profile
-            korrektur = load_profile(config.calibration.pv_profile)
+            from .calibration import load_profile, pv_profile_for_source
+            profil = load_profile(config.calibration.pv_profile)
+            aktiv = pv_eval.active_source(config)
+            korrekturen = {
+                name: pv_profile_for_source(profil, name, aktiv)
+                for name in ("solcast", "pvlib")}
         except Exception:                               # pragma: no cover
-            korrektur = None
+            korrekturen = {}
 
     produktiv = {}
     if getattr(config.solcast, "enabled", False):
@@ -744,7 +747,9 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
         prognose = pv_eval.read_group_asof(
             db, [quelle_id], start, current, tz,
             config.general.slot_minutes, "pv")
-        if korrektur and feld.name in produktiv:
+        korrektur = korrekturen.get(
+            "solcast" if feld.name in produktiv else "pvlib")
+        if korrektur:
             from .calibration import apply_pv_correction
             prognose = apply_pv_correction(prognose, korrektur, tz)
         paar = pd.DataFrame({"ist": straenge[spalte],

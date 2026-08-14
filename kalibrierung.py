@@ -40,6 +40,7 @@ from ems.config import load_config
 from ems.quality import BOUNDS, bias_w
 from ems.forecast import LoadForecaster
 from ems.influx import InfluxRepository
+from ems import pv_eval
 
 
 def _metrics(actual: np.ndarray, pred: np.ndarray) -> dict:
@@ -88,12 +89,40 @@ def _month_hour_table(actual: pd.Series, pred: pd.Series, tz: str) -> dict:
     return out
 
 
-def _pv_forecast_hist(cfg, repo, start, now):
-    """PV-Prognose wie im Live-Betrieb: kombinierte lokale Quellen (Solcast ODER
-    freies pvlib-Modell) bei aktiver Quelle, sonst InfluxDB. (str-Quelle mit
-    zurückgeben.) So wird die aktive Prognose gegen die realen Ertragsdaten
-    (actuals.pv_w) kalibriert - egal ob Solcast oder pvlib."""
-    from ems import solcast, pvforecast
+_PV_KEYS = ("pv_global", "pv_month_hour", "pv_hour", "pv_month")
+
+
+def _pv_factors(res: dict) -> dict:
+    """Korrekturfaktoren eines Kalibrierlaufs im Profilformat."""
+    return {
+        "pv_global": round(
+            res.get("fit_metrics", {}).get("scale_actual_over_pred", 1.0), 4),
+        "pv_month_hour": res.get("month_hour", {}),
+        "pv_hour": res.get("hourly", {}),
+        "pv_month": res.get("monthly", {}),
+    }
+
+
+def pv_source_groups(cfg) -> dict:
+    """Verfuegbare PV-Quellgruppen als {Name: [Archiv-IDs]}. Jede bekommt ein
+    eigenes Korrekturprofil, sonst tritt im Quellenvergleich eine korrigierte
+    gegen eine rohe Prognose an."""
+    return pv_eval.source_groups(cfg)
+
+
+def _pv_forecast_hist(cfg, repo, start, now, source=None):
+    """PV-Prognose wie im Live-Betrieb. Ohne ``source`` die AKTIVE Quelle
+    (Solcast ODER pvlib), sonst genau die benannte Gruppe - damit sich jede
+    einzeln kalibrieren laesst."""
+    from ems import pvforecast, solcast
+    if source:
+        ids = pv_source_groups(cfg).get(source) or []
+        if not ids:
+            return None, f"{source} (keine Quellen)"
+        return (pv_eval.read_group_asof(
+            cfg.e3dc_rscp.history_db_path, ids, start, now,
+            cfg.general.timezone, cfg.general.slot_minutes, "pv"),
+            f"lokal ({source})")
     if cfg.solcast.enabled:
         return (solcast.read_pv_signal(cfg, repo, "pv_forecast", start, now),
                 "lokal (Solcast-Quellen / influx_hist)")
@@ -115,9 +144,10 @@ def _pv_actual_hist(cfg, repo, start, now):
     return pd.Series(dtype="float64"), "—"
 
 
-def calibrate_pv(repo, cfg, now, lookback_days, promotion_days=14):
+def calibrate_pv(repo, cfg, now, lookback_days, promotion_days=14,
+                 source=None):
     start = now - timedelta(days=lookback_days)
-    fcast, fsrc = _pv_forecast_hist(cfg, repo, start, now)
+    fcast, fsrc = _pv_forecast_hist(cfg, repo, start, now, source=source)
     actual, asrc = _pv_actual_hist(cfg, repo, start, now)
     if fcast is None or fcast.empty or actual.empty:
         return None
@@ -627,6 +657,19 @@ def main():
         pv = calibrate_pv(
             repo, cfg, now, args.lookback_days,
             cfg.calibration.promotion_days)
+        # Auch die NICHT produktive Quelle kalibrieren. Sonst tritt sie im
+        # Quellenvergleich roh gegen eine korrigierte Prognose an, und die
+        # Umschaltempfehlung misst Kalibrierung statt Prognosequalitaet.
+        pv_aktiv = pv_eval.active_source(cfg)
+        pv_schatten = {}
+        for _name in pv_eval.source_groups(cfg):
+            if _name == pv_aktiv:
+                continue
+            _res = calibrate_pv(
+                repo, cfg, now, args.lookback_days,
+                cfg.calibration.promotion_days, source=_name)
+            if _res:
+                pv_schatten[_name] = _res
         load = calibrate_load(
             repo, cfg, now, args.lookback_days, args.test_days,
             cfg.calibration.promotion_days)
@@ -652,14 +695,7 @@ def main():
     cc = cfg.calibration
     candidate_profile = {"generated": now.isoformat()}
     if pv:
-        candidate_profile.update({
-            "pv_global": round(
-                pv.get("fit_metrics", {}).get(
-                    "scale_actual_over_pred", 1.0), 4),
-            "pv_month_hour": pv.get("month_hour", {}),
-            "pv_hour": pv.get("hourly", {}),
-            "pv_month": pv.get("monthly", {}),
-        })
+        candidate_profile.update(_pv_factors(pv))
     rolling_hourly = (validation or {}).get("hourly_correction")
     if rolling_hourly:
         candidate_profile["load_hourly"] = {
@@ -733,6 +769,43 @@ def main():
                 load_frame["raw"], candidate_profile, cfg.general.timezone),
             load_available)
 
+    # --- Korrekturprofil je Quellgruppe -----------------------------------
+    # Jede Quelle bekommt ihr eigenes Profil und ihre eigene Champion-/
+    # Challenger-Pruefung. Ueber Kreuz angewandt verschlechtern die Faktoren:
+    # pvlib mit Solcasts Profil kam auf WAPE 22,2 statt 16,0 roh.
+    vorher_je_quelle = dict(previous_profile.get("pv_sources") or {})
+    quellen_profile = dict(vorher_je_quelle)
+    quellen_wettbewerb = {}
+    if pv_aktiv and pv_aktiv not in quellen_profile:
+        flach = {k: previous_profile[k]
+                 for k in _PV_KEYS if k in previous_profile}
+        if flach:
+            quellen_profile[pv_aktiv] = flach
+    if pv and pv_aktiv:
+        # Die produktive Quelle hat ihre Pruefung oben schon hinter sich.
+        quellen_wettbewerb[pv_aktiv] = pv_competition
+        if pv_competition.get("promote") or pv_aktiv not in quellen_profile:
+            quellen_profile[pv_aktiv] = _pv_factors(pv)
+    for _name, _res in pv_schatten.items():
+        _kandidat = _pv_factors(_res)
+        _rahmen = _res.pop("_promotion_frame", None)
+        _champion = vorher_je_quelle.get(_name)
+        _entscheid = {"n": 0, "promote": False, "status": "insufficient",
+                      "reason": "kein PV-Challenger"}
+        if (_rahmen is not None and not _rahmen.empty
+                and int(_res.get("fit_metrics", {}).get("n", 0))
+                >= cc.promotion_min_samples):
+            _entscheid = _point_decision(
+                _rahmen,
+                apply_pv_correction(_rahmen["raw"], _champion,
+                                    cfg.general.timezone),
+                apply_pv_correction(_rahmen["raw"], _kandidat,
+                                    cfg.general.timezone),
+                bool(_champion))
+        quellen_wettbewerb[_name] = _entscheid
+        if _entscheid.get("promote") or not _champion:
+            quellen_profile[_name] = _kandidat
+
     competition = {
         "enabled": bool(cc.champion_challenger_enabled),
         "promotion_days": int(cc.promotion_days),
@@ -743,6 +816,7 @@ def main():
             "pv_correction": pv_competition,
             "load_correction": load_competition,
         },
+        "pv_sources": quellen_wettbewerb,
     }
 
     _print_block("PV-Vorhersage (Solcast) vs. Ist-Erzeugung", pv)
@@ -773,7 +847,6 @@ def main():
     band = None
     if cfg.pv_model.arrays and not args.no_band:
         try:
-            from ems import pv_eval
             from ems.config import save_override
             band = pv_eval.calibrate_band(
                 cfg, lookback_days=args.band_lookback_days,
@@ -860,6 +933,8 @@ def main():
                 "load_archive_weight"):
             if key in candidate_profile:
                 profile[key] = candidate_profile[key]
+    if quellen_profile:
+        profile["pv_sources"] = quellen_profile
     profile["generated"] = now.isoformat()
     profile["calibration_competition"] = competition
 
@@ -878,6 +953,17 @@ def main():
         print(f"  {labels.get(name, name):<16} {verdict:<20} "
               f"n={int(decision.get('n', 0)):>4} · "
               f"{decision.get('reason', '–')}")
+    if quellen_wettbewerb:
+        print("  PV-Korrektur je Quelle (Grundlage des Quellenvergleichs):")
+        for name, decision in quellen_wettbewerb.items():
+            verdict = (
+                "ÜBERNEHMEN" if decision.get("promote")
+                else "CHAMPION HALTEN" if decision.get("status") == "held"
+                else "NOCH NICHT BEWERTBAR")
+            rolle = " (produktiv)" if name == pv_aktiv else ""
+            faktor = (quellen_profile.get(name) or {}).get("pv_global", "–")
+            print(f"    {name + rolle:<14} {verdict:<20} "
+                  f"n={int(decision.get('n', 0)):>4} · global={faktor}")
 
     out = {
         "generated": now.isoformat(),

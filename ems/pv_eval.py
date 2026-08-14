@@ -138,6 +138,32 @@ def solcast_source_ids(config) -> List[str]:
     return [s.resource_id for s in sc.sources]
 
 
+def source_groups(config) -> dict:
+    """Verfuegbare PV-Quellgruppen als {Name: [Archiv-IDs]}.
+
+    Jede Gruppe braucht ein EIGENES Korrekturprofil - siehe
+    ``calibration.pv_profile_for_source``."""
+    from . import pvforecast
+    gruppen = {}
+    sc = solcast_source_ids(config)
+    if sc:
+        gruppen["solcast"] = sc
+    if config.pv_model.arrays:
+        pv = pvforecast.source_ids(config)
+        if pv:
+            gruppen["pvlib"] = pv
+    return gruppen
+
+
+def active_source(config) -> Optional[str]:
+    """Name der Gruppe, die den Produktivbetrieb speist (Solcast vor pvlib)."""
+    gruppen = source_groups(config)
+    for name in ("solcast", "pvlib"):
+        if name in gruppen:
+            return name
+    return None
+
+
 def _grid(start, end, tz, slot_minutes) -> pd.DatetimeIndex:
     return pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz),
@@ -296,19 +322,16 @@ def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
             correction = load_profile(config.calibration.pv_profile)
         except Exception:
             correction = None
-    sc = solcast_source_ids(config)
-    if sc:
-        groups["solcast"] = evaluate_group(db, sc, start, end, tz, slot,
-                                            min_pv_w, lead_hours,
-                                            allow_cache=allow_cache,
-                                            correction_profile=correction)
-    pv = pvforecast.source_ids(config) if config.pv_model.arrays else []
-    if pv:
-        groups["pvlib"] = evaluate_group(db, pv, start, end, tz, slot,
-                                         min_pv_w, lead_hours,
-                                         allow_cache=allow_cache,
-                                         correction_profile=(
-                                             correction if not sc else None))
+    # Jede Gruppe mit IHREM eigenen Profil bewerten. Fremde Profile sind
+    # schlechter als gar keins, und "korrigiert gegen roh" waere kein fairer
+    # Vergleich - genau daran haengt die Quellen-Empfehlung.
+    from .calibration import pv_profile_for_source
+    aktiv = active_source(config)
+    for name, ids in source_groups(config).items():
+        groups[name] = evaluate_group(
+            db, ids, start, end, tz, slot, min_pv_w, lead_hours,
+            allow_cache=allow_cache,
+            correction_profile=pv_profile_for_source(correction, name, aktiv))
     groups = {k: v for k, v in groups.items() if v is not None}
     # Für die Empfehlung und Anzeige beide Quellen auf exakt denselben Slots
     # samt EMS-Kontext bewerten. Nur wenn kein gemeinsamer Archivvergleich
@@ -354,12 +377,21 @@ def _common_archive_metrics(config, lookback_days: int, now,
     actual = read_actual_pv(db, start, end, tz, slot)
     sc = read_group_asof(db, sc_ids, start, end, tz, slot)
     pv = read_group_asof(db, pv_ids, start, end, tz, slot)
-    if config.calibration.enabled and not sc.empty:
+    if config.calibration.enabled:
+        # BEIDE Quellen mit ihrem eigenen Profil - sonst tritt eine korrigierte
+        # gegen eine rohe Prognose an und der Vergleich misst nur, wer
+        # kalibriert ist.
         try:
-            from .calibration import apply_pv_correction, load_profile
+            from .calibration import (apply_pv_correction, load_profile,
+                                      pv_profile_for_source)
             profile = load_profile(config.calibration.pv_profile)
-            if profile:
-                sc = apply_pv_correction(sc, profile, tz)
+            aktiv = active_source(config)
+            p_sc = pv_profile_for_source(profile, "solcast", aktiv)
+            p_pv = pv_profile_for_source(profile, "pvlib", aktiv)
+            if p_sc and not sc.empty:
+                sc = apply_pv_correction(sc, p_sc, tz)
+            if p_pv and not pv.empty:
+                pv = apply_pv_correction(pv, p_pv, tz)
         except Exception:
             pass
     frame = pd.DataFrame({"actual": actual, "solcast": sc,

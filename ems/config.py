@@ -760,9 +760,9 @@ class SolcastSource:
     resource_id: str
     # Optionaler Name des PV-Feldes, das diese Ressource prognostiziert - passend
     # zu pv_model.arrays[].name. Nur damit laesst sich die Prognosegüte JE FELD
-    # auf der PRODUKTIVEN Quelle messen; ohne Zuordnung bleibt nur das
-    # pvlib-Schattenmodell, das keine Stundenkorrektur bekommt (die gehoert der
-    # produktiven Quelle) und deshalb systematisch schlechter aussieht.
+    # auf der PRODUKTIVEN Quelle messen; ohne Zuordnung bleibt das
+    # pvlib-Schattenmodell (das seit der Kalibrierung je Quellgruppe seine
+    # eigene Stundenkorrektur bekommt).
     name: Optional[str] = None
 
 
@@ -836,7 +836,11 @@ class PvModelConfig:
 
 @dataclass
 class PvSourceSelectionConfig:
-    """Automatische Wahl zwischen Solcast und pvlib-Schattenmodell."""
+    """Automatische Wahl zwischen Solcast und pvlib-Schattenmodell.
+
+    Fair ist der Vergleich erst, seit die woechentliche Kalibrierung JEDE
+    Quellgruppe einzeln misst (Profil unter ``pv_sources``). Ohne das traete
+    eine korrigierte gegen eine rohe Prognose an."""
     enabled: bool = False
     lookback_days: int = 30
     min_samples: int = 96
