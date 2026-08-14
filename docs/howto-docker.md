@@ -22,9 +22,9 @@ Dashboard-HTML, Debug-Schnappschüsse).
 
 ```bash
 mkdir -p ~/microems/{config,data} && cd ~/microems
-curl -fsSL https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.6.0/config.example.yaml \
+curl -fsSL https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.7.0/config.example.yaml \
      -o config/config.yaml
-curl -fsSL https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.6.0/docker-compose.yml \
+curl -fsSL https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.7.0/docker-compose.yml \
      -o docker-compose.yml
 ```
 
@@ -34,10 +34,10 @@ sonst wird ein Checkout gebraucht:
 ```yaml
 services:
   ems:
-    image: ghcr.io/robertherter/microems:3.6.0
+    image: ghcr.io/robertherter/microems:3.7.0
     # build: .        <- entfernen
   scheduler:
-    image: ghcr.io/robertherter/microems:3.6.0
+    image: ghcr.io/robertherter/microems:3.7.0
     # build: .        <- entfernen
 ```
 
@@ -62,7 +62,7 @@ Konfiguration prüfen, bevor etwas dauerhaft läuft:
 
 ```bash
 docker run --rm -v ./config:/app/config -v ./data:/app/data \
-  ghcr.io/robertherter/microems:3.6.0 --config /app/config/config.yaml --check
+  ghcr.io/robertherter/microems:3.7.0 --config /app/config/config.yaml --check
 ```
 
 Der `ENTRYPOINT` ist `python -m ems.main`, deshalb werden nur die Argumente
@@ -75,7 +75,7 @@ Dieselben Skripte wie im systemd-Betrieb, nur im Container. Reihenfolge beachten
 ```bash
 cd ~/microems
 DOCK="docker run --rm -v ./config:/app/config -v ./data:/app/data \
-      --entrypoint python ghcr.io/robertherter/microems:3.6.0"
+      --entrypoint python ghcr.io/robertherter/microems:3.7.0"
 
 # Hauslast aus dem E3DC (ein RSCP-Aufruf je 15-min-Fenster, läuft Stunden)
 $DOCK rscp_import.py --config /app/config/config.yaml --days 730
