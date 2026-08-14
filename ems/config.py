@@ -232,6 +232,21 @@ class ControllableLoad:
     type: str = "deferrable"
     enabled: bool = True
     switch_penalty_ct: float = 5.0       # Malus je Einschaltvorgang (Anti-Takten)
+    # Komfort-Obergrenze, GETRENNT von max_c. max_c ist die Heizgrenze: darueber
+    # heizt das Geraet nicht mehr (harte Bedingung). comfort_max_c ist die
+    # Temperatur, ab der es wirklich unangenehm wird und die weich bestraft wird.
+    #
+    # Beides in einem Wert zu fuehren hatte eine perverse Folge: Treibt die Sonne
+    # einen Pool ohnehin ueber max_c, kostet jedes zusaetzlich eingebrachte
+    # Kelvin im Zielfunktional - auch wenn geheizt wurde, WAEHREND die Temperatur
+    # noch unter max_c lag. Gemessen am 14.08.2026: 8 kW Solarueberschuss bei
+    # 12 ct blieben ungenutzt, der Pool lag den Vormittag unter dem Wunschwert,
+    # und geheizt wurde stattdessen nachts bei 32 ct.
+    #
+    # None = wie max_c (bisheriges Verhalten). Wer keine Obergrenze braucht -
+    # bei einem Pool ist eine hohe Temperatur meist einfach egal - setzt einen
+    # Wert oberhalb des Erreichbaren.
+    comfort_max_c: Optional[float] = None
     control_topic: Optional[str] = None  # ausgehender Schaltbefehl/Start-Topic
     # Reale Rückmeldung, besonders für verschiebbare Lasten. Sobald ein
     # power_topic einen Wert geliefert hat, entscheidet die Leistung über den
@@ -1072,6 +1087,8 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             type=str(w.get("type", "deferrable")),
             enabled=bool(w.get("enabled", True)),
             switch_penalty_ct=float(w.get("switch_penalty_ct", 5.0)),
+            comfort_max_c=(float(w["comfort_max_c"])
+                           if w.get("comfort_max_c") is not None else None),
             control_topic=(str(w.get("control_topic") or w.get("mqtt_topic"))
                            if (w.get("control_topic") or w.get("mqtt_topic"))
                            else None),

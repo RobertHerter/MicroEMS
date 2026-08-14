@@ -277,7 +277,12 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     # nur ein kleiner konstanter Rest verbleibt im Ziel. Sichere Richtung.)
     heat_ok = np.asarray(active, dtype=bool)
     T_on = _free_run(np.where(heat_ok, all_heat, 0.0))
-    unavoid_hi = float(np.clip(T_off - ld.max_c, 0.0, None).sum())
+    # Komfort-Obergrenze getrennt von der Heizgrenze: max_c sagt, bis wohin
+    # GEHEIZT werden darf; comfort_max_c, ab wann es stoert. Fallen sie zusammen,
+    # bestraft das Modell auch Waerme, die es gar nicht eingebracht hat.
+    komfort_max = float(ld.comfort_max_c
+                        if ld.comfort_max_c is not None else ld.max_c)
+    unavoid_hi = float(np.clip(T_off - komfort_max, 0.0, None).sum())
     unavoid_lo = float(np.clip(heat_floor - T_on, 0.0, None).sum())
 
     # Temperatur darf das Band nach OBEN verlassen: die Stufen können nur HEIZEN,
@@ -287,7 +292,7 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     # als weiter Sicherheitsrahmen (an die physikalisch erreichbaren Trajektorien
     # angepasst, sonst würde z.B. starker Solar-Eintrag die Obergrenze sprengen).
     t_lb = min(ld.min_c - 10.0, float(T_off.min()) - 1.0)
-    t_ub = max(ld.max_c + 10.0, float(T_on.max()) + 1.0)
+    t_ub = max(max(ld.max_c, komfort_max) + 10.0, float(T_on.max()) + 1.0)
     T = [pulp.LpVariable(f"clT_{sg}_{t}", t_lb, t_ub) for t in range(N + 1)]
     prob += T[0] == T0
     slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
@@ -413,9 +418,9 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         loss = ld.loss_w_per_k * (T[t] - float(Tamb[t]))
         prob += T[t + 1] == T[t] + (heat - loss) * dt / C
         prob += T[t] + slack[t] >= heat_floor
-        prob += T[t] - slack_hi[t] <= ld.max_c
+        prob += T[t] - slack_hi[t] <= komfort_max
     prob += T[N] + slack[N] >= heat_floor
-    prob += T[N] - slack_hi[N] <= ld.max_c
+    prob += T[N] - slack_hi[N] <= komfort_max
     # Komfort-Malus NUR auf den VERMEIDBAREN Teil der Bandverletzung: die
     # unvermeidbare Verletzung (Wasser wärmer als max_c und nicht kühlbar, bzw.
     # selbst Volllast-Heizen erreicht min_c nicht) wird als Konstante abgezogen.

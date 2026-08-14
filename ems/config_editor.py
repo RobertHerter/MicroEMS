@@ -84,6 +84,7 @@ LOAD_DESCRIPTIONS = {
     "controllable_loads[].target_c": "Zieltemperatur beziehungsweise Thermostat-Sollwert.",
     "controllable_loads[].min_c": "Untere Komfortgrenze.",
     "controllable_loads[].max_c": "Temperatur, bis zu der geheizt wird. Bei einem Gerät mit eigenem Thermostat dessen Abschaltpunkt - am Gerät ablesen.",
+    "controllable_loads[].comfort_max_c": "Temperatur, ab der es unangenehm wird (weicher Malus). Getrennt von max_c, das nur sagt, bis wohin geheizt wird. Leer = wie max_c; bei einem Pool, dem hohe Temperatur egal ist, hoch ansetzen.",
     "controllable_loads[].loss_w_per_k": "Wärmeverlust in Watt je Kelvin Differenz zur Außenluft.",
     "controllable_loads[].surface_m2": "Wirksame Oberfläche für solaren Wärmeeintrag.",
     "controllable_loads[].solar_absorption": "Absorptionsfaktor der Oberfläche von 0 bis 1.",

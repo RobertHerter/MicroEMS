@@ -884,3 +884,94 @@ def test_the_heating_limit_wins_over_the_minimum_runtime():
 # test_minimum_on_time_survives_rolling_replanning und das Gegenstueck fuer die
 # Stillstandszeit ab. Ein eigener Test dafuer bestand auch OHNE die Sperre und
 # haette nur Sicherheit vorgetaeuscht.
+
+
+# --------------------------------------------------------------------------- #
+# Komfort-Obergrenze getrennt von der Heizgrenze
+# --------------------------------------------------------------------------- #
+def _pool_sonne(*, comfort_max_c=None, start_c=26.4, max_c=28.5):
+    """Sonniger Tag: die Einstrahlung treibt den Pool ohnehin ueber max_c.
+
+    Nachgestellt nach dem realen Fall vom 14.08.2026 - Pool unter dem Band,
+    kraeftiger Ueberschuss, und der Plan heizte trotzdem nicht.
+
+    Rueckgabe: (Heizenergie kWh, hoechste Pooltemperatur).
+    """
+    cfg = make_config()
+    ld = _pool_load()
+    ld.max_c, ld.comfort_max_c = max_c, comfort_max_c
+    ld.surface_m2, ld.solar_absorption = 7.0, 0.52
+    ld.switch_penalty_ct = 0.0
+    cfg.controllable_loads = [ld]
+    idx = _day_index("2026-08-14")[:48]
+    stunde = idx.tz_convert(TZ).hour
+    sonne = np.where((stunde >= 8) & (stunde <= 18), 600.0, 0.0)
+    inp = _inputs(idx, pv=9000.0, load=1500.0, price=12.0,
+                  ambient_temp_c=np.full(len(idx), 26.0),
+                  solar_w_m2=sonne, load_state={"pool": start_c})
+    res = Optimizer(cfg).solve(inp)
+    kwh = float(res.table["load_pool_klein_w"].to_numpy().sum()) * DT_H / 1000.0
+    spitze = float(res.table["load_pool_temp_c"].to_numpy().max())
+    return kwh, spitze
+
+
+def test_comfort_ceiling_defaults_to_the_heating_limit():
+    """Ohne Angabe bleibt alles wie bisher - die Aenderung ist rueckwaerts-
+    kompatibel."""
+    ohne, _ = _pool_sonne(comfort_max_c=None)
+    gleich, _ = _pool_sonne(comfort_max_c=28.5)
+    assert ohne == pytest.approx(gleich, abs=0.05)
+
+
+def test_a_high_comfort_ceiling_frees_the_surplus():
+    """max_c sagt, bis WOHIN geheizt wird; comfort_max_c, ab wann es stoert.
+
+    Zusammengelegt bestrafte das Modell auch Waerme, die die Sonne gebracht
+    hat - und liess deshalb Ueberschuss ungenutzt, waehrend der Pool UNTER dem
+    Wunschwert lag. Am 14.08.2026 real: 8 kW Ueberschuss bei 12 ct blieben
+    liegen, geheizt wurde nachts bei 32 ct (dort 1,32 gegen 6,61 kWh).
+
+    Im synthetischen Fall faellt der Effekt kleiner aus, weil Preis- und
+    Lastverlauf flach sind - die Richtung ist dieselbe.
+    """
+    eng, spitze = _pool_sonne(comfort_max_c=None)
+    weit, _ = _pool_sonne(comfort_max_c=99.0)
+    # Vorbedingung: die Sonne muss die Grenze ueberhaupt ueberschreiten, sonst
+    # greift der Malus nicht und der Test prueft nichts.
+    assert spitze > 28.5, "Szenario erreicht max_c nie"
+    assert weit > eng * 1.25, f"Komfortgrenze ohne Wirkung ({eng:.2f} -> {weit:.2f})"
+
+
+def test_the_heating_limit_holds_even_without_a_comfort_ceiling():
+    """Die harte Grenze darf nicht mit der Komfortgrenze aufweichen.
+
+    Aufbau wie test_no_heating_above_the_heating_limit - inklusive der
+    Abregelungsgrenze, ohne die Heizen gar nicht lohnt und der Test nichts
+    zeigte -, aber MIT hoher comfort_max_c. Genau diese Kombination ist neu:
+    kein Malus nach oben, trotzdem darf oberhalb max_c nicht geheizt werden.
+    """
+    import pandas as pd
+
+    from ems.config import ControllableLoad, LoadStage
+    from ems.optimizer import OptimizerInputs
+
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True,
+        target_c=28.0, min_c=26.0, max_c=28.5, comfort_max_c=99.0,
+        thermostat=True, volume_l=8000, loss_w_per_k=200.0,
+        stages=[LoadStage("gross", 660, 4000)])]
+    index = pd.date_range("2026-07-31 10:00", periods=24, freq="15min",
+                          tz=cfg.general.timezone)
+    n = len(index)
+    cfg.inverter.max_export_w = 3000.0        # Ueberschuss waere sonst wertlos
+    inp = OptimizerInputs(
+        index=index, house_load_w=np.full(n, 400.0), pv_w=np.full(n, 9000.0),
+        price_ct_kwh=np.full(n, 30.0), feedin_ct_kwh=np.full(n, 7.0),
+        initial_house_soc_wh=cfg.house_battery.max_soc_wh,
+        ambient_temp_c=np.full(n, 25.0),
+        load_state={"Pool": 29.5})            # ueber der Heizgrenze
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert res.status == "Optimal", res.status
+    geplant = float(res.table["load_Pool_gross_w"].sum())
+    assert geplant == 0.0, f"{geplant} W oberhalb der Heizgrenze eingeplant"

@@ -261,9 +261,17 @@ controllable_loads: []
   #   # Abschalttemperatur des GERÄTS entsprechen - am Gerät ablesen, nicht
   #   # raten: eine Pool-WP heizt z.B. bis 28.5 °C, obwohl target_c 28 sagt.
   #   # Darüber plant der Optimierer nicht mehr, und die Freigabe darf dort
-  #   # folgenlos stehenbleiben. Passiv (Sonne) darf die Temperatur höher
-  #   # steigen; das wird nicht als vermeidbar bewertet.
+  #   # folgenlos stehenbleiben.
   #   max_c: 28.5
+  #   # comfort_max_c: ab wann es wirklich stört (weicher Malus). GETRENNT von
+  #   # max_c, das nur die Heizgrenze ist. Ohne Angabe gilt max_c - dann kostet
+  #   # aber auch Wärme, die gar nicht die Heizung eingebracht hat: treibt die
+  #   # Sonne den Pool ohnehin über max_c, wird jedes zusätzlich geheizte Kelvin
+  #   # bestraft, obwohl geheizt wurde, WÄHREND die Temperatur noch darunter lag.
+  #   # Gemessen: 8 kW Mittagsüberschuss bei 12 ct blieben ungenutzt, der Pool
+  #   # lag den Vormittag unter dem Wunschwert, geheizt wurde nachts bei 32 ct.
+  #   # Wem hohe Temperatur egal ist (typisch Pool), setzt sie hoch:
+  #   comfort_max_c: 99.0
   #   loss_w_per_k: 120    # Wärmeverlust je K (T_pool - T_außen); ggf. kalibrieren
   #   # Solarer Wärmeeintrag (braucht weather.enabled: Open-Meteo-Einstrahlung):
   #   surface_m2: 8.0          # Wasseroberfläche; 0/weglassen = kein Solareintrag
