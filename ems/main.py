@@ -1557,6 +1557,25 @@ def _resolve_post_route(path: str, config):
     return ("ingest", path[len("/api/ingest/"):].strip("/"))
 
 
+def static_asset_allowed(path: str, dashboard_file: str) -> bool:
+    """Darf dieser Pfad statisch aus dem Arbeitsverzeichnis ausgeliefert werden?
+
+    Erlaubnisliste, keine Sperrliste. Das Basisverzeichnis des HTTP-Servers ist
+    das Verzeichnis der Dashboard-Datei - im Standardsetup ``/opt/ems``, und dort
+    liegen ``config.yaml`` (InfluxDB-, MQTT- und E3DC-Zugangsdaten, Solcast-
+    Schluessel), das Overlay und die komplette History-Datenbank. Vorher gab
+    ``SimpleHTTPRequestHandler`` jeden Pfad darin heraus; bei leerem
+    ``dashboard.password`` ohne jede Anmeldung, und ``dashboard.host`` steht per
+    Standard auf 0.0.0.0. Icon und Manifest laufen ueber die "raw"-Route, nicht
+    hierueber.
+
+    Weil nur bekannte Namen durchkommen, greifen auch Traversal-Versuche nicht -
+    weder ``../`` noch prozentkodierte Varianten.
+    """
+    name = str(path).split("?")[0].split("#")[0].lstrip("/")
+    return name in {dashboard_file, "plotly.min.js"}
+
+
 def _resolve_get_route(path: str, config, *, has_schedule_runner: bool):
     """Reine GET-Routing-Entscheidung (ohne IO): welchen Endpoint der Handler
     bedient. Deskriptor:
@@ -4362,6 +4381,9 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
                     return
             if self.path in ("/", "/index.html", "/dashboard", "/dashboard.html"):
                 self.path = "/" + fname
+            if not static_asset_allowed(self.path, fname):
+                self.send_error(404, "Not Found")
+                return
             return super().do_GET()
 
         def end_headers(self):

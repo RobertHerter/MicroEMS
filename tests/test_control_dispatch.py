@@ -355,3 +355,20 @@ def test_status_api_payload_mode_comparison(tmp_path):
                                 series={"timestamp": [], "modes": {}})
     obj, code = m._status_api_payload("/api/mode-comparison.json", cfg)
     assert code == 200 and obj["series"] == {"timestamp": [], "modes": {}}
+
+
+def test_static_serving_is_an_allowlist_not_a_blocklist():
+    """Das Basisverzeichnis des HTTP-Servers ist das Arbeitsverzeichnis - dort
+    liegen config.yaml mit allen Zugangsdaten und die History-Datenbank. Vorher
+    lieferte SimpleHTTPRequestHandler jeden Pfad darin aus, bei leerem
+    dashboard.password ohne Anmeldung."""
+    from ems.main import static_asset_allowed
+    datei = "dashboard_heute.html"
+    for erlaubt in ("/dashboard_heute.html", "dashboard_heute.html",
+                    "/plotly.min.js", "/plotly.min.js?v=3"):
+        assert static_asset_allowed(erlaubt, datei), erlaubt
+    for verboten in ("/config.yaml", "/config_overrides.yaml",
+                     "/e3dc_history.sqlite", "/kalibrierung_profil.yaml",
+                     "/../config.yaml", "/%2e%2e/config.yaml",
+                     "/ems/config.py", "/backup/config.yaml", "/"):
+        assert not static_asset_allowed(verboten, datei), verboten
