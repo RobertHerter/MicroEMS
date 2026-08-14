@@ -206,3 +206,42 @@ def test_refresh_budget_and_spacing(tmp_path, monkeypatch):
 
     solcast.refresh(cfg)                          # Budget=1 erschöpft -> kein Abruf
     assert calls["n"] == 1
+
+
+def test_fetch_horizon_survives_the_nightly_pause():
+    """Nachts wird nicht abgerufen, der Horizont steht aber bis Mitternacht
+    fest. Die letzte Abendprognose muss den letzten Lauf vor dem naechsten
+    Abruf noch abdecken - sonst werden Slots mit 0 W besetzt."""
+    from tests.test_synthetic import make_config
+    from ems.main import _optimization_index
+    cfg = make_config()
+    cfg.general.forecast_horizon_hours = 72
+    cfg.general.optimization_horizon_hours = 48
+    cfg.general.optimization_horizon_round_to_midnight = True
+    cfg.solcast.enabled = True
+    cfg.solcast.window_start_hour, cfg.solcast.window_end_hour = 5, 22
+    cfg.solcast.calls_per_key_per_day = 10
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="r")]
+    tz = cfg.general.timezone
+
+    letzter_abruf = pd.Timestamp("2026-08-13 20:45", tz=tz)
+    naechster_abruf = pd.Timestamp("2026-08-14 05:00", tz=tz)
+    letzter_lauf = naechster_abruf - pd.Timedelta(
+        minutes=cfg.general.slot_minutes)
+    horizont_ende = _optimization_index(cfg, letzter_lauf)[-1]
+
+    abdeckung = letzter_abruf + pd.Timedelta(hours=solcast.fetch_hours(cfg))
+    assert abdeckung >= horizont_ende, (
+        f"Abdeckung endet {abdeckung}, Horizont braucht {horizont_ende}")
+    # ohne Reserve (72 h) waere genau hier die gemessene Luecke entstanden
+    assert letzter_abruf + pd.Timedelta(
+        hours=cfg.general.forecast_horizon_hours) < horizont_ende
+
+
+def test_fetch_horizon_stays_within_the_api_limit():
+    from tests.test_synthetic import make_config
+    cfg = make_config()
+    cfg.general.forecast_horizon_hours = 168
+    cfg.solcast.enabled = True
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="r")]
+    assert solcast.fetch_hours(cfg) == solcast._MAX_FETCH_HOURS

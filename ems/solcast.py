@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import urllib.error
 import urllib.request
 from typing import Dict, Tuple
@@ -24,6 +25,9 @@ from typing import Dict, Tuple
 import pandas as pd
 
 from . import local_history
+
+# Solcast liefert je Abruf hoechstens sieben Tage.
+_MAX_FETCH_HOURS = 168
 
 log = logging.getLogger("ems.solcast")
 
@@ -51,8 +55,8 @@ def _period_minutes(p: str) -> int:
 def fetch_forecast(api_key: str, resource_id: str, hours: int = 72,
                    timeout: float = 30.0) -> Dict[str, Tuple[float, float, float]]:
     """Forecast einer Resource -> {UTC-ISO-Periodenstart: (pv_w, p10_w, p90_w)}.
-    hours: Vorhersage-Horizont (Solcast max 168); 72 deckt den auf Mitternacht
-    aufgerundeten Optimierungshorizont ab (bis 00:00 übernächster Tag)."""
+    hours: Vorhersage-Horizont; Solcast liefert bis _MAX_FETCH_HOURS. Wie weit
+    tatsaechlich noetig ist, rechnet ``fetch_hours`` aus."""
     url = _BASE.format(rid=resource_id)
     if hours:
         url += f"&hours={int(hours)}"
@@ -88,6 +92,35 @@ def _window(sc):
     return start_h, end_h, full_day, window_secs
 
 
+def fetch_hours(config) -> int:
+    """Anzufordernder Solcast-Horizont inklusive Reserve fuer die Abrufpause.
+
+    Der Optimierungshorizont endet an der Mitternacht NACH jetzt+48 h, also bis
+    zu 72 h voraus - und er wandert nicht mit, sondern steht bis Mitternacht
+    fest. Der Abruf pausiert dagegen ausserhalb von ``window_start_hour`` ..
+    ``window_end_hour``. Die letzte Abendprognose altert damit ueber Nacht in
+    den Horizont hinein: mit genau ``forecast_horizon_hours`` angeforderten
+    Stunden fehlten jede Nacht 13 Slots (16.08. 20:45-23:45, gemessen am
+    14.08.2026), die dann konservativ mit 0 W besetzt wurden. Sie lagen nach
+    Sonnenuntergang, der Plan blieb also richtig - aber nur zufaellig.
+
+    Die Reserve deckt die naechtliche Pause plus einen Abrufabstand ab. Sie
+    kostet nichts: Solcast rechnet je Aufruf ab, nicht je angeforderter Stunde.
+    """
+    sc = config.solcast
+    stunden = int(config.general.forecast_horizon_hours)
+    start_h, end_h, full_day, window_secs = _window(sc)
+    if not full_day:
+        je_key: Dict[str, int] = {}
+        for quelle in (sc.sources or []):
+            je_key[quelle.api_key] = je_key.get(quelle.api_key, 0) + 1
+        je_quelle = max(1, sc.calls_per_key_per_day // max(je_key.values() or [1]))
+        pause_h = (24 - end_h) + start_h
+        abstand_h = (window_secs / je_quelle) / 3600.0
+        stunden += int(math.ceil(pause_h + abstand_h))
+    return max(1, min(_MAX_FETCH_HOURS, stunden))
+
+
 def refresh(config) -> None:
     """Fällige Quellen abrufen (Budget + gleichmäßige Verteilung im Fenster)."""
     sc = config.solcast
@@ -121,7 +154,7 @@ def refresh(config) -> None:
             continue                             # noch nicht fällig
         try:
             data = fetch_forecast(s.api_key, s.resource_id,
-                                  hours=config.general.forecast_horizon_hours)
+                                  hours=fetch_hours(config))
             local_history.write_pv_forecast(db, s.resource_id, data)
             local_history.write_pv_forecast_archive(
                 db, s.resource_id, now.tz_convert("UTC"), data)
