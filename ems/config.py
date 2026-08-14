@@ -758,6 +758,12 @@ class WeatherConfig:
 class SolcastSource:
     api_key: str
     resource_id: str
+    # Optionaler Name des PV-Feldes, das diese Ressource prognostiziert - passend
+    # zu pv_model.arrays[].name. Nur damit laesst sich die Prognosegüte JE FELD
+    # auf der PRODUKTIVEN Quelle messen; ohne Zuordnung bleibt nur das
+    # pvlib-Schattenmodell, das keine Stundenkorrektur bekommt (die gehoert der
+    # produktiven Quelle) und deshalb systematisch schlechter aussieht.
+    name: Optional[str] = None
 
 
 @dataclass
@@ -1661,7 +1667,9 @@ def load_config(path: str) -> Config:
         combine=str(sc.get("combine", "sum")),
         calls_per_key_per_day=int(sc.get("calls_per_key_per_day", 10)),
         sources=[SolcastSource(api_key=str(s["api_key"]),
-                               resource_id=str(s["resource_id"]))
+                               resource_id=str(s["resource_id"]),
+                               name=(str(s["name"])
+                                     if s.get("name") else None))
                  for s in (sc.get("sources") or [])],
         distribution=str(sc.get("distribution", "daytime")),
         window_start_hour=int(sc.get("window_start_hour", 5)),

@@ -213,6 +213,7 @@ FIELD_DESCRIPTIONS = {
     "solcast.window_end_hour": "Ende des Zeitfensters, über das die Abrufe verteilt werden.",
     "solcast.sources[].api_key": "Solcast-API-Schlüssel.",
     "solcast.sources[].resource_id": "Kennung der Solcast-Anlage (rooftop site).",
+    "solcast.sources[].name": "Name des PV-Feldes, das diese Ressource prognostiziert - passend zu pv_model.arrays[].name. Nur damit misst die Prognosegüte je Feld die produktive Quelle statt des pvlib-Schattenmodells.",
     "weather.enabled": "Temperatur und Einstrahlung von Open-Meteo abrufen (ohne Schlüssel).",
     "weather.forecast_days": "Wie viele Tage Wettervorhersage geladen werden.",
     "weather.past_days": "Wie viele vergangene Tage mitgeladen werden.",

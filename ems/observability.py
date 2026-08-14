@@ -712,13 +712,41 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
     except Exception:                                   # pragma: no cover
         pass
 
+    # Bevorzugt die PRODUKTIVE Quelle: Solcast liefert je Feld eine eigene
+    # Ressource, wenn sie benannt ist. Das pvlib-Modell laeuft hier nur im
+    # Schattenbetrieb und bekommt keine Stundenkorrektur - die gehoert der
+    # produktiven Quelle -, sieht also systematisch schlechter aus, ohne dass
+    # das den Plan beträfe.
+    # Das Stundenprofil gehoert der produktiven Quelle. Ohne es misst die
+    # Kennzahl den ROHEN Archivstand und damit einen Fehler, den die Planung
+    # gar nicht sieht - an dieser Anlage rund -9 % Solcast-Ueberschaetzung, die
+    # das Profil laengst herausrechnet.
+    korrektur = None
+    if config.calibration.enabled:
+        try:
+            from .calibration import load_profile
+            korrektur = load_profile(config.calibration.pv_profile)
+        except Exception:                               # pragma: no cover
+            korrektur = None
+
+    produktiv = {}
+    if getattr(config.solcast, "enabled", False):
+        for quelle in (getattr(config.solcast, "sources", None) or []):
+            if getattr(quelle, "name", None) and quelle.resource_id:
+                produktiv[str(quelle.name)] = str(quelle.resource_id)
+
     for feld in felder:
         spalte = f"string_{int(feld.string_index)}"
         if spalte not in straenge.columns:
             continue
+        quelle_id = produktiv.get(feld.name) or f"pvmodel:{feld.name}"
+        herkunft = "produktiv" if feld.name in produktiv else "Schattenmodell"
         prognose = pv_eval.read_group_asof(
-            db, [f"pvmodel:{feld.name}"], start, current, tz,
+            db, [quelle_id], start, current, tz,
             config.general.slot_minutes, "pv")
+        if korrektur and feld.name in produktiv:
+            from .calibration import apply_pv_correction
+            prognose = apply_pv_correction(prognose, korrektur, tz)
         paar = pd.DataFrame({"ist": straenge[spalte],
                              "soll": prognose}).dropna()
         if not abgeregelt.empty:
@@ -731,6 +759,7 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
         if len(paar) < MIN_SAMPLES.get("pv_band", 24):
             out["arrays"].append({
                 "name": feld.name, "string": spalte, "n": int(len(paar)),
+                "source": herkunft,
                 "wape_pct": None, "wape_scaled_pct": None,
                 "scale": None, "bias_w": None})
             continue
@@ -738,6 +767,7 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
         skala = float(ist.sum() / soll.sum()) if soll.sum() > 0 else None
         out["arrays"].append({
             "name": feld.name, "string": spalte, "n": int(len(paar)),
+            "source": herkunft,
             "wape_pct": _wape(ist, soll),
             "wape_scaled_pct": (_wape(ist, soll * skala)
                                 if skala else None),

@@ -634,3 +634,121 @@ def test_array_quality_uses_each_field_own_string(tmp_path):
     assert felder["West"]["string"] == "string_1"
     assert felder["Ost"]["scale"] == pytest.approx(1.0, abs=0.02)
     assert felder["West"]["scale"] == pytest.approx(1.5, abs=0.02)
+
+
+def test_array_quality_prefers_the_productive_source(tmp_path):
+    """Gemessen werden soll, was den PLAN steuert.
+
+    Ohne Zuordnung vergleicht die Kennzahl gegen das pvlib-Schattenmodell
+    (pv_model.enabled false, shadow true). Das bekommt keine Stundenkorrektur -
+    die gehoert der produktiven Quelle - und sieht deshalb systematisch
+    schlechter aus, ohne dass das den Betrieb betraefe. An der Referenzanlage:
+    WAPE 17,4 gegen 13,7/11,9, und eine scheinbare Feld-Asymmetrie von
+    +9,3/-8,3 %, die sich als Artefakt erwies.
+    """
+    from ems.config import PvArray, SolcastSource
+    from ems.local_history import write_pv_forecast_archive, write_pv_strings
+    from ems.observability import array_forecast_quality
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.calibration.enabled = False
+    cfg.pv_model.arrays = [
+        PvArray(name="Ost", kwp=8.0, tilt=20, azimuth=90, string_index=0)]
+    cfg.solcast.enabled = True
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="res-ost",
+                                         name="Ost")]
+    tz = cfg.general.timezone
+    ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
+    start = ende - pd.Timedelta(days=3)
+    index = [t for t in pd.date_range(start, ende, freq="1h", inclusive="left")
+             if 8 <= t.hour <= 16]
+
+    # Produktive Quelle trifft, Schattenmodell liegt um die Haelfte daneben.
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "res-ost", start - pd.Timedelta(hours=12),
+        {t.tz_convert("UTC").isoformat(): (2000.0, 1600.0, 2400.0) for t in index})
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "pvmodel:Ost", start - pd.Timedelta(hours=12),
+        {t.tz_convert("UTC").isoformat(): (3000.0, 2400.0, 3600.0) for t in index})
+    for t in index:
+        write_pv_strings(cfg.e3dc_rscp.history_db_path, t, {0: 2000.0})
+
+    feld = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+    assert feld["source"] == "produktiv"
+    assert feld["scale"] == pytest.approx(1.0, abs=0.02), \
+        "es wurde gegen das Schattenmodell gemessen"
+
+
+def test_array_quality_falls_back_to_the_shadow_model(tmp_path):
+    """Ohne benannte Ressource bleibt das Schattenmodell - aber sichtbar
+    benannt, damit die Zahl nicht fuer die produktive Guete gehalten wird."""
+    from ems.config import PvArray, SolcastSource
+    from ems.local_history import write_pv_forecast_archive, write_pv_strings
+    from ems.observability import array_forecast_quality
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.calibration.enabled = False
+    cfg.pv_model.arrays = [
+        PvArray(name="Ost", kwp=8.0, tilt=20, azimuth=90, string_index=0)]
+    cfg.solcast.enabled = True
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="res-ost")]
+    tz = cfg.general.timezone
+    ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
+    start = ende - pd.Timedelta(days=3)
+    index = [t for t in pd.date_range(start, ende, freq="1h", inclusive="left")
+             if 8 <= t.hour <= 16]
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "pvmodel:Ost", start - pd.Timedelta(hours=12),
+        {t.tz_convert("UTC").isoformat(): (3000.0, 2400.0, 3600.0) for t in index})
+    for t in index:
+        write_pv_strings(cfg.e3dc_rscp.history_db_path, t, {0: 2000.0})
+
+    feld = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+    assert feld["source"] == "Schattenmodell"
+    assert feld["scale"] == pytest.approx(2000.0 / 3000.0, abs=0.02)
+
+
+def test_array_quality_applies_the_hourly_correction(tmp_path):
+    """Gemessen wird der KORRIGIERTE Stand, nicht der rohe Archivwert.
+
+    Das Stundenprofil gehoert der produktiven Quelle und wird im Betrieb auf
+    sie angewandt. Ohne es zeigte die Kennzahl einen Fehler, den die Planung
+    gar nicht sieht - an der Referenzanlage rund -9 % Solcast-Ueberschaetzung,
+    die das Profil laengst herausrechnet.
+    """
+    from ems.config import PvArray, SolcastSource
+    from ems.local_history import write_pv_forecast_archive, write_pv_strings
+    from ems.observability import array_forecast_quality
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "h.sqlite")
+    cfg.pv_model.arrays = [
+        PvArray(name="Ost", kwp=8.0, tilt=20, azimuth=90, string_index=0)]
+    cfg.solcast.enabled = True
+    cfg.solcast.sources = [SolcastSource(api_key="k", resource_id="res-ost",
+                                         name="Ost")]
+    # Profil halbiert die Prognose - das Archiv liegt damit doppelt so hoch
+    # wie das, womit tatsaechlich geplant wird.
+    profil = tmp_path / "profil.yaml"
+    profil.write_text("pv_global: 0.5\n", encoding="utf-8")
+    cfg.calibration.enabled = True
+    cfg.calibration.pv_profile = str(profil)
+
+    tz = cfg.general.timezone
+    ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
+    start = ende - pd.Timedelta(days=3)
+    index = [t for t in pd.date_range(start, ende, freq="1h", inclusive="left")
+             if 8 <= t.hour <= 16]
+    write_pv_forecast_archive(
+        cfg.e3dc_rscp.history_db_path, "res-ost", start - pd.Timedelta(hours=12),
+        {t.tz_convert("UTC").isoformat(): (4000.0, 3200.0, 4800.0) for t in index})
+    for t in index:
+        write_pv_strings(cfg.e3dc_rscp.history_db_path, t, {0: 2000.0})
+
+    feld = array_forecast_quality(cfg, days=3, now=ende)["arrays"][0]
+    # Korrigiert (4000 * 0.5 = 2000) trifft die Messung exakt; ohne Korrektur
+    # laege der Faktor bei 0,5.
+    assert feld["scale"] == pytest.approx(1.0, abs=0.02), \
+        "die Stundenkorrektur wurde nicht angewandt"

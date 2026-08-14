@@ -150,8 +150,12 @@ solcast:
   window_start_hour: 5       # nur bei distribution="daytime"
   window_end_hour: 22
   sources:
-    - {api_key: "DEIN_KEY_1", resource_id: "aaaa-bbbb-cccc-dddd"}   # z.B. Ost-Dach
-    - {api_key: "DEIN_KEY_1", resource_id: "eeee-ffff-0000-1111"}   # z.B. West-Dach
+    # name (optional) ordnet die Ressource einem PV-Feld zu (pv_model.arrays[].name).
+    # Nur damit misst die Prognosegüte JE FELD die PRODUKTIVE Quelle; ohne
+    # Zuordnung bleibt das pvlib-Schattenmodell, das keine Stundenkorrektur
+    # bekommt (die gehört der produktiven Quelle) und schlechter aussieht.
+    - {api_key: "DEIN_KEY_1", resource_id: "aaaa-bbbb-cccc-dddd", name: "Ost"}
+    - {api_key: "DEIN_KEY_1", resource_id: "eeee-ffff-0000-1111", name: "West"}
     # weiterer Account für mehr Abrufe derselben Anlage (combine: "mean"):
     # - {api_key: "DEIN_KEY_2", resource_id: "..."}
 

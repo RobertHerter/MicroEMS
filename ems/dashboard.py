@@ -924,10 +924,12 @@ def _forecast_analysis_block(forecast_quality=None,
   if(!liste.length){el.innerHTML='<span class="an-hint">'+esc((a&&a.note)||'Keine Feld-Auswertung verfügbar.')+'</span>';return;}
   el.innerHTML=liste.map(function(f){
    if(!f.n||f.wape_pct==null)
-    return tile('–',esc(f.name)+' WAPE','noch zu wenige Messwerte ('+(f.n||0)+')');
+    return tile('–',esc(f.name)+' WAPE','noch zu wenige Messwerte ('+(f.n||0)+')'
+     +(f.source?' · '+esc(f.source):''));
    const skala=(typeof f.scale==='number')?((f.scale-1)*100):null;
    return tile(num(f.wape_pct)+' %',esc(f.name)+' WAPE',
-    'Form '+num(f.wape_scaled_pct)+' % · Höhe '+(skala>0?'+':'')+num(skala,0)+' % · n='+f.n);
+    'Form '+num(f.wape_scaled_pct)+' % · Höhe '+(skala>0?'+':'')+num(skala,0)+' % · n='+f.n
+    +(f.source?' · '+esc(f.source):''));
   }).join('');
  }
  function dayComparison(d){
