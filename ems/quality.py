@@ -131,6 +131,12 @@ MIN_SAMPLES: dict[str, int] = {
     "drift_window": 96,          # ein Tag im 15-min-Raster
     "promotion": 96,
     "nowcast": 96,
+    # Eine Zelle des Korrekturprofils (Stunde, Monat oder Monat x Stunde).
+    # 12 Slots = drei Tage derselben Stunde. Ohne Gate entstand ein voll
+    # angewandter Faktor schon aus EINEM Slot - beim Monatswechsel also aus
+    # dem ersten Tag des neuen Monats, genau dort, wo das Profil saisonal
+    # umschwenken soll.
+    "profile_cell": 12,
 }
 
 

@@ -37,7 +37,7 @@ import pandas as pd
 import yaml
 
 from ems.config import load_config
-from ems.quality import BOUNDS, bias_w
+from ems.quality import BOUNDS, bias_w, enough
 from ems.forecast import LoadForecaster
 from ems.influx import InfluxRepository
 from ems import pv_eval
@@ -62,6 +62,18 @@ def _metrics(actual: np.ndarray, pred: np.ndarray) -> dict:
             "rmse_W": rmse, "scale_actual_over_pred": scale, "corr": corr}
 
 
+def _cell_ok(sub: pd.DataFrame) -> bool:
+    """Traegt diese Profilzelle genug Messwerte, um angewandt zu werden?
+
+    Ohne Gate entstand ein voll wirksamer Faktor schon aus einem einzigen Slot.
+    Beim Monatswechsel hiess das: der erste Tag des neuen Monats bestimmt dessen
+    Korrektur - genau dort, wo das Profil saisonal umschwenken soll und die
+    Datenlage am duennsten ist. Faellt eine Zelle weg, greift die Kette
+    (Monat x Stunde -> Stunde -> Monat -> global) eine Ebene hoeher.
+    """
+    return sub["p"].sum() > 1e-6 and enough("profile_cell", len(sub))
+
+
 def _factor_table(actual: pd.Series, pred: pd.Series, key) -> dict:
     """Korrekturfaktor sum(actual)/sum(pred) je Gruppe (Stunde/Monat)."""
     df = pd.DataFrame({"a": actual, "p": pred}).dropna()
@@ -70,7 +82,7 @@ def _factor_table(actual: pd.Series, pred: pd.Series, key) -> dict:
     g = df.groupby(key(df.index))
     out = {}
     for k, sub in g:
-        if sub["p"].sum() > 1e-6:
+        if _cell_ok(sub):
             out[int(k)] = round(float(sub["a"].sum() / sub["p"].sum()), 3)
     return out
 
@@ -84,8 +96,9 @@ def _month_hour_table(actual: pd.Series, pred: pd.Series, tz: str) -> dict:
     df["m"], df["h"] = loc.month, loc.hour
     out: dict = {}
     for (m, h), sub in df.groupby(["m", "h"]):
-        if sub["p"].sum() > 1e-6:
-            out.setdefault(int(m), {})[int(h)] = round(float(sub["a"].sum() / sub["p"].sum()), 3)
+        if _cell_ok(sub):
+            out.setdefault(int(m), {})[int(h)] = round(
+                float(sub["a"].sum() / sub["p"].sum()), 3)
     return out
 
 

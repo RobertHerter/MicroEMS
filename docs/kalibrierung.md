@@ -72,6 +72,15 @@ Lastkorrektur    ÜBERNEHMEN           n=1336 · WAPE verbessert sich um 2.0 %
 PV-Band          NOCH NICHT BEWERTBAR n= 175 · zu wenig getrennte Residuen
 ```
 
+**Mindestbelegung je Zelle.** Ein Faktor entsteht erst ab
+`MIN_SAMPLES["profile_cell"]` (12 Slots = drei Tage derselben Stunde). Vorher
+genügte ein einziger Slot für einen voll wirksamen Faktor — beim Monatswechsel
+also der erste Tag des neuen Monats, genau dort, wo das Profil saisonal
+umschwenken soll und die Datenlage am dünnsten ist. Fällt eine Zelle weg, greift
+die Kette eine Ebene höher (Monat × Stunde → Stunde → Monat → global). Auf dieser
+Anlage betrifft das derzeit genau eine von 32 Zellen: August, 5 Uhr, 11 Slots —
+die Dämmerungsstunde.
+
 **Ein Profil je PV-Quelle.** Solcast und das freie pvlib-Modell bekommen
 getrennte Korrekturfaktoren, jedes mit eigener Champion-/Challenger-Prüfung:
 
