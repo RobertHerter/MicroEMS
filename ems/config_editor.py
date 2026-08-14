@@ -178,6 +178,7 @@ FIELD_DESCRIPTIONS = {
     "forecast.disaggregation_lookback_days": "Rückblick, aus dem die reale Laufzeit steuerbarer Lasten herausgerechnet wird.",
     "forecast.disaggregation_min_samples": "Mindestzahl echter Rückmeldungen, bevor herausgerechnet wird.",
     "forecast.live_nowcast_retention_days": "Aufbewahrung der 5-Sekunden-Livewerte in der lokalen Historie.",
+    "general.forecast_archive_raw_days": "Wie viele Tage das Prognosearchiv vollstaendig behaelt. Aelteres duennt ems.archive_thinning auf eine Prognose je Zielslot und Vorlaufzeit aus - ohne das waechst es um rund 14 MB pro Tag.",
     "forecast.live_nowcast_min_coverage_seconds": "Mindestabdeckung je 15-min-Slot, damit der Livewert als belastbar gilt.",
     "forecast.live_nowcast_max_gap_seconds": "Größere Lücken beenden die Verdichtung eines Slots.",
     "controllable_loads[].feedback_topic": "Optionaler MQTT-Schaltzustand der Last; dient als Fallback, wenn noch kein Leistungswert vorliegt.",

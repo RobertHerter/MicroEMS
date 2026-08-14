@@ -216,6 +216,7 @@ ExecStart=/opt/ems/.venv/bin/python -m kalibrierung --config /opt/ems/config.yam
 ExecStart=/opt/ems/.venv/bin/python -m ems.pool_calibration --config /opt/ems/config.yaml --apply
 ExecStart=/opt/ems/.venv/bin/python -m ems.battery_calibration --config /opt/ems/config.yaml --apply
 ExecStart=/opt/ems/.venv/bin/python -m ems.load_learning --config /opt/ems/config.yaml --apply
+ExecStart=/opt/ems/.venv/bin/python -m ems.archive_thinning --config /opt/ems/config.yaml --apply
 UNIT
 
 sudo tee /etc/systemd/system/ems-kalibrierung.timer >/dev/null <<'UNIT'
@@ -232,6 +233,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ems-kalibrierung.tim
 ```
 
 Geschriebene Werte landen im Overlay `config_overrides.yaml`, `config.yaml` bleibt unangetastet.
+Der letzte Schritt löscht keine Messwerte, sondern dünnt nur das Prognosearchiv
+jenseits von `general.forecast_archive_raw_days` (60) aus – ohne ihn wächst es um
+rund 14 MB pro Tag.
 Die Schritte 2–4 sind nur nötig, wenn eine thermische Last, ein Akku bzw. Geräte
 mit `power_topic` konfiguriert sind – ohne passende Daten melden sie das und
 schreiben nichts. Was jeder Schritt misst und wann er etwas übernimmt, steht in

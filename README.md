@@ -95,6 +95,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/pool_calibration.py` | Pool-Thermomodell (Verlust/Solar/Heizleistung) aus Messdaten fitten |
 | `ems/battery_calibration.py` | Entladewirkungsgrad des Speichers aus Entladephasen messen und nachführen |
 | `ems/load_learning.py` | Lastprofil verschiebbarer Lasten aus der Verbrauchsrückmeldung anlernen |
+| `ems/archive_thinning.py` | Prognosearchiv ausdünnen: Rohfenster behalten, älteres auf eine Prognose je Zielslot und Vorlaufzeit |
 | `ems/planvalue.py` | Entscheidungsgüte: Timing-Note der Ist-Daten + Regret gegen Hellsicht (€/Tag) |
 | `ems/archive.py` | Seite `/archiv`: archivierten Optimierer-Lauf wählen und gegen die Ist-Werte legen |
 | `ems/gridweather.py` + `ems/priceforecast.py` | Deutschlandweite Wetter-Indizes (Residuallast) + gelernte Börsenpreis-Prognose mit Selbstprüfung |
@@ -251,8 +252,9 @@ Lebenszeichen ausbleibt). Die Timer:
   Verbrauchs-/PV-Kalibrierung (`kalibrierung.py`) inkl. Champion-/Challenger-
   Prüfung und pvlib-p10/p90-Bandkalibrierung, Pool-Thermomodell
   (`ems.pool_calibration --apply`), Entladewirkungsgrad
-  (`ems.battery_calibration --apply`) und Lastprofile
-  (`ems.load_learning --apply`).
+  (`ems.battery_calibration --apply`), Lastprofile
+  (`ems.load_learning --apply`) und das Ausdünnen des Prognosearchivs
+  (`ems.archive_thinning --apply`).
   PV-Korrektur, Lastkorrektur und PV-Band werden getrennt auf einem ausgesparten
   Holdout bewertet; nur belastbar bessere Challenger werden übernommen.
   Alles Übernommene landet im Overlay `config_overrides.yaml` und greift

@@ -186,6 +186,52 @@ Trockner abgelehnt (nur 2 Läufe), beide Waschmaschinen ohne Rückmeldung.
 
 ---
 
+## Schritt 5 – Prognosearchiv ausdünnen
+
+```
+python -m ems.archive_thinning --config config.yaml --apply
+```
+
+Löscht keine Messwerte, nur Redundanz in `pv_forecast_archive`. Diese Tabelle
+hält je Ausgabezeitpunkt die komplette Prognose – für leckagefreie
+Rolling-Origin-Auswertung genau richtig, aber sie wächst mit jedem Zyklus:
+gemessen am 14.08.2026 rund **49 600 Zeilen und 14,2 MB pro Tag** (Tabelle plus
+zwei Indizes). Auf 730 Tage wären das ~10,4 GB.
+
+Der Aufwand steckt nicht in der Historie, sondern in der Wiederholung:
+
+| | |
+|---|---|
+| pvlib-Ensemble-Mitglieder | **65 %** aller Zeilen, gelesen nur bis `ensemble_lookback_days` (45 T) |
+| `pvmodel:Ost` | 7 280 Zeilen/Tag – derselbe Zielslot in jedem Zyklus neu |
+
+Deshalb:
+
+1. **Rohfenster** `general.forecast_archive_raw_days` (60 Tage) bleibt
+   vollständig – deckt den Ensemble-Lookback (45 T) mit Reserve, ebenso
+   Quellenauswahl (30 T) und Feldgüte (21 T).
+2. **Älter:** je Quelle und Zielslot bleibt eine Prognose je Lead-Bucket
+   (0 h plus `ensemble_horizon_hours`, hier 6/24/48 h). Behalten wird die
+   *kleinste* Vorlaufzeit ab dem Bucket – genau die, die `read_group_asof` für
+   diesen Lead auswählt. Damit sind Kalibrier-Fit und Validierung nach dem
+   Ausdünnen bitgleich; ein Test prüft das.
+3. **Ensemble-Mitglieder** jenseits des Rohfensters fallen ganz weg.
+
+Größenordnung: 730 Tage kosten so ~300 MB statt ~10,4 GB. Verloren geht die
+feine Entwicklung einer Prognose für alte Slots („wie hat sich die Vorhersage
+für den 3. Januar über 72 Stunden verändert") – für Kalibrierung,
+Quellenvergleich und Validierung wird sie nicht gebraucht.
+
+Ohne `--apply` wird nur gezählt. `--vacuum` gibt den Platz an das Dateisystem
+zurück; ohne das bleibt er in der Datei und wird von späteren Einträgen
+wiederverwendet.
+
+Solange das Archiv jünger als das Rohfenster ist, meldet der Schritt
+„nichts jenseits des Rohfensters" und tut nichts. Es begann am 16.07.2026, die
+erste echte Ausdünnung fällt damit Mitte September 2026 an.
+
+---
+
 ## Was die Temperatur im laufenden Betrieb tut
 
 Nicht Teil des wöchentlichen Laufs, aber nötig, um dessen Zahlen einzuordnen:

@@ -31,6 +31,11 @@ class GeneralConfig:
     # Liegt das reguläre Ende bereits auf 00:00, wird NICHT weiter verlängert.
     optimization_horizon_round_to_midnight: bool = False
     forecast_horizon_hours: int = 72
+    # Rohfenster des Prognosearchivs: so viele Tage bleiben vollstaendig
+    # erhalten. Aelteres duennt ems.archive_thinning auf eine Prognose je
+    # Zielslot und Lead-Bucket aus. 60 deckt den Ensemble-Lookback (45 T) mit
+    # Reserve; ohne das Ausduennen waechst das Archiv um ~14 MB pro Tag.
+    forecast_archive_raw_days: int = 60
     slot_minutes: int = 15
     run_interval_minutes: int = 15
     # Neuberechnung auf das Uhr-Raster synchronisiert (:00/:15/:30/:45); dieser
@@ -1247,6 +1252,8 @@ def load_config(path: str) -> Config:
         optimization_horizon_round_to_midnight=bool(g.get(
             "optimization_horizon_round_to_midnight", False)),
         forecast_horizon_hours=int(g.get("forecast_horizon_hours", 72)),
+        forecast_archive_raw_days=int(
+            g.get("forecast_archive_raw_days", 60)),
         slot_minutes=int(g.get("slot_minutes", 15)),
         run_interval_minutes=int(g.get("run_interval_minutes", 15)),
         run_offset_seconds=int(g.get("run_offset_seconds", 10)),

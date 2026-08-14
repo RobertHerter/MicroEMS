@@ -252,3 +252,26 @@ def test_a_flat_profile_is_never_applied_to_the_other_source(tmp_path):
     g = pv_eval.compare_sources(cfg, lookback_days=6, now=NOW)["groups"]
     assert g["solcast"]["wape_pct"] < 2.0
     assert g["pvlib"]["wape_pct"] > 20.0
+
+
+def test_lead_bound_compares_identical_timestamp_formats(tmp_path):
+    """Die Lead-Schranke wird als STRING gegen issue_ts geprueft. Rendert man
+    sie mit datetime(), entsteht "2026-05-24 10:00:00" gegen
+    "2026-05-24T10:00:00+00:00" - das "T" gewinnt gegen das Leerzeichen, und
+    jede Ausgabe mit demselben Datum fiel heraus. Die wirksame Vorlaufzeit war
+    dadurch bis zu einen Tag groesser als angefordert."""
+    db = str(tmp_path / "hist.sqlite")
+    ziel = pd.Timestamp("2026-05-26 12:00", tz=TZ)
+    for lead in (6.0, 24.0, 48.0, 72.0):
+        local_history.write_pv_forecast_archive(
+            db, "sc1", (ziel - pd.Timedelta(hours=lead)).tz_convert("UTC"),
+            {ziel.tz_convert("UTC").isoformat(): (1000.0 + lead, 0.0, 0.0)})
+
+    for lead in (6.0, 24.0, 48.0):
+        s = pv_eval.read_group_asof(
+            db, ["sc1"], ziel, ziel + pd.Timedelta(minutes=15), TZ, 15,
+            "pv", lead)
+        assert len(s) == 1
+        # genau die Ausgabe mit dieser Vorlaufzeit, nicht die vom Vortag
+        assert float(s.iloc[0]) == 1000.0 + lead, (
+            f"Lead {lead} h liefert {float(s.iloc[0])} statt {1000.0 + lead}")

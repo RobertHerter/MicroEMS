@@ -203,9 +203,16 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
     s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     placeholders = ",".join("?" * len(sources))
-    # Maximale issue_ts je (source, target) unter der Lead-Schranke; die
-    # Schranke wird pro Zeile über datetime(target, '-Xh') ausgewertet.
-    lead_sql = f"datetime(target_ts, '-{lead_hours} hours')" if lead_hours else "target_ts"
+    # Maximale issue_ts je (source, target) unter der Lead-Schranke, pro Zeile
+    # aus target_ts gerechnet. strftime statt datetime, weil die Schranke mit
+    # issue_ts als STRING verglichen wird: datetime() liefert
+    # "2026-05-24 10:00:00" (Leerzeichen, ohne Offset), issue_ts steht als
+    # "2026-05-24T10:00:00+00:00" da. Beim Vergleich gewinnt dann das "T"
+    # gegen das Leerzeichen, und jede Ausgabe mit GLEICHEM Datum fiel heraus -
+    # die wirksame Vorlaufzeit war bis zu einen Tag groesser als angefordert.
+    lead_sql = (
+        f"strftime('%Y-%m-%dT%H:%M:%S+00:00', target_ts, '-{lead_hours} hours')"
+        if lead_hours else "target_ts")
     try:
         con = sqlite3.connect(db, timeout=10)
         rows = con.execute(
