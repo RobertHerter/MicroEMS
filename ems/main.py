@@ -848,7 +848,9 @@ class _LiveExecutionMonitor:
         self.slot = None
         self.bad_count = self.good_count = 0
         self.alarm = False
+        self.explained = None
         self.last_state = None
+        self.last_cause = None
         self.last_write = None
 
     def _sample_strings(self, now) -> None:
@@ -949,6 +951,51 @@ class _LiveExecutionMonitor:
                 energy += 0.5 * (v0 + v1) * seconds / 3600.0
         return energy
 
+    def _deviation_cause(self, delta, planned, mon):
+        """Benennt die Ursache, wenn die Abweichung NICHT am Regelpfad liegt.
+
+        Zwei Ursachen, am 13./14.08.2026 auf dieser Anlage ausgemessen:
+
+        * **Lastsprung** - ein Verbraucher (Ofen, Herd) geht in einem einzigen
+          5-s-Sample an, hier 1200 -> 3660 W. Der E3DC deckt ihn korrekt aus dem
+          Akku, das Netz bleibt bei 0 W. Die Akkuabweichung IST dann die
+          Lastabweichung: die Summe beider Deltas lag bei 10 W. Der Regelpfad
+          ist unschuldig, die Lastprognose hat den Verbraucher nicht gesehen.
+        * **SoC-Grenze** - der Akku stand real bei 4,4 %, unter
+          ``min_soc_percent`` = 10. Der Plan wollte deshalb halten (0 W), das
+          Geraet entlud weiter ~800 W: seine Eigenreserve liegt tiefer als die
+          EMS-Grenze. An der Grenze kann das Geraet dem Plan nicht folgen.
+
+        Beides bleibt eine Abweichung und wird auch so protokolliert - aber als
+        Info mit Ursache statt als Regelwarnung. Zaehler, Audit-Zustand und der
+        Neuberechnungs-Trigger (der am NETZ haengt, nicht hier) bleiben
+        unberuehrt.
+        """
+        last_ist = self._interpolated_median(
+            self.samples, "house_load_w", mon.execution_live_window_seconds,
+            mon.execution_live_sample_seconds,
+            mon.execution_live_max_gap_seconds)
+        plan_last = planned.get("load_w")
+        if last_ist is not None and plan_last is not None:
+            d_last = float(last_ist) - float(plan_last)
+            rest = delta + d_last
+            if abs(rest) <= float(mon.execution_battery_tolerance_w):
+                return (f"unprognostizierter Lastsprung {d_last:+.0f} W "
+                        f"(ungeklaerter Rest nur {rest:+.0f} W)")
+        soc = self.samples[-1][1].get("soc_percent") if self.samples else None
+        hb = self.config.house_battery
+        if soc is not None:
+            soc = float(soc)
+            if soc <= hb.min_soc_percent + 1.0:
+                return (f"SoC {soc:.1f} % an der Untergrenze "
+                        f"{hb.min_soc_percent:.0f} % - dort kann das Geraet dem "
+                        f"Plan nicht folgen")
+            if soc >= hb.max_soc_percent - 1.0:
+                return (f"SoC {soc:.1f} % an der Obergrenze "
+                        f"{hb.max_soc_percent:.0f} % - dort kann das Geraet dem "
+                        f"Plan nicht folgen")
+        return None
+
     def sample(self, now=None):
         mon = self.config.monitoring
         audit_enabled = bool(
@@ -992,7 +1039,8 @@ class _LiveExecutionMonitor:
         if self.slot != slot:
             self.slot, self.samples = slot, []
             self.bad_count = self.good_count = 0
-            self.last_state = self.last_write = None
+            self.last_state = self.last_write = self.last_cause = None
+            self.explained = None
         self.samples.append((now, dict(live)))
         keep_s = max(mon.execution_live_window_seconds,
                      mon.execution_live_max_gap_seconds) + 10.0
@@ -1021,23 +1069,39 @@ class _LiveExecutionMonitor:
             self.good_count += 1
             self.bad_count = 0
         consecutive = max(1, int(mon.execution_live_consecutive))
-        if bad and self.bad_count >= consecutive and not self.alarm:
+        # Erklärbare Abweichungen (Lastsprung, SoC-Grenze) sind keine
+        # Regelfehler. Als Warnung erzogen sie nur dazu, die Meldung zu
+        # überlesen - sechs am Tag auf dieser Anlage.
+        ursache = (self._deviation_cause(delta, planned, mon)
+                   if bad and self.bad_count >= consecutive else None)
+        if bad and self.bad_count >= consecutive and ursache is not None:
+            if self.publisher is not None and self.explained != ursache:
+                self.publisher.publish_alert(
+                    "info", "EMS-Live-Abweichung mit bekannter Ursache: "
+                    f"{ursache}. Akku Soll {planned_w:.0f} W, Ist-Median "
+                    f"{actual_w:.0f} W.")
+            self.explained = ursache
+        elif bad and self.bad_count >= consecutive and not self.alarm:
             self.alarm = True
+            self.explained = None
             if self.publisher is not None:
                 self.publisher.publish_alert(
                     "warning", "Vorläufige EMS-Live-Abweichung: Akku Soll "
                     f"{planned_w:.0f} W, Ist-Median {actual_w:.0f} W. "
                     "Bestätigung folgt mit E3/DC-Zählerenergie.")
-        elif not bad and self.good_count >= consecutive and self.alarm:
-            self.alarm = False
-            if self.publisher is not None:
-                self.publisher.publish_alert(
-                    "info", "EMS-Live-Ausführung folgt wieder dem Sollplan.")
+        elif not bad and self.good_count >= consecutive:
+            self.explained = None
+            if self.alarm:
+                self.alarm = False
+                if self.publisher is not None:
+                    self.publisher.publish_alert(
+                        "info", "EMS-Live-Ausführung folgt wieder dem Sollplan.")
         state = ("live_deviation" if self.alarm else
                  "live_suspect" if bad else "live_ok")
         ok = not self.alarm
         message = (f"Vorläufige Live-Abweichung Akku: Soll {planned_w:.0f} W, "
                    f"Ist-Median {actual_w:.0f} W."
+                   + (f" Ursache: {ursache}." if ursache else "")
                    if bad else "Vorläufige Live-Prüfung innerhalb der Toleranz.")
         energy_wh = self._window_energy_wh(
             self.samples, "battery_w", mon.execution_live_max_gap_seconds)
@@ -1049,9 +1113,15 @@ class _LiveExecutionMonitor:
                        "window_battery_wh": round(energy_wh, 2),
                        "samples": len(self.samples),
                        "window_seconds": round(span_s, 1)},
-            "deviations": {"battery_w": round(delta, 1)},
+            # Ursache in "deviations", nicht als eigener Schluessel: die
+            # Audit-Tabelle hat ein festes Schema, alles andere fiele still weg.
+            # Nur battery_w wird numerisch weiterverarbeitet (drift.py).
+            "deviations": {"battery_w": round(delta, 1), "cause": ursache},
         }
-        changed = state != self.last_state
+        # Auch eine neu erkannte Ursache ist eine Aenderung: sie steht erst
+        # fest, wenn die Entprellung durch ist - ohne diese Bedingung bliebe im
+        # Audit die ursachenlose erste Probe stehen.
+        changed = state != self.last_state or ursache != self.last_cause
         due = (self.last_write is None
                or (now - self.last_write).total_seconds() >= 30.0)
         if changed or due:
@@ -1059,6 +1129,7 @@ class _LiveExecutionMonitor:
                 write_execution_audit(
                     self.config.e3dc_rscp.history_db_path, slot, audit)
                 self.last_state, self.last_write = state, now
+                self.last_cause = ursache
             except Exception as exc:
                 log.debug("Vorläufiges Live-Audit nicht speicherbar (%s).", exc)
         return live

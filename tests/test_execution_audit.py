@@ -706,3 +706,101 @@ def test_string_reader_sums_multiple_inverters():
             return E()
 
     assert Fake().read_strings() == {0: 1250.0, 1: 500.0}
+
+
+class _CauseLink:
+    """Livewerte mit Hauslast und SoC - beides braucht die Ursachenerkennung."""
+
+    def __init__(self, battery_w, house_load_w, soc_percent=50.0):
+        self.values = {"battery_w": battery_w, "house_load_w": house_load_w,
+                       "grid_w": 0.0, "soc_percent": soc_percent}
+
+    def read_live(self, force=False):
+        return dict(self.values)
+
+
+def _plan_abend(cfg, akku_w=-930.0, last_w=930.0):
+    """Abendslot: der Akku deckt die prognostizierte Hauslast."""
+    table = pd.DataFrame([{
+        "grid_import_w": 0.0, "grid_export_w": 0.0,
+        "batt_dc_charge_w": 0.0, "batt_ac_charge_w": 0.0,
+        "batt_discharge_w": -akku_w, "mode": "auto",
+        "batt_charge_limit_w": 5000.0, "batt_discharge_limit_w": 5000.0,
+        "batt_grid_charge_w": 0.0, "house_soc_percent": 50.0,
+        "house_load_w": last_w,
+    }], index=[TS])
+    write_execution_plan(cfg.e3dc_rscp.history_db_path, TS, table,
+                         initial_soc_percent=50.0)
+
+
+def _cause_cfg(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.monitoring.execution_live_settle_seconds = 5.0
+    cfg.monitoring.execution_live_window_seconds = 20.0
+    cfg.monitoring.execution_live_sample_seconds = 5.0
+    cfg.monitoring.execution_live_max_gap_seconds = 10.0
+    cfg.monitoring.execution_live_consecutive = 2
+    cfg.monitoring.execution_battery_tolerance_w = 1500.0
+    return cfg
+
+
+def _dreimal(monitor):
+    for sekunden in (0, 5, 10):
+        monitor.sample(TS + pd.Timedelta(seconds=sekunden))
+
+
+def test_unforecast_load_step_is_reported_as_cause_not_as_control_fault(tmp_path):
+    """Gemessen am 13.08.2026: Last springt 1200 -> 3660 W in einem Sample, der
+    Akku folgt, das Netz bleibt bei 0 W. Delta Akku + Delta Last = 10 W - der
+    Regelpfad ist unschuldig, die Lastprognose hat den Verbraucher verpasst."""
+    cfg = _cause_cfg(tmp_path)
+    _plan_abend(cfg)
+    alerts = _Alerts()
+    monitor = _m._LiveExecutionMonitor(
+        cfg, alerts, _CauseLink(-3338.0, 3348.0))
+    _dreimal(monitor)
+
+    assert len(alerts.items) == 1
+    stufe, text = alerts.items[0]
+    assert stufe == "info", f"Regelwarnung statt Info: {text}"
+    assert "Lastsprung" in text
+    audit = read_execution_audits(cfg.e3dc_rscp.history_db_path, 1)[0]
+    assert "Lastsprung" in (audit["deviations"].get("cause") or "")
+    assert "Lastsprung" in audit["message"]
+    # nur EINE Meldung, auch wenn die Abweichung anhaelt
+    _dreimal(monitor)
+    assert len(alerts.items) == 1
+
+
+def test_deviation_at_the_soc_floor_is_reported_as_cause(tmp_path):
+    """Gemessen am 14.08.2026 06:14: SoC real 8,1 % bei min_soc 10 %. Der Plan
+    wollte halten, das Geraet entlud weiter - an der Grenze kann es dem Plan
+    nicht folgen."""
+    cfg = _cause_cfg(tmp_path)
+    cfg.house_battery.min_soc_percent = 10.0
+    _plan_abend(cfg, akku_w=0.0, last_w=1256.0)
+    alerts = _Alerts()
+    monitor = _m._LiveExecutionMonitor(
+        cfg, alerts, _CauseLink(-1932.0, 1256.0, soc_percent=8.1))
+    _dreimal(monitor)
+
+    assert len(alerts.items) == 1
+    stufe, text = alerts.items[0]
+    assert stufe == "info", f"Regelwarnung statt Info: {text}"
+    assert "Untergrenze" in text
+
+
+def test_unexplained_deviation_still_warns(tmp_path):
+    """Gegenprobe: passt die Abweichung zu keiner Ursache, muss die Warnung
+    bleiben - sonst hat die Aufraeumaktion den Melder blind gemacht."""
+    cfg = _cause_cfg(tmp_path)
+    _plan_abend(cfg)
+    alerts = _Alerts()
+    # Last wie prognostiziert, SoC in der Mitte - der Akku weicht trotzdem ab
+    monitor = _m._LiveExecutionMonitor(
+        cfg, alerts, _CauseLink(-3338.0, 930.0, soc_percent=55.0))
+    _dreimal(monitor)
+
+    assert len(alerts.items) == 1
+    assert alerts.items[0][0] == "warning"
+    assert "Vorläufige EMS-Live-Abweichung" in alerts.items[0][1]
