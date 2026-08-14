@@ -646,7 +646,12 @@ class DashboardConfig:
     output_path: str = "./dashboard.html"
     # HTTP-Server im Dienstmodus (--loop): Dashboard im Browser abrufbar machen
     serve: bool = True
-    host: str = "0.0.0.0"
+    # Standard bewusst nur lokal: im Arbeitsverzeichnis des Dienstes liegen
+    # config.yaml und die History-Datenbank, und ohne username/password
+    # laesst der Server jede Anfrage durch. Wer das Dashboard im Netz
+    # braucht - oder in einem Container, wo 127.0.0.1 den veroeffentlichten
+    # Port unerreichbar macht -, setzt 0.0.0.0 bewusst.
+    host: str = "127.0.0.1"
     port: int = 8080
     api_enabled: bool = True
     # E3/DC-Livewerte im Dashboard. Der Server begrenzt die RSCP-Abfragen
@@ -1550,7 +1555,7 @@ def load_config(path: str) -> Config:
         enabled=bool(d.get("enabled", True)),
         output_path=d.get("output_path", "./dashboard.html"),
         serve=bool(d.get("serve", True)),
-        host=d.get("host", "0.0.0.0"),
+        host=d.get("host", "127.0.0.1"),
         port=int(d.get("port", 8080)),
         api_enabled=bool(d.get("api_enabled", True)),
         live_refresh_seconds=float(d.get("live_refresh_seconds", 5.0)),

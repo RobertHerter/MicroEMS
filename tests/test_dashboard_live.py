@@ -740,3 +740,32 @@ def test_disabled_load_still_shows_that_it_runs():
     assert row[2] == 2, "aus -> grau"
     assert row[3] == 3, "Vergangenheit ohne Rueckmeldung -> unbekannt"
     assert "deaktiviert, l" in html      # "läuft trotzdem", escaped
+
+
+def test_dashboard_listens_only_locally_unless_asked_otherwise(tmp_path):
+    """Im Arbeitsverzeichnis des Dienstes liegen config.yaml und die
+    History-Datenbank, und ohne username/password laesst der Server jede
+    Anfrage durch. Der Standard gehoert deshalb auf 127.0.0.1; wer das
+    Dashboard im Netz oder im Container braucht, setzt 0.0.0.0 bewusst."""
+    import os
+    from ems.config import load_config
+    beispiel = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "config.example.yaml")
+
+    # Beispielconfig: ausdruecklich lokal
+    assert load_config(beispiel).dashboard.host == "127.0.0.1"
+
+    # Config ohne dashboard.host -> Standard, nicht 0.0.0.0
+    with open(beispiel, encoding="utf-8") as fh:
+        text = fh.read()
+    ohne = "\n".join(z for z in text.splitlines()
+                     if z.strip() != 'host: "127.0.0.1"')
+    ziel = tmp_path / "config.yaml"
+    ziel.write_text(ohne, encoding="utf-8")
+    assert load_config(str(ziel)).dashboard.host == "127.0.0.1"
+
+    # ausdrueckliches 0.0.0.0 bleibt respektiert
+    ziel.write_text(ohne.replace("  serve: true",
+                                 '  serve: true\n  host: "0.0.0.0"', 1),
+                    encoding="utf-8")
+    assert load_config(str(ziel)).dashboard.host == "0.0.0.0"

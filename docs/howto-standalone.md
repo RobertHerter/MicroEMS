@@ -95,9 +95,10 @@ mqtt:
 dashboard:
   enabled: true
   serve: true                 # HTTP-Server im --loop-Betrieb (Standard an)
+  host: "0.0.0.0"             # Standard 127.0.0.1 = nur lokal; 0.0.0.0 = im Netz
   port: 8080
   username: "ems"             # Basic Auth; leer = ohne Passwort erreichbar
-  password: "bitte-aendern"
+  password: "bitte-aendern"   # bei host 0.0.0.0 unbedingt setzen
 ```
 
 `serve` schaltet den HTTP-Server im `--loop`-Betrieb; ohne ihn wird das Dashboard

@@ -240,7 +240,7 @@ FIELD_DESCRIPTIONS = {
     # -- Dashboard / Berichte / Sonstiges ------------------------------------
     "dashboard.enabled": "HTML-Dashboard erzeugen.",
     "dashboard.output_path": "Dateipfad der erzeugten Dashboard-Seite.",
-    "dashboard.host": "Adresse, auf der der Dashboard-Server lauscht (0.0.0.0 = alle).",
+    "dashboard.host": "Adresse, auf der der Dashboard-Server lauscht. 127.0.0.1 = nur lokal (Standard); 0.0.0.0 = im ganzen Netz - dann username und password vergeben.",
     "dashboard.port": "Port des Dashboard-Servers.",
     "monitoring.drift_enabled": "Abweichung zwischen prognostiziertem und echtem Ladestand überwachen.",
     "monitoring.drift_window_hours": "Zeitfenster, über das die Drift gemittelt wird.",

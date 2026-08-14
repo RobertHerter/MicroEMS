@@ -795,6 +795,11 @@ dashboard:
   # HTTP-Server im Dienstmodus (--loop): macht das Dashboard im Browser
   # abrufbar (http://<host>:<port>/). false = nur die HTML-Datei schreiben.
   serve: true
+  # Lauschadresse. 127.0.0.1 = nur von diesem Rechner erreichbar
+  # (Standard). Fuer den Zugriff aus dem Heimnetz oder im Docker-Container
+  # 0.0.0.0 setzen - dann aber username/password vergeben, sonst ist das
+  # Dashboard ungeschuetzt im Netz.
+  host: "127.0.0.1"
   # Port des HTTP-Servers. Unter 1024 braucht der Dienst zusaetzliche Rechte
   # (systemd: AmbientCapabilities=CAP_NET_BIND_SERVICE).
   port: 8080

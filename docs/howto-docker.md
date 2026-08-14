@@ -125,6 +125,19 @@ Der Scheduler ersetzt die systemd-Timer und fährt aus `docker/crontab`:
 Geschriebene Werte landen im Overlay `config/config_overrides.yaml`,
 `config.yaml` bleibt unangetastet.
 
+
+> **Wichtig im Container:** `dashboard.host` steht standardmäßig auf
+> `127.0.0.1` und ist dann von außerhalb des Containers **nicht** erreichbar –
+> der veröffentlichte Port `8080:8080` läuft ins Leere. Im Container gehört
+> deshalb in die Config:
+>
+> ```yaml
+> dashboard:
+>   host: "0.0.0.0"
+>   username: "ems"          # ohne Zugangsdaten ist das Dashboard im Netz offen
+>   password: "bitte-aendern"
+> ```
+
 ## 5. Steuerung scharf schalten
 
 **Erst nachdem ein paar Zyklen sauber gelaufen sind:**
