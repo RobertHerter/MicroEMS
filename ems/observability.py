@@ -6,12 +6,15 @@ den Dashboard-Endpoints aufgerufen, nicht im Steuer-Zyklus.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 from .quality import MIN_SAMPLES, bias_w, enough, shortfall_note
+
+log = logging.getLogger("ems.observability")
 
 
 def _wape(actual, pred) -> float:
@@ -516,8 +519,8 @@ def calibration_maturity(config, now=None) -> dict:
             since = (since.tz_localize("UTC") if since.tzinfo is None else since
                      ).tz_convert(tz)
             age_days = max(0.0, (current - since).total_seconds() / 86400.0)
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            log.debug("Alter des Kalibrierstands nicht bestimmbar: %s", exc)
     # Mindeststichprobe plus zwei Wochen unabhängige Wetterlagen.
     source_conf = 100.0 * min(1.0, sample_ratio, age_days / 14.0)
     source_level, source_state = _maturity_level(source_conf)
@@ -709,8 +712,8 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
         if plan is not None and "pv_curtail_w" in plan:
             abgeregelt = pd.to_numeric(plan["pv_curtail_w"],
                                        errors="coerce").fillna(0.0) > 1.0
-    except Exception:                                   # pragma: no cover
-        pass
+    except Exception as exc:                                   # pragma: no cover
+        log.debug("Abregelungsmaske nicht lesbar - Feldguete ohne Abregelungsfilter: %s", exc)
 
     # Bevorzugt die PRODUKTIVE Quelle: Solcast liefert je Feld eine eigene
     # Ressource, wenn sie benannt ist; sonst misst die Kachel das pvlib-Modell
@@ -930,8 +933,8 @@ def savings_drivers(config, days: int = 30) -> dict:
         if neg.any():
             out["negative_price_export_kwh"] = round(
                 float(exp[neg.fillna(False)].sum()) * dt / 1000.0, 2)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Export bei negativem Preis nicht auswertbar: %s", exc)
     return out
 
 
@@ -1100,8 +1103,8 @@ def forecast_accuracy(config, days: int = 7) -> dict:
                   "bias_w": chosen.get("bias_w"),
                   "mae_w": chosen.get("mae_w"),
                   "source": active}
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Prognosegenauigkeit der aktiven Quelle nicht ermittelbar: %s", exc)
     try:
         pv_nowcast = _pv_nowcast_accuracy(config, start, now)
     except Exception:

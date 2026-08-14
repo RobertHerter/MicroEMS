@@ -226,3 +226,31 @@ def test_calibration_reload_updates_learned_load_profile_and_battery(monkeypatch
     assert dishwasher.runtime_minutes == 60
     assert running.house_battery.discharge_efficiency == 0.863
     assert "2076.6, 45.5, 63.3, 55.7" in _controls_block(running)
+
+
+def test_broken_overlay_is_reported_not_swallowed(tmp_path, caplog):
+    """Ein kaputtes Overlay ist nicht harmlos: die wöchentlich kalibrierten
+    Werte fallen still auf die Standardwerte zurück, und der Plan rechnet mit
+    veralteten Parametern weiter. Vorher war der Handler ein blankes `pass`."""
+    import logging
+    from ems.config import load_config
+    basis = tmp_path / "config.yaml"
+    beispiel = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "config.example.yaml")
+    with open(beispiel, encoding="utf-8") as fh:
+        basis.write_text(fh.read(), encoding="utf-8")
+    # kein Overlay -> still, das ist der Normalfall
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        load_config(str(basis))
+    assert not [r for r in caplog.records if "Overlay" in r.message]
+
+    # kaputtes Overlay -> Warnung mit Pfad
+    _overrides_path(str(basis))
+    (tmp_path / "config_overrides.yaml").write_text(
+        "house_battery:\n  capacity_wh: [unbalanced\n", encoding="utf-8")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        load_config(str(basis))
+    treffer = [r for r in caplog.records if "Overlay" in r.message]
+    assert treffer, "kaputtes Overlay muss gemeldet werden"
+    assert "NICHT angewandt" in treffer[0].getMessage()

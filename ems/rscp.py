@@ -115,8 +115,8 @@ class E3DCLink:
         try:
             if self._e3dc is not None and self._wd_mode != 0:
                 self._set_power(0, 0)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.warning("RSCP: Akkumodus beim Beenden nicht zurueckgesetzt (%s) - der E3DC faellt nach ~10 s selbst auf auto.", exc)
         self._wd_mode = 0
         # Persistente Lade-/Entlade-Limits ausdrücklich freigeben – sie haben
         # keinen E3DC-Watchdog und blieben sonst nach dem Beenden unbegrenzt aktiv
@@ -129,8 +129,8 @@ class E3DCLink:
                 self._set_limits(False)
                 log.info("RSCP: Lade-/Entlade-Limits beim Beenden freigegeben "
                          "(EMS_POWER_LIMITS_USED=false).")
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.warning("RSCP: Lade-/Entlade-Limits beim Beenden nicht freigegeben (%s).", exc)
         # PV-Derating ist persistent. Auch bei Fehlern in der restlichen
         # Steuerung beim sauberen Beenden immer auf den gemerkten Normalwert.
         try:
@@ -144,8 +144,8 @@ class E3DCLink:
         try:
             if self._e3dc is not None and hasattr(self._e3dc, "disconnect"):
                 self._e3dc.disconnect()
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("RSCP-Verbindung nicht sauber getrennt: %s", exc)
         self._e3dc = None
 
     # ------------------------------------------------------------------ #

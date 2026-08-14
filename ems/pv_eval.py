@@ -399,8 +399,8 @@ def _common_archive_metrics(config, lookback_days: int, now,
                 sc = apply_pv_correction(sc, p_sc, tz)
             if p_pv and not pv.empty:
                 pv = apply_pv_correction(pv, p_pv, tz)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("PV-Korrekturprofil im Quellenvergleich nicht anwendbar: %s", exc)
     frame = pd.DataFrame({"actual": actual, "solcast": sc,
                           "pvlib": pv}).dropna()
     if not frame.empty:

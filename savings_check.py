@@ -32,6 +32,8 @@ from ems.rscp import E3DCLink
 from ems.savings_validate import METER_COLUMNS, reconcile
 from ems.tariff import read_price_signal, read_spot_signal
 
+log = logging.getLogger("ems.savings_check")
+
 
 def _meter_frame(raw: dict, tz: str) -> pd.DataFrame:
     if not raw:
@@ -47,8 +49,8 @@ def _soc0_wh(config, repo, start, cap_wh):
                                start + timedelta(hours=1)).dropna()
         if not s.empty:
             return float(s.iloc[0]) / 100.0 * cap_wh
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Start-SoC aus der Historie nicht lesbar: %s", exc)
     return None
 
 

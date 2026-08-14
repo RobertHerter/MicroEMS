@@ -6,12 +6,15 @@ statt mit rohen Dictionaries.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import time
 from typing import Any, Dict, Optional
 
 import yaml
+
+log = logging.getLogger("ems.config")
 
 
 # --------------------------------------------------------------------------- #
@@ -1228,8 +1231,15 @@ def load_config(path: str) -> Config:
             overrides = yaml.safe_load(fh)
         if isinstance(overrides, dict):
             _deep_merge(raw, overrides)
-    except (OSError, yaml.YAMLError):
-        pass
+    except FileNotFoundError:
+        pass          # kein Overlay - Normalfall einer frischen Installation
+    except (OSError, yaml.YAMLError) as exc:
+        # Ein kaputtes Overlay ist NICHT harmlos: die woechentlich kalibrierten
+        # Werte (Kapazitaet, Entladewirkungsgrad, Pool-Thermomodell) fallen dann
+        # still auf die Standardwerte aus config.yaml zurueck, und der Plan
+        # rechnet mit veralteten Parametern weiter.
+        log.warning("Overlay %s nicht lesbar (%s) - kalibrierte Werte werden "
+                    "NICHT angewandt.", _overrides_path(path), exc)
 
     g = raw.get("general", {})
     # Abwärtskompatibilität: bis v1.4 lagen Standort unter ``weather`` und

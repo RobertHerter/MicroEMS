@@ -48,7 +48,7 @@ def _period_minutes(p: str) -> int:
         if p.endswith("M"):
             return int(p[:-1])
     except ValueError:
-        pass
+        log.debug("Solcast-Periodenangabe %r nicht lesbar - nutze 30 min.", p)
     return 30
 
 

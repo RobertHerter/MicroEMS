@@ -160,8 +160,8 @@ class HomeyMqttPublisher:
         info = client.publish(status_topic, "online", qos=1, retain=True)
         try:
             info.wait_for_publish(timeout=5)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("MQTT: Bestaetigung fuer 'online' ausgeblieben: %s", exc)
         log.info("MQTT verbunden, Status 'online' (Last Will: %s = offline).",
                  status_topic)
         return client
@@ -304,7 +304,7 @@ class HomeyMqttPublisher:
             try:
                 self.load_temps[msg.topic] = float(payload.replace(",", "."))
             except ValueError:
-                pass
+                log.debug("MQTT: Temperatur auf %s nicht als Zahl lesbar (%r).", msg.topic, payload)
             return
         if msg.topic in self._feedback_topics:
             try:
@@ -495,13 +495,13 @@ class HomeyMqttPublisher:
             try:
                 if self._client.is_connected():
                     return
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                log.debug("MQTT: Verbindungszustand nicht abfragbar: %s", exc)
             try:
                 self._client.loop_stop()
                 self._client.disconnect()
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                log.debug("MQTT: Aufraeumen der alten Verbindung fehlgeschlagen: %s", exc)
             self._client = None
             log.warning("MQTT-Verbindung verloren – verbinde neu.")
         self._client = self._connect()
@@ -527,8 +527,8 @@ class HomeyMqttPublisher:
             info = self._client.publish(f"{self.cfg.base_topic}/status",
                                         "offline", qos=1, retain=True)
             info.wait_for_publish(timeout=5)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("MQTT: 'offline'-Status nicht bestaetigt: %s", exc)
         try:
             self._client.loop_stop()
             self._client.disconnect()
@@ -542,8 +542,8 @@ class HomeyMqttPublisher:
         # abschneiden.
         try:
             info.wait_for_publish(timeout=5)
-        except Exception:  # pragma: no cover - ältere paho-Versionen ohne timeout
-            pass
+        except Exception as exc:  # pragma: no cover - ältere paho-Versionen ohne timeout
+            log.debug("MQTT: Versandbestaetigung nicht verfuegbar (aeltere paho-Version?): %s", exc)
 
     def publish(self, table: pd.DataFrame, current_ts: pd.Timestamp,
                 load_mqtt_map=None):

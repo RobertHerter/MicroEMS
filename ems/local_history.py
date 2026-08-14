@@ -11,11 +11,14 @@ Schlüssel = UTC-ISO-Zeitstempel (monoton, DST-sicher). Werte = W (Mittel des
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import zlib
 from typing import Dict, Optional
 
 import pandas as pd
+
+log = logging.getLogger("ems.local_history")
 
 
 def _con(path: str) -> sqlite3.Connection:
@@ -199,11 +202,11 @@ def _con(path: str) -> sqlite3.Connection:
         con.execute("ALTER TABLE savings_validated "
                     "ADD COLUMN baseline_end_soc_wh REAL")
     except sqlite3.OperationalError:
-        pass
+        pass   # Spalte existiert bereits - erwartet
     try:
         con.execute("ALTER TABLE execution_plan ADD COLUMN details_json TEXT")
     except sqlite3.OperationalError:
-        pass
+        pass   # Spalte existiert bereits - erwartet
     con.execute("CREATE TABLE IF NOT EXISTS forecast_accuracy_daily ("
                 " day TEXT PRIMARY KEY, computed_ts TEXT,"
                 " pv_wape REAL, pv_bias_w REAL, pv_n INTEGER,"
@@ -1492,8 +1495,8 @@ def write_debug_snapshot(path: str, snap: dict, keep: int = 1000) -> None:
             (max(1, int(keep)),))
         con.commit()
         con.close()
-    except Exception:   # Debug-Persistenz darf den Lauf nie stören
-        pass
+    except Exception as exc:   # Debug-Persistenz darf den Lauf nie stören
+        log.debug("Debug-Schnappschuss nicht speicherbar: %s", exc)
 
 
 def list_debug_snapshots(path: str, tz: str, limit: int = 60) -> list[dict]:

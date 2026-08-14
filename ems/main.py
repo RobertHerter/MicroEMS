@@ -192,8 +192,8 @@ def _start_cycle_watchdog(config, publisher, stop_event):
                         publisher.publish_alert(
                             "error", f"EMS: seit {mins:.0f} min kein erfolgreicher "
                             "Optimierungszyklus (Dienst hängt?).")
-                    except Exception:  # pragma: no cover
-                        pass
+                    except Exception as exc:  # pragma: no cover
+                        log.debug("Watchdog-Alarm nicht publizierbar: %s", exc)
                     state.update(alarmed=True, last=now)
             elif state["alarmed"] and _last_cycle_ok["monotonic"] is not None:
                 with _runtime_lock:
@@ -201,8 +201,8 @@ def _start_cycle_watchdog(config, publisher, stop_event):
                         overdue=False, message=None, since=None)
                 try:
                     publisher.publish_alert("info", "EMS: Zyklen laufen wieder.")
-                except Exception:  # pragma: no cover
-                    pass
+                except Exception as exc:  # pragma: no cover
+                    log.debug("Watchdog-Entwarnung nicht publizierbar: %s", exc)
                 state["alarmed"] = False
 
     thread = threading.Thread(target=loop, name="ems-cycle-watchdog", daemon=True)
@@ -2258,8 +2258,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .pvforecast import status_summary as _pv_ensemble_summary
             if config.pv_model.shadow or config.pv_model.enabled:
                 pv_note += f" · {_pv_ensemble_summary()}"
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Ensemble-Status fuer die Prognosenotiz nicht verfuegbar: %s", exc)
         forecast_quality = [
             _forecast_quality_entry(
                 "Hauslast", total_slots,
@@ -2287,8 +2287,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 profile_issue = pd.Timestamp(
                     os.path.getmtime(config.calibration.pv_profile),
                     unit="s", tz="UTC")
-            except OSError:
-                pass
+            except OSError as exc:
+                log.debug("Alter des Kalibrierprofils nicht bestimmbar: %s", exc)
             if cal_profile is None:
                 cal_level, cal_state = "replaced", "Profil fehlt oder ist unlesbar"
                 cal_detail = (
@@ -2688,8 +2688,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if one_shot and publisher is not None:
             try:
                 publisher.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("MQTT nach Einzellauf nicht sauber geschlossen: %s", exc)
 
         if plan_published:
             try:
@@ -3538,8 +3538,8 @@ def _build_display_frame(repo, config, now, history, result,
         price, estimated = _price_series(repo, config, full, now, return_estimated=True)
         df["price_ct_kwh"] = price
         df["price_estimated"] = estimated.astype(float)  # 1 = Schätzung, 0 = Börsenpreis
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Preisreihe fuers Dashboard nicht verfuegbar: %s", exc)
     # Was der 00:00-Plan für die inzwischen VERÖFFENTLICHTEN Slots nur geschätzt
     # hatte. Nur dieser Vergleich macht die Preisunsicherheit im Dashboard
     # sichtbar: im laufenden Plan sind die geschätzten Slots zwangsläufig genau
@@ -3696,8 +3696,8 @@ def _build_display_frame(repo, config, now, history, result,
             try:
                 fi = repo.read_slots("feed_in_tariff", day_start, end + slot)
                 df["feedin_ct_kwh"] = df["feedin_ct_kwh"].fillna(fi.reindex(full))
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                log.debug("Einspeisetarif aus der Datenbank nicht lesbar: %s", exc)
         df["feedin_ct_kwh"] = df["feedin_ct_kwh"].fillna(config.feed_in.fixed_ct_kwh)
         if config.feed_in.zero_at_negative_price and "spot_price_ct_kwh" in df.columns:
             df["feedin_ct_kwh"] = df["feedin_ct_kwh"].where(
@@ -3730,8 +3730,8 @@ def _build_display_frame(repo, config, now, history, result,
             if not s.empty:
                 s = s.reindex(full)
                 df[col] = s.where(past_mask).ffill().where(past_mask)
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("Ist-Reihe %s fuers Dashboard nicht aufbereitbar: %s", col, exc)
 
     # Leistungswerte sind Intervallgrößen. Die zu Beginn eines Rechenlaufs
     # gespeicherten Momentanwerte können noch den vorherigen Slot abbilden und
@@ -3783,13 +3783,13 @@ def _build_display_frame(repo, config, now, history, result,
                                            dtype=float).tz_convert(config.general.timezone)
                             rs = rs.where(rs > 0.0).reindex(full).where(past_mask)
                             mean = mean.combine_first(rs)
-                    except Exception:  # pragma: no cover
-                        pass
+                    except Exception as exc:  # pragma: no cover
+                        log.debug("Nowcast-Mittel der Hauslast nicht einmischbar: %s", exc)
             snap = df["actual_load_w"]               # Momentan-Fallback (Tail)
             df["actual_load_w"] = (mean.combine_first(snap)
                                    .where(past_mask).ffill().where(past_mask))
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("Ist-Hauslast fuers Dashboard nicht aufbereitbar: %s", exc)
     # Plan-SoC auf die Messachse legen (Slotende vs. Slotanfang, siehe
     # quality.planned_soc_on_measurement_axis). Eigene Spalte: die rohe
     # house_soc_percent bleibt unangetastet, an ihr haengen Archiv und
@@ -3835,8 +3835,8 @@ def _sd_notify(message: str) -> None:
             s.sendto(message.encode(), addr)
         finally:
             s.close()
-    except Exception:  # pragma: no cover
-        pass
+    except Exception as exc:  # pragma: no cover
+        log.debug("systemd-Notify (%s) nicht absetzbar: %s", message, exc)
 
 
 def start_dashboard_server(config: Config, publisher=None, e3dc=None,
@@ -3852,6 +3852,7 @@ def start_dashboard_server(config: Config, publisher=None, e3dc=None,
     import os
     import threading
     import base64
+    import hmac
 
     out = os.path.abspath(config.dashboard.output_path)
     directory = os.path.dirname(out) or "."
@@ -4068,7 +4069,12 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
             if not (u and p):
                 return True
             expected = "Basic " + base64.b64encode(f"{u}:{p}".encode()).decode()
-            if self.headers.get("Authorization") == expected:
+            # compare_digest statt ==: der Stringvergleich bricht beim ersten
+            # abweichenden Byte ab und verraet damit ueber die Antwortzeit, wie
+            # weit ein Rateversuch gekommen ist. Im LAN theoretisch, aber der
+            # zeitkonstante Vergleich kostet nichts.
+            if hmac.compare_digest(
+                    self.headers.get("Authorization") or "", expected):
                 return True
             self.send_response(401)
             self.send_header("WWW-Authenticate", 'Basic realm="EMS"')
@@ -4684,8 +4690,8 @@ def main() -> None:
         if schedule_runner is not None:
             try:
                 schedule_runner.close()
-            except Exception:  # pragma: no cover
-                pass
+            except Exception as exc:  # pragma: no cover
+                log.debug("Zeitplan-Runner nicht sauber geschlossen: %s", exc)
         if e3dc is not None:
             try:
                 e3dc.close()   # gibt persistente Lade-/Entlade-Limits frei
@@ -4693,8 +4699,8 @@ def main() -> None:
                 log.warning("RSCP-Abschluss fehlgeschlagen (%s).", exc)
         try:
             publisher.close()
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            log.debug("MQTT-Verbindung nicht sauber geschlossen: %s", exc)
     if _service_restart_requested.is_set():
         # ems.service verwendet Restart=on-failure. Ein eigener Exit-Code erlaubt
         # dem unprivilegierten Dienst einen sauberen Neustart ohne systemctl/sudo.

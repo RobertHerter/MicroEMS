@@ -2485,8 +2485,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             _vtot = float(_vdf["saved_eur"].sum())
             validated_note = (f"vs. ohne EMS · {_vtot:+.2f} € an Zählern "
                               f"bestätigt ({len(_vdf)} T)")
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Zaehlerbestaetigte Ersparnis fuer die Notiz nicht ermittelbar: %s", exc)
     # Der Akku-SoC steht bereits in den E3/DC-Live-Kacheln (Echtzeit). Die
     # KPI-Kachel dafür nur zeigen, wenn die Live-Kacheln AUS sind - sonst wäre
     # sie redundant.

@@ -461,8 +461,8 @@ def _description_payload(config_path: str) -> dict:
         try:
             descriptions.update(extract_descriptions(
                 _read_bytes(path).decode("utf-8")))
-        except UnicodeDecodeError:
-            pass
+        except UnicodeDecodeError as exc:
+            log.debug("Beschreibungen aus %s nicht lesbar (kein UTF-8): %s", path, exc)
     descriptions.update(TOP_DESCRIPTIONS)
     descriptions.update(LOAD_DESCRIPTIONS)
     descriptions.update(FIELD_DESCRIPTIONS)
@@ -518,8 +518,8 @@ def validate_document(document) -> dict:
     finally:
         try:
             os.unlink(handle.name)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("Temporaere Pruefdatei %s nicht entfernbar: %s", handle.name, exc)
     warnings = []
     if (parsed.dashboard.config_editor_enabled
             and not (parsed.dashboard.username and parsed.dashboard.password)):
@@ -547,8 +547,8 @@ def _atomic_write(path: str, content: bytes, mode: int) -> None:
     finally:
         try:
             os.unlink(tmp)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("Temporaerdatei %s nicht entfernbar: %s", tmp, exc)
 
 
 def save_document(config_path: str, document, expected_revision: str) -> dict:
