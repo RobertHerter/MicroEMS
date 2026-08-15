@@ -141,3 +141,32 @@ def test_debug_snapshot_roundtrip(tmp_path):
     assert snap["inputs"]["pv_w"] and snap["plan"]["house_soc_wh"]
     assert snap["drift_soc_mae_pp"] == 1.2
     assert "config" in snap and "optimization" in snap["config"]
+
+
+def test_grid_slack_column_is_not_counted_as_an_extra_load():
+    """``load_<Last>_grid_w`` ist der Schlupf "Netzbezug trotz no_grid_import" -
+    eine Herkunftsaufteilung der ohnehin gezaehlten Stufenleistung, keine
+    zusaetzliche Last. Als Verbrauch mitgezaehlt meldete die AC-Knotenbilanz in
+    der Nacht vom 15.08.2026 achtmal einen Fehler; die Abweichung entsprach
+    jedes Mal exakt dieser Spalte (40,0 W im Lauf von 05:30)."""
+    from ems.loads import load_power_columns
+    cfg = make_config()
+    inp, res = _solve(cfg)
+    assert not res.infeasible
+
+    # Plan um eine Stufenlast und ihren Netzanteil ergaenzen, Bilanz erhalten:
+    # die Last wird vom Netz gedeckt, der Schlupf beziffert nur deren Herkunft.
+    stufe = 1000.0
+    res.table["load_Pool_WP_w"] = stufe
+    res.table["load_Pool_grid_w"] = stufe          # komplett aus dem Netz
+    res.table["load_Pool_temp_c"] = 27.8
+    res.table["grid_import_w"] = res.table["grid_import_w"] + stufe
+
+    assert load_power_columns(res.table.columns) == ["load_Pool_WP_w"]
+    verstoesse = validate_plan(cfg, res, inp)
+    assert "balance.node" not in _rules(verstoesse, "error"), (
+        "Herkunftsspalte wird als zusaetzlicher Verbrauch gezaehlt")
+
+    # Gegenprobe: eine ECHTE Unterdeckung muss weiter auffallen
+    res.table["grid_import_w"] = res.table["grid_import_w"] - 500.0
+    assert "balance.node" in _rules(validate_plan(cfg, res, inp), "error")

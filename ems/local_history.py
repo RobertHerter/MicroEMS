@@ -17,6 +17,7 @@ import zlib
 from typing import Dict, Optional
 
 import pandas as pd
+from .loads import load_power_columns
 
 log = logging.getLogger("ems.local_history")
 
@@ -476,8 +477,7 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
     issue = pd.Timestamp(issued_at).tz_convert("UTC").isoformat()
     previous_soc = initial_soc_percent
     rows = []
-    load_cols = [name for name in table.columns
-                 if name.startswith("load_") and name.endswith("_w")]
+    load_cols = load_power_columns(table.columns)
     dashboard_cols = {
         "house_load_w", "house_load_p10_w", "house_load_p90_w",
         "pv_w", "pv10_w", "pv90_w", "price_ct_kwh", "price_estimated",

@@ -18,6 +18,24 @@ Bei leerer/deaktivierter Liste: alles leer -> Optimierer unverändert.
 """
 from __future__ import annotations
 
+# Buchhaltungsspalte, KEINE zusaetzliche Last: ``load_<Last>_grid_w`` ist der
+# Schlupf "Netzbezug trotz no_grid_import" und beziffert, welcher Anteil der
+# ohnehin gezaehlten Stufenleistung aus dem Netz kommt. Wer sie zur Summe der
+# steuerbaren Lasten addiert, zaehlt sie doppelt - genau das hat die
+# AC-Knotenbilanz in der Nacht vom 15.08.2026 als Fehler gemeldet (40 W).
+_ACCOUNTING_SUFFIX = "_grid_w"
+
+
+def load_power_columns(columns) -> list:
+    """Spalten mit der ELEKTRISCHEN Leistung steuerbarer Lasten.
+
+    ``load_<Last>_temp_c`` ist eine Temperatur, ``load_<Last>_grid_w`` eine
+    Herkunftsaufteilung - beide gehoeren nicht in eine Leistungssumme."""
+    return [str(c) for c in columns
+            if str(c).startswith("load_") and str(c).endswith("_w")
+            and not str(c).endswith(_ACCOUNTING_SUFFIX)]
+
+
 import re
 
 import numpy as np

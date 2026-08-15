@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
+from .loads import load_power_columns
 from .optimizer import OptimizerInputs, OptimizerResult, natural_battery_step
 
 TOL_W = 5.0        # Leistungs-Toleranz (Rundung in der Tabelle: 0.1 W)
@@ -71,7 +72,7 @@ def economic_comparison(config: Config, result: OptimizerResult,
 
     exp = col("grid_export_w")
     soc = col("house_soc_wh")
-    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+    cl_cols = load_power_columns(t.columns)
     cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
 
     prev0 = min(hb.max_soc_wh, max(hb.min_soc_wh, inputs.initial_house_soc_wh))
@@ -184,7 +185,7 @@ def validate_plan(config: Config, result: OptimizerResult,
     # Steuerbare Lasten (Pool-WP etc.) sind lokale Verbraucher: der Akku darf sie
     # decken und PV wird zuerst von ihnen verbraucht. Für "PV-Überschuss"- und
     # Bilanz-Regeln daher zur Last zählen (sonst Fehlalarme, sobald der Pool läuft).
-    cl_cols = [c for c in t.columns if c.startswith("load_") and c.endswith("_w")]
+    cl_cols = load_power_columns(t.columns)
     cl = t[cl_cols].sum(axis=1) if cl_cols else pd.Series(0.0, index=t.index)
     total_load = load + cl + car          # gesamte lokale Last (ohne Akku/Netz)
 

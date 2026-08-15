@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pandas as pd
+from .loads import load_power_columns
 
 
 LABELS = {
@@ -22,8 +23,7 @@ def annotate_executability(config, table: pd.DataFrame) -> pd.DataFrame:
     mqtt = bool(getattr(config.mqtt, "enabled", False))
     max_export_w = config.inverter.max_export_w
     max_ac = float(config.inverter.max_ac_power_w)
-    load_cols = [name for name in table.columns
-                 if name.startswith("load_") and name.endswith("_w")]
+    load_cols = load_power_columns(table.columns)
     paths, details = [], []
     for _, row in table.iterrows():
         curt = max(0.0, float(row.get("pv_curtail_w", 0.0) or 0.0))
