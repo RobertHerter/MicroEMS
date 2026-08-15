@@ -254,3 +254,23 @@ def test_broken_overlay_is_reported_not_swallowed(tmp_path, caplog):
     treffer = [r for r in caplog.records if "Overlay" in r.message]
     assert treffer, "kaputtes Overlay muss gemeldet werden"
     assert "NICHT angewandt" in treffer[0].getMessage()
+
+
+def test_ignored_overlay_keys_are_reported(caplog):
+    """Das Overlay wendet nur eine Erlaubnisliste an. Ein Eintrag ausserhalb
+    davon sah in der Datei richtig aus und kam nie an - genau daran ist am
+    15.08.2026 ein Versuch gescheitert, binary_horizon_hours so zu setzen."""
+    import logging
+    from ems.config import parse_controllable_loads
+    roh = [{"name": "Pool", "type": "thermal", "enabled": True,
+            "target_c": 28.0, "min_c": 27.0, "max_c": 28.5,
+            "binary_horizon_hours": 0.0, "stages": []}]
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        lasten = parse_controllable_loads(
+            roh, {"Pool": {"max_c": 29.0, "binary_horizon_hours": 24.0}})
+    assert lasten[0].max_c == 29.0                    # erlaubt -> angewandt
+    assert lasten[0].binary_horizon_hours == 0.0      # nicht erlaubt -> ignoriert
+    meldungen = [r.getMessage() for r in caplog.records]
+    assert any("binary_horizon_hours" in m and "nicht angewandt" in m
+               for m in meldungen), meldungen
+    assert not any("max_c" in m for m in meldungen)

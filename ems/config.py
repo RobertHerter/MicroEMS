@@ -1173,6 +1173,14 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)
+                elif k != "stage_heat_w":
+                    # Sonst verschwindet ein Eintrag wirkungslos: beim Setzen
+                    # von binary_horizon_hours ueber das Overlay sah die Datei
+                    # richtig aus, der Wert kam aber nie an (15.08.2026).
+                    log.warning(
+                        "Overlay: %s.%s wird nicht angewandt - nicht in der "
+                        "Erlaubnisliste der ueberschreibbaren Felder. Der Wert "
+                        "gehoert in die config.yaml.", load.name, k)
             stage_heat = ov.get("stage_heat_w")
             if isinstance(stage_heat, dict):
                 for stage in load.stages:
