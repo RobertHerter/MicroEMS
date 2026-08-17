@@ -2511,10 +2511,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 # aber je Zyklus wäre es unnötig.
                 if _time.time() - _last_efficiency_check > 3600:
                     efficiency_drift = monitor.check_energy_model(now)
+                    ac_charge_drift = monitor.check_ac_charge_model(now)
                     execution_bias = monitor.check_execution_bias(now)
                     load_bias = monitor.check_load_bias(now)
                     _last_monitor_diagnostics = {
                         "efficiency": efficiency_drift,
+                        "ac_charge": ac_charge_drift,
                         "execution_bias": execution_bias,
                     }
                     _last_load_bias = load_bias

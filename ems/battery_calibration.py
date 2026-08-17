@@ -403,6 +403,150 @@ def _run_capacity(frame: pd.DataFrame, config, config_path: str, days: int,
           f"{candidate['current']:.0f} -> {new:.0f} Wh")
 
 
+
+# --------------------------------------------------------------------------- #
+# AC-Ladewirkungsgrad (Netz -> Speicher)
+# --------------------------------------------------------------------------- #
+# ``ac_charge_efficiency`` war bis 18.08.2026 eine reine ANNAHME (0,90), waehrend
+# Entladen und Kapazitaet gemessen werden. Der Wert entscheidet aber jede
+# Netzlade-Arbitrage: bei 26 ct Einkauf und 32 ct Nachtpreis frassen die
+# Wandlungsverluste 5,8 der 6,2 ct Spanne, uebrig blieben 0,35 ct/kWh.
+#
+# Gemessen wird die GRID-Seite: Energie, die das Netz ueber die Hauslast hinaus
+# liefert, gegen den SoC-Zuwachs. Damit deckt der Wert Wechselrichter UND
+# Speicher ab - genau das, was das Modell als eff_ac_charge anwendet
+# (soc += eff_ac_charge * ac * dt).
+#
+# Nur zusammenhaengende Phasen: der E3DC meldet SoC in ganzen Prozent, ein
+# Schritt sind ~190 Wh. Auf einzelnen Slots ergibt das Wirkungsgrade ueber 1
+# (am 17.08. real gemessen: 1,14 auf vier Slots). Ueber mehrere Prozentpunkte
+# Hub mittelt sich die Quantisierung heraus.
+AC_MIN_SLOTS = 4                  # >= 1 h zusammenhaengend
+AC_MIN_SWING_PCT = 5.0            # mindestens 5 pp SoC-Hub (~25x Quantisierung)
+AC_SOC_MAX_PCT = 90.0             # oberhalb taper der Ladestrom
+AC_MIN_GRID_W = 300.0             # echtes Netzladen, nicht Messrauschen
+AC_MAX_PV_SURPLUS_W = 200.0       # PV-Ueberschuss wuerde den DC-Pfad mischen
+# Uebernahme wie bei den anderen Werten: gedaempft, mit Mindest-Stichprobe und
+# Streuungsgatter. Weniger Stunden als beim Entladen, weil Netzladen nur in
+# wenigen Slots je Tag stattfindet - dafuer ein straffes Streuungsgatter.
+AC_APPLY_MIN_WINDOWS = 5
+AC_APPLY_MIN_HOURS = 5.0
+AC_APPLY_MAX_DISPERSION = 0.08    # MAD/Median
+AC_BOUNDS = (0.60, 0.99)
+
+
+@dataclass
+class AcChargeWindow:
+    start: pd.Timestamp
+    slots: int
+    grid_wh: float
+    soc_gain_pct: float
+    mean_w: float
+
+    def efficiency(self, capacity_wh: float) -> Optional[float]:
+        if self.grid_wh <= 0.0:
+            return None
+        return (self.soc_gain_pct / 100.0 * capacity_wh) / self.grid_wh
+
+
+def ac_charge_windows(frame: pd.DataFrame, dt_hours: float) -> List[AcChargeWindow]:
+    """Zusammenhaengende NETZ-Ladephasen unter AC_SOC_MAX_PCT schneiden."""
+    if frame is None or frame.empty:
+        return []
+    noetig = ("soc", "grid_w", "house_w", "pv_w")
+    if any(c not in frame.columns for c in noetig):
+        return []
+    f = frame.dropna(subset=list(noetig)).sort_index()
+    if len(f) < AC_MIN_SLOTS + 1:
+        return []
+    soc = f["soc"].to_numpy(dtype="float64")
+    netto = (f["grid_w"] - f["house_w"]).to_numpy(dtype="float64")
+    ueberschuss = (f["pv_w"] - f["house_w"]).to_numpy(dtype="float64")
+    laedt = ((netto > AC_MIN_GRID_W) & (soc <= AC_SOC_MAX_PCT)
+             & (ueberschuss < AC_MAX_PV_SURPLUS_W))
+    schritt = f.index.to_series().diff().dt.total_seconds().fillna(
+        dt_hours * 3600.0).to_numpy()
+    luecke = schritt > dt_hours * 3600.0 * 1.5
+
+    out: List[AcChargeWindow] = []
+    i, n = 0, len(f)
+    while i < n:
+        if not laedt[i] or luecke[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and laedt[j + 1] and not luecke[j + 1]:
+            j += 1
+        slots = j - i + 1
+        if slots >= AC_MIN_SLOTS:
+            ende = min(j + 1, n - 1)
+            hub = float(soc[ende] - soc[i])
+            if hub >= AC_MIN_SWING_PCT and soc[ende] <= AC_SOC_MAX_PCT + 2.0:
+                out.append(AcChargeWindow(
+                    f.index[i], slots, float(netto[i:j + 1].sum()) * dt_hours,
+                    hub, float(netto[i:j + 1].mean())))
+        i = j + 1
+    return out
+
+
+def fit_ac_charge_efficiency(frame: pd.DataFrame, capacity_wh: float,
+                             dt_hours: float) -> dict:
+    """Energiegewichteter AC-Ladewirkungsgrad ueber alle Netz-Ladephasen."""
+    fenster = ac_charge_windows(frame, dt_hours)
+    if not fenster:
+        return {"efficiency": None, "n_windows": 0}
+    grid = sum(w.grid_wh for w in fenster)
+    hub = sum(w.soc_gain_pct for w in fenster) / 100.0
+    einzeln = [e for e in (w.efficiency(capacity_wh) for w in fenster)
+               if e is not None]
+    median = float(np.median(einzeln)) if einzeln else 0.0
+    mad = float(np.median([abs(v - median) for v in einzeln])) if einzeln else 0.0
+    return {
+        "efficiency": (round(hub * capacity_wh / grid, 3) if grid > 0 else None),
+        "n_windows": len(fenster),
+        "hours": round(sum(w.slots for w in fenster) * dt_hours, 1),
+        "grid_kwh": round(grid / 1000.0, 2),
+        "soc_gain_pct": round(hub * 100.0, 1),
+        "spread": (round(max(einzeln) - min(einzeln), 3) if einzeln else None),
+        "dispersion": (round(mad / median, 3) if median > 0 else None),
+        "windows": fenster,
+    }
+
+
+def maybe_apply_ac_charge(fit: dict, config, config_path: str) -> Optional[dict]:
+    """Gemessenen AC-Ladewirkungsgrad gedaempft ins Overlay uebernehmen.
+
+    Strengeres Streuungsgatter als bei den anderen Werten: die Phasen sind kurz
+    (Netzladen faellt nur in wenigen Slots je Tag an), und die SoC-Quantisierung
+    schlaegt dort staerker durch.
+    """
+    from .config import save_override
+    aktuell = float(config.house_battery.eff_ac_charge)
+    gemessen = fit.get("efficiency")
+    if gemessen is None:
+        return None
+    if (fit.get("n_windows", 0) < AC_APPLY_MIN_WINDOWS
+            or float(fit.get("hours") or 0.0) < AC_APPLY_MIN_HOURS):
+        print(f"  Keine Übernahme: Stichprobe zu klein (Phasen "
+              f"{fit.get('n_windows')} >= {AC_APPLY_MIN_WINDOWS}? Stunden "
+              f"{fit.get('hours')} >= {AC_APPLY_MIN_HOURS}?).")
+        return None
+    streuung = fit.get("dispersion")
+    if streuung is not None and streuung > AC_APPLY_MAX_DISPERSION:
+        print(f"  Keine Übernahme: Streuung MAD/Median {streuung} > "
+              f"{AC_APPLY_MAX_DISPERSION} – Messung noch zu unruhig.")
+        return None
+    if not (AC_BOUNDS[0] <= gemessen <= AC_BOUNDS[1]):
+        print(f"  Keine Übernahme: {gemessen} außerhalb {AC_BOUNDS} – "
+              f"Kapazität oder SoC-Signal prüfen.")
+        return None
+    neu_wert = round(APPLY_BLEND * gemessen + (1 - APPLY_BLEND) * aktuell, 3)
+    save_override(config_path, "house_battery.ac_charge_efficiency", neu_wert)
+    print(f"  Übernommen (gedämpft, ins Overlay): "
+          f"ac_charge_efficiency {aktuell} -> {neu_wert}")
+    return {"ac_charge_efficiency": neu_wert}
+
+
 def run(config_path: str, days: int = 30, apply: bool = False) -> int:
     from .config import load_config
     from .local_history import read_actual
@@ -415,7 +559,10 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
     start = now - pd.Timedelta(days=days)
     frame = pd.DataFrame({
         "battery_w": read_actual(db, "battery_w", start, now, tz),
-        "soc": read_actual(db, "soc", start, now, tz)})
+        "soc": read_actual(db, "soc", start, now, tz),
+        "grid_w": read_actual(db, "grid_w", start, now, tz),
+        "house_w": read_actual(db, "house_w", start, now, tz),
+        "pv_w": read_actual(db, "pv_w", start, now, tz)})
     standby = float(getattr(config.optimization, "standby_discharge_w", 0.0))
 
     _run_capacity(frame, config, config_path, days, apply=apply)
@@ -440,6 +587,33 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
         maybe_apply(fit, config, config_path)
     elif fit.usable:
         print("  Wert bei Bedarf manuell übernehmen (oder --apply).")
+
+    # AC-Ladewirkungsgrad: NUR messen und berichten. Der Wert ist neu, hat noch
+    # keine Historie und keine Vertraeglichkeitspruefung - automatisch uebernommen
+    # wuerde er eine Annahme durch eine ungeprueftre Messung ersetzen.
+    ac = fit_ac_charge_efficiency(frame, hb.capacity_wh, config.general.dt_hours)
+    print(f"AC-Ladewirkungsgrad (Netz -> Speicher) aus {days} Tagen")
+    if ac.get("efficiency") is None:
+        print(f"  Keine ausreichenden Netz-Ladephasen gefunden "
+              f"(mindestens {AC_MIN_SLOTS} Slots zusammenhaengend, "
+              f"{AC_MIN_SWING_PCT:.0f} pp SoC-Hub, unter {AC_SOC_MAX_PCT:.0f} % SoC, "
+              f"ohne PV-Ueberschuss).")
+        print(f"  Modell nutzt {hb.eff_ac_charge} - bis dahin eine ANNAHME, "
+              f"kein Messwert.")
+    else:
+        print(f"  {ac['n_windows']} Phasen, {ac['hours']} h, {ac['grid_kwh']} kWh "
+              f"vom Netz gegen {ac['soc_gain_pct']} pp SoC-Zuwachs")
+        print(f"  gemessen {ac['efficiency']}  (Streuung {ac['spread']}, "
+              f"MAD/Median {ac['dispersion']}), Modell {hb.eff_ac_charge}")
+        for w in ac["windows"]:
+            e = w.efficiency(hb.capacity_wh)
+            print(f"    {w.start:%d.%m %H:%M}  "
+                  f"{w.slots * config.general.dt_hours:4.1f} h {w.mean_w:6.0f} W  "
+                  f"{e:.3f}" if e is not None else "")
+        if apply:
+            maybe_apply_ac_charge(ac, config, config_path)
+        else:
+            print("  Wert bei Bedarf manuell übernehmen (oder --apply).")
     return 0
 
 

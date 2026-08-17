@@ -613,3 +613,82 @@ def test_load_bias_warns_only_on_change(tmp_path, caplog):
         for _ in range(5):
             monitor.check_load_bias(now)
         assert len(warnungen()) == 1, "Warnung wiederholt sich"
+
+
+def test_ac_charge_efficiency_is_measured_from_grid_phases():
+    """ac_charge_efficiency war eine Annahme (0,90), waehrend Entladen und
+    Kapazitaet gemessen werden - obwohl der Wert jede Netzlade-Arbitrage
+    entscheidet. Gemessen wird die GRID-Seite gegen den SoC-Zuwachs, nur ueber
+    zusammenhaengende Phasen: auf einzelnen Slots liefert die 1-%-Quantisierung
+    Wirkungsgrade ueber 1 (am 17.08.2026 real 1,14 auf vier Slots)."""
+    import numpy as np
+    import pandas as pd
+    from ems.battery_calibration import fit_ac_charge_efficiency
+
+    kapazitaet, dt, eff = 20000.0, 0.25, 0.85
+    idx = pd.date_range("2026-08-20 13:00", periods=8, freq="15min",
+                        tz="Europe/Berlin")
+    netz_netto = 4000.0
+    gespeichert = netz_netto * len(idx) * dt * eff          # Wh
+    hub = gespeichert / kapazitaet * 100.0
+    frame = pd.DataFrame({
+        "soc": np.linspace(40.0, 40.0 + hub, len(idx)),
+        "grid_w": np.full(len(idx), netz_netto + 800.0),
+        "house_w": np.full(len(idx), 800.0),
+        "pv_w": np.zeros(len(idx)),
+        "battery_w": np.full(len(idx), netz_netto)}, index=idx)
+
+    res = fit_ac_charge_efficiency(frame, kapazitaet, dt)
+    assert res["n_windows"] == 1, res
+    # letzter Slot zaehlt beim SoC-Ende mit -> kleine Abweichung erlaubt
+    assert res["efficiency"] == pytest.approx(eff, abs=0.03), res["efficiency"]
+
+    # PV-Ueberschuss mischt den DC-Pfad ein -> Phase wird verworfen
+    mit_pv = frame.copy()
+    mit_pv["pv_w"] = 3000.0
+    assert fit_ac_charge_efficiency(mit_pv, kapazitaet, dt)["n_windows"] == 0
+
+    # oberhalb 90 % SoC tapert der Ladestrom -> ebenfalls verworfen
+    hoch = frame.copy()
+    hoch["soc"] = np.linspace(92.0, 92.0 + hub, len(idx))
+    assert fit_ac_charge_efficiency(hoch, kapazitaet, dt)["n_windows"] == 0
+
+
+def test_ac_charge_efficiency_is_only_applied_with_enough_evidence(tmp_path):
+    """Uebernahme wie bei den anderen Werten: gedaempft, mit Mindest-Stichprobe
+    und Streuungsgatter. Netzladen faellt nur in wenigen Slots je Tag an,
+    deshalb ist das Streuungsgatter hier straffer."""
+    import os
+    from ems.battery_calibration import (AC_APPLY_MAX_DISPERSION,
+                                         AC_APPLY_MIN_WINDOWS,
+                                         maybe_apply_ac_charge)
+    from ems.config import load_config
+    beispiel = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "config.example.yaml")
+    ziel = tmp_path / "config.yaml"
+    with open(beispiel, encoding="utf-8") as fh:
+        ziel.write_text(fh.read(), encoding="utf-8")
+    cfg = load_config(str(ziel))
+    alt = float(cfg.house_battery.eff_ac_charge)
+
+    # zu wenige Phasen -> nichts
+    assert maybe_apply_ac_charge(
+        {"efficiency": 0.84, "n_windows": AC_APPLY_MIN_WINDOWS - 1,
+         "hours": 20.0, "dispersion": 0.01}, cfg, str(ziel)) is None
+    # zu unruhig -> nichts
+    assert maybe_apply_ac_charge(
+        {"efficiency": 0.84, "n_windows": AC_APPLY_MIN_WINDOWS + 2,
+         "hours": 20.0, "dispersion": AC_APPLY_MAX_DISPERSION + 0.01},
+        cfg, str(ziel)) is None
+    # physikalisch unmoeglich -> nichts (die 1,14 vom 17.08.2026)
+    assert maybe_apply_ac_charge(
+        {"efficiency": 1.14, "n_windows": 9, "hours": 20.0,
+         "dispersion": 0.01}, cfg, str(ziel)) is None
+    # genug Belege -> gedaempft uebernommen
+    res = maybe_apply_ac_charge(
+        {"efficiency": 0.84, "n_windows": 9, "hours": 20.0,
+         "dispersion": 0.02}, cfg, str(ziel))
+    assert res is not None
+    erwartet = round(0.5 * 0.84 + 0.5 * alt, 3)
+    assert res["ac_charge_efficiency"] == erwartet
+    assert load_config(str(ziel)).house_battery.eff_ac_charge == erwartet
