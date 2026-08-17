@@ -255,6 +255,15 @@ class ControllableLoad:
     # bei einem Pool ist eine hohe Temperatur meist einfach egal - setzt einen
     # Wert oberhalb des Erreichbaren.
     comfort_max_c: Optional[float] = None
+    # Was 1 K Unterschreitung der Heizgrenze je Slot "wert" ist (ct). Bis 3.7.1
+    # eine feste 50 im Code - und damit hoeher als jeder Strompreis, weshalb die
+    # Grenze IMMER gewann und der Pool auch nachts aus dem Akku heizte. Gemessen
+    # am 17.08.2026 (Preise 33-38 ct nachts): 50 -> 4,24 kWh Nachtheizen und
+    # 4,44 kWh Netzbezug am Morgen; 5 -> 2,78 kWh; 2 -> 0,66 kWh bei 3,86 statt
+    # 2,82 kWh Heizen aus Tagesueberschuss. Der Preis dafuer ist Temperatur: bei
+    # 2 ct sank das Minimum auf 25,9 statt 26,9 Grad.
+    # Kleiner = Preis entscheidet, groesser = Komfort entscheidet.
+    comfort_penalty_ct_per_k_slot: Optional[float] = None
     control_topic: Optional[str] = None  # ausgehender Schaltbefehl/Start-Topic
     # Reale Rückmeldung, besonders für verschiebbare Lasten. Sobald ein
     # power_topic einen Wert geliefert hat, entscheidet die Leistung über den
@@ -1112,6 +1121,9 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             switch_penalty_ct=float(w.get("switch_penalty_ct", 5.0)),
             comfort_max_c=(float(w["comfort_max_c"])
                            if w.get("comfort_max_c") is not None else None),
+            comfort_penalty_ct_per_k_slot=(
+                float(w["comfort_penalty_ct_per_k_slot"])
+                if w.get("comfort_penalty_ct_per_k_slot") is not None else None),
             control_topic=(str(w.get("control_topic") or w.get("mqtt_topic"))
                            if (w.get("control_topic") or w.get("mqtt_topic"))
                            else None),
@@ -1169,7 +1181,9 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                         "min_on_minutes", "min_off_minutes",
                         # von der Thermomodell-Kalibrierung geschrieben
                         # (ems/pool_calibration.py --apply)
-                        "loss_w_per_k"}
+                        "loss_w_per_k",
+                        # sonst faellt der Wert im Overlay still weg
+                        "comfort_penalty_ct_per_k_slot"}
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)

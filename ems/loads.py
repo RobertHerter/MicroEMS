@@ -446,8 +446,15 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     # tausende Euro auf - und die RELATIVE MIP-Gap (1 %) erlaubt dann real um
     # zig Euro schlechtere Pläne ("Optimal" mit Entladesperren/econ-Lücke).
     # Der Abzug ist eine Konstante -> ändert KEINE Entscheidung, nur die Skala.
-    cost_terms.append(_COMFORT_PEN * (pulp.lpSum(slack) - unavoid_lo))
-    cost_terms.append(_COMFORT_PEN * (pulp.lpSum(slack_hi) - unavoid_hi))
+    # Je Last einstellbar: was 1 K Bandverletzung je Slot wert ist. Der
+    # Vorgabewert _COMFORT_PEN liegt hoeher als jeder Strompreis, deshalb gewinnt
+    # die Grenze dort immer - beim Pool hiess das Heizen aus dem Akku mitten in
+    # der Nacht (17.08.2026). Kleiner = der Preis entscheidet.
+    komfort_pen = ld.comfort_penalty_ct_per_k_slot
+    komfort_pen = (_COMFORT_PEN if komfort_pen is None
+                   else max(0.0, float(komfort_pen)))
+    cost_terms.append(komfort_pen * (pulp.lpSum(slack) - unavoid_lo))
+    cost_terms.append(komfort_pen * (pulp.lpSum(slack_hi) - unavoid_hi))
 
     for st in ld.stages:
         ssg = _slug(st.name)

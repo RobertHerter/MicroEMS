@@ -261,6 +261,14 @@ controllable_loads: []
   #   volume_l: 7000
   #   target_c: 28
   #   min_c: 27            # darunter starten; laufende Phase heizt bis target_c
+  #   # Was 1 K Unterschreitung von min_c je Slot kostet (ct). Ohne Angabe 50 -
+  #   # und damit mehr als jeder Strompreis, weshalb die Grenze IMMER gewinnt:
+  #   # der Speicher heizt dann auch mitten in der Nacht aus dem Akku, und die
+  #   # Energie fehlt am naechsten Morgen (gemessen am 17.08.2026: 4,24 kWh
+  #   # Nachtheizen, danach 4,44 kWh Netzbezug). Kleiner heisst, der Preis
+  #   # entscheidet: die Temperatur sinkt nachts ab und wird tagsueber aus
+  #   # Ueberschuss nachgeholt. Bei 2 ct blieben davon 0,66 kWh Nachtheizen.
+  #   # comfort_penalty_ct_per_k_slot: 5
   #   # max_c ist die Heiz-Obergrenze. Bei thermostat: true MUSS sie der
   #   # Abschalttemperatur des GERÄTS entsprechen - am Gerät ablesen, nicht
   #   # raten: eine Pool-WP heizt z.B. bis 28.5 °C, obwohl target_c 28 sagt.

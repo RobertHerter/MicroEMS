@@ -85,6 +85,7 @@ LOAD_DESCRIPTIONS = {
     "controllable_loads[].min_c": "Untere Komfortgrenze.",
     "controllable_loads[].max_c": "Temperatur, bis zu der geheizt wird. Bei einem Gerät mit eigenem Thermostat dessen Abschaltpunkt - am Gerät ablesen.",
     "controllable_loads[].comfort_max_c": "Temperatur, ab der es unangenehm wird (weicher Malus). Getrennt von max_c, das nur sagt, bis wohin geheizt wird. Leer = wie max_c; bei einem Pool, dem hohe Temperatur egal ist, hoch ansetzen.",
+    "controllable_loads[].comfort_penalty_ct_per_k_slot": "Was 1 K Unterschreitung der Heizgrenze je Slot kostet (ct). Hoch = Komfort entscheidet, niedrig = Strompreis entscheidet. Leer = 50 (Vorgabe); bei 50 gewinnt die Grenze gegen jeden Preis, der Pool heizt dann auch nachts aus dem Akku.",
     "controllable_loads[].loss_w_per_k": "Wärmeverlust in Watt je Kelvin Differenz zur Außenluft.",
     "controllable_loads[].surface_m2": "Wirksame Oberfläche für solaren Wärmeeintrag.",
     "controllable_loads[].solar_absorption": "Absorptionsfaktor der Oberfläche von 0 bis 1.",

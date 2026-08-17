@@ -975,3 +975,44 @@ def test_the_heating_limit_holds_even_without_a_comfort_ceiling():
     assert res.status == "Optimal", res.status
     geplant = float(res.table["load_Pool_gross_w"].sum())
     assert geplant == 0.0, f"{geplant} W oberhalb der Heizgrenze eingeplant"
+
+
+def test_comfort_penalty_is_configurable_per_load():
+    """Bis 3.7.1 war der Malus fuer die Unterschreitung der Heizgrenze eine feste
+    50 im Code - hoeher als jeder Strompreis, weshalb die Grenze IMMER gewann und
+    der Pool auch nachts aus dem Akku heizte (17.08.2026, Nachtpreise 33-38 ct).
+    Der Wert gehoert der Last: hoch = Komfort entscheidet, niedrig = Preis.
+    """
+    from tests.test_synthetic import make_config
+
+    def heiz_kwh(pen):
+        cfg = make_config()
+        cfg.optimization.charge_strategy = "auto"
+        pool = ControllableLoad(
+            name="Pool", type="thermal", enabled=True,
+            target_c=28.0, min_c=27.0, max_c=28.5, comfort_max_c=99.0,
+            volume_l=8000, loss_w_per_k=250.0, surface_m2=7.0,
+            solar_absorption=0.5, thermostat=True, decision_minutes=60,
+            binary_horizon_hours=24.0, comfort_penalty_ct_per_k_slot=pen,
+            stages=[LoadStage(name="WP", power_w=1200.0, heat_w=2400.0)])
+        cfg.controllable_loads = [pool]
+        idx = _day_index("2026-01-15")          # Winternacht, keine PV
+        n = len(idx)
+        inp = _inputs(idx, pv=0.0, load=900.0, price=36.0, soc=9000.0)
+        inp.ambient_temp_c = np.full(n, 8.0)     # kalt -> echter Waermeverlust
+        inp.solar_w_m2 = np.zeros(n)
+        inp.load_state = {"Pool": 27.0}          # genau an der Heizgrenze
+        res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+        assert not res.infeasible, res.infeasible_reason
+        spalten = [c for c in res.table.columns
+                   if c.startswith("load_Pool_") and c.endswith("_w")
+                   and not c.endswith("_grid_w")]
+        return float(res.table[spalten].sum(axis=1).sum()) * 0.25 / 1000.0
+
+    teuer_komfort = heiz_kwh(50.0)     # Vorgabe: Grenze gewinnt
+    guenstig = heiz_kwh(1.0)           # Preis gewinnt
+    assert teuer_komfort > guenstig + 0.5, (
+        f"niedriger Malus muss weniger heizen: {guenstig:.2f} gegen "
+        f"{teuer_komfort:.2f} kWh")
+    # ohne Angabe gilt weiter die Vorgabe
+    assert heiz_kwh(None) == pytest.approx(teuer_komfort, abs=0.3)
