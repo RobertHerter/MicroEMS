@@ -565,73 +565,6 @@ class Optimizer:
             status=status, infeasible=True, export_line_w=None,
         )
 
-    def _reference_cash_cost_ct(self, inp: OptimizerInputs):
-        """Kassenkosten ueber den Horizont OHNE die thermischen Lasten mit
-        ``no_grid_import``. Rueckgabe in ct, None wenn nicht ermittelbar.
-
-        Grundlage der Regel "die Last darf keinen Netzbezug verursachen". Die
-        Slot-Variante in ``loads._add_thermal`` prueft nur den Import im selben
-        Slot - in der Nacht zum 18.08.2026 heizte der Pool deshalb 4,24 kWh aus
-        dem AKKU (Import im Slot null, Regel formal erfuellt), fuhr den Speicher
-        von 55 auf 10 %, und danach musste die Hauslast fuenf Stunden komplett
-        aus dem Netz kommen. Ueber den Horizont gemessen trieb der Pool den Bezug
-        von 8,78 auf 20,89 kWh.
-
-        Warum ausgerechnet ein Referenzlauf:
-        * Eine Bilanzform (Verbrauch <= Einspeisung + Abregelung) ist zu streng -
-          bei vollem Speicher ohne Einspeisung entsteht trotzdem kein Bezug.
-        * Ein Horizontbudget ist falsch herum - es wuerde die PV von morgen dem
-          Pool von heute Nacht zurechnen; Energie fliesst nicht rueckwaerts.
-        Nur der Referenzlauf bekommt Kausalitaet, Speicherstand und Zeitpunkte
-        richtig, weil das Modell sie selbst rechnet.
-
-        Kostet wenig: ohne die thermischen Lasten faellt der Binaerloewenanteil
-        weg - gemessen 1,2 s gegen 98,4 s fuer den vollen Lauf.
-        """
-        import copy as _copy
-        betroffen = [ld for ld in getattr(self.cfg, "controllable_loads", [])
-                     if getattr(ld, "type", "") == "thermal"
-                     and getattr(ld, "enabled", False)
-                     and getattr(ld, "no_grid_import", False)]
-        if not betroffen:
-            return None
-        namen = {ld.name for ld in betroffen}
-        ref_cfg = _copy.deepcopy(self.cfg)
-        ref_cfg.controllable_loads = [
-            ld for ld in ref_cfg.controllable_loads if ld.name not in namen]
-        # Der Lauf kann sich nicht rekursiv aufrufen: die betroffenen Lasten
-        # fehlen darin, also ist betroffen == [] und die Methode gibt None.
-        ref_cfg.optimization.solver_time_limit_s = max(
-            10, min(60, int(getattr(
-                self.cfg.optimization, "solver_time_limit_s", 60))))
-        try:
-            ref = Optimizer(ref_cfg, store_warm=False, stabilize_plan=False,
-                            diagnose_infeasible=False)._solve(inp)
-        except Exception as exc:                       # pragma: no cover
-            log.warning("Referenzlauf ohne thermische Last fehlgeschlagen (%s) - "
-                        "Horizont-Regel bleibt aus.", exc)
-            return None
-        if ref.infeasible or "grid_import_w" not in ref.table:
-            log.debug("Referenzlauf ohne thermische Last unloesbar - "
-                      "Horizont-Regel bleibt aus.")
-            return None
-        # KASSENKOSTEN, nicht Bezugsmenge. Die Menge zu deckeln war falsch:
-        # * Ein Deckel auf den GESAMTBEZUG zwingt zum teuren Bezug. Um 1 kWh
-        #   Nachtbezug durch Mittagsladung zu ersetzen, braucht man wegen der
-        #   Wirkungsgrade ~1,22 kWh (0,90 laden x 0,909 entladen) - der Tausch
-        #   erhoeht die Menge und war damit verboten. Live beobachtet am
-        #   17.08.2026: nachts 7,19 kWh zu 32,35 ct bezogen, waehrend mittags
-        #   16-26 ct verfuegbar waren und NICHT geladen wurde.
-        # * Ein Deckel auf "Bezug ohne Netzladen" oeffnet das Gegenteil: dann
-        #   laeuft Netz -> Akku -> Pool, und der Pool heizte 11,89 kWh statt 6,93.
-        # Geld als Einheit schliesst beide Fallen: guenstiges Laden SENKT die
-        # Kosten und bleibt erlaubt, Poolheizen mit Folgebezug erhoeht sie und
-        # bleibt gesperrt, Waschen ueber den Akku kostet und ist damit aus.
-        ct = float(ref.total_cost_ct)
-        log.info("Referenz-Kassenkosten ohne %s: %.2f EUR (Grundlage der "
-                 "Horizont-Regel).", ", ".join(sorted(namen)), ct / 100.0)
-        return ct
-
     def _diagnose_infeasibility(self, inp: OptimizerInputs) -> str:
         """Bei Infeasible die wahrscheinliche Ursache eingrenzen: nacheinander
         einzelne (harte) Bausteine relaxieren und neu lösen; der erste, der die
@@ -996,35 +929,6 @@ class Optimizer:
         from .loads import add_controllable_loads
         cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
             prob, cfg, inp, N, dt, g_imp=g_imp)
-
-        # HORIZONT-REGEL: eine thermische Last mit no_grid_import darf den
-        # Netzbezug UEBER DEN GANZEN HORIZONT nicht erhoehen. Der Referenzwert
-        # kommt aus einem Lauf ohne diese Last (s. _reference_grid_import_wh);
-        # Kausalitaet und Speicherstand rechnet das Modell dabei selbst.
-        # Weich formuliert mit demselben hohen Malus wie die Slot-Regel, damit
-        # ein echter Notfall (weit unter min_c, Frostschutz) sie brechen kann.
-        ng_ref_ct = self._reference_cash_cost_ct(inp)
-        if ng_ref_ct is not None:
-            ng_pen_h = max(0.0, float(getattr(
-                cfg.optimization, "no_grid_import_penalty_ct_kwh", 5000.0)))
-            ng_h_slack = pulp.LpVariable("ngHorizont", 0)
-            kwh_f = dt / 1000.0
-            kasse = pulp.lpSum(
-                g_imp[t] * float(inp.price_ct_kwh[t]) * kwh_f
-                - g_exp[t] * float(inp.feedin_ct_kwh[t]) * kwh_f
-                for t in range(N))
-            # Reserve mindestens in Hoehe der absoluten MIP-Toleranz: Referenz-
-            # und Hauptlauf haben jeder ihre eigene, ohne Reserve waere die
-            # Grenze numerisch zu scharf.
-            reserve = max(5.0, float(getattr(
-                cfg.optimization, "solver_mip_gap_abs_ct", 3.0)))
-            prob += kasse <= ng_ref_ct + reserve + ng_h_slack
-            # Der Slupf ist in ct. Gewicht aus demselben Parameter wie die
-            # Slot-Regel: bei der Vorgabe 5000 ct/kWh kostet 1 ct Mehrkosten
-            # 100 ct im Ziel - hart, aber im Notfall (Frostschutz) brechbar.
-            cost_terms_horizon = max(1.0, ng_pen_h / 50.0) * ng_h_slack
-        else:
-            cost_terms_horizon = None
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -1749,8 +1653,6 @@ class Optimizer:
             cost_terms.append(-v * hb.discharge_efficiency * term_seg[i] / 1000.0)
 
         cost_terms.extend(cl_cost)          # Schalt-Malus + Komfort der Lasten
-        if cost_terms_horizon is not None:
-            cost_terms.append(cost_terms_horizon)
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
