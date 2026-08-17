@@ -372,3 +372,32 @@ def test_static_serving_is_an_allowlist_not_a_blocklist():
                      "/../config.yaml", "/%2e%2e/config.yaml",
                      "/ems/config.py", "/backup/config.yaml", "/"):
         assert not static_asset_allowed(verboten, datei), verboten
+
+
+def test_control_uses_the_wall_clock_slot_not_the_cycle_start(monkeypatch):
+    """Ein Solve, der ueber die Slotgrenze laeuft, darf nicht den ABGELAUFENEN
+    Slot kommandieren. Beobachtet am 17.08.2026: Zyklusbeginn 14:27:58, Solver
+    351,9 s, Veroeffentlichung 14:33:51 mit dem Sollwert fuer 14:15 - der
+    14:30-Slot mit 9,7 kW geplantem Netzladen bekam nie einen Befehl."""
+    import pandas as pd
+    from ems import main as _m
+    from tests.test_synthetic import make_config
+    cfg = make_config()
+    tz = cfg.general.timezone
+    plan_start = pd.Timestamp("2026-08-17 14:15", tz=tz)
+
+    # Zyklus beginnt 14:15, der Solve laeuft bis 14:33 -> laufender Slot 14:30
+    monkeypatch.setattr(_m, "_now_slot",
+                        lambda _c: pd.Timestamp("2026-08-17 14:30", tz=tz))
+    assert _m._control_slot(cfg, plan_start) == pd.Timestamp(
+        "2026-08-17 14:30", tz=tz)
+
+    # Normalfall: Zyklus schnell fertig, der Slot ist noch derselbe
+    monkeypatch.setattr(_m, "_now_slot", lambda _c: plan_start)
+    assert _m._control_slot(cfg, plan_start) == plan_start
+
+    # Uhr laeuft nie zurueck: ein frueherer Wert darf den Planbeginn nicht
+    # unterschreiten (der Plan hat davor keine Zeile)
+    monkeypatch.setattr(_m, "_now_slot",
+                        lambda _c: pd.Timestamp("2026-08-17 14:00", tz=tz))
+    assert _m._control_slot(cfg, plan_start) == plan_start

@@ -1767,6 +1767,19 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return pd.Timestamp.now(tz=config.general.timezone).floor(freq)
 
 
+def _control_slot(config: Config, plan_start) -> pd.Timestamp:
+    """Der Slot, der beim ANWENDEN des Befehls gilt - Wanduhr, nicht Zyklusbeginn.
+
+    Ein Solve, der ueber die Slotgrenze laeuft, wuerde sonst den ABGELAUFENEN
+    Slot kommandieren und den laufenden ueberspringen. Beobachtet am 17.08.2026:
+    Zyklusbeginn 14:27:58, Solver 351,9 s, Veroeffentlichung 14:33:51 mit dem
+    Sollwert fuer 14:15 - der 14:30-Slot mit 9,7 kW geplantem Netzladen bekam
+    nie einen Befehl, und der Watchdog hielt bis 14:45 den alten Stand.
+    """
+    jetzt = _now_slot(config)
+    return jetzt if jetzt > pd.Timestamp(plan_start) else pd.Timestamp(plan_start)
+
+
 def _optimization_index(config: Config, now) -> pd.DatetimeIndex:
     """Konfigurierten Horizont, optional bis zur nächsten Mitternacht."""
     start = pd.Timestamp(now)
@@ -2600,7 +2613,15 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             _publish_solver_alarm(publisher, solver_status)
             _publish_execution_alarm(publisher, config, execution_status)
             _publish_load_feedback_alarm(publisher, load_feedback_status)
-            load_cmds = publisher.publish(result.table, now, result.load_mqtt_map)
+            steuer_ts = _control_slot(config, now)
+            if steuer_ts != now:
+                log.warning(
+                    "Zyklus lief ueber die Slotgrenze: Plan beginnt %s, "
+                    "kommandiert wird der laufende Slot %s. Der Solve dauerte "
+                    "zu lange fuer den 15-min-Takt.",
+                    now.strftime("%H:%M"), steuer_ts.strftime("%H:%M"))
+            load_cmds = publisher.publish(
+                result.table, steuer_ts, result.load_mqtt_map)
             plan_published = True
             _log_switching_events(config, result.table, load_cmds)  # Schaltvorgänge
             # Publizierte Heiz-Freigabe je thermischer Last loggen (0 = sicher
@@ -2661,7 +2682,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     _store_control_status(config, previous)
                     _publish_control_alarm(publisher, config, previous)
                 try:
-                    pos = result.table.index.get_indexer([now], method="ffill")[0]
+                    steuer_ts = _control_slot(config, now)
+                    pos = result.table.index.get_indexer(
+                        [steuer_ts], method="ffill")[0]
                     row = result.table.iloc[max(pos, 0)]
                     control_status = _apply_curtailment_and_control(e3dc, row)
                     # Aktuellen Befehl lokal sichern -> beim nächsten Dienststart
@@ -2669,7 +2692,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     try:
                         from .local_history import write_last_control
                         write_last_control(
-                            config.e3dc_rscp.history_db_path, now,
+                            config.e3dc_rscp.history_db_path, steuer_ts,
                             {c: row.get(c) for c in CONTROL_COLS if c in row.index})
                     except Exception as exc:   # pragma: no cover
                         log.debug("last_control-Sicherung fehlgeschlagen (%s).", exc)
