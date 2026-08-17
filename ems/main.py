@@ -2497,6 +2497,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # --- 3c) SoC-Drift (Modell gegen Realität) ---------------------- #
         drift_mae = None
         efficiency_drift = _last_monitor_diagnostics.get("efficiency")
+        ac_charge_drift = _last_monitor_diagnostics.get("ac_charge")
         execution_bias = _last_monitor_diagnostics.get("execution_bias")
         load_bias = _last_load_bias
         diagnostics_refreshed = False
@@ -2526,6 +2527,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                 log.warning("Drift-Check fehlgeschlagen (%s).", exc)
         else:
             efficiency_drift = execution_bias = load_bias = None
+            ac_charge_drift = None
         monitoring_status = {}
         if drift_mae is not None:
             monitoring_status["soc_drift"] = {
@@ -2537,6 +2539,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             }
         if efficiency_drift:
             monitoring_status["efficiency"] = efficiency_drift
+        if ac_charge_drift:
+            monitoring_status["ac_charge"] = ac_charge_drift
         if execution_bias:
             monitoring_status["execution_bias"] = execution_bias
 

@@ -1647,19 +1647,32 @@ def _operations_block(solver, execution, timezone="Europe/Berlin",
 
     ac_charge = diagnostics.get("ac_charge")
     if ac_charge:
-        level = "partial" if ac_charge.get("alert") else "current"
-        levels.append(level)
-        cards.append(
-            f"<article class='quality-item {level}'>"
-            "<div class='quality-source'>AC-Ladewirkungsgrad</div>"
-            f"<div class='quality-state'>gemessen "
-            f"{float(ac_charge.get('measured', 0)):.3f}"
-            f" · Modell {float(ac_charge.get('model', 0)):.3f}</div>"
-            f"<div class='quality-detail'>Abweichung "
-            f"{float(ac_charge.get('deviation_percent', 0)):+.1f} %"
-            f" · {int(ac_charge.get('windows', 0))} Netz-Ladephasen / "
-            f"{float(ac_charge.get('hours', 0) or 0):.1f} h"
-            " · entscheidet die Netzlade-Arbitrage</div></article>")
+        if ac_charge.get("measured") is None:
+            levels.append("partial")
+            cards.append(
+                "<article class='quality-item partial'>"
+                "<div class='quality-source'>AC-Ladewirkungsgrad</div>"
+                f"<div class='quality-state'>noch kein Messwert · Modell "
+                f"{float(ac_charge.get('model', 0)):.3f} ist eine "
+                f"Annahme</div>"
+                f"<div class='quality-detail'>"
+                f"{int(ac_charge.get('windows', 0))} brauchbare Netz-Ladephasen "
+                f"in {float(ac_charge.get('window_days', 0)):.0f} Tagen"
+                " · entscheidet die Netzlade-Arbitrage</div></article>")
+        else:
+            level = "partial" if ac_charge.get("alert") else "current"
+            levels.append(level)
+            cards.append(
+                f"<article class='quality-item {level}'>"
+                "<div class='quality-source'>AC-Ladewirkungsgrad</div>"
+                f"<div class='quality-state'>gemessen "
+                f"{float(ac_charge.get('measured', 0)):.3f}"
+                f" · Modell {float(ac_charge.get('model', 0)):.3f}</div>"
+                f"<div class='quality-detail'>Abweichung "
+                f"{float(ac_charge.get('deviation_percent', 0)):+.1f} %"
+                f" · {int(ac_charge.get('windows', 0))} Netz-Ladephasen / "
+                f"{float(ac_charge.get('hours', 0) or 0):.1f} h"
+                " · entscheidet die Netzlade-Arbitrage</div></article>")
 
     execution_bias = diagnostics.get("execution_bias")
     if execution_bias:

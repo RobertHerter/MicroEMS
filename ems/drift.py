@@ -155,9 +155,17 @@ class DriftMonitor:
             log.debug("AC-Ladewirkungsgrad nicht pruefbar (%s).", exc)
             return None
         gemessen = fit.get("efficiency")
-        if gemessen is None:
-            return None
         model = float(hb.eff_ac_charge)
+        if gemessen is None:
+            # Karte trotzdem zeigen, wie bei den anderen Werten im
+            # Sammelzustand: dass der Modellwert eine ANNAHME ist, ist die
+            # wichtigere Information als sein Zahlenwert.
+            return {"measured": None, "model": round(model, 3),
+                    "windows": fit.get("n_windows", 0),
+                    "hours": fit.get("hours", 0.0),
+                    "window_days": round(float(self.eff_days), 1),
+                    "evaluated_at": pd.Timestamp(now).isoformat(),
+                    "collecting": True, "alert": False}
         deviation = 100.0 * (gemessen - model) / max(1e-6, model)
         out = {"measured": gemessen, "model": round(model, 3),
                "deviation_percent": round(deviation, 1),
