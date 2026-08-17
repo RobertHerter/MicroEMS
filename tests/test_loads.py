@@ -1016,3 +1016,76 @@ def test_comfort_penalty_is_configurable_per_load():
         f"{teuer_komfort:.2f} kWh")
     # ohne Angabe gilt weiter die Vorgabe
     assert heiz_kwh(None) == pytest.approx(teuer_komfort, abs=0.3)
+
+
+def test_no_grid_import_blocks_heating_that_causes_import_later():
+    """Die Slot-Regel prueft nur den Import im selben Slot. In der Nacht zum
+    18.08.2026 heizte der Pool deshalb 4,24 kWh aus dem AKKU - Import im Slot
+    null, Regel formal erfuellt -, fuhr den Speicher auf den Boden, und danach
+    musste die Hauslast fuenf Stunden komplett aus dem Netz kommen. Ueber den
+    Horizont trieb der Pool den Bezug von 8,78 auf 20,89 kWh.
+
+    Der Speicher reicht hier fuer das Haus, aber nicht fuer Haus UND Pool: das
+    Heizen wuerde den Bezug erhoehen und muss deshalb entfallen.
+    """
+    cfg = make_config()
+    pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
+    pool.no_grid_import = True
+    cfg.controllable_loads = [pool]
+    idx = pd.date_range("2026-01-15 18:00", "2026-01-16 06:00", freq="15min",
+                        tz="Europe/Berlin", inclusive="left")
+    n = len(idx)
+    # Akku knapp: deckt die Hauslast der Nacht, nicht zusaetzlich den Pool.
+    haus = 400.0
+    reserve = haus * (n * 0.25) / cfg.house_battery.discharge_efficiency
+    soc = cfg.house_battery.min_soc_wh + reserve * 1.05
+    res = Optimizer(cfg).solve(_inputs(
+        idx, pv=0.0, load=haus, price=40.0, soc=soc,
+        ambient_temp_c=np.full(n, 2.0), load_state={"pool": 25.5}))
+    assert not res.infeasible, res.infeasible_reason
+    t = res.table
+    wp = (t["load_pool_klein_w"] + t["load_pool_gross_w"]).values
+    geheizt = float(wp.sum()) * 0.25 / 1000.0
+    bezug = float(t["grid_import_w"].sum()) * 0.25 / 1000.0
+    assert geheizt < 0.5, (
+        f"Pool heizt {geheizt:.2f} kWh, obwohl das Netzbezug ausloest "
+        f"(Bezug im Plan {bezug:.2f} kWh)")
+
+
+def test_no_grid_import_heats_as_far_as_the_reserve_allows():
+    """Die Regel begrenzt den NETZBEZUG, nicht den Pool - er heizt deshalb so
+    weit, wie die Akkureserve reicht, und hoert dort auf. Genau der Fall "bis 27
+    heizen, weil 28 Netzbezug erzeugen wuerde".
+    """
+    cfg = make_config()
+    pool = _pool_load(loss=250.0, min_c=27.0, target=28.0)
+    pool.no_grid_import = True
+    cfg.controllable_loads = [pool]
+    idx = pd.date_range("2026-01-15 18:00", "2026-01-16 06:00", freq="15min",
+                        tz="Europe/Berlin", inclusive="left")
+    n = len(idx)
+    haus = 400.0
+    reserve = haus * (n * 0.25) / cfg.house_battery.discharge_efficiency
+
+    def lauf(kopf_kwh):
+        soc = min(cfg.house_battery.max_soc_wh,
+                  cfg.house_battery.min_soc_wh + reserve
+                  + kopf_kwh * 1000.0 / cfg.house_battery.discharge_efficiency)
+        res = Optimizer(cfg).solve(_inputs(
+            idx, pv=0.0, load=haus, price=40.0, soc=soc,
+            ambient_temp_c=np.full(n, 2.0), load_state={"pool": 26.0}))
+        assert not res.infeasible, res.infeasible_reason
+        t = res.table
+        wp = float((t["load_pool_klein_w"] + t["load_pool_gross_w"]).sum())
+        return wp * 0.25 / 1000.0, float(t["grid_import_w"].sum()) * 0.25 / 1000.0
+
+    ohne, imp0 = lauf(0.0)
+    knapp, imp1 = lauf(1.0)
+    reichlich, imp2 = lauf(2.5)
+
+    assert ohne < 0.2, f"ohne Reserve darf nicht geheizt werden ({ohne:.2f} kWh)"
+    assert 0.5 < knapp < 2.0, f"1 kWh Reserve -> teilweise heizen ({knapp:.2f})"
+    assert reichlich > knapp + 0.8, (
+        f"mehr Reserve muss mehr heizen: {reichlich:.2f} gegen {knapp:.2f} kWh")
+    for imp in (imp0, imp1, imp2):
+        assert imp < 0.3, f"Netzbezug trotz Regel: {imp:.2f} kWh"

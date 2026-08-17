@@ -565,6 +565,63 @@ class Optimizer:
             status=status, infeasible=True, export_line_w=None,
         )
 
+    def _reference_grid_import_wh(self, inp: OptimizerInputs):
+        """Netzbezug ueber den Horizont OHNE die thermischen Lasten mit
+        ``no_grid_import``. Rueckgabe in Wh, None wenn nicht ermittelbar.
+
+        Grundlage der Regel "die Last darf keinen Netzbezug verursachen". Die
+        Slot-Variante in ``loads._add_thermal`` prueft nur den Import im selben
+        Slot - in der Nacht zum 18.08.2026 heizte der Pool deshalb 4,24 kWh aus
+        dem AKKU (Import im Slot null, Regel formal erfuellt), fuhr den Speicher
+        von 55 auf 10 %, und danach musste die Hauslast fuenf Stunden komplett
+        aus dem Netz kommen. Ueber den Horizont gemessen trieb der Pool den Bezug
+        von 8,78 auf 20,89 kWh.
+
+        Warum ausgerechnet ein Referenzlauf:
+        * Eine Bilanzform (Verbrauch <= Einspeisung + Abregelung) ist zu streng -
+          bei vollem Speicher ohne Einspeisung entsteht trotzdem kein Bezug.
+        * Ein Horizontbudget ist falsch herum - es wuerde die PV von morgen dem
+          Pool von heute Nacht zurechnen; Energie fliesst nicht rueckwaerts.
+        Nur der Referenzlauf bekommt Kausalitaet, Speicherstand und Zeitpunkte
+        richtig, weil das Modell sie selbst rechnet.
+
+        Kostet wenig: ohne die thermischen Lasten faellt der Binaerloewenanteil
+        weg - gemessen 1,2 s gegen 98,4 s fuer den vollen Lauf.
+        """
+        import copy as _copy
+        betroffen = [ld for ld in getattr(self.cfg, "controllable_loads", [])
+                     if getattr(ld, "type", "") == "thermal"
+                     and getattr(ld, "enabled", False)
+                     and getattr(ld, "no_grid_import", False)]
+        if not betroffen:
+            return None
+        namen = {ld.name for ld in betroffen}
+        ref_cfg = _copy.deepcopy(self.cfg)
+        ref_cfg.controllable_loads = [
+            ld for ld in ref_cfg.controllable_loads if ld.name not in namen]
+        # Der Lauf kann sich nicht rekursiv aufrufen: die betroffenen Lasten
+        # fehlen darin, also ist betroffen == [] und die Methode gibt None.
+        ref_cfg.optimization.solver_time_limit_s = max(
+            10, min(60, int(getattr(
+                self.cfg.optimization, "solver_time_limit_s", 60))))
+        try:
+            ref = Optimizer(ref_cfg, store_warm=False, stabilize_plan=False,
+                            diagnose_infeasible=False)._solve(inp)
+        except Exception as exc:                       # pragma: no cover
+            log.warning("Referenzlauf ohne thermische Last fehlgeschlagen (%s) - "
+                        "Horizont-Regel bleibt aus.", exc)
+            return None
+        if ref.infeasible or "grid_import_w" not in ref.table:
+            log.debug("Referenzlauf ohne thermische Last unloesbar - "
+                      "Horizont-Regel bleibt aus.")
+            return None
+        dt = self.cfg.general.dt_hours
+        wh = float(np.nansum(
+            np.asarray(ref.table["grid_import_w"], dtype=float))) * dt
+        log.info("Referenz-Netzbezug ohne %s: %.2f kWh (Grundlage der "
+                 "Horizont-Regel).", ", ".join(sorted(namen)), wh / 1000.0)
+        return max(0.0, wh)
+
     def _diagnose_infeasibility(self, inp: OptimizerInputs) -> str:
         """Bei Infeasible die wahrscheinliche Ursache eingrenzen: nacheinander
         einzelne (harte) Bausteine relaxieren und neu lösen; der erste, der die
@@ -929,6 +986,25 @@ class Optimizer:
         from .loads import add_controllable_loads
         cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
             prob, cfg, inp, N, dt, g_imp=g_imp)
+
+        # HORIZONT-REGEL: eine thermische Last mit no_grid_import darf den
+        # Netzbezug UEBER DEN GANZEN HORIZONT nicht erhoehen. Der Referenzwert
+        # kommt aus einem Lauf ohne diese Last (s. _reference_grid_import_wh);
+        # Kausalitaet und Speicherstand rechnet das Modell dabei selbst.
+        # Weich formuliert mit demselben hohen Malus wie die Slot-Regel, damit
+        # ein echter Notfall (weit unter min_c, Frostschutz) sie brechen kann.
+        ng_ref_wh = self._reference_grid_import_wh(inp)
+        if ng_ref_wh is not None:
+            ng_pen_h = max(0.0, float(getattr(
+                cfg.optimization, "no_grid_import_penalty_ct_kwh", 5000.0)))
+            ng_h_slack = pulp.LpVariable("ngHorizont", 0)
+            # Kleine Reserve: Referenz- und Hauptlauf haben jeder ihre eigene
+            # MIP-Toleranz, ohne sie waere die Grenze numerisch zu scharf.
+            prob += (pulp.lpSum(g_imp) * dt
+                     <= ng_ref_wh + 50.0 + ng_h_slack)
+            cost_terms_horizon = ng_pen_h * ng_h_slack / 1000.0
+        else:
+            cost_terms_horizon = None
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -1653,6 +1729,8 @@ class Optimizer:
             cost_terms.append(-v * hb.discharge_efficiency * term_seg[i] / 1000.0)
 
         cost_terms.extend(cl_cost)          # Schalt-Malus + Komfort der Lasten
+        if cost_terms_horizon is not None:
+            cost_terms.append(cost_terms_horizon)
         prob += pulp.lpSum(cost_terms)
 
         # ---- Lösen ------------------------------------------------------- #
