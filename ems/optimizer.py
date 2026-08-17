@@ -565,9 +565,9 @@ class Optimizer:
             status=status, infeasible=True, export_line_w=None,
         )
 
-    def _reference_grid_import_wh(self, inp: OptimizerInputs):
-        """Netzbezug ueber den Horizont OHNE die thermischen Lasten mit
-        ``no_grid_import``. Rueckgabe in Wh, None wenn nicht ermittelbar.
+    def _reference_cash_cost_ct(self, inp: OptimizerInputs):
+        """Kassenkosten ueber den Horizont OHNE die thermischen Lasten mit
+        ``no_grid_import``. Rueckgabe in ct, None wenn nicht ermittelbar.
 
         Grundlage der Regel "die Last darf keinen Netzbezug verursachen". Die
         Slot-Variante in ``loads._add_thermal`` prueft nur den Import im selben
@@ -615,12 +615,22 @@ class Optimizer:
             log.debug("Referenzlauf ohne thermische Last unloesbar - "
                       "Horizont-Regel bleibt aus.")
             return None
-        dt = self.cfg.general.dt_hours
-        wh = float(np.nansum(
-            np.asarray(ref.table["grid_import_w"], dtype=float))) * dt
-        log.info("Referenz-Netzbezug ohne %s: %.2f kWh (Grundlage der "
-                 "Horizont-Regel).", ", ".join(sorted(namen)), wh / 1000.0)
-        return max(0.0, wh)
+        # KASSENKOSTEN, nicht Bezugsmenge. Die Menge zu deckeln war falsch:
+        # * Ein Deckel auf den GESAMTBEZUG zwingt zum teuren Bezug. Um 1 kWh
+        #   Nachtbezug durch Mittagsladung zu ersetzen, braucht man wegen der
+        #   Wirkungsgrade ~1,22 kWh (0,90 laden x 0,909 entladen) - der Tausch
+        #   erhoeht die Menge und war damit verboten. Live beobachtet am
+        #   17.08.2026: nachts 7,19 kWh zu 32,35 ct bezogen, waehrend mittags
+        #   16-26 ct verfuegbar waren und NICHT geladen wurde.
+        # * Ein Deckel auf "Bezug ohne Netzladen" oeffnet das Gegenteil: dann
+        #   laeuft Netz -> Akku -> Pool, und der Pool heizte 11,89 kWh statt 6,93.
+        # Geld als Einheit schliesst beide Fallen: guenstiges Laden SENKT die
+        # Kosten und bleibt erlaubt, Poolheizen mit Folgebezug erhoeht sie und
+        # bleibt gesperrt, Waschen ueber den Akku kostet und ist damit aus.
+        ct = float(ref.total_cost_ct)
+        log.info("Referenz-Kassenkosten ohne %s: %.2f EUR (Grundlage der "
+                 "Horizont-Regel).", ", ".join(sorted(namen)), ct / 100.0)
+        return ct
 
     def _diagnose_infeasibility(self, inp: OptimizerInputs) -> str:
         """Bei Infeasible die wahrscheinliche Ursache eingrenzen: nacheinander
@@ -993,16 +1003,26 @@ class Optimizer:
         # Kausalitaet und Speicherstand rechnet das Modell dabei selbst.
         # Weich formuliert mit demselben hohen Malus wie die Slot-Regel, damit
         # ein echter Notfall (weit unter min_c, Frostschutz) sie brechen kann.
-        ng_ref_wh = self._reference_grid_import_wh(inp)
-        if ng_ref_wh is not None:
+        ng_ref_ct = self._reference_cash_cost_ct(inp)
+        if ng_ref_ct is not None:
             ng_pen_h = max(0.0, float(getattr(
                 cfg.optimization, "no_grid_import_penalty_ct_kwh", 5000.0)))
             ng_h_slack = pulp.LpVariable("ngHorizont", 0)
-            # Kleine Reserve: Referenz- und Hauptlauf haben jeder ihre eigene
-            # MIP-Toleranz, ohne sie waere die Grenze numerisch zu scharf.
-            prob += (pulp.lpSum(g_imp) * dt
-                     <= ng_ref_wh + 50.0 + ng_h_slack)
-            cost_terms_horizon = ng_pen_h * ng_h_slack / 1000.0
+            kwh_f = dt / 1000.0
+            kasse = pulp.lpSum(
+                g_imp[t] * float(inp.price_ct_kwh[t]) * kwh_f
+                - g_exp[t] * float(inp.feedin_ct_kwh[t]) * kwh_f
+                for t in range(N))
+            # Reserve mindestens in Hoehe der absoluten MIP-Toleranz: Referenz-
+            # und Hauptlauf haben jeder ihre eigene, ohne Reserve waere die
+            # Grenze numerisch zu scharf.
+            reserve = max(5.0, float(getattr(
+                cfg.optimization, "solver_mip_gap_abs_ct", 3.0)))
+            prob += kasse <= ng_ref_ct + reserve + ng_h_slack
+            # Der Slupf ist in ct. Gewicht aus demselben Parameter wie die
+            # Slot-Regel: bei der Vorgabe 5000 ct/kWh kostet 1 ct Mehrkosten
+            # 100 ct im Ziel - hart, aber im Notfall (Frostschutz) brechbar.
+            cost_terms_horizon = max(1.0, ng_pen_h / 50.0) * ng_h_slack
         else:
             cost_terms_horizon = None
 
