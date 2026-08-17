@@ -3365,7 +3365,11 @@ def _reload_calibration_overrides(config) -> None:
             continue
         if current.type != "thermal":
             continue
-        for field in ("loss_w_per_k", "solar_absorption"):
+        # comfort_penalty_ct_per_k_slot gehoert dazu: der Wert ist zum Drehen
+        # gedacht (er entscheidet, ob Komfort oder Strompreis gewinnt), und ohne
+        # Hot-Reload braeuchte jede Probe einen Dienstneustart.
+        for field in ("loss_w_per_k", "solar_absorption",
+                      "comfort_penalty_ct_per_k_slot"):
             old, new = getattr(current, field), getattr(newer, field)
             if old != new:
                 setattr(current, field, new)
