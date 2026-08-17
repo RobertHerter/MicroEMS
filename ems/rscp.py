@@ -788,6 +788,34 @@ class E3DCLink:
         """Alarmziel für asynchrone Watchdog-Ausfälle (z.B. MQTT) setzen."""
         self._alarm_callback = callback
 
+    def _mode_effective(self, mode: int, value: int) -> bool:
+        """Wirkt der gesetzte Modus noch? Gemessen am AKKUFLUSS, nicht am
+        Sendeerfolg.
+
+        Am 17.08.2026 quittierte der E3DC beim Netzladen (Mode 4) einzelne
+        Watchdog-Sendungen mit "Max retries reached" - um 15:05 viermal in Folge,
+        also ueber 30 s -, waehrend der Akku durchgehend mit dem Sollwert lud
+        (+9516 W bei 9484 W Soll, ueber Minuten belegt). Ein fehlgeschlagener
+        Sendeversuch ist damit KEIN Steuerausfall, und ein Fehleralarm darauf ist
+        ein Fehlalarm. Erst wenn der Fluss dem gesetzten Modus widerspricht - oder
+        gar nicht lesbar ist - ist die Steuerung wirklich weg.
+        """
+        try:
+            live = self.read_live(force=True)
+        except Exception:
+            return False
+        if not live or live.get("battery_w") is None:
+            return False
+        batt = float(live["battery_w"])
+        schwelle = 0.5 * abs(float(value))
+        if mode == 1:                                   # halten
+            return abs(batt) <= max(100.0, 0.1 * abs(float(value)))
+        if mode == 2:                                   # entladen
+            return batt <= -schwelle
+        if mode in (3, 4):                              # laden (PV bzw. Netz)
+            return batt >= schwelle
+        return False
+
     def _watchdog_loop(self) -> None:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
@@ -800,6 +828,13 @@ class E3DCLink:
                             "info", "E3DC-Steuer-Watchdog wiederhergestellt.")
                     self._watchdog_failed = False
                 except Exception as exc:  # pragma: no cover
+                    if self._mode_effective(mode, value):
+                        # Sendung gescheitert, Modus wirkt trotzdem: kein Alarm.
+                        log.debug(
+                            "RSCP-Watchdog-Sendung fehlgeschlagen (%s), der "
+                            "Modus %d wirkt aber weiter - kein Steuerausfall.",
+                            exc, mode)
+                        continue
                     log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s).", exc)
                     status = self._control_status(
                         False, "watchdog_failed", f"mode_{mode}",

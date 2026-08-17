@@ -796,3 +796,45 @@ def test_apply_system_limits_leaves_unlisted_fields():
     _apply_system_limits(cfg, {"min_discharge_w": 100.0})   # nur min_discharge
     assert cfg.optimization.min_discharge_w == 100.0
     assert cfg.house_battery.capacity_wh == cap_before      # Rest unberührt
+
+
+def test_failed_watchdog_send_is_no_alarm_while_the_mode_still_works():
+    """Am 17.08.2026 quittierte der E3DC beim Netzladen einzelne
+    Watchdog-Sendungen mit "Max retries reached" - viermal in Folge, also ueber
+    30 s -, waehrend der Akku durchgehend mit dem Sollwert lud (+9516 W bei
+    9484 W Soll). Vier MQTT-FEHLERalarme fuer eine nachweislich funktionierende
+    Steuerung sind ein Fehlalarm; entscheidend ist der Akkufluss."""
+    from ems.rscp import E3DCLink
+    link = E3DCLink.__new__(E3DCLink)          # ohne Verbindungsaufbau
+
+    def live(werte):
+        link.read_live = lambda force=False: werte
+
+    # Netzladen (Mode 4) mit 9484 W Soll: Akku laedt -> Modus wirkt
+    live({"battery_w": 9516.0})
+    assert link._mode_effective(4, 9484) is True
+    # PV-Laden genauso
+    assert link._mode_effective(3, 9484) is True
+    # Akku entlaedt stattdessen -> Widerspruch
+    live({"battery_w": -2000.0})
+    assert link._mode_effective(4, 9484) is False
+    # halten: Fluss muss nahe null sein
+    live({"battery_w": 30.0})
+    assert link._mode_effective(1, 0) is True
+    live({"battery_w": -3000.0})
+    assert link._mode_effective(1, 0) is False
+    # entladen
+    live({"battery_w": -2500.0})
+    assert link._mode_effective(2, 3000) is True
+    live({"battery_w": 0.0})
+    assert link._mode_effective(2, 3000) is False
+    # keine Livewerte lesbar -> nicht bestaetigt, Alarm bleibt zulaessig
+    live(None)
+    assert link._mode_effective(4, 9484) is False
+    live({"battery_w": None})
+    assert link._mode_effective(4, 9484) is False
+
+    def kaputt(force=False):
+        raise ConnectionError("nicht erreichbar")
+    link.read_live = kaputt
+    assert link._mode_effective(4, 9484) is False
