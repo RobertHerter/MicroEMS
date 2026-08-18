@@ -30,7 +30,8 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ems.config import load_config          # noqa: E402
-from ems.optimizer import Optimizer, OptimizerInputs   # noqa: E402
+from ems.optimizer import (Optimizer, OptimizerInputs,   # noqa: E402
+                           terminal_credit_ct)
 
 FELDER = ("house_load_w", "pv_w", "price_ct_kwh", "feedin_ct_kwh", "pv10_w",
           "ambient_temp_c", "solar_w_m2")
@@ -81,8 +82,12 @@ def main() -> int:
           f"{len(lokal)} Slots, Start {state}")
     print(f"Einspeiseverguetung im Mittel {verg:.2f} ct/kWh - darunter lohnt "
           f"Heizen aus PV nie.\n")
-    print(f"{'Malus':>7s} {'Kosten':>9s} {'Pool ges':>10s} {'Nacht':>9s} "
-          f"{'Tag':>9s} {'Temp-Min':>9s} {'Bezug':>9s} {'Dauer':>7s}")
+    print("netto = Kosten - Terminalwert des End-SoC. Die Kostenspalte allein "
+          "vergleicht\nfalsch, sobald die Stufen unterschiedlich voll enden - "
+          "bezahlte Energie im Akku\nsieht dort wie Ersparnis aus.\n")
+    print(f"{'Malus':>7s} {'Kosten':>9s} {'netto':>9s} {'Pool ges':>10s} "
+          f"{'Nacht':>9s} {'Tag':>9s} {'Temp-Min':>9s} {'Bezug':>9s} "
+          f"{'Dauer':>7s}")
     nacht_von, nacht_bis = 21, 7
     for pen in args.werte:
         cfg = copy.deepcopy(basis)
@@ -91,7 +96,8 @@ def main() -> int:
             if ld.type == "thermal":
                 ld.comfort_penalty_ct_per_k_slot = pen
         t0 = time.time()
-        res = Optimizer(cfg).solve(inp)
+        res = Optimizer(cfg, store_warm=False,
+                        stabilize_plan=False).solve(inp)
         dauer = time.time() - t0
         if res.infeasible:
             print(f"  {pen:5.1f}   unloesbar: {res.infeasible_reason}")
@@ -105,7 +111,11 @@ def main() -> int:
         ist_nacht = (t.index.hour >= nacht_von) | (t.index.hour < nacht_bis)
         temp = [c for c in t.columns if c.endswith("_temp_c")]
         tmin = float(t[temp[0]].min()) if temp else float("nan")
+        netto = res.total_cost_ct - terminal_credit_ct(
+            cfg, inp.price_ct_kwh, inp.feedin_ct_kwh,
+            float(t["house_soc_wh"].iloc[-1]))
         print(f"  {pen:5.1f} {res.total_cost_ct / 100:8.3f} "
+              f"{netto / 100:8.3f} "
               f"{float(pool.sum()) * 0.25 / 1000:7.2f} kWh "
               f"{float(pool[ist_nacht].sum()) * 0.25 / 1000:6.2f} kWh "
               f"{float(pool[~ist_nacht].sum()) * 0.25 / 1000:6.2f} kWh "

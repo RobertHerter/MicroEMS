@@ -182,3 +182,58 @@ def test_terminal_value_can_buy_energy_when_no_penalty_masks_it():
         f"hundertfacher Terminalwert verschiebt den End-SoC nur von "
         f"{soc_klein:.2f} auf {soc_gross:.2f} % - erwartet war genau diese "
         "Wirkungslosigkeit")
+
+
+def test_terminal_segment_values_stay_at_or_above_the_feed_in_tariff():
+    """Die dokumentierte Invariante: alle drei Segmente >= Einspeisung.
+
+    Faellt ein Segment darunter, wird PV-Laden gegenueber Einspeisen
+    unattraktiv und der Akku bleibt im Sommer leer.
+    """
+    from ems.optimizer import terminal_segment_values
+
+    cfg = make_config()
+    cfg.optimization.terminal_soc_value = "auto"
+    preise = np.array([5.0, 10.0, 20.0, 40.0, 60.0])
+    einsp = np.full(5, 12.0)
+
+    seg = terminal_segment_values(cfg, preise, einsp)
+    assert seg == sorted(seg, reverse=True), f"nicht fallend: {seg}"
+    assert min(seg) >= 12.0 - 1e-9, f"Segment unter der Einspeisung: {seg}"
+    assert seg[0] == pytest.approx(max(float(np.percentile(preise, 50)), 12.0))
+
+    # Fester Zahlenwert -> flache Kurve, alle Segmente gleich
+    cfg.optimization.terminal_soc_value = 30.0
+    assert terminal_segment_values(cfg, preise, einsp) == [30.0] * 3
+
+
+def test_terminal_credit_is_concave_and_capped_per_third():
+    """Die Gutschrift muss das LP-Optimum der termseg-Variablen nachrechnen.
+
+    Auswertungen brauchen den Wert (``total_cost_ct`` enthaelt ihn nicht) -
+    weicht der Helfer vom Modell ab, vergleichen sie falsch.
+    """
+    from ems.optimizer import terminal_credit_ct, terminal_segment_values
+
+    cfg = make_config()
+    cfg.optimization.terminal_soc_value = "auto"
+    hb = cfg.house_battery
+    preise = np.linspace(10.0, 50.0, 96)
+    einsp = np.full(96, 8.0)
+    seg = terminal_segment_values(cfg, preise, einsp)
+    nutzbar = hb.max_soc_wh - hb.min_soc_wh
+
+    def gut(soc_wh):
+        return terminal_credit_ct(cfg, preise, einsp, soc_wh)
+
+    assert gut(hb.min_soc_wh) == pytest.approx(0.0)
+    assert gut(hb.min_soc_wh - 5000.0) == pytest.approx(0.0), "keine Strafe"
+    assert gut(hb.max_soc_wh) == pytest.approx(
+        sum(seg) * hb.discharge_efficiency * (nutzbar / 3.0) / 1000.0)
+
+    # konkav: jedes weitere Drittel ist weniger wert als das vorige
+    stufen = [gut(hb.min_soc_wh + i * nutzbar / 3.0) for i in range(4)]
+    zuwachs = [b - a for a, b in zip(stufen, stufen[1:])]
+    assert all(b <= a + 1e-9 for a, b in zip(zuwachs, zuwachs[1:])), (
+        f"nicht konkav: {zuwachs}")
+    assert all(z > 0.0 for z in zuwachs), f"Segment ohne Wert: {zuwachs}"

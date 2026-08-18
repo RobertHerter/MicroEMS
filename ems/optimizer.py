@@ -327,6 +327,47 @@ class _WarmHiGHS(pulp.HiGHS):
             raise SolverCancelled("Optimierung wegen Dienstende abgebrochen")
 
 
+def terminal_segment_values(cfg, price_ct_kwh, feedin_ct_kwh) -> list:
+    """Grenzwerte der drei Terminalwert-Segmente (ct/kWh), fallend sortiert.
+
+    Eigene Funktion, weil AUSWERTUNGEN denselben Wert brauchen: der
+    Terminalwert steckt in der Zielfunktion, aber nicht in
+    ``total_cost_ct``. Wer zwei Parametervarianten auf den Kosten allein
+    vergleicht, vergleicht falsch, sobald der End-SoC differiert - bezahlte
+    Energie im Akku sieht dort wie Ersparnis aus. Nachgebaute Kopien der
+    Formel wuerden vom Modell wegdriften, darum hier einmalig.
+    """
+    tv = cfg.optimization.terminal_soc_value
+    if tv != "auto":
+        return [float(tv)] * 3
+    p = np.asarray(price_ct_kwh, dtype=float)
+    fin = float(np.mean(np.asarray(feedin_ct_kwh, dtype=float)))
+    return sorted([
+        max(float(np.percentile(p, 50)), fin),
+        max(float(np.percentile(p, 25)), fin),
+        fin,
+    ], reverse=True)
+
+
+def terminal_credit_ct(cfg, price_ct_kwh, feedin_ct_kwh, soc_end_wh) -> float:
+    """Gutschrift (ct) fuer den Akkuinhalt am Horizontende - wie im Modell.
+
+    Fuellt die drei Segmente von oben nach unten, jedes hoechstens ein Drittel
+    der nutzbaren Kapazitaet, und diskontiert mit dem Entlade-Wirkungsgrad.
+    Entspricht dem LP-Optimum der ``termseg``-Variablen, da die Werte fallend
+    sind.
+    """
+    hb = cfg.house_battery
+    seg_cap = (hb.max_soc_wh - hb.min_soc_wh) / 3.0
+    rest = max(0.0, float(soc_end_wh) - hb.min_soc_wh)
+    gutschrift = 0.0
+    for wert in terminal_segment_values(cfg, price_ct_kwh, feedin_ct_kwh):
+        nimm = min(seg_cap, rest)
+        rest -= nimm
+        gutschrift += wert * hb.discharge_efficiency * nimm / 1000.0
+    return gutschrift
+
+
 def _polish_continuous(prob, cfg, free_names=None) -> bool:
     """Politur: Binärentscheidungen der Lösung fixieren und den Rest exakt
     (gap-frei) nachoptimieren.
@@ -1634,17 +1675,8 @@ class Optimizer:
         # Abend-Eingriffe im Sommer). Median/p25/Einspeisung behebt das (die
         # Grenz-kWh liegt jetzt unter dem Bezugspreis) und ist zugleich billiger;
         # der Akku füllt sich weiterhin aus PV, da alle Segmente >= Einspeisung.
-        tv = cfg.optimization.terminal_soc_value
-        if tv == "auto":
-            p = np.asarray(inp.price_ct_kwh, dtype=float)
-            fin = float(np.mean(inp.feedin_ct_kwh))
-            seg_values = sorted([
-                max(float(np.percentile(p, 50)), fin),
-                max(float(np.percentile(p, 25)), fin),
-                fin,
-            ], reverse=True)
-        else:
-            seg_values = [float(tv)] * 3
+        seg_values = terminal_segment_values(
+            cfg, inp.price_ct_kwh, inp.feedin_ct_kwh)
         usable_cap = hb.max_soc_wh - hb.min_soc_wh
         term_seg = [pulp.LpVariable(f"termseg_{i}", 0, usable_cap / 3.0)
                     for i in range(3)]
