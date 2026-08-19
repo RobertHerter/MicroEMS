@@ -61,6 +61,8 @@ CURVE_FAMILIES = {
     "akku": ("#2ca02c", "#66d16a"),
     "soc": ("#111111", "#f7fafc"),
     "preis": ("#8c564b", "#c9a49a"),
+    "temp": ("#00838f", "#4dd0d8"),        # Temperatur thermischer Lasten
+    "temp_alt": ("#9467bd", "#c3a6e0"),    # zweite thermische Last
     "preis_schaetzung": ("#c49a94", "#dcbdb8"),
 }
 
@@ -2349,7 +2351,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     # ---------- Panel 7: Temperaturen (Pool erwartet/echt, Außentemperatur) ---
     if temp_row is not None:
         from .loads import _slug as _lslug
-        _tcol = ["#d62728", "#1f77b4", "#2ca02c", "#9467bd"]
+        _tcol = [CURVE_FAMILIES["temp"][0], CURVE_FAMILIES["temp_alt"][0],
+                 "#1f77b4", "#2ca02c"]
         for i, ld in enumerate(thermal_cfg):
             sg = _lslug(ld.name)
             c = _tcol[i % len(_tcol)]

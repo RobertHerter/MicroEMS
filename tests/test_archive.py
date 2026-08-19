@@ -445,3 +445,86 @@ def test_run_detail_soc_alignment_makes_a_perfectly_executed_plan_exact(tmp_path
     versetzt = [abs(ist[k] - round(roh[k], 2)) for k in paare]
     assert max(gerichtet) == pytest.approx(0.0, abs=0.01)
     assert min(versetzt) == pytest.approx(hub, abs=0.01)
+
+
+# --------------------------------------------------------------------------- #
+# Temperatur thermischer Lasten
+# --------------------------------------------------------------------------- #
+def _pool_cfg(cfg):
+    from ems.config import ControllableLoad, LoadStage
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", volume_l=7000.0, target_c=28.0,
+        min_c=27.0, max_c=28.5, loss_w_per_k=100.0, switch_penalty_ct=0.0,
+        stages=[LoadStage(name="klein", power_w=400.0, heat_w=3000.0)])]
+    return cfg
+
+
+def test_run_detail_lays_the_planned_pool_temperature_over_the_measured_one(
+        tmp_path):
+    """Die Temperatur kommt aus zwei Quellen - Plan aus dem Schnappschuss, Ist
+    aus ``load_temp`` (MQTT, nicht der Wechselrichter). Beide muessen auf dem
+    Raster des Laufs liegen, sonst vergleicht die Ansicht versetzte Kurven."""
+    from ems.local_history import write_load_temp
+
+    cfg, index, gen = _seed(tmp_path)
+    _pool_cfg(cfg)
+    n = len(index)
+    # Plan: gleichmaessig von 27 auf 29 C. Ist: konstant 1 K darunter.
+    snap = _snapshot(index, generated=gen)
+    snap["plan"]["load_Pool_temp_c"] = list(np.linspace(27.0, 29.0, n))
+    write_debug_snapshot(cfg.e3dc_rscp.history_db_path, snap)
+    for k in range(6):
+        write_load_temp(cfg.e3dc_rscp.history_db_path, index[k], "Pool",
+                        float(np.linspace(27.0, 29.0, n)[k]) - 1.0)
+
+    d = run_detail(cfg, gen.isoformat())
+    plan = d["plan"]["load_temp_c"]["Pool"]
+    ist = d["actual"]["load_temp_c"]["Pool"]
+    assert len(plan) == n and len(ist) == n, "nicht auf dem Raster des Laufs"
+    assert plan[0] == pytest.approx(27.0, abs=0.01)
+    assert ist[0] == pytest.approx(26.0, abs=0.01)
+    assert ist[6] is None, "Ist darf ueber den Messbereich hinaus nichts erfinden"
+    # Der Abstand ist konstruiert 1 K - genau das muss die Kachel zeigen.
+    assert d["deviation"]["load_temp_mae_k"]["Pool"] == pytest.approx(1.0,
+                                                                     abs=0.05)
+    # Komfortband, damit die Kurve ohne Blick in die Konfiguration lesbar ist.
+    assert d["comfort_band"]["Pool"] == [27.0, 28.5]
+
+
+def test_run_detail_without_a_thermal_load_draws_no_temperature(tmp_path):
+    """Ohne thermische Last darf kein leerer Kurvensatz und keine vierte Achse
+    entstehen - sonst zeigt die Ansicht eine Skala ohne Inhalt."""
+    cfg, index, gen = _seed(tmp_path)          # make_config: keine Lasten
+    d = run_detail(cfg, gen.isoformat())
+    assert d["plan"]["load_temp_c"] is None
+    assert d["actual"]["load_temp_c"] is None
+    assert d["comfort_band"] is None
+    assert d["deviation"]["load_temp_mae_k"] is None
+
+
+def test_run_detail_reports_no_temperature_deviation_without_measurements(
+        tmp_path):
+    """Geplante Kurve ohne Messwerte: zeichnen ja, Abweichung nein."""
+    cfg, index, gen = _seed(tmp_path)
+    _pool_cfg(cfg)
+    snap = _snapshot(index, generated=gen)
+    snap["plan"]["load_Pool_temp_c"] = list(np.full(len(index), 27.5))
+    write_debug_snapshot(cfg.e3dc_rscp.history_db_path, snap)
+
+    d = run_detail(cfg, gen.isoformat())
+    assert d["plan"]["load_temp_c"]["Pool"][0] == pytest.approx(27.5)
+    assert d["actual"]["load_temp_c"] is None
+    assert d["deviation"]["load_temp_mae_k"] is None, (
+        "ohne Messwerte gibt es keine Modellabweichung zu berichten")
+
+
+def test_archive_page_draws_the_temperature_on_its_own_scale():
+    """22-30 C auf der 0-100-Prozent-Achse waere ein Strich am Boden."""
+    html = archive_html().decode("utf-8")
+    assert "yaxis4" in html and "overlaying:'y2'" in html
+    assert "tempNames" in html, "Kurven werden nur bei Daten gezeichnet"
+    assert "comfort_band" in html, "Komfortband fehlt"
+    # Dieselbe Farbquelle wie das Dashboard, sonst laufen die Seiten auseinander.
+    from ems.dashboard import CURVE_FAMILIES
+    assert "temp" in CURVE_FAMILIES
+    assert CURVE_FAMILIES["temp"][0] in html

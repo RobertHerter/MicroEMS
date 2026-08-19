@@ -161,6 +161,30 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
                             index)),
     }
 
+    # Thermische Lasten: geplante Temperatur steht im Plan, die gemessene in
+    # load_temp (eigene Tabelle, weil sie ueber MQTT kommt und nicht vom
+    # Wechselrichter). Beide auf dasselbe Raster - sonst vergleicht die Ansicht
+    # Kurven mit verschobener Zeitachse.
+    from .loads import _slug
+    from .local_history import read_load_temp
+    plan_temp, actual_temp, comfort_band = {}, {}, {}
+    for ld in getattr(config, "controllable_loads", []) or []:
+        if getattr(ld, "type", "") != "thermal":
+            continue
+        col = plan_col(f"load_{_slug(ld.name)}_temp_c")
+        if col is not None:
+            plan_temp[ld.name] = _series(col, index)
+        try:
+            gemessen = read_load_temp(db, ld.name, index[0],
+                                     index[-1] + step, tz)
+        except Exception as exc:                            # pragma: no cover
+            log.debug("Temperatur %s nicht lesbar (%s).", ld.name, exc)
+            gemessen = None
+        if gemessen is not None and not gemessen.empty:
+            actual_temp[ld.name] = _series(
+                gemessen.reindex(index).to_numpy(dtype="float64"), index)
+        comfort_band[ld.name] = [float(ld.min_c), float(ld.max_c)]
+
     # Ist-Werte auf das Raster des Laufs bringen (nur vorhandene Slots).
     actual_out, coverage = {}, 0
     start, end = index[0], index[-1] + step
@@ -191,6 +215,9 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
         None if real_price is None
         else _series(real_price.to_numpy(dtype="float64"), index))
 
+    plan_out["load_temp_c"] = plan_temp or None
+    actual_out["load_temp_c"] = actual_temp or None
+
     deviation = {
         "pv_mae_w": _mae(plan_out["pv_w"], actual_out.get("pv_w") or []),
         "house_mae_w": _mae(plan_out["house_w"], actual_out.get("house_w") or []),
@@ -200,6 +227,12 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
                               actual_out.get("battery_w") or []),
         "price_mae_ct": _mae(plan_out["price_ct_kwh"],
                              actual_out.get("price_ct_kwh") or []),
+        # Je thermischer Last in Kelvin. Der Wert misst das THERMOMODELL
+        # (Aufheizrate, Verluste, Solargewinn) - anders als die uebrigen
+        # Abweichungen, die die Prognose messen.
+        "load_temp_mae_k": {
+            name: _mae(plan_temp[name], actual_temp[name])
+            for name in plan_temp if name in actual_temp} or None,
     }
     # Nur der geschaetzte Teil ist fuer die Preisguete interessant - bei den
     # bereits veroeffentlichten Slots muessen Plan und Ist ohnehin gleich sein.
@@ -226,6 +259,7 @@ def run_detail(config, generated: Optional[str] = None) -> Optional[dict]:
         "index": [ts.isoformat() for ts in index],
         "plan": plan_out,
         "actual": actual_out,
+        "comfort_band": comfort_band or None,
         "deviation": deviation,
     }
 
@@ -341,6 +375,15 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
  // Farbfamilie je Thema. Dieselbe Zuordnung wie im Dashboard - sie kommt
  // aus derselben Quelle, damit die beiden Seiten nicht wieder auseinanderlaufen.
  function fam(name){return EMS_CURVES[name][document.documentElement.classList.contains('dark')?1:0];}
+ // Eigene Kachel, weil sie das THERMOMODELL misst und nicht die Prognose.
+ function tempTile(mae){
+  const namen=Object.keys(mae||{}).filter(n=>typeof mae[n]==='number');
+  if(!namen.length)return '';
+  const n=namen[0],v=mae[n];
+  return tile(num(v,1)+' K',n+'-Abweichung',
+              (namen.length>1?namen.length+' Lasten · ':'')+'MAE Thermomodell',
+              v>1.5?'warn':'');
+ }
  function tile(v,l,s,cls){return '<div class="tile'+(cls?' '+cls:'')+'"><div class="v">'+v+'</div><div class="l">'+l+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>';}
  function label(r){
   const t=(r.ts_local||r.generated||'').replace('T',' ').slice(0,16);
@@ -425,6 +468,7 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
           ? 'geschätzter Teil: '+num(dv.price_estimated_mae_ct,2)+' ct in '
             +dv.price_estimated_slots+' Slots'
           : 'Plan gegen veröffentlichten Preis'))
+   +tempTile(dv.load_temp_mae_k)
    +tile(cov+' %','Ist-Abdeckung',d.actual_slots+' von '+d.slots+' Slots');
  }
  function viewPref(){return localStorage.getItem('ems-archive-view')||'lines';}
@@ -446,7 +490,7 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
      line:{color:color,width:dash?1.6:2,dash:dash||'solid',shape:'hv'},
      yaxis:row===1?'y':'y'+row,legendgroup:name.replace(/ (Plan|Ist)$/,''),
      showlegend:!noLegend,
-     hovertemplate:name+': %{y:,.'+(unit==='%'?1:0)+'f} '+unit+'<extra></extra>'});
+     hovertemplate:name+': %{y:,.'+((unit==='%'||unit==='°C'||unit==='K')?1:0)+'f} '+unit+'<extra></extra>'});
   }
   function transparent(color,alpha){
    const c=String(color||'').replace('#','');
@@ -469,18 +513,34 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
      +(unit==='%'?1:0)+'f} '+unit+'<extra></extra>'});
   }
   const P=d.plan||{},A=d.actual||{};
+  // Thermische Lasten: nur die zeichnen, die im Lauf ueberhaupt Kurven haben.
+  function tempNames(){
+   const von=Object.assign({},P.load_temp_c||{},A.load_temp_c||{});
+   return Object.keys(von).filter(function(n){
+    const p=(P.load_temp_c||{})[n],a=(A.load_temp_c||{})[n];
+    return (p&&p.some(v=>v!==null))||(a&&a.some(v=>v!==null));});
+  }
+  // Farben aus derselben Quelle wie das Dashboard (CURVE_FAMILIES), damit die
+  // beiden Seiten nicht auseinanderlaufen. Ab der dritten Last wiederholt sich
+  // die Reihenfolge - real gibt es eine thermische Last.
+  function tempColor(i){return fam(i%2?'temp_alt':'temp');}
   if(deltaMode){
    addDelta(P.pv_w,A.pv_w,'PV',fam('pv'),1,'W');
    addDelta(P.house_w,A.house_w,'Last',fam('last'),1,'W');
    addDelta(P.battery_w,A.battery_w,'Akku',fam('akku'),1,'W');
    addDelta(P.grid_w,A.grid_w,'Netz',fam('netz'),1,'W');
    addDelta(P.soc_percent,A.soc_percent,'SoC',fam('soc'),2,'%');
+   tempNames().forEach(function(n,i){
+    addDelta((P.load_temp_c||{})[n],(A.load_temp_c||{})[n],n,tempColor(i),4,'K');});
   }else{
    add(P.pv_w,'PV Plan',fam('pv'),1,null,'W');        add(A.pv_w,'PV Ist',fam('pv'),1,'dot','W');
    add(P.house_w,'Last Plan',fam('last'),1,null,'W');   add(A.house_w,'Last Ist',fam('last'),1,'dot','W');
    add(P.battery_w,'Akku Plan',fam('akku'),1,null,'W'); add(A.battery_w,'Akku Ist',fam('akku'),1,'dot','W');
    add(P.grid_w,'Netz Plan',fam('netz'),1,null,'W');    add(A.grid_w,'Netz Ist',fam('netz'),1,'dot','W');
    add(P.soc_percent,'SoC Plan',fam('soc'),2,null,'%');add(A.soc_percent,'SoC Ist',fam('soc'),2,'dot','%');
+   tempNames().forEach(function(n,i){
+    add((P.load_temp_c||{})[n],n+' Plan',tempColor(i),4,null,'°C');
+    add((A.load_temp_c||{})[n],n+' Ist',tempColor(i),4,'dot','°C');});
   }
   // Preis wie im Dashboard: EINE durchgezogene Linie mit dem tatsaechlichen
   // Boersenpreis. Wo er zur Planung schon veroeffentlicht war, ist das der
@@ -507,6 +567,17 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
     add(pp.map((v,i)=>(guessed(i)||(i+1<pp.length&&guessed(i+1)))?v:null),
         'Preis (Schätzung)',fam('preis_schaetzung'),3,'dash','ct/kWh');
   }
+  // Komfortband [min_c, max_c] der ERSTEN thermischen Last - dieselbe
+  // Orientierungshilfe wie im Dashboard. In der Delta-Ansicht sinnlos (dort
+  // steht die Nulllinie fuer "Plan getroffen").
+  function band(){
+   const n=tempNames();
+   if(deltaMode||!n.length)return [];
+   const b=(d.comfort_band||{})[n[0]];
+   if(!b||b.length!==2)return [];
+   return [{type:'rect',xref:'paper',x0:0,x1:1,yref:'y4',y0:b[0],y1:b[1],
+            line:{width:0},fillcolor:'rgba(44,160,44,0.10)',layer:'below'}];
+  }
   const ax={gridcolor:line,zerolinecolor:line,linecolor:line,tickfont:{color:mut}};
   // Ohne diese beiden Bloecke bleiben Hover-Box und Werkzeugleiste im
   // Dark-Mode weiss auf weiss (Plotly-Standard ist hell).
@@ -523,8 +594,13 @@ veröffentlicht war und der Plan schätzen musste (Folgetag vor ~13:00).</div></
    yaxis2:Object.assign({},ax,{title:{text:(deltaMode?'Δ SoC (pp)':'SoC (%)'),font:{size:11}},domain:[0.24,0.42]},
                         deltaMode?{}:{range:[0,100]}),
    yaxis3:Object.assign({},ax,{title:{text:(deltaMode?'Δ ct/kWh':'ct/kWh'),font:{size:11}},domain:[0,0.20]}),
+   // Temperatur teilt sich die Flaeche mit dem SoC, aber mit eigener Skala
+   // rechts: 22-30 C auf der 0-100-Achse waere ein Strich am Boden.
+   yaxis4:Object.assign({},ax,tempNames().length?{
+     title:{text:(deltaMode?'Δ K':'°C'),font:{size:11}},
+     overlaying:'y2',side:'right',showgrid:false}:{visible:false}),
    shapes:[{type:'line',x0:x[0],x1:x[0],yref:'paper',y0:0,y1:1,
-            line:{color:mut,width:1,dash:'dot'}}]
+            line:{color:mut,width:1,dash:'dot'}}].concat(band())
   },{responsive:true,displaylogo:false,
      modeBarButtonsToRemove:['lasso2d','select2d','autoScale2d']});
   window.LAST_X=x;applyHours();
