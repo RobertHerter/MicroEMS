@@ -521,6 +521,11 @@ forecast:
   fallback_load_w: 1500       # konservativ bei komplett fehlender Historie
   # Rezenz: jüngere Historie exponentiell höher gewichten (Halbwertszeit in
   # Tagen). Verhaltensänderungen schlagen so zeitnah durch. 0 = aus.
+  # Vor dem Drehen messen: bei method "ml" trägt das Merkmal lag_7d das
+  # aktuelle Verhalten schon, und eine kurze Halbwertszeit wirft dann nur
+  # Wochentags-/Saisonstruktur weg. Auf einer Anlage mit 13 Monaten Historie
+  # war "aus" um 0,6-1,4 pp WAPE besser als 120 Tage, 15 Tage um 4 pp
+  # schlechter - je Anlage nachrechnen, nicht übernehmen.
   half_life_days: 120
   # Intraday-Korrektur getrennt für Last und PV. deadband neutralisiert kleine
   # Abweichungen, max_step begrenzt die Änderung je 15-min-Lauf.
