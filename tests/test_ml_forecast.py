@@ -91,6 +91,61 @@ def test_ml_model_cache_reused(monkeypatch):
     assert np.allclose(f1.values, f2.values)
 
 
+def test_changed_recency_half_life_retrains_instead_of_reusing_the_cache():
+    """Der Cache darf nicht ueber die TRAININGSGEWICHTE hinwegsehen.
+
+    ``half_life_days`` ist kein Merkmal, sondern ein ``sample_weight``. Stand es
+    nicht im Fingerabdruck, gab derselbe Verlauf mit anderer Halbwertszeit das
+    alte Modell zurueck - eine Aenderung war still wirkungslos, auch per
+    Overlay zur Laufzeit. Beim Durchmessen des Parameters kam deshalb sechsmal
+    exakt dasselbe Ergebnis heraus.
+    """
+    import sklearn.ensemble
+    real = sklearn.ensemble.HistGradientBoostingRegressor
+    fits = {"n": 0}
+
+    class Counting(real):
+        def fit(self, *a, **k):
+            fits["n"] += 1
+            return super().fit(*a, **k)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(sklearn.ensemble, "HistGradientBoostingRegressor",
+                        Counting)
+    try:
+        fc_mod._ML_CACHE.clear()
+        # Verhaltensaenderung: die letzten 10 Tage tagsueber 400 statt 800 W.
+        # Ohne Bruch in der Historie aendert Umgewichten nichts - ein exakt
+        # wiederholtes Profil ergibt dasselbe Modell.
+        hist = _history(60).copy()
+        umbruch = START - pd.Timedelta(days=10)
+        tags = (hist.index.tz_convert(TZ).hour >= 8) & (
+            hist.index.tz_convert(TZ).hour < 20)
+        hist[(hist.index >= umbruch) & tags] = 400.0
+
+        def loese(halbwert):
+            cfg = _ml_config()
+            cfg.forecast.half_life_days = halbwert
+            return LoadForecaster(cfg).forecast(hist, START, 96)
+
+        kurz = loese(5.0)
+        lang = loese(2000.0)
+        assert fits["n"] == 2, (
+            f"Modell nur {fits['n']}x trainiert - der Cache uebersieht die "
+            "Gewichte")
+        assert len(fc_mod._ML_CACHE) == 2, (
+            "beide Halbwertszeiten teilen sich einen Cache-Eintrag: "
+            f"{len(fc_mod._ML_CACHE)} Eintrag/Eintraege")
+        # Bewusst KEINE Aussage darueber, dass sich die Prognose unterscheidet:
+        # ob die Gewichtung durchschlaegt, haengt an den Daten. Hier tut sie es
+        # nicht, weil das Merkmal lag_7d das neue Niveau ohnehin traegt - und
+        # genau deshalb faellt eine stille Cache-Wiederverwendung sonst nicht
+        # auf. Zugesagt ist das Neutrainieren, und das steht oben.
+        assert len(kurz) == len(lang) == 96
+    finally:
+        monkeypatch.undo()
+
+
 def test_similar_days_unaffected():
     """Default-Methode bleibt unverändert nutzbar."""
     cfg = make_config()          # method default 'similar_days'

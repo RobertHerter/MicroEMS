@@ -181,8 +181,14 @@ class LoadForecaster:
         if len(X_train) == 0 or len(X_train.columns) == 0:
             raise ValueError("keine tauglichen ML-Trainingsdaten")
 
+        # Die Trainingsgewichte gehoeren IN den Fingerabdruck: sie sind kein
+        # Merkmal (X_train), veraendern das Modell aber. Ohne sie liefert der
+        # Cache bei gleicher Historie das alte Modell zurueck - eine Aenderung
+        # von half_life_days (auch per Overlay zur Laufzeit) waere dann still
+        # wirkungslos.
         fp = (len(X_train), tuple(X_train.columns), str(X_train.index[0]),
-              str(X_train.index[-1]), round(float(np.nansum(y_train)), 3))
+              str(X_train.index[-1]), round(float(np.nansum(y_train)), 3),
+              None if w_train is None else round(float(np.nansum(w_train)), 6))
         cached = _ML_CACHE.get(fp)
         if cached is not None:
             model, train_cols = cached
