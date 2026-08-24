@@ -2,5 +2,5 @@
 #   pip install -r requirements-dev.txt
 pytest>=9.1.1
 pytest-xdist>=3.8.0      # parallele Testausführung (-n auto), s. pytest.ini
-ruff>=0.16.3             # Linter (CI: ruff check, Regelauswahl s. ruff.toml)
+ruff>=0.16.4             # Linter (CI: ruff check, Regelauswahl s. ruff.toml)
 # highspy steht jetzt in requirements.txt (Produktiv-Solver), nicht mehr hier.
