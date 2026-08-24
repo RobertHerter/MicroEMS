@@ -12,7 +12,7 @@ charset-normalizer==3.4.7
 execnet==2.1.2
 h5py==3.16.0
 highspy==1.15.1
-holidays==0.102
+holidays==0.103
 idna==3.18
 influxdb==5.3.2
 influxdb_client==1.50.0
@@ -31,14 +31,14 @@ pvlib==0.15.2
 py3rijndael==0.3.3
 pye3dc==0.10.0
 Pygments==2.20.0
-pytest-xdist==3.8.0
 pytest==9.1.1
+pytest-xdist==3.8.0
 python-dateutil==2.9.0.post0
 pytz==2026.2
 PyYAML==6.0.3
 reactivex==4.1.0
 requests==2.34.2
-ruff==0.16.2
+ruff==0.16.4
 scikit-learn==1.9.0
 scipy==1.18.0
 six==1.17.0
