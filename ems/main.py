@@ -720,6 +720,9 @@ def _audit_execution(config, now, live, e3dc=None):
         deviations["grid_energy_kwh"] = round(
             (float(meter["grid_import_wh"]) - float(meter["grid_export_wh"])
              - float(planned.get("grid_w", 0.0)) * dt) / 1000.0, 3)
+        def _w(value):
+            return f"{float(value or 0.0):.0f} W"
+
         def _action(value):
             value = float(value or 0.0)
             return "laden" if value > 50.0 else ("entladen" if value < -50.0 else "idle")
@@ -734,18 +737,92 @@ def _audit_execution(config, now, live, e3dc=None):
         forecast_bad = (abs(deviations.get("pv_w", 0.0))
                         + abs(deviations.get("load_w", 0.0))) > float(
                             config.monitoring.execution_grid_tolerance_w)
+        # Dem E3DC wird KEIN Akku-Sollwert vorgegeben, sondern ein Rahmen:
+        # Ladelimit, Entladelimit und (nur dann) ein Netzladebefehl. Innerhalb
+        # dieses Rahmens folgt der Akku der tatsaechlichen Hauslast, nicht dem
+        # Plan. Eine Abweichung von planned["battery_w"] ist deshalb fuer sich
+        # noch kein Geraetefehler - sie ist die Fortsetzung des
+        # Prognosefehlers. Geprueft wird der Rahmen.
+        #
+        # Gemessen am 31.08.2026 ueber 14 Tage: von 1370 Slots lagen ALLE im
+        # Rahmen, darunter die 112, die als "Geraeteabweichung" gemeldet wurden
+        # (5 bis 18 Warnungen pro Tag). Die Regel kann Verletzungen finden, sie
+        # fand keine.
+        #
+        # Die Knotenbilanz taugt dafuer NICHT: Plan und Ist erfuellen sie
+        # jeweils einzeln, also erfuellen die Differenzen sie zwangsläufig
+        # (gemessen: Restfehler 0,03 W - auch bei den 1127 unauffaelligen
+        # Slots). Sie wuerde jede Abweichung entschuldigen, auch eine echte.
+        surplus_actual_w = float(actual.get("pv_w") or 0.0) - float(
+            actual.get("load_w") or 0.0)
+        grid_charge_cmd_w = float(planned.get("grid_charge_w") or 0.0)
+        batt_tol_w = float(config.monitoring.execution_battery_tolerance_w)
+        charge_limit_w = planned.get("charge_limit_w")
+        discharge_limit_w = planned.get("discharge_limit_w")
+        actual_batt_w = float(actual.get("battery_w") or 0.0)
+        actual_soc_pct = actual.get("soc")
+        envelope_why = []
+        if (charge_limit_w is not None
+                and actual_batt_w > float(charge_limit_w) + batt_tol_w):
+            envelope_why.append(
+                f"lud {_w(actual_batt_w)} über dem Ladelimit "
+                f"{_w(charge_limit_w)}")
+        if (discharge_limit_w is not None
+                and -actual_batt_w > float(discharge_limit_w) + batt_tol_w):
+            envelope_why.append(
+                f"entlud {_w(-actual_batt_w)} über dem Entladelimit "
+                f"{_w(discharge_limit_w)}")
+        if (grid_charge_cmd_w <= 1.0
+                and actual_batt_w > max(0.0, surplus_actual_w) + batt_tol_w):
+            envelope_why.append(
+                f"lud {_w(actual_batt_w)} ohne Überschuss "
+                f"({_w(surplus_actual_w)}) und ohne Netzladebefehl")
+        # Gegenrichtung: der Rahmen ERLAUBTE die geplante Leistung und die
+        # Energie war da, der Akku tat es aber nicht. Das ist der Fall, der
+        # wirklich zaehlt - so faellt befohlenes Netzladen auf, das ausbleibt.
+        planned_batt_w = float(planned.get("battery_w") or 0.0)
+        if planned_batt_w > 50.0:
+            reachable_w = min(
+                planned_batt_w,
+                float(charge_limit_w) if charge_limit_w is not None
+                else planned_batt_w,
+                max(0.0, surplus_actual_w) + grid_charge_cmd_w)
+            if (reachable_w > batt_tol_w
+                    and actual_batt_w < reachable_w - batt_tol_w
+                    and not (actual_soc_pct is not None
+                             and float(actual_soc_pct) >= 99.0)):
+                envelope_why.append(
+                    f"lud nur {_w(actual_batt_w)}, möglich waren "
+                    f"{_w(reachable_w)}" + (
+                        f" (davon {_w(grid_charge_cmd_w)} befohlenes Netzladen)"
+                        if grid_charge_cmd_w > 1.0 else ""))
+        elif planned_batt_w < -50.0:
+            reachable_w = min(
+                -planned_batt_w,
+                float(discharge_limit_w) if discharge_limit_w is not None
+                else -planned_batt_w,
+                max(0.0, -surplus_actual_w))
+            if (reachable_w > batt_tol_w
+                    and -actual_batt_w < reachable_w - batt_tol_w
+                    and not (actual_soc_pct is not None
+                             and float(actual_soc_pct) <= 6.0)):
+                envelope_why.append(
+                    f"entlud nur {_w(-actual_batt_w)}, möglich waren "
+                    f"{_w(reachable_w)}")
+        envelope_bad = bool(envelope_why)
+
         limit = planned.get("export_limit_w")
         export_bad = (limit is not None and actual["grid_export_w"]
                       > float(limit) + config.monitoring.execution_grid_tolerance_w)
         model_bad = (float(planned.get("pv_curtail_w", 0.0) or 0.0) > 5.0
                      and planned.get("execution_path") == "model")
-        failed = batt_bad or soc_bad or export_bad or (
+        failed = envelope_bad or export_bad or (
             config.monitoring.execution_audit_grid and grid_bad)
         if model_bad:
             cause, state = "model", "model_error"
-        elif batt_bad or soc_bad or export_bad:
+        elif envelope_bad or export_bad:
             cause, state = "device", "device_error"
-        elif forecast_bad or grid_bad:
+        elif batt_bad or soc_bad or forecast_bad or grid_bad:
             cause, state = "forecast", "forecast_deviation"
         else:
             cause, state = "none", "ok"
@@ -757,13 +834,15 @@ def _audit_execution(config, now, live, e3dc=None):
         # Das nackte Label sagt nicht, WAS abwich - dann ist die gelbe
         # Betriebsdiagnose nicht deutbar. Deshalb die auslösenden Groessen mit
         # Ist- und Sollwert in die Meldung schreiben.
-        def _w(value):
-            return f"{float(value or 0.0):.0f} W"
-
         why = []
-        if batt_bad:
-            why.append(f"Akku {_w(actual.get('battery_w'))} statt geplant "
-                       f"{_w(planned.get('battery_w'))}")
+        why.extend(f"Akku {t}" for t in envelope_why)
+        if batt_bad and not envelope_bad:
+            why.append(
+                f"Akku {_w(actual.get('battery_w'))} statt geplant "
+                f"{_w(planned.get('battery_w'))} - im Rahmen des Befehls "
+                f"(Laden<={_w(charge_limit_w)}, Entladen<={_w(discharge_limit_w)}), "
+                f"der Akku folgte dem tatsächlichen Überschuss "
+                f"{_w(surplus_actual_w)}")
         if soc_bad:
             why.append(f"SoC {float(actual.get('soc') or 0.0):.1f} % statt "
                        f"{float(planned.get('soc') or 0.0):.1f} %")

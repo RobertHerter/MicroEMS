@@ -6,6 +6,7 @@ speist den Überschuss ein), darf das KEINEN Ausführungsfehler auslösen.
 """
 from __future__ import annotations
 
+import sqlite3
 import time as _time
 
 import pandas as pd
@@ -276,10 +277,75 @@ def test_device_error_message_names_the_deviating_quantity(tmp_path):
     assert audit["ok"] is False and audit["cause"] == "device"
     message = audit["message"]
     assert message.startswith("Geräteabweichung")
-    assert "Akku" in message and "statt geplant" in message
+    # Genannt wird das ERREICHBARE, nicht das Geplante: der Plan ist kein
+    # Sollwert fuers Geraet, sondern nur Ladelimit/Entladelimit. Hier erlaubte
+    # das Ladelimit 5000 W und der reale Ueberschuss 2000 W - geladen wurden
+    # 400 W, also ein echter Befund.
+    assert "Akku" in message and "möglich waren" in message
+    assert "400 W" in message and "2000 W" in message
     assert "Netz" in message           # Überschuss-Hinweis
-    # Zahlen statt nur Label: Ist- und Sollwert müssen erkennbar sein.
-    assert any(ch.isdigit() for ch in message)
+
+
+def test_battery_following_the_real_load_within_its_limits_is_no_device_error(
+        tmp_path):
+    """Dem E3DC wird kein Akku-SOLLWERT vorgegeben, nur ein Rahmen.
+
+    Der Plan wollte laden; real lag die Hauslast weit ueber der Prognose, es gab
+    keinen Ueberschuss, und der Akku hat entladen - innerhalb des erlaubten
+    Entladelimits. Das ist die Fortsetzung des Prognosefehlers, kein
+    Geraetefehler.
+
+    Gemessen am 31.08.2026 ueber 14 Tage: 105 der 112 als "Geraeteabweichung"
+    gemeldeten Slots waren dieser Fall (5 bis 18 Warnungen taeglich), und alle
+    1128 unauffaelligen Slots lagen ebenfalls im Rahmen - die Regel erzeugt dort
+    also keine neuen Befunde. Uebrig blieben 7 echte: befohlenes Netzladen, das
+    ausblieb.
+    """
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    # Entladen erlauben (der Plan der Fixture verbietet es mit Limit 0).
+    con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
+    con.execute("UPDATE execution_plan SET discharge_limit_w=12120.0")
+    con.commit()
+    con.close()
+    # Keine PV, hohe Last: 2000 W Defizit, vom Akku gedeckt.
+    link = _EnergyLink({"pv_wh": 0.0, "load_wh": 500.0,
+                        "bat_in_wh": 0.0, "bat_out_wh": 500.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 48.0}, e3dc=link)
+    assert audit["cause"] == "forecast", audit["message"]
+    assert audit["ok"] is True, "im Rahmen des Befehls ist kein Fehlschlag"
+    assert "im Rahmen des Befehls" in audit["message"]
+    # Die Abweichung bleibt sichtbar - nur eben als Prognose, nicht als Gerät.
+    assert audit["deviations"]["battery_w"] != 0.0
+    assert audit["battery_action"]["ok"] is False
+
+
+def test_commanded_grid_charging_that_does_not_happen_stays_a_device_error(
+        tmp_path):
+    """Der Fall, der uebrig bleibt und wirklich einer ist.
+
+    Netzladen ist ein BEFEHL, kein Nebenprodukt des Ueberschusses: bleibt es
+    aus, kann der Prognosefehler es nicht erklaeren. Sieben solche Slots in 14
+    Tagen, alle am 17.08.2026 mittags.
+    """
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
+    con.execute("UPDATE execution_plan SET grid_charge_w=4000.0, "
+                "battery_w=4000.0, discharge_limit_w=12120.0")
+    con.commit()
+    con.close()
+    # Kein Ueberschuss, aber 4000 W Netzladen befohlen - der Akku tut nichts.
+    link = _EnergyLink({"pv_wh": 0.0, "load_wh": 125.0,
+                        "bat_in_wh": 0.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 125.0, "grid_export_wh": 0.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 50.0}, e3dc=link)
+    assert audit["cause"] == "device", audit["message"]
+    assert audit["ok"] is False
+    assert "Netzladen" in audit["message"], audit["message"]
 
 
 def test_completed_slot_separates_forecast_deviation(tmp_path):
