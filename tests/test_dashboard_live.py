@@ -769,3 +769,24 @@ def test_dashboard_listens_only_locally_unless_asked_otherwise(tmp_path):
                                  '  serve: true\n  host: "0.0.0.0"', 1),
                     encoding="utf-8")
     assert load_config(str(ziel)).dashboard.host == "0.0.0.0"
+
+
+def test_forecast_analysis_prefers_the_operative_stand():
+    """Gezeigt wird der Stand, der den Akku gefuehrt hat - der Tagesstart als
+    Kontext. Beide in einen Wert zu mischen war die Ursache dafuer, dass
+    wochenlang ein Bias gemeldet wurde, den die laufende Fuehrung nicht hatte
+    (gemessen 31.08.2026: Tagesstart +183 W, operativ +24 W)."""
+    html = _forecast_analysis_block([], load_bias={
+        "alert": False, "alert_scope": None,
+        "operative_median_w": -14.1, "operative_night_median_w": -31.5,
+        "operative_n": 187, "operative_window_days": 2.0,
+        "night_median_w": 174.9, "median_w": 158.6,
+        "threshold_w": 100.0, "window_days": 7, "n": 725,
+    })
+
+    assert "Nacht -32 W · Gesamt -14 W" in html
+    assert "187 Paare · 2.0-Tage-Fenster" in html
+    assert "Stand, der den Akku im jeweiligen Slot geführt hat" in html
+    # Der Tagesstart bleibt lesbar, aber klar als Vergleich benannt.
+    assert "Tagesstart-Stand zum Vergleich" in html
+    assert "Nacht +175 W" in html and "Gesamt +159 W" in html

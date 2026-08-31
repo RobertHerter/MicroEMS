@@ -728,6 +728,10 @@ class MonitoringConfig:
     # gemessene Last). Faellt in der WAPE kaum auf, verschiebt aber jede Nacht
     # die SoC-Planung.
     load_bias_window_days: float = 7.0
+    # Zweites, kurzes Fenster fuer den OPERATIVEN Stand (die Prognose, die den
+    # Akku im jeweiligen Slot wirklich gefuehrt hat). Kostet einen
+    # Archivzugriff je Slot - gemessen 4,9 ms, also rund 0,9 s fuer 2 Tage.
+    load_bias_operative_days: float = 2.0
     load_bias_alert_w: float = 100.0
     solver_runtime_alert_seconds: float = 60.0
     solver_runtime_factor: float = 3.0
@@ -1636,6 +1640,8 @@ def load_config(path: str) -> Config:
             mon.get("execution_bias_window_days", 7.0)),
         execution_bias_alert_w=float(mon.get("execution_bias_alert_w", 50.0)),
         load_bias_window_days=float(mon.get("load_bias_window_days", 7.0)),
+        load_bias_operative_days=float(
+            mon.get("load_bias_operative_days", 2.0)),
         load_bias_alert_w=float(mon.get("load_bias_alert_w", 100.0)),
         solver_runtime_alert_seconds=float(
             mon.get("solver_runtime_alert_seconds", 60.0)),

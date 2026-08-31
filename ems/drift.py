@@ -57,6 +57,8 @@ class DriftMonitor:
             config.monitoring, "load_bias_window_days", 7.0))
         self.load_alert_w = float(getattr(
             config.monitoring, "load_bias_alert_w", 100.0))
+        self.load_op_days = float(getattr(
+            config.monitoring, "load_bias_operative_days", 2.0))
         # Entprellung der Lastprognose-Warnung: zuletzt gemeldete Stufe
         # (Vielfaches der Schwelle), None = kein Alarm.
         self._load_bias_level = None
@@ -316,12 +318,20 @@ class DriftMonitor:
     def check_load_bias(self, now: pd.Timestamp) -> Optional[dict]:
         """Einseitigen Fehler der Hauslastprognose aufsummieren.
 
-        Verglichen wird die Prognose, die VOR Tagesbeginn galt, gegen die
-        gemessene Hauslast - nicht der frischeste Stand, der die eigene
-        Nowcast-Korrektur schon enthielte. Ein systematischer Versatz faellt in
-        der taeglichen WAPE-Kennzahl kaum auf, verschiebt aber jede Nacht die
-        SoC-Planung: eine zu tief bereinigte Grundlast liess den Optimierer mit
-        400 W statt real 1200 W planen.
+        Zwei Staende, weil sie Verschiedenes aussagen:
+
+        * **operativ** - der Stand, der im jeweiligen Slot wirklich galt (mit
+          Nowcast-Korrektur). Das ist die Prognose, die den Akku gefuehrt hat,
+          und **nur sie loest aus**.
+        * **Tagesstart** - der 00:00-Stand, als Kontext. Er treibt die
+          naechtliche SoC-Planung, korrigiert sich aber durch die Neuplanung
+          alle 15 min weitgehend weg.
+
+        Gemessen am 31.08.2026 ueber 14 Tage, warum die Trennung noetig ist:
+        der 00:00-Stand hatte +129 W Bias und 34,0 % WAPE, der operative -21 W
+        und 28,2 %; nachts +183 gegen +24 W. Der Alarm feuerte also wochenlang
+        auf einer Groesse, die nichts steuert - und schickte die Ursachensuche
+        ins Modell, wo die Korrekturkette bereits sauber arbeitete.
         """
         from .local_history import (read_house_load,
                                     read_optimizer_forecast_asof)
@@ -360,6 +370,48 @@ class DriftMonitor:
             log.debug("Lastprognose-Bias: %s", shortfall_note(
                 "drift_window", len(deltas)))
             return None
+
+        # Operativer Stand: je Slot der Archivstand, der zu dessen Beginn galt.
+        # Ein Zugriff pro Slot (gemessen 4,9 ms), deshalb ein kuerzeres Fenster.
+        schritt = pd.Timedelta(minutes=self.cfg.general.slot_minutes)
+        op_deltas, op_stamps = [], []
+        op_start = end - pd.Timedelta(days=self.load_op_days)
+        try:
+            op_ist = read_house_load(db, op_start, end, tz)
+        except Exception as exc:  # pragma: no cover
+            log.debug("Ist-Hauslast fuer den operativen Stand fehlt (%s).", exc)
+            op_ist = pd.Series(dtype="float64")
+        for ts in op_ist.index:
+            a = float(op_ist.loc[ts])
+            if not pd.notna(a):
+                continue
+            try:
+                _i, fr = read_optimizer_forecast_asof(db, ts, ts, ts + schritt, tz)
+            except Exception:
+                continue
+            if fr is None or fr.empty or "house_load_w" not in fr:
+                continue
+            p = pd.to_numeric(fr["house_load_w"], errors="coerce")
+            if p.empty or not pd.notna(p.iloc[0]):
+                continue
+            op_deltas.append(float(p.iloc[0]) - a)
+            op_stamps.append(ts)
+        if op_deltas:
+            op_arr = pd.Series(op_deltas, index=pd.DatetimeIndex(op_stamps),
+                               dtype="float64")
+            op_median = float(op_arr.median())
+            op_share = float((op_arr > 0).mean())
+            op_sided = max(op_share, 1.0 - op_share)
+            op_night = op_arr.between_time("00:00", "05:59")
+            op_night_w = (float(op_night.median()) if len(op_night) >= 24
+                          else None)
+            op_night_sided = (max(float((op_night > 0).mean()),
+                                  1.0 - float((op_night > 0).mean()))
+                              if len(op_night) >= 24 else 0.0)
+        else:
+            op_arr = None
+            op_median = op_night_w = None
+            op_sided = op_night_sided = 0.0
         arr = pd.Series(deltas, index=pd.DatetimeIndex(stamps),
                         dtype="float64")
         # Median wie beim Ausfuehrungs-Versatz: einzelne Lastspitzen (Herd,
@@ -387,11 +439,22 @@ class DriftMonitor:
         # Nachts entscheidet sich, ob der Akku bis zum Morgen reicht; tagsuebre
         # deckt die PV den Fehler ohnehin. Der Tagesmedian bleibt in der
         # Ausgabe stehen - als Information, nicht als Ausloeser.
+        # AUSGELOEST wird ueber den OPERATIVEN Stand - er hat den Akku gefuehrt.
+        # Der Tagesstart-Stand bleibt in der Ausgabe, aber als Kontext: er
+        # korrigiert sich durch die Neuplanung alle 15 min weitgehend weg.
+        # Ohne operative Paare (frisches System, leeres Archiv) faellt der
+        # Ausloeser auf den Tagesstart zurueck - lieber grob warnen als still
+        # bleiben.
+        hat_operativ = op_arr is not None and len(op_arr) >= 24
+        loes_median = op_median if hat_operativ else median_w
+        loes_night = op_night_w if hat_operativ else night_w
+        loes_night_sided = op_night_sided if hat_operativ else night_sided
         day_trigger = False
-        day_bias_w = median_w if abs(median_w) > self.load_alert_w else None
-        night_trigger = (night_w is not None
-                         and abs(night_w) > self.load_alert_w
-                         and night_sided >= 0.65)
+        day_bias_w = (loes_median if loes_median is not None
+                      and abs(loes_median) > self.load_alert_w else None)
+        night_trigger = (loes_night is not None
+                         and abs(loes_night) > self.load_alert_w
+                         and loes_night_sided >= 0.65)
         disaggregation = bool(getattr(
             self.cfg.forecast, "disaggregate_controllable_loads", False))
         diagnostic = (
@@ -403,9 +466,25 @@ class DriftMonitor:
                "mean_w": round(float(arr.mean()), 1),
                "night_median_w": (None if night_w is None
                                   else round(night_w, 1)),
-               "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
+               # Auf den AUSLOESER bezogen, sonst widersprechen sich Zahl und
+               # Klartext (gemessen: Tagesstart +159 W "zu hoch", operativ
+               # -14 W "zu niedrig").
+               "kwh_per_day": round(
+                   (loes_median if loes_median is not None else median_w)
+                   * 24.0 / 1000.0, 2),
                "same_sign_share": round(one_sided, 2), "n": len(deltas),
                "window_days": int(self.load_days),
+               # Operativer Stand: der Ausloeser. Getrennt gefuehrt, damit die
+               # Anzeige nicht zwei Groessen in einen Wert mischt.
+               "operative_median_w": (None if op_median is None
+                                      else round(op_median, 1)),
+               "operative_night_median_w": (None if op_night_w is None
+                                            else round(op_night_w, 1)),
+               "operative_n": (0 if op_arr is None else int(len(op_arr))),
+               "operative_window_days": round(float(self.load_op_days), 1),
+               "operative_same_sign_share": round(op_sided, 2),
+               "alert_basis": ("operativ" if hat_operativ
+                               else "Tagesstart (kein operativer Stand)"),
                "threshold_w": round(float(self.load_alert_w), 1),
                "evaluated_at": pd.Timestamp(now).isoformat(),
                # Nur bei Alarm aussagekraeftig: ohne Ausloeser waere "Gesamt"
@@ -419,7 +498,8 @@ class DriftMonitor:
                # Richtung kommt im Klartext mit, damit Anzeigen sie nicht selbst
                # aus dem Vorzeichen ableiten muessen.
                "sign_convention": BIAS_CONVENTION,
-               "direction": bias_direction(median_w),
+               "direction": bias_direction(
+                   loes_median if loes_median is not None else median_w),
                "diagnostic": diagnostic,
                "day_bias_w": (None if day_bias_w is None
                               else round(day_bias_w, 1)),
@@ -433,27 +513,39 @@ class DriftMonitor:
         # mehr las. Gemeldet wird nur der Wechsel - und die Entwarnung ebenso,
         # damit ein stilles Verschwinden nicht mit "noch offen" verwechselt wird.
         stufe = None if not out["alert"] else int(
-            abs(night_w or median_w) // max(1.0, self.load_alert_w))
+            abs(loes_night if loes_night is not None else (loes_median or 0.0))
+            // max(1.0, self.load_alert_w))
         neu_melden = stufe != self._load_bias_level
         self._load_bias_level = stufe
         if not out["alert"]:
             if neu_melden:
-                log.info("Lastprognose-Versatz wieder im Rahmen "
-                         "(nachts %+.0f W, Schwelle %.0f W).",
-                         night_w if night_w is not None else 0.0,
-                         self.load_alert_w)
+                log.info("Lastprognose-Versatz wieder im Rahmen (operativ "
+                         "nachts %+.0f W, Schwelle %.0f W; Tagesstart %+.0f W).",
+                         loes_night if loes_night is not None else 0.0,
+                         self.load_alert_w,
+                         night_w if night_w is not None else 0.0)
             return out
         if not neu_melden:
             return out
         if out["alert"]:
             log.warning(
-                "Lastprognose-Versatz: Median %+.0f W über %d Slots "
-                "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Prognose "
-                "liegt systematisch %s. %s.",
-                median_w, len(deltas), 100.0 * one_sided, out["kwh_per_day"],
-                "zu hoch" if median_w > 0 else "zu niedrig", diagnostic)
-            if night_w is not None:
-                log.warning("  nachts (00-06 Uhr): %+.0f W", night_w)
+                "Lastprognose-Versatz im OPERATIVEN Stand: Median %+.0f W über "
+                "%d Slots (%.0f %% gleiches Vorzeichen). Die Prognose, die den "
+                "Akku fuehrt, liegt systematisch %s. %s.",
+                loes_median if loes_median is not None else 0.0,
+                out["operative_n"] or len(deltas),
+                100.0 * (op_sided if hat_operativ else one_sided),
+                "zu hoch" if (loes_median or 0.0) > 0 else "zu niedrig",
+                diagnostic)
+            if loes_night is not None:
+                log.warning("  operativ nachts (00-06 Uhr): %+.0f W",
+                            loes_night)
+            # Tagesstart als Kontext: weicht er stark ab, ist die Ursache die
+            # Tagesplanung, nicht die laufende Fuehrung.
+            log.warning("  Tagesstart-Stand zum Vergleich: Median %+.0f W, "
+                        "nachts %s (%d Slots, %d Tage).", median_w,
+                        "-" if night_w is None else f"{night_w:+.0f} W",
+                        len(deltas), int(self.load_days))
         else:
             log.info("Lastprognose-Versatz: Median %+.0f W, nachts %s (%d "
                      "Slots, %.0f %% gleiches Vorzeichen).", median_w,

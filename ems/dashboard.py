@@ -747,14 +747,26 @@ def _load_bias_quality_card(load_bias) -> tuple[str, str]:
         return "", "neutral"
     alert = bool(load_bias.get("alert"))
     level = "partial" if alert else "current"
-    median = load_bias.get("median_w")
-    night = load_bias.get("night_median_w")
+    # Gezeigt wird der OPERATIVE Stand - er loest aus und hat den Akku
+    # gefuehrt. Der Tagesstart-Stand kommt als Kontext dazu; beide in einen
+    # Wert zu mischen war die Ursache dafuer, dass wochenlang ein Bias gemeldet
+    # wurde, den die laufende Fuehrung gar nicht hatte (+183 gegen +24 W).
+    median = load_bias.get("operative_median_w")
+    night = load_bias.get("operative_night_median_w")
+    start_median = load_bias.get("median_w")
+    start_night = load_bias.get("night_median_w")
+    operativ = median is not None or night is not None
+    if not operativ:                              # kein operativer Stand
+        median, night = start_median, start_night
+        start_median = start_night = None
     # alert_scope ist None, wenn gar kein Alarm vorliegt - ein Default im get()
     # greift dann NICHT (der Schluessel existiert), und die Karte zeigte "None".
     scope = load_bias.get("alert_scope") or "Gesamt"
     threshold = load_bias.get("threshold_w", 100)
     days = load_bias.get("window_days", 7)
-    samples = int(load_bias.get("n", 0) or 0)
+    samples = int(load_bias.get("operative_n", 0)
+                  or load_bias.get("n", 0) or 0)
+    op_days = load_bias.get("operative_window_days")
 
     parts = []
     if night is not None:
@@ -769,10 +781,22 @@ def _load_bias_quality_card(load_bias) -> tuple[str, str]:
     state = " · ".join(parts) or "noch nicht auswertbar"
     if not alert:
         state = "kein systematischer Versatz · " + state
+    kontext = ""
+    if start_median is not None or start_night is not None:
+        teile = []
+        if start_night is not None:
+            teile.append(f"Nacht {float(start_night):+.0f} W")
+        if start_median is not None:
+            teile.append(f"Gesamt {float(start_median):+.0f} W")
+        kontext = (f" · Tagesstart-Stand zum Vergleich: {' / '.join(teile)} "
+                   f"({days}-Tage-Fenster)")
     detail = (
         f"{scope} {'über' if alert else 'unter'} der Schwelle "
-        f"±{float(threshold):.0f} W · {samples} Paare · {days}-Tage-Fenster"
-        " · historische Tagesstart-Prognosen; Modelländerungen laufen verzögert ein")
+        f"±{float(threshold):.0f} W · {samples} Paare · "
+        f"{op_days if op_days is not None else days}-Tage-Fenster · "
+        + ("Stand, der den Akku im jeweiligen Slot geführt hat" if operativ
+           else "historische Tagesstart-Prognosen; Modelländerungen laufen "
+                "verzögert ein") + kontext)
     return (
         f"<article class='quality-item {level}'>"
         "<div class='quality-source'>Lastprognose-Bias</div>"
