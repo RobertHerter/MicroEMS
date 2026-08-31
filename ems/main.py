@@ -60,6 +60,11 @@ _solver_alarm = {"failed": False}
 # "Planabweichung Akku" melden. In einer Karenz danach wird es ausgesetzt.
 _PROCESS_START = _time.monotonic()
 _load_feedback_alarm = {"failed": set()}
+# Ab hier gilt der Akku als voll bzw. leer, und ein nicht ausgefuehrtes Laden
+# oder Entladen ist keine Geraeteabweichung mehr. 97 % statt 99: der E3DC
+# riegelte gemessen bei 97,9 % ab, obwohl die Konfiguration 100 % erlaubt.
+_AUDIT_FULL_SOC_PCT = 97.0
+_AUDIT_SOC_MARGIN_PCT = 3.0
 _runtime_lock = threading.RLock()
 _runtime_status = {
     "state": "starting", "phase": "Dienst startet", "progress": 0,
@@ -761,6 +766,22 @@ def _audit_execution(config, now, live, e3dc=None):
         discharge_limit_w = planned.get("discharge_limit_w")
         actual_batt_w = float(actual.get("battery_w") or 0.0)
         actual_soc_pct = actual.get("soc")
+        # Der E3DC hoert nahe der Obergrenze von selbst auf zu laden - gemessen
+        # am 29.08.2026 stand der SoC sechs Slots lang auf exakt 97,9 %,
+        # waehrend 2,6 kW Ueberschuss ins Netz gingen. Die Konfiguration sagt
+        # max_soc = 100 %, das Geraet riegelt aber darunter ab; deshalb ein
+        # Abstand statt einer harten 99. Symmetrisch unten am Mindest-SoC.
+        soc_full = actual_soc_pct is not None and float(
+            actual_soc_pct) >= _AUDIT_FULL_SOC_PCT
+        min_soc_pct = (100.0 * config.house_battery.min_soc_wh
+                       / max(1.0, config.house_battery.capacity_wh))
+        soc_empty = actual_soc_pct is not None and float(
+            actual_soc_pct) <= min_soc_pct + _AUDIT_SOC_MARGIN_PCT
+        # Ohne belastbare Zaehlerwerte ist der Rahmen nicht beurteilbar: eine
+        # Hauslast von 0 W gibt es nicht. Gemessen 7 von 1379 Slots in 14
+        # Tagen; heute (31.08.) erzeugten drei davon prompt Fehlbefunde, obwohl
+        # der Akku exakt dem Plan folgte (2790 gegen 2780 W Soll).
+        meter_usable = float(actual.get("load_w") or 0.0) > 1.0
         envelope_why = []
         if (charge_limit_w is not None
                 and actual_batt_w > float(charge_limit_w) + batt_tol_w):
@@ -789,8 +810,7 @@ def _audit_execution(config, now, live, e3dc=None):
                 max(0.0, surplus_actual_w) + grid_charge_cmd_w)
             if (reachable_w > batt_tol_w
                     and actual_batt_w < reachable_w - batt_tol_w
-                    and not (actual_soc_pct is not None
-                             and float(actual_soc_pct) >= 99.0)):
+                    and not soc_full):
                 envelope_why.append(
                     f"lud nur {_w(actual_batt_w)}, möglich waren "
                     f"{_w(reachable_w)}" + (
@@ -804,11 +824,12 @@ def _audit_execution(config, now, live, e3dc=None):
                 max(0.0, -surplus_actual_w))
             if (reachable_w > batt_tol_w
                     and -actual_batt_w < reachable_w - batt_tol_w
-                    and not (actual_soc_pct is not None
-                             and float(actual_soc_pct) <= 6.0)):
+                    and not soc_empty):
                 envelope_why.append(
                     f"entlud nur {_w(-actual_batt_w)}, möglich waren "
                     f"{_w(reachable_w)}")
+        if not meter_usable:
+            envelope_why = []
         envelope_bad = bool(envelope_why)
 
         limit = planned.get("export_limit_w")

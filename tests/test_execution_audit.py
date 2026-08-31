@@ -348,6 +348,48 @@ def test_commanded_grid_charging_that_does_not_happen_stays_a_device_error(
     assert "Netzladen" in audit["message"], audit["message"]
 
 
+def test_a_nearly_full_battery_that_stops_charging_is_no_device_error(tmp_path):
+    """Der E3DC riegelt UNTER der konfigurierten Obergrenze ab.
+
+    Gemessen am 29.08.2026: der SoC stand sechs Slots lang auf exakt 97,9 %,
+    waehrend 2,6 kW Ueberschuss ins Netz gingen - die Konfiguration erlaubt
+    100 %. Eine harte Schranke bei 99 % erklaerte diese Slots deshalb nicht und
+    meldete vier Geraetefehler, die keine waren.
+    """
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    write_actuals(cfg.e3dc_rscp.history_db_path,
+                  TS + pd.Timedelta(minutes=15), {"soc_percent": 97.9})
+    # Ueberschuss 2000 W war da, das Ladelimit erlaubte 5000 W - der Akku
+    # nimmt trotzdem nichts, weil er oben ist.
+    link = _EnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                        "bat_in_wh": 0.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 500.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 97.9}, e3dc=link)
+    assert audit["actual"]["soc"] == 97.9
+    assert audit["cause"] != "device", audit["message"]
+
+
+def test_an_implausible_meter_reading_never_becomes_a_device_error(tmp_path):
+    """Eine Hauslast von 0 W gibt es nicht - dann ist der Rahmen nicht pruefbar.
+
+    Am 31.08.2026 lieferte der Zaehler in drei Slots pv=0, load=0 und keinen
+    SoC. Der Akku folgte dem Plan exakt (2790 gegen 2780 W Soll), die
+    Rahmenpruefung sah aber "geladen ohne Ueberschuss" und meldete drei
+    Geraetefehler. 7 von 1379 Slots in 14 Tagen sind so.
+    """
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    # Alles null ausser dem Akku: genau die Signatur des Ausfalls.
+    link = _EnergyLink({"pv_wh": 0.0, "load_wh": 0.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 52.0}, e3dc=link)
+    assert audit["cause"] != "device", audit["message"]
+
+
 def test_completed_slot_separates_forecast_deviation(tmp_path):
     cfg = _cfg(tmp_path)
     _completed_plan(cfg)
