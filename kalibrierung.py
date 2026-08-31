@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import timedelta
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -624,6 +625,56 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days,
             "_promotion_frame": promotion_frame}
 
 
+def _intraday_load_pull(cfg, days: float = 7.0) -> Optional[dict]:
+    """Was die Intraday-Korrektur der Last zuletzt WIRKLICH getan hat.
+
+    Die Empfehlung fuer ``forecast.correction_factor`` wird mit neutralisierter
+    Korrektur gemessen - sie gilt also fuers Basismodell. Live multipliziert
+    zusaetzlich die Intraday-Korrektur. Zieht sie in die andere Richtung, ist
+    das Anheben des statischen Faktors kontraproduktiv: gemessen am 24.08.2026
+    lag ihr Rohverhaeltnis im Mittel bei 0,838 (Ueberschaetzung um 19 %),
+    waehrend der Wochenlauf 1,2493 empfahl.
+    """
+    import sqlite3
+    try:
+        con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
+        row = con.execute(
+            "SELECT count(*), avg(raw_ratio), "
+            "sum(abs(raw_ratio - clipped_ratio) > 0.001) "
+            "FROM intraday_correction WHERE signal='load' "
+            "AND raw_ratio IS NOT NULL AND issue_ts >= ?",
+            ((pd.Timestamp.now(tz="UTC")
+              - pd.Timedelta(days=days)).isoformat(),)).fetchone()
+        con.close()
+    except Exception:
+        return None
+    if not row or not row[0] or row[1] is None:
+        return None
+    n, mittel, gekappt = int(row[0]), float(row[1]), int(row[2] or 0)
+    return {"days": round(float(days), 1), "runs": n,
+            "mean_raw_ratio": round(mittel, 3),
+            "clipped_share_percent": round(100.0 * gekappt / max(1, n), 1)}
+
+
+def _correction_conflict(empfehlung, pull) -> Optional[str]:
+    """Text, wenn statische Empfehlung und Intraday-Korrektur gegeneinander
+    ziehen. None, wenn sie in dieselbe Richtung zeigen oder Daten fehlen."""
+    if not pull or empfehlung is None:
+        return None
+    ratio = pull["mean_raw_ratio"]
+    if (float(empfehlung) - 1.0) * (ratio - 1.0) >= 0:
+        return None
+    return (f"Die Empfehlung {float(empfehlung):.4f} zieht "
+            f"{'hoch' if float(empfehlung) > 1.0 else 'runter'}, die "
+            f"Intraday-Korrektur der letzten {pull['days']:.0f} Tage aber "
+            f"{'runter' if ratio < 1.0 else 'hoch'} (Rohverhaeltnis im Mittel "
+            f"x{ratio:.3f} ueber {pull['runs']} Laeufe, "
+            f"{pull['clipped_share_percent']:.0f} % davon gekappt). Das "
+            f"Uebernehmen wuerde das Basismodell weiter verschieben und die "
+            f"Intraday-Korrektur haerter dagegenarbeiten lassen - vor dem "
+            f"Setzen gegen die Ist-Daten pruefen.")
+
+
 def _print_block(title, res):
     print("\n" + "=" * 62 + f"\n{title}\n" + "-" * 62)
     if res is None:
@@ -865,6 +916,18 @@ def main():
         "pv_sources": quellen_wettbewerb,
     }
 
+    # Zieht die statische Empfehlung gegen die Intraday-Korrektur? Der
+    # empfohlene Wert stammt aus dem Bericht (validation bevorzugt, sonst der
+    # Rohvorschlag) - genau der, der unten in empfohlene_config landet.
+    intraday_pull = _intraday_load_pull(cfg)
+    empfohlen_corr = (validation.get("global_correction") if validation
+                      else (load["suggested_correction_factor"] if load
+                            else None))
+    correction_conflict = _correction_conflict(empfohlen_corr, intraday_pull)
+    if load is not None:
+        load["intraday_load_pull"] = intraday_pull
+        load["intraday_conflict"] = correction_conflict
+
     _print_block("PV-Vorhersage (Solcast) vs. Ist-Erzeugung", pv)
     if pv:
         print(f"     Quelle Prognose: {pv.get('forecast_source', '?')} | "
@@ -876,6 +939,8 @@ def main():
     _print_block("Hausverbrauch (Modell) vs. Ist-Verbrauch (out-of-sample)", load)
     if load:
         print(f"  -> Empfehlung  forecast.correction_factor = {load['suggested_correction_factor']}")
+        if load.get("intraday_conflict"):
+            print(f"  !! {load['intraday_conflict']}")
         print(f"     Quelle Verbrauch: {load.get('load_source', '?')} | "
               f"Temperatur: {load.get('temp_source', '?')}")
         print(f"     Temperatur im Modell genutzt: {load.get('temp_used', False)}")
@@ -1021,6 +1086,7 @@ def main():
         "forecast_validation": validation,
         "pv_band": band,
         "calibration_competition": competition,
+        "correction_factor_konflikt": correction_conflict,
         "empfohlene_config": {
             "influxdb.signals.pv_forecast.scale": pv["suggested_scale"] if pv else None,
             "forecast.correction_factor": (

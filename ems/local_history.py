@@ -1420,6 +1420,10 @@ def read_latest_thermal_calibration(path: str, tz: str) -> list[dict]:
             for r in rows]
 
 
+_EVENT_KEEP_DAYS = 30.0
+_EVENT_ROW_CAP = 20000
+
+
 def write_dashboard_event(path: str, kind: str, message: str, *,
                           level: str = "info", details: Optional[dict] = None,
                           ts=None) -> None:
@@ -1433,10 +1437,23 @@ def write_dashboard_event(path: str, kind: str, message: str, *,
         "VALUES(?,?,?,?,?)",
         (stamp.tz_convert("UTC").isoformat(), str(kind), str(level),
          str(message), json.dumps(details or {}, ensure_ascii=False, default=str)))
-    # Verlauf begrenzen; 500 Eintraege reichen fuer die Bedienhistorie und
-    # verhindern unbegrenztes Wachstum bei vielen manuellen Neuberechnungen.
+    # Verlauf nach ZEIT begrenzen, nicht nach Zeilenzahl: bei gemessen 110 bis
+    # 160 Ereignissen pro Tag reichten die frueheren 500 Eintraege nur gut drei
+    # Tage. Am 31.08.2026 war deshalb nicht mehr feststellbar, wann eine
+    # Warnserie begonnen hatte - die aelteste Zeile fiel mit dem ersten Alarm
+    # zusammen, was faelschlich wie ein Beginn aussah. 30 Tage sind rund 4500
+    # Zeilen und damit unkritisch; die Obergrenze faengt nur den pathologischen
+    # Fall (Dauerschleife manueller Neuberechnungen) ab.
+    # Anker ist der JUENGSTE Eintrag, nicht die Wanduhr: sonst loescht ein
+    # Aufruf mit historischem Zeitstempel (Nachtragen, Test) die eigenen Zeilen.
+    neuest = con.execute("SELECT max(ts) FROM dashboard_event").fetchone()[0]
+    if neuest:
+        cutoff = (pd.Timestamp(neuest)
+                  - pd.Timedelta(days=_EVENT_KEEP_DAYS)).isoformat()
+        con.execute("DELETE FROM dashboard_event WHERE ts < ?", (cutoff,))
     con.execute("DELETE FROM dashboard_event WHERE id NOT IN "
-                "(SELECT id FROM dashboard_event ORDER BY id DESC LIMIT 500)")
+                "(SELECT id FROM dashboard_event ORDER BY id DESC LIMIT ?)",
+                (_EVENT_ROW_CAP,))
     con.commit()
     con.close()
 
@@ -1447,7 +1464,11 @@ def read_dashboard_events(path: str, tz: str, limit: int = 50) -> list[dict]:
         con = _con(path)
         rows = con.execute(
             "SELECT id,ts,kind,level,message,details_json FROM dashboard_event "
-            "ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 200)),)
+            # Obergrenze grosszuegig: die Anzeige fragt ohnehin nur wenige
+            # Zeilen ab, aber eine Diagnose ("seit wann warnt das?") braucht
+            # den Verlauf. Mit den frueheren 200 reichte jede Abfrage nur rund
+            # 1,5 Tage zurueck - unabhaengig davon, was die Tabelle noch hielt.
+            "ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 5000)),)
         ).fetchall()
         con.close()
     except Exception:
