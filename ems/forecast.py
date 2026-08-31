@@ -478,7 +478,9 @@ def stabilize_intraday_ratio(ratio, previous: float = 1.0,
 def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
                            decay_hours: float = 6.0,
                            max_slots: int | None = None,
-                           slot_minutes: int = 15) -> pd.Series:
+                           slot_minutes: int = 15,
+                           per_hour: "dict | None" = None,
+                           timezone: str = "UTC") -> pd.Series:
     """Korrekturfaktor je Zukunfts-Slot: volle Korrektur jetzt, exponentiell
     abklingend mit der Lead-Time (Halbwertszeit decay_hours).
 
@@ -486,8 +488,23 @@ def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
     Das ist für PV wichtig: aktuelles Wolkenrauschen ist für die nächsten
     Minuten nützlich, darf aber weiter entfernte Solcast-/pvlib-Werte nicht
     verbiegen. Ohne Grenze bleibt das bisherige Verhalten für die Hauslast.
+
+    ``per_hour`` (Stunde -> Restverhältnis) mischt ein REGIMEGLEICHES Fenster
+    dazu: dasselbe Zeitfenster der Vortage statt der letzten Stunden. Das
+    3-h-Fenster ist regimeblind - es misst um 05:45 die ruhige Nacht und trägt
+    den Faktor in die Morgenrampe. Gemessen über vier 14-Tage-Fenster
+    (31.08.2026), WAPE morgens 05-10 Uhr:
+
+        nur 3 h        22,6 / 23,4 / 23,0 / 22,3 %
+        nur Vortage    20,1 / 22,2 / 24,4 / 25,2 %   (gesamt schlechter!)
+        geometrisch    20,6 / 22,3 / 22,4 / 21,7 %   <- in allen vier besser
+
+    Deshalb das geometrische Mittel und nicht das eine oder andere: allein
+    verliert jedes Fenster in mindestens einem Zeitraum. Der 3-h-Anteil klingt
+    weiter ab (er ist eine Momentaufnahme), der Vortagesanteil bleibt - er ist
+    ein kurzfristiges Stundenprofil und damit ueber den Horizont gueltig.
     """
-    if ratio is None:
+    if ratio is None and not per_hour:
         return pd.Series(1.0, index=index)
     lead_h = np.maximum(
         (index - pd.Timestamp(now)).total_seconds() / 3600.0, 0.0)
@@ -497,7 +514,18 @@ def intraday_factor_series(ratio, index: pd.DatetimeIndex, now,
         raw_lead_h = np.asarray(
             (index - pd.Timestamp(now)).total_seconds() / 3600.0)
         w = np.where((raw_lead_h >= 0.0) & (raw_lead_h < horizon_h), w, 0.0)
-    return pd.Series(1.0 + (float(ratio) - 1.0) * w, index=index)
+    skalar = 1.0 + ((float(ratio) - 1.0) * w if ratio is not None else 0.0)
+    if not per_hour:
+        return pd.Series(skalar, index=index)
+    stunden = index.tz_convert(timezone).hour if index.tz is not None \
+        else index.hour
+    stunde_faktor = np.array([float(per_hour.get(int(h), 1.0))
+                              for h in stunden], dtype="float64")
+    # Geometrisches Mittel: bei lead 0 genau die gemessene Mischung, bei
+    # grossem lead bleibt die Wurzel des Stundenanteils (der Momentanteil ist
+    # dann abgeklungen).
+    return pd.Series(np.sqrt(np.maximum(skalar, 1e-6) * stunde_faktor),
+                     index=index)
 
 
 def dampen_estimated(price: pd.Series, estimated: pd.Series,

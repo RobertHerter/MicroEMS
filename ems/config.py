@@ -559,6 +559,11 @@ class ForecastConfig:
     intraday_load_deadband: float = 0.10
     intraday_pv_deadband: float = 0.10
     intraday_load_max_step: float = 0.10
+    # Regimegleiches Zweitfenster: dieselbe Stunde der letzten N Tage, geo-
+    # metrisch mit dem 3-h-Fenster gemischt. 0 = aus (Auslieferungsstand).
+    # Das 3-h-Fenster ist regimeblind - es misst um 05:45 die ruhige Nacht und
+    # traegt den Faktor in die Morgenrampe.
+    intraday_load_sameslot_days: float = 0.0
     intraday_pv_max_step: float = 0.10
     intraday_pv_min_power_w: float = 1000.0
     # PV-Nowcast ist nur operativ belastbar: auf höchstens diese Zahl direkt
@@ -1484,6 +1489,8 @@ def load_config(path: str) -> Config:
         intraday_load_deadband=float(f.get("intraday_load_deadband", 0.10)),
         intraday_pv_deadband=float(f.get("intraday_pv_deadband", 0.10)),
         intraday_load_max_step=float(f.get("intraday_load_max_step", 0.10)),
+        intraday_load_sameslot_days=float(
+            f.get("intraday_load_sameslot_days", 0.0)),
         intraday_pv_max_step=float(f.get("intraday_pv_max_step", 0.10)),
         intraday_pv_min_power_w=float(f.get("intraday_pv_min_power_w", 1000.0)),
         intraday_pv_operational_slots=int(

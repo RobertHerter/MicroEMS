@@ -16,6 +16,7 @@ import sqlite3
 import zlib
 from typing import Dict, Optional
 
+import numpy as np
 import pandas as pd
 from .loads import load_power_columns
 
@@ -2129,6 +2130,52 @@ def read_optimizer_forecast_snapshots(path: str, start, end, tz: str,
             continue
         out.append((issue.tz_convert(tz), frame))
     return out
+
+
+def read_intraday_hour_ratios(path: str, signal: str, now, days: float,
+                              tz: str, max_factor: float = 1.5,
+                              min_samples: int = 4) -> dict:
+    """Restverhaeltnis Ist/Prognose je Tagesstunde aus den letzten ``days``.
+
+    Quelle sind die schon archivierten Intraday-Fenster (``intraday_window``):
+    sie enthalten je Ausgabezeitpunkt Prognose UND Ist, also genau die Paare,
+    aus denen sonst das 3-h-Verhaeltnis entsteht. Damit braucht das
+    regimegleiche Fenster (dieselbe Stunde der Vortage) keine neu gerechneten
+    Prognosen.
+
+    Nur Stunden mit genug Paaren kommen vor; der Aufrufer laesst fehlende
+    Stunden bei 1.0. Rueckgabe {Stunde: Verhaeltnis}, geklemmt auf
+    [1/max_factor, max_factor].
+    """
+    if days <= 0:
+        return {}
+    ende = pd.Timestamp(now)
+    if ende.tzinfo is None:
+        ende = ende.tz_localize("UTC")
+    start = (ende - pd.Timedelta(days=float(days))).tz_convert("UTC").isoformat()
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT target_ts, actual_w, predicted_w FROM intraday_window "
+            "WHERE signal = ? AND target_ts >= ? AND target_ts < ? "
+            "AND eligible = 1 AND actual_w IS NOT NULL "
+            "AND predicted_w IS NOT NULL AND predicted_w > 0",
+            (str(signal), start, ende.tz_convert("UTC").isoformat())).fetchall()
+        con.close()
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    je_stunde: dict = {}
+    for ts, actual, predicted in rows:
+        try:
+            stunde = int(pd.Timestamp(ts).tz_convert(tz).hour)
+        except Exception:
+            continue
+        je_stunde.setdefault(stunde, []).append(float(actual) / float(predicted))
+    lo, hi = 1.0 / max(1e-6, max_factor), max(1e-6, max_factor)
+    return {h: float(np.clip(float(np.median(v)), lo, hi))
+            for h, v in je_stunde.items() if len(v) >= int(min_samples)}
 
 
 def write_intraday_diagnostic(path: str, issue_time, signal: str,

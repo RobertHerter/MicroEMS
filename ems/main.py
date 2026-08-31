@@ -2064,14 +2064,30 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         load_ratio, pv_ratio = _intraday_ratios(
             repo, config, forecaster, history, temp, now, hist_pv=hist_pv,
             load_actual=load_evaluation_actual)
-        if load_ratio is not None:
+        load_hours = _intraday_hour_ratios(config, now)
+        if load_ratio is not None or load_hours:
             load_fc = load_fc * intraday_factor_series(
                 load_ratio, load_fc.index, now,
-                config.forecast.intraday_load_decay_hours)
-            log.info("Intraday-Korrektur Last: x%.2f (roh x%.2f; klingt über "
-                     "%.1f h ab).", load_ratio,
-                     _intraday_raw["load"],
-                     config.forecast.intraday_load_decay_hours)
+                config.forecast.intraday_load_decay_hours,
+                per_hour=load_hours, timezone=config.general.timezone)
+            if load_hours:
+                _stunde = int(pd.Timestamp(now).tz_convert(
+                    config.general.timezone).hour)
+                log.info("Intraday-Korrektur Last: x%.2f (roh x%.2f; klingt "
+                         "über %.1f h ab) gemischt mit dem regimegleichen "
+                         "Fenster x%.2f für %02d Uhr (%d Stunden aus %.0f "
+                         "Tagen).",
+                         load_ratio if load_ratio is not None else 1.0,
+                         _intraday_raw["load"] or 1.0,
+                         config.forecast.intraday_load_decay_hours,
+                         load_hours.get(_stunde, 1.0), _stunde,
+                         len(load_hours),
+                         config.forecast.intraday_load_sameslot_days)
+            else:
+                log.info("Intraday-Korrektur Last: x%.2f (roh x%.2f; klingt "
+                         "über %.1f h ab).", load_ratio,
+                         _intraday_raw["load"],
+                         config.forecast.intraday_load_decay_hours)
 
         load_p10, load_p90 = forecaster.uncertainty_band(
             history, load_fc, hist_temp=temp, fut_temp=temp)
@@ -2982,6 +2998,36 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             e3dc.close()
 
 
+_intraday_hours_cache: dict = {}
+
+
+def _intraday_hour_ratios(config, now) -> dict:
+    """Restverhaeltnis je Tagesstunde aus den Vortagen (regimegleiches Fenster).
+
+    Einmal je Zyklus lesen: der Wert wird an mehreren Stellen gebraucht (Haupt-
+    prognose und die archivierten/angezeigten Reihen), und die Abfrage geht
+    ueber die schon vorhandenen Intraday-Fenster.
+    """
+    tage = float(getattr(config.forecast, "intraday_load_sameslot_days", 0.0))
+    if tage <= 0:
+        return {}
+    schluessel = (str(pd.Timestamp(now)), tage)
+    if schluessel in _intraday_hours_cache:
+        return _intraday_hours_cache[schluessel]
+    try:
+        from .local_history import read_intraday_hour_ratios
+        werte = read_intraday_hour_ratios(
+            config.e3dc_rscp.history_db_path, "load", now, tage,
+            config.general.timezone,
+            max_factor=config.forecast.intraday_load_max_factor)
+    except Exception as exc:            # pragma: no cover
+        log.debug("Regimegleiches Fenster nicht lesbar (%s).", exc)
+        werte = {}
+    _intraday_hours_cache.clear()       # nur der aktuelle Zyklus
+    _intraday_hours_cache[schluessel] = werte
+    return werte
+
+
 def _intraday_ratios(repo, config, forecaster, history, temp, now, hist_pv=None,
                      load_actual=None):
     """Ist/Prognose-Verhältnisse der letzten Stunden (Last, PV) für die
@@ -3714,7 +3760,12 @@ def _build_display_frame(repo, config, now, history, result,
                 ratio, full, now, decay,
                 max_slots=(None if is_load else
                            config.forecast.intraday_pv_operational_slots),
-                slot_minutes=config.general.slot_minutes)
+                slot_minutes=config.general.slot_minutes,
+                # Damit archivierte und angezeigte Reihen dieselbe Korrektur
+                # tragen wie die produktive Prognose.
+                per_hour=(_intraday_hour_ratios(config, now) if is_load
+                          else None),
+                timezone=config.general.timezone)
             fac[full <= now] = 1.0
             df[col] = df[col] * fac
 
