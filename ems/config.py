@@ -300,6 +300,16 @@ class ControllableLoad:
     # (weiches Band). false = der Optimierer darf auch Netzstrom nutzen, wenn
     # es wirtschaftlich ist. (YAML-Alias: pv_surplus_only, ältere Configs.)
     no_grid_import: bool = False
+    # Strenger als no_grid_import: die Stufen duerfen je Slot nur laufen, soweit
+    # die PV GLEICHZEITIG mehr liefert als die Grundlast braucht. Damit fliesst
+    # keine Speicherenergie in die Last - und nur so kann sie auch keinen
+    # spaeteren Netzbezug verursachen. no_grid_import allein verbietet nur den
+    # Bezug im selben Slot; der Pool leerte damit nachts den Akku (18.08. und
+    # 01.09.2026), und der Bezug kam Stunden spaeter.
+    #   "off"      wie bisher
+    #   "expected" gegen die erwartete PV
+    #   "p10"      gegen die pessimistische PV (nur wenn sie sicher da ist)
+    solar_surplus_only: str = "off"
     # Last hat einen EIGENEN Thermostat-Cutoff (z.B. Pool-WP): das EMS-Signal ist
     # dann eine Heiz-FREIGABE, kein Zwang. Bei Ist-Temperatur >= max_c bleibt
     # die Freigabe AN (der Thermostat hält die WP ohnehin aus) - weniger Schalt-
@@ -1160,6 +1170,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             # 0/leer = nicht gesetzt -> target_c. Ein echter Cutoff von 0 °C
             # ergibt fuer diese Lasten keinen Sinn, waere aber fatal: die
             # Heiz-Freigabe bliebe dann IMMER stehen (T >= 0 °C).
+            solar_surplus_only=str(w.get("solar_surplus_only", "off")).lower(),
             no_grid_import=bool(w.get("no_grid_import",
                                       w.get("pv_surplus_only", False))),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
@@ -1192,7 +1203,10 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                         # (ems/pool_calibration.py --apply)
                         "loss_w_per_k",
                         # sonst faellt der Wert im Overlay still weg
-                        "comfort_penalty_ct_per_k_slot"}
+                        "comfort_penalty_ct_per_k_slot",
+                        # per Overlay umschaltbar, weil es die Regel ist, die
+                        # ueber Nachtheizen entscheidet
+                        "solar_surplus_only"}
             for k, v in ov.items():
                 if k in _ALLOWED and hasattr(load, k):
                     setattr(load, k, v)

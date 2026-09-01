@@ -968,8 +968,10 @@ class Optimizer:
 
         # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
         from .loads import add_controllable_loads
+        budget_power = [pulp.LpAffineExpression() for _ in range(N)]
         cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
-            prob, cfg, inp, N, dt, g_imp=g_imp)
+            prob, cfg, inp, N, dt, g_imp=g_imp,
+            budget_power=budget_power)
 
         for t in range(N):
             pv_t = float(max(0.0, inp.pv_w[t]))
@@ -1278,6 +1280,42 @@ class Optimizer:
                 partial_imports.append(partial)
             cost_terms.append(bat_pen * (
                 pulp.lpSum(hold_blocks) + pulp.lpSum(partial_imports)))
+
+        # Kumulatives Budget "nur uebrige Energie": eine Last mit
+        # solar_surplus_only = "spare_budget" darf bis zu jedem Zeitpunkt nur
+        # soviel verbraucht haben, wie bis dahin TATSAECHLICH uebrig war -
+        # eingespeist oder abgeregelt. Damit bleibt der Akku erlaubt (was der
+        # Tag uebrig liess, darf nachts ausgegeben werden), aber er kann nicht
+        # so weit geleert werden, dass spaeter Netzbezug entsteht.
+        #
+        # KUMULATIV und nicht als Horizontsumme: eine Summe ueber den ganzen
+        # Horizont wuerde die Einspeisung von morgen dem Pool von heute Nacht
+        # zurechnen - Energie fliesst nicht rueckwaerts. Ein Summendeckel ist
+        # ausserdem genau die Bauform, die zweimal gescheitert ist (81d7c79 auf
+        # die Menge, fcb2878 auf die Kosten, zurueckgenommen in 38d3180): er
+        # laesst den Optimierer den Preis an beliebiger anderer Stelle zahlen.
+        #
+        # Bewusstes Netzladen zaehlt NICHT gegen das Budget - Arbitrage ist eine
+        # eigene Entscheidung und bleibt frei.
+        #
+        # Hart, nicht weich: die Last kann immer aus bleiben, der Plan kippt
+        # also nie. Bei laengerer Schlechtwetterphase heizt der Pool dann
+        # tatsaechlich nicht - das ist die gewollte Rangfolge.
+        if any(str(getattr(ld, "solar_surplus_only", "off") or "off").lower()
+               == "spare_budget"
+               for ld in getattr(cfg, "controllable_loads", []) or []):
+            verbraucht = pulp.LpVariable("spare_used_0", 0)
+            uebrig = pulp.LpVariable("spare_free_0", 0)
+            prob += verbraucht == budget_power[0] * dt
+            prob += uebrig == (g_exp[0] + curt[0]) * dt
+            prob += verbraucht <= uebrig
+            for t in range(1, N):
+                v_neu = pulp.LpVariable(f"spare_used_{t}", 0)
+                u_neu = pulp.LpVariable(f"spare_free_{t}", 0)
+                prob += v_neu == verbraucht + budget_power[t] * dt
+                prob += u_neu == uebrig + (g_exp[t] + curt[t]) * dt
+                prob += v_neu <= u_neu
+                verbraucht, uebrig = v_neu, u_neu
 
         # Netzbezug trotz noch nutzbarer Akkuenergie bestrafen (ct/kWh).
         # Anders als ein pauschaler Malus auf alle ungedeckte Restlast ist das

@@ -136,7 +136,12 @@ def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag, initial_on=None):
         cost_terms.append(pen_ct * sw)
 
 
-def add_controllable_loads(prob, config, inp, N, dt, g_imp=None):
+def add_controllable_loads(prob, config, inp, N, dt, g_imp=None,
+                           budget_power=None):
+    """``budget_power`` (Liste je Slot) sammelt die Leistung der Lasten mit
+    ``solar_surplus_only = "spare_budget"``. Der Optimierer bildet daraus das
+    kumulative Budget gegen Einspeisung + Abregelung - er kennt g_exp und curt,
+    diese Funktion nicht."""
     cl_power = [pulp.LpAffineExpression() for _ in range(N)]
     cost_terms: list = []
     outputs: dict = {}
@@ -171,7 +176,7 @@ def add_controllable_loads(prob, config, inp, N, dt, g_imp=None):
         if ld.type == "thermal":
             _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
                          mqtt_map, amb, solar, state, active, on_by_key, g_imp,
-                         config)
+                         config, budget_power=budget_power)
         else:
             _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs,
                             mqtt_map, hours, active, on_by_key)
@@ -245,7 +250,8 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
 
 
 def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
-                 amb, solar, state, active, on_by_key, g_imp=None, config=None):
+                 amb, solar, state, active, on_by_key, g_imp=None, config=None,
+                 budget_power=None):
     sg = _slug(ld.name)
     C = ld.capacity_wh_per_k
     if C <= 0 or not ld.stages:
@@ -427,6 +433,38 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             config.optimization, "no_grid_import_penalty_ct_kwh", 5000.0)))
         cost_terms.append(ng_pen * pulp.lpSum(ng_slack) * dt / 1000.0)
         outputs[f"load_{sg}_grid_w"] = list(ng_slack)   # Netzbezug trotz "kein Netz"
+
+    # Strengere Variante: je Slot nur soviel Stufenleistung, wie die PV
+    # GLEICHZEITIG ueber der Grundlast liefert. Harte Schranke mit konstanter
+    # rechter Seite - immer erfuellbar (alle Stufen aus), also kein Slack und
+    # keine Infeasibility. Damit fliesst keine SPEICHERenergie in die Last, und
+    # genau das ist die Bedingung dafuer, dass sie keinen spaeteren Netzbezug
+    # verursachen kann. Ein Deckel auf die Gesamtmenge oder die Gesamtkosten
+    # taugt dafuer nicht (81d7c79 und fcb2878, zurueckgenommen in 38d3180):
+    # er laesst den Optimierer den Preis an anderer Stelle zahlen.
+    # Regelvarianten, die der Anforderung "nie Netzbezug in Folge" dienen.
+    # "surplus_slot"  - nur gleichzeitiger PV-Ueberschuss (schliesst den Akku
+    #                   aus; gemessen sauber, aber nicht gewollt)
+    # "spare_budget"  - kumulatives Budget aus dem, was bis dahin tatsaechlich
+    #                   uebrig war (Einspeisung + Abregelung). Der Akku bleibt
+    #                   erlaubt: was der Tag uebrig liess, darf nachts ausgeben
+    #                   werden, aber nicht mehr. Das Budget wird im Optimierer
+    #                   gebildet, der g_exp und curt kennt; hier wird nur die
+    #                   Leistung eingesammelt.
+    modus = str(getattr(ld, "solar_surplus_only", "off") or "off").lower()
+    if modus in ("expected", "p10", "surplus_slot"):
+        pv_ref = np.asarray(inp.pv_w, dtype=float)
+        if modus == "p10" and getattr(inp, "pv10_w", None) is not None:
+            pv_ref = np.minimum(pv_ref, np.asarray(inp.pv10_w, dtype=float))
+        grundlast = np.asarray(inp.house_load_w, dtype=float)
+        ueberschuss = np.maximum(pv_ref[:N] - grundlast[:N], 0.0)
+        for t in range(N):
+            prob += pulp.lpSum(st.power_w * stage_on[st.name][t]
+                               for st in ld.stages) <= float(ueberschuss[t])
+    elif modus == "spare_budget" and budget_power is not None:
+        for t in range(N):
+            budget_power[t] = budget_power[t] + pulp.lpSum(
+                st.power_w * stage_on[st.name][t] for st in ld.stages)
 
     for t in range(N):
         heat = (pulp.lpSum(st.heat_w * stage_on[st.name][t] for st in ld.stages)

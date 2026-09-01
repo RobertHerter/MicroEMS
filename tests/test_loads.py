@@ -1016,3 +1016,178 @@ def test_comfort_penalty_is_configurable_per_load():
         f"{teuer_komfort:.2f} kWh")
     # ohne Angabe gilt weiter die Vorgabe
     assert heiz_kwh(None) == pytest.approx(teuer_komfort, abs=0.3)
+
+
+# --------------------------------------------------------------------------- #
+# Nur aus gleichzeitigem PV-Ueberschuss heizen
+# --------------------------------------------------------------------------- #
+def test_solar_surplus_only_forbids_heating_from_the_battery_at_night():
+    """Die Regel, die no_grid_import NICHT leistet.
+
+    no_grid_import verbietet nur den Bezug im SELBEN Slot und erlaubt
+    ausdruecklich den Akku. Der Pool leerte damit nachts den Speicher (18.08.
+    und 01.09.2026: 8,3 kWh nachts, danach Entladesperre und Netzbezug um
+    04:00) - die Energie war Netzstrom, nur Stunden versetzt.
+
+    Mit "expected" darf je Slot nur laufen, was die PV GLEICHZEITIG ueber der
+    Grundlast liefert. Nachts ist das null, also heizt der Pool nicht, egal wie
+    voll der Akku ist.
+    """
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "expected"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-01-15")            # Winter: keine PV
+    inp = _inputs(idx, pv=0.0, load=400.0, price=20.0,
+                  soc=cfg.house_battery.max_soc_wh,   # Akku voll
+                  ambient_temp_c=np.full(len(idx), 5.0),
+                  load_state={"pool": 26.0})          # deutlich unter min_c
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    leistung = res.table[[c for c in res.table.columns
+                          if c.startswith("load_pool") and c.endswith("_w")
+                          and not c.endswith("_grid_w")]].sum(axis=1)
+    assert float(leistung.sum()) < 1.0, (
+        f"Pool heizte {float(leistung.sum()) * 0.25 / 1000:.2f} kWh ohne "
+        "jeden PV-Ueberschuss")
+
+
+def test_solar_surplus_only_still_heats_from_real_surplus():
+    """Und die Gegenprobe: mit Ueberschuss heizt er, sonst waere die Regel
+    bloss ein Ausschalter."""
+    from tests.test_optimizer import _pv_gauss
+
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "expected"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    inp = _inputs(idx, pv=_pv_gauss(idx, 9000.0), load=400.0, price=20.0,
+                  soc=cfg.house_battery.min_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 22.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    spalten = [c for c in res.table.columns
+               if c.startswith("load_pool") and c.endswith("_w")
+               and not c.endswith("_grid_w")]
+    leistung = res.table[spalten].sum(axis=1)
+    assert float(leistung.sum()) * 0.25 / 1000.0 > 1.0, "heizt gar nicht"
+    # Und nie mehr als der gleichzeitige Ueberschuss.
+    ueber = np.maximum(np.asarray(inp.pv_w) - np.asarray(inp.house_load_w), 0.0)
+    assert (leistung.to_numpy(float) <= ueber + 1.0).all(), (
+        "Stufenleistung ueber dem gleichzeitigen Ueberschuss")
+
+
+def test_solar_surplus_only_p10_uses_the_pessimistic_forecast():
+    """"p10" nimmt den kleineren der beiden Werte - Ueberschuss, der nur im
+    Erwartungswert existiert, darf den Pool nicht einschalten."""
+    from tests.test_optimizer import _pv_gauss
+
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "p10"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 9000.0)
+    inp = _inputs(idx, pv=pv, load=400.0, price=20.0,
+                  pv10_w=np.zeros(len(idx)),      # pessimistisch: nichts
+                  soc=cfg.house_battery.max_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 22.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    leistung = res.table[[c for c in res.table.columns
+                          if c.startswith("load_pool") and c.endswith("_w")
+                          and not c.endswith("_grid_w")]].sum(axis=1)
+    assert float(leistung.sum()) < 1.0, "p10 = 0 muss den Pool sperren"
+
+
+def test_solar_surplus_only_off_keeps_the_previous_behaviour():
+    """Standard "off" darf nichts aendern - sonst waere es eine stille
+    Verhaltensaenderung fuer jede bestehende Anlage."""
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    cfg.controllable_loads = [pool]
+    assert getattr(pool, "solar_surplus_only", "off") == "off"
+    idx = _day_index("2026-01-15")
+    inp = _inputs(idx, pv=0.0, load=400.0, price=20.0,
+                  soc=cfg.house_battery.max_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 5.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible
+    leistung = res.table[[c for c in res.table.columns
+                          if c.startswith("load_pool") and c.endswith("_w")
+                          and not c.endswith("_grid_w")]].sum(axis=1)
+    assert float(leistung.sum()) > 1.0, (
+        "ohne Regel muss der Akku den Pool weiter heizen duerfen")
+
+
+def test_spare_budget_heats_only_from_energy_that_was_already_left_over():
+    """Die Regel, die Robert am 01.09.2026 festgelegt hat.
+
+    Der Akku ist NICHT ausgeschlossen - aber der Pool darf bis zu jedem
+    Zeitpunkt nur soviel verbraucht haben, wie bis dahin tatsaechlich uebrig
+    war (Einspeisung + Abregelung). Damit kann er den Speicher nicht so weit
+    leeren, dass Stunden spaeter Netzbezug entsteht (Nacht zum 01.09.2026:
+    2,9 kWh Pool aus dem Akku, danach Entladesperre und 0,55 kWh Netzbezug).
+
+    Hier: Winternacht, keine PV, Akku voll, Pool unter der Grenze. Es war
+    nichts uebrig, also heizt er nicht - auch wenn der Speicher es koennte.
+    """
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "spare_budget"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-01-15")
+    inp = _inputs(idx, pv=0.0, load=400.0, price=20.0,
+                  soc=cfg.house_battery.max_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 5.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    leistung = res.table[[c for c in res.table.columns
+                          if c.startswith("load_pool") and c.endswith("_w")
+                          and not c.endswith("_grid_w")]].sum(axis=1)
+    assert float(leistung.sum()) < 1.0, (
+        f"Pool nahm {float(leistung.sum()) * 0.25 / 1000:.2f} kWh, obwohl "
+        "nichts uebrig war")
+
+
+def test_spare_budget_is_cumulative_not_a_horizon_total():
+    """Energie fliesst nicht rueckwaerts.
+
+    Ein Deckel auf die HORIZONTSUMME wuerde die Einspeisung des Folgetags dem
+    Pool der ersten Nacht zurechnen. Hier liegt die PV komplett in der zweiten
+    Tageshaelfte: in der ersten (dunklen) Haelfte darf der Pool nichts nehmen,
+    danach schon.
+    """
+    from tests.test_optimizer import _pv_gauss
+
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "spare_budget"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    pv = _pv_gauss(idx, 9000.0)
+    inp = _inputs(idx, pv=pv, load=400.0, price=20.0,
+                  soc=cfg.house_battery.max_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 22.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    t = res.table.copy()
+    t.index = idx
+    leistung = t[[c for c in t.columns if c.startswith("load_pool")
+                  and c.endswith("_w") and not c.endswith("_grid_w")]].sum(axis=1)
+    vor_sonne = idx.hour < 7
+    assert float(leistung[vor_sonne].sum()) < 1.0, (
+        "vor der ersten Einspeisung darf kein Budget existieren")
+    assert float(leistung.sum()) * 0.25 / 1000.0 > 1.0, (
+        "nach der Einspeisung muss er heizen duerfen, sonst ist es ein "
+        "Ausschalter")
+    # Und nie mehr verbraucht als bis dahin eingespeist/abgeregelt wurde.
+    frei = ((t["grid_export_w"] + t.get("pv_curtail_w", 0.0)) * 0.25).cumsum()
+    genutzt = (leistung * 0.25).cumsum()
+    assert (genutzt <= frei + 1.0).all(), "kumulatives Budget verletzt"
