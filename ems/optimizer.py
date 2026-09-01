@@ -1304,10 +1304,35 @@ class Optimizer:
         if any(str(getattr(ld, "solar_surplus_only", "off") or "off").lower()
                == "spare_budget"
                for ld in getattr(cfg, "controllable_loads", []) or []):
+            # ANFANGSGUTHABEN: der Akku ist zu Horizontbeginn nicht leer, und
+            # sein Inhalt stammt aus FRUEHEREM Ueberschuss - er ist "uebrige
+            # Energie", nur eben aus gestern. Ohne dieses Guthaben verbietet das
+            # Budget in der ersten Nacht jedes Heizen, und der Akku kommt am
+            # Morgen VOLLER an als ohne Regel (gemessen 41 statt 30 %), obwohl
+            # der Tag ihn ohnehin fuellt. Reserviert bleibt, was das Haus bis
+            # zum naechsten erwarteten Ueberschuss braucht - nur der Rest ist
+            # frei. Damit kann das Ausgeben keinen Netzbezug ausloesen.
+            _defizit = np.maximum(
+                np.asarray(inp.house_load_w, dtype=float)
+                - np.asarray(inp.pv_w, dtype=float), 0.0)
+            _bis_sonne = 0
+            while _bis_sonne < N and _defizit[_bis_sonne] > 1.0:
+                _bis_sonne += 1
+            _bedarf_wh = float(_defizit[:_bis_sonne].sum()) * dt
+            _soc0 = min(hb.max_soc_wh, max(hb.min_soc_wh,
+                                        float(inp.initial_house_soc_wh)))
+            _vorrat_wh = max(0.0, (_soc0 - hb.min_soc_wh)
+                             * hb.discharge_efficiency)
+            _guthaben_wh = max(0.0, _vorrat_wh - _bedarf_wh)
+            if _guthaben_wh > 0.0:
+                log.info("Rest-Budget zu Horizontbeginn: %.2f kWh "
+                         "(Akkuvorrat %.2f, reserviert bis Sonne %.2f).",
+                         _guthaben_wh / 1000.0, _vorrat_wh / 1000.0,
+                         _bedarf_wh / 1000.0)
             verbraucht = pulp.LpVariable("spare_used_0", 0)
             uebrig = pulp.LpVariable("spare_free_0", 0)
             prob += verbraucht == budget_power[0] * dt
-            prob += uebrig == (g_exp[0] + curt[0]) * dt
+            prob += uebrig == _guthaben_wh + (g_exp[0] + curt[0]) * dt
             prob += verbraucht <= uebrig
             for t in range(1, N):
                 v_neu = pulp.LpVariable(f"spare_used_{t}", 0)

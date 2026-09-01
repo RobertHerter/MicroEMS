@@ -1171,8 +1171,11 @@ def test_spare_budget_is_cumulative_not_a_horizon_total():
     cfg.controllable_loads = [pool]
     idx = _day_index("2026-06-10")
     pv = _pv_gauss(idx, 9000.0)
+    # Akku LEER starten: sonst gibt das Anfangsguthaben (Inhalt aus frueherem
+    # Ueberschuss) schon vor Sonnenaufgang Budget frei - richtig, aber hier
+    # nicht die gepruefte Eigenschaft.
     inp = _inputs(idx, pv=pv, load=400.0, price=20.0,
-                  soc=cfg.house_battery.max_soc_wh,
+                  soc=cfg.house_battery.min_soc_wh,
                   ambient_temp_c=np.full(len(idx), 22.0),
                   load_state={"pool": 26.0})
     res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
@@ -1191,3 +1194,44 @@ def test_spare_budget_is_cumulative_not_a_horizon_total():
     frei = ((t["grid_export_w"] + t.get("pv_curtail_w", 0.0)) * 0.25).cumsum()
     genutzt = (leistung * 0.25).cumsum()
     assert (genutzt <= frei + 1.0).all(), "kumulatives Budget verletzt"
+
+
+def test_spare_budget_counts_the_battery_content_as_yesterdays_leftover():
+    """Der Akku ist zu Horizontbeginn nicht leer - sein Inhalt ist uebrige
+    Energie von gestern.
+
+    Ohne dieses Anfangsguthaben verbot das Budget in der ersten Nacht jedes
+    Heizen, und der Akku kam am Morgen VOLLER an als ohne Regel: gemessen am
+    Lauf vom 31.08.2026 41 % bei Produktionsbeginn statt 30 %, obwohl der Tag
+    50,9 kWh PV brachte. Mit Guthaben sind es 16 %, das Tal ist 1,8 K waermer
+    (26,55 statt 24,73 C) und der Netzbezug bleibt null.
+
+    Reserviert bleibt, was das Haus bis zum naechsten erwarteten Ueberschuss
+    braucht - nur der Rest ist frei.
+    """
+    from tests.test_optimizer import _pv_gauss
+
+    cfg = make_config()
+    pool = _pool_load(min_c=27.0, target=28.0)
+    pool.solar_surplus_only = "spare_budget"
+    cfg.controllable_loads = [pool]
+    idx = _day_index("2026-06-10")
+    # Nacht zuerst, PV erst am Mittag: vor der Sonne gibt es nur das Guthaben.
+    pv = _pv_gauss(idx, 9000.0)
+    inp = _inputs(idx, pv=pv, load=400.0, price=20.0,
+                  soc=cfg.house_battery.max_soc_wh,
+                  ambient_temp_c=np.full(len(idx), 22.0),
+                  load_state={"pool": 26.0})
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert not res.infeasible, res.infeasible_reason
+    t = res.table.copy()
+    t.index = idx
+    leistung = t[[c for c in t.columns if c.startswith("load_pool")
+                  and c.endswith("_w") and not c.endswith("_grid_w")]].sum(axis=1)
+    vor_sonne = idx.hour < 6
+    assert float(leistung[vor_sonne].sum()) > 1.0, (
+        "das Guthaben aus dem vollen Akku muss vor Sonnenaufgang nutzbar sein")
+    # Und es bleibt begrenzt: der Hausbedarf bis zur Sonne ist reserviert, also
+    # darf kein Netzbezug entstehen.
+    assert float(t["grid_import_w"].sum()) * 0.25 / 1000.0 < 0.2, (
+        "das Guthaben darf keinen Netzbezug ausloesen")
