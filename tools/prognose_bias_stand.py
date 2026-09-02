@@ -29,7 +29,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ems.config import load_config                              # noqa: E402
-from ems.local_history import (read_house_load,                 # noqa: E402
+from ems.local_history import (read_base_house_load,            # noqa: E402
                                read_optimizer_forecast_asof)
 
 BLOECKE = ((0, 6, "00-06"), (6, 10, "06-10"), (10, 14, "10-14"),
@@ -50,7 +50,12 @@ def sammle(cfg, tage: float) -> pd.DataFrame:
     tag = jetzt.normalize() - pd.Timedelta(days=float(tage))
     while tag < jetzt.normalize():
         nxt = tag + pd.Timedelta(days=1)
-        ist = read_house_load(db, tag, nxt, tz)
+        # GRUNDLAST: die Prognose sagt sie voraus, die steuerbaren Lasten
+        # kommen separat obendrauf. Gegen die rohe Hauslast zaehlt jeder
+        # Poolbetrieb als Prognosefehler (Nacht zum 01.09.2026: -708 statt
+        # -149 W).
+        ist = read_base_house_load(db, cfg.controllable_loads, tag, nxt, tz,
+                                   cfg.general.slot_minutes)
         try:
             _issue, start_frame = read_optimizer_forecast_asof(db, tag, tag,
                                                               nxt, tz)

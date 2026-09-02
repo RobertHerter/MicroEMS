@@ -1074,6 +1074,40 @@ def read_live_slot_averages(path: str, start, end, tz: str,
     return frame.sort_index()
 
 
+def read_base_house_load(path: str, loads: list, start, end, tz: str,
+                         slot_minutes: int) -> "pd.Series":
+    """Gemessene GRUNDLAST: Hauslast minus der gemessenen steuerbaren Lasten.
+
+    Das ist die Groesse, die die Lastprognose vorhersagt - der Optimierer legt
+    die steuerbaren Lasten SEPARAT obendrauf. Wer die Prognose gegen die rohe
+    Hauslast haelt, zaehlt jeden Poolbetrieb als Prognosefehler.
+
+    Gemessen in der Nacht zum 01.09.2026 (Pool 2,83 kWh): Median-Fehler gegen
+    die rohe Hauslast -708 W, gegen die Grundlast -149 W. Rund 80 % des
+    gemeldeten "Nacht-Bias" war dieser Vergleichsfehler.
+
+    Abgezogen wird nur, wo die Messung VOLLSTAENDIG ist (jede unabhaengige
+    Quelle frisch); sonst bliebe ein halb bekannter Wert als neuer Fehler
+    stehen und der Slot faellt lieber heraus (NaN).
+    """
+    gesamt = read_house_load(path, start, end, tz)
+    if gesamt is None or gesamt.empty or not loads:
+        return gesamt
+    try:
+        leistung, vollstaendig, labels = read_controllable_load_power(
+            path, loads, start, end, tz, slot_minutes)
+    except Exception:
+        return gesamt
+    if not labels:
+        return gesamt
+    abzug = leistung.reindex(gesamt.index)
+    ok = vollstaendig.reindex(gesamt.index).fillna(False) & abzug.notna()
+    basis = (gesamt - abzug).clip(lower=0.0).where(ok)
+    # Wo keine belastbare Messung vorliegt, bleibt die rohe Hauslast NICHT
+    # stehen - sie waere systematisch zu hoch. Der Slot ist dann unbekannt.
+    return basis
+
+
 def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
                                  slot_minutes: int):
     """Gemessene Leistung steuerbarer Lasten auf dem Slotraster.

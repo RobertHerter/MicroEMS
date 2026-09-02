@@ -333,8 +333,19 @@ class DriftMonitor:
         auf einer Groesse, die nichts steuert - und schickte die Ursachensuche
         ins Modell, wo die Korrekturkette bereits sauber arbeitete.
         """
-        from .local_history import (read_house_load,
+        from .local_history import (read_base_house_load,
                                     read_optimizer_forecast_asof)
+
+        def _ist(von, bis):
+            """Gemessene GRUNDLAST - die Groesse, die die Prognose vorhersagt.
+
+            Gegen die rohe Hauslast gemessen zaehlt jeder Poolbetrieb als
+            Prognosefehler: in der Nacht zum 01.09.2026 waren es -708 W gegen
+            die rohe Last und -149 W gegen die Grundlast.
+            """
+            return read_base_house_load(
+                db, getattr(self.cfg, "controllable_loads", None), von, bis, tz,
+                self.cfg.general.slot_minutes)
 
         db = self.cfg.e3dc_rscp.history_db_path
         tz = self.cfg.general.timezone
@@ -351,7 +362,7 @@ class DriftMonitor:
                         or "house_load_w" not in frame:
                     day = day + pd.Timedelta(days=1)
                     continue
-                actual = read_house_load(db, day, nxt, tz)
+                actual = _ist(day, nxt)
                 fc = pd.to_numeric(frame["house_load_w"], errors="coerce")
                 common = actual.index.intersection(fc.index)
                 for ts in common:
@@ -377,7 +388,7 @@ class DriftMonitor:
         op_deltas, op_stamps = [], []
         op_start = end - pd.Timedelta(days=self.load_op_days)
         try:
-            op_ist = read_house_load(db, op_start, end, tz)
+            op_ist = _ist(op_start, end)
         except Exception as exc:  # pragma: no cover
             log.debug("Ist-Hauslast fuer den operativen Stand fehlt (%s).", exc)
             op_ist = pd.Series(dtype="float64")

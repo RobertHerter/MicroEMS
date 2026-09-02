@@ -118,3 +118,44 @@ def test_a_too_thin_operative_window_falls_back_to_the_day_start(tmp_path):
     assert out["operative_n"] < 24
     assert out["alert_basis"].startswith("Tagesstart")
     assert out["alert"] is True, out
+
+
+def test_the_bias_is_measured_against_the_base_load_not_the_raw_house_load(
+        tmp_path):
+    """Die Prognose sagt die GRUNDLAST voraus - die steuerbaren Lasten legt der
+    Optimierer separat obendrauf.
+
+    Gegen die rohe Hauslast gemessen zaehlt jeder Poolbetrieb als
+    Prognosefehler. In der Nacht zum 01.09.2026 (Pool 2,83 kWh) waren es -708 W
+    Median gegen die rohe Last und -149 W gegen die Grundlast - rund 80 % des
+    gemeldeten Nacht-Bias war dieser Vergleichsfehler. Er hat mich zwei Tage
+    lang eine Modellschwaeche suchen lassen, die es so nicht gab.
+    """
+    from ems.config import ControllableLoad, LoadStage
+    from ems.local_history import write_load_feedback
+
+    cfg = _cfg(tmp_path)
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", volume_l=7000.0, target_c=28.0,
+        min_c=27.0, max_c=28.5, loss_w_per_k=100.0, enabled=True,
+        stages=[LoadStage(name="klein", power_w=1000.0, heat_w=3000.0,
+                          feedback_topic="pool/on", power_topic="pool/w")])]
+    # Ist 1400 W, davon 1000 W Pool -> Grundlast 400 W. Die Prognose sagt 400 W,
+    # ist also GENAU richtig - gegen die rohe Last waere sie 1000 W zu tief.
+    db = cfg.e3dc_rscp.history_db_path
+    _seed(cfg, tagesstart_w=400.0, operativ_w=400.0)
+    idx = pd.date_range((JETZT - pd.Timedelta(days=3)).normalize(), JETZT,
+                        freq="15min", tz=TZ, inclusive="left")
+    write_house_load(db, {ts.tz_convert("UTC").isoformat(): 1400.0
+                          for ts in idx})
+    for ts in idx:
+        write_load_feedback(db, ts, "Pool", "klein",
+                            {"on": True, "power_w": 1000.0, "fresh": True,
+                             "age_seconds": 5.0})
+
+    out = DriftMonitor(cfg).check_load_bias(JETZT)
+
+    assert out is not None
+    assert out["operative_median_w"] == pytest.approx(0.0, abs=20.0), (
+        f"gegen die Grundlast muss der Bias ~0 sein, ist {out['operative_median_w']}")
+    assert out["alert"] is False, out["message"]

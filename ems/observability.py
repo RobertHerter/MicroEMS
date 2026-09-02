@@ -978,7 +978,8 @@ def battery_health(config, days: int = 30) -> dict:
 def _load_accuracy(config, start, now) -> dict:
     """Rollierende Last-Prognosegüte: je Tag den vor Tagesbeginn gültigen
     Optimierer-Snapshot gegen die real gemessene Hauslast stellen."""
-    from .local_history import read_house_load, read_optimizer_forecast_asof
+    from .local_history import (read_base_house_load,
+                                read_optimizer_forecast_asof)
     db = config.e3dc_rscp.history_db_path
     tz = config.general.timezone
     a_vals, p_vals = [], []
@@ -991,7 +992,12 @@ def _load_accuracy(config, start, now) -> dict:
         except Exception:
             frame = None
         if frame is not None and not frame.empty and "house_load_w" in frame:
-            actual = read_house_load(db, day, nxt, tz)
+            # GRUNDLAST, nicht die rohe Hauslast: die Prognose sagt die
+            # Grundlast voraus, die steuerbaren Lasten legt der Optimierer
+            # separat obendrauf (siehe read_base_house_load).
+            actual = read_base_house_load(
+                db, getattr(config, "controllable_loads", None), day, nxt, tz,
+                config.general.slot_minutes)
             fc = pd.to_numeric(frame["house_load_w"], errors="coerce")
             common = actual.index.intersection(fc.index)
             for ts in common:
