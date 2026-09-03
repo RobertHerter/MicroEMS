@@ -561,3 +561,52 @@ def test_mode_colours_are_a_legend_group_not_a_footnote(tmp_path):
     anmerkungen = [a.get("text", "") for a in layout.get("annotations", [])]
     assert not [a for a in anmerkungen if "Modus:" in a], \
         "Modus-Anmerkung unter dem Diagramm ist noch da"
+
+
+def test_pv_confidence_asap_on_a_dull_day_is_not_a_warning():
+    """Ein asap-Tag bei wenig Sonne ist die KONSERVATIVE Wahl, keine
+    Auffaelligkeit.
+
+    Die Ampel war gelb, sobald ein Tag nicht auf Basis "p10" entschieden wurde
+    - also auch bei jedem asap-Tag. Robert am 03.09.2026: "wird gelb angezeigt,
+    aber Peak ist ja eigentlich keine Warnung." Robust sind ZWEI Faelle: peak,
+    weil schon der pessimistische Ueberschuss die Schwelle traegt, und asap,
+    weil er sie nicht traegt. Gelb gehoert allein dem dritten: peak auf Basis
+    der ERWARTUNG, wo p10 allein nicht reicht - nur das ist eine Wette.
+    """
+    from ems.dashboard import _pv_confidence_block
+
+    robust = {"2026-09-03": {"basis": "p10", "mode": "peak"},
+              "2026-09-04": {"basis": "p10", "mode": "peak"},
+              "2026-09-05": {"basis": "insufficient", "mode": "asap"}}
+    html = _pv_confidence_block(robust)
+    assert "an-dot ok" in html, html[:200]
+    assert "3/3 Tage ohne Wette" in html
+
+    wette = {"2026-09-03": {"basis": "p10", "mode": "peak"},
+             "2026-09-04": {"basis": "expected+p10-floor", "mode": "peak"}}
+    html = _pv_confidence_block(wette)
+    assert "an-dot warn" in html
+    assert "1 T auf Erwartung" in html
+
+    # Nur asap ist ebenfalls in Ordnung - der Optimierer weicht bewusst aus.
+    nur_asap = {"2026-09-05": {"basis": "insufficient", "mode": "asap"}}
+    assert "an-dot ok" in _pv_confidence_block(nur_asap)
+
+
+def test_load_timeline_has_a_state_for_switching_slots():
+    """Im Flankenslot weichen Soll und Ist regelmaessig um einen Slot ab, weil
+    der Befehl wenige Sekunden NACH Slotbeginn hinausgeht und die Rueckmeldung
+    davor gelesen wird. Gemessen ueber sechs Tage an beiden Pool-Stufen lagen
+    12 der 13 echten Abweichungen an einer Flanke. Sie brauchen einen eigenen
+    Zustand statt "geplant, laeuft nicht"."""
+    import ems.dashboard as dash
+
+    quelle = dash.__file__
+    text = open(quelle, encoding="utf-8").read()
+    assert "SWITCH" in text and "schaltet um" in text
+    # Farbstufen und Codes muessen dieselbe Zahl haben - sonst verschieben
+    # sich im Dunkelmodus die Farben gegen die Zustaende.
+    assert "n_states = 8" in text
+    assert text.count("[0.875,'#7f9bb5'],[0.9999,'#7f9bb5']") == 1
+    assert text.count("[0.875,'#4c6478'],[0.9999,'#4c6478']") == 1

@@ -1093,18 +1093,31 @@ def _pv_confidence_block(auto_peak_basis) -> str:
         return f"{float(v):.1f}" if isinstance(v, (int, float)) else "–"
 
     values = list(auto_peak_basis.values())
-    robust = sum(1 for value in values if value.get("basis") == "p10")
-    insufficient = sum(
-        1 for value in values if value.get("basis") == "insufficient")
-    dot = ("bad" if insufficient == len(values)
-           else "warn" if robust < len(values) else "ok")
+    # ROBUST ist eine Entscheidung, die nicht auf den Erwartungswert wettet -
+    # und das sind ZWEI Faelle: "p10" (peak, weil schon der pessimistische
+    # Ueberschuss die Schwelle traegt) und "insufficient" (asap, weil er sie
+    # nicht traegt). Der zweite ist die konservative Wahl und war hier
+    # faelschlich gelb: ein asap-Tag bei wenig Sonne ist genau das gewollte
+    # Verhalten, keine Auffaelligkeit. Gelb gehoert allein dem dritten Fall,
+    # "expected+p10-floor" - dort wird peak gefahren, weil die ERWARTUNG die
+    # Schwelle traegt, p10 allein aber nicht. Nur das ist eine Wette.
+    robust = sum(1 for value in values
+                 if value.get("basis") in ("p10", "insufficient"))
+    wette = sum(1 for value in values
+                if value.get("basis") == "expected+p10-floor")
+    unbekannt = sum(1 for value in values
+                    if value.get("basis") not in
+                    ("p10", "insufficient", "expected+p10-floor"))
+    dot = ("bad" if unbekannt == len(values) and values
+           else "warn" if wette else "ok")
     mode_counts = {}
     for value in values:
         mode = str(value.get("mode", "–"))
         mode_counts[mode] = mode_counts.get(mode, 0) + 1
     mode_summary = ", ".join(
         f"{mode} {count} T" for mode, count in mode_counts.items())
-    summary = f"{robust}/{len(values)} Tage robust · {mode_summary}"
+    summary = (f"{robust}/{len(values)} Tage ohne Wette · {mode_summary}"
+               + (f" · {wette} T auf Erwartung" if wette else ""))
 
     cards = "".join(
         "<div class='pvconf-card'>"
@@ -1123,7 +1136,9 @@ def _pv_confidence_block(auto_peak_basis) -> str:
             f"Auto-Modus <small>{_esc(summary)}</small></summary>"
             "<div class=\"pvconf-grid\">" + cards + "</div>"
             "<p class=\"pvconf-note\">Peak nur, wenn der pessimistische (p10-)"
-            "Überschuss die Schwelle trägt – sonst asap.</p></details>")
+            "Überschuss die Schwelle trägt – sonst asap. Beides ist robust; "
+            "gelb wird es nur, wenn peak auf der ERWARTUNG beruht.</p>"
+            "</details>")
 
 
 def _controls_block(config) -> str:
@@ -2270,12 +2285,13 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # Zustandscodes. Reihenfolge = Reihenfolge der Farbstufen unten UND in
         # paint() fuer den Dunkelmodus - beide muessen dieselbe Zahl an Stufen
         # haben, sonst verschieben sich die Farben gegen die Codes.
-        OFF, RUN, DISABLED, UNKNOWN, ARMED, MISSING, UNPLANNED = range(7)
+        OFF, RUN, DISABLED, UNKNOWN, ARMED, MISSING, UNPLANNED, SWITCH = range(8)
         _lab = {OFF: "aus", RUN: "läuft wie geplant",
                 DISABLED: "deaktiviert", UNKNOWN: "Ist unbekannt",
                 ARMED: "freigegeben, heizt nicht",
                 MISSING: "geplant, läuft nicht",
-                UNPLANNED: "läuft, nicht geplant"}
+                UNPLANNED: "läuft, nicht geplant",
+                SWITCH: "schaltet um"}
 
         ylabels, z, hover = [], [], []
         for label, plan_col, actual_col, enabled, owner in lanes:
@@ -2325,9 +2341,31 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             else:
                 real = pd.Series(float("nan"), index=x)
 
+            # Schaltflanken: der Befehl geht wenige Sekunden NACH Slotbeginn
+            # hinaus, die Rueckmeldung wird DAVOR gelesen. Im Flankenslot
+            # weichen Soll und Ist deshalb regelmaessig um einen Slot ab.
+            # Gemessen ueber sechs Tage an beiden Pool-Stufen, die Slots ueber
+            # der Heizgrenze herausgerechnet: 12 der 13 echten Abweichungen
+            # lagen an einer Flanke (Pinguin 8 von 8, klein 4 von 5). Sie als
+            # "geplant, laeuft nicht" zu zeigen war eine Fehlmeldung.
+            #
+            # Die Messreihe wird dafuer NICHT verschoben: eine Verschiebung um
+            # einen Slot passte bei WP Pinguin (173 statt 166 Treffer) und
+            # verschlechterte WP klein (163 statt 169) - die kleine Stufe folgt
+            # offenbar der grossen und nicht unmittelbar dem Befehl.
+            # Randslots mit dem eigenen Wert auffuellen: shift() liefert dort
+            # NaN, und ne(NaN) ist WAHR - der erste und letzte Slot waeren
+            # sonst immer eine "Flanke".
+            if len(planned):
+                vorher = planned.shift(1, fill_value=bool(planned.iloc[0]))
+                nachher = planned.shift(-1, fill_value=bool(planned.iloc[-1]))
+                flanke = planned.ne(vorher) | planned.ne(nachher)
+            else:
+                flanke = planned
+
             row, texts = [], []
-            for stamp, plan_on, is_armed, actual_v in zip(
-                    x, planned, armed, real):
+            for stamp, plan_on, is_armed, actual_v, ist_flanke in zip(
+                    x, planned, armed, real, flanke):
                 soll = "AN" if plan_on else ("freigegeben" if is_armed
                                              else "aus")
                 # Zukunft: es KANN kein Ist geben -> nur den Sollzustand zeigen.
@@ -2343,9 +2381,9 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     if plan_on and running:
                         code = RUN
                     elif plan_on and not running:
-                        code = MISSING
+                        code = SWITCH if ist_flanke else MISSING
                     elif running:
-                        code = UNPLANNED
+                        code = SWITCH if ist_flanke else UNPLANNED
                     else:
                         code = ARMED if is_armed else OFF
                 row.append(code)
@@ -2353,9 +2391,11 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
             z.append(row)
             hover.append(texts)
 
-        n_states = 7
+        # Reihenfolge = Reihenfolge der Codes oben. SWITCH bekommt ein ruhiges
+        # Blaugrau: es ist ein Uebergang, keine Auffaelligkeit.
+        n_states = 8
         palette_light = ["#e9ecef", "#2ca02c", "#adb5bd", "#d8a52a",
-                         "#8fa8c8", "#c2185b", "#e8710a"]
+                         "#8fa8c8", "#c2185b", "#e8710a", "#7f9bb5"]
         step = 1.0 / n_states
         colorscale = []
         for i, colour in enumerate(palette_light):
@@ -3419,7 +3459,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
 <script>(function(){{
  var theme=document.getElementById('theme-toggle'),install=document.getElementById('install-app'),prompt=null;
  function label(){{var dark=document.documentElement.classList.contains('dark');theme.title=dark?'Helle Darstellung':'Dunkle Darstellung';theme.setAttribute('aria-label',theme.title);}}
- function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines=EMS_DARK_LINES;document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[i]!==undefined){{if(t._emsHell===undefined)t._emsHell=t.line&&t.line.color;Plotly.restyle(p,{{'line.color':dark?lines[i]:t._emsHell}},[i]);}}if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0.0,'#263442'],[0.1428,'#263442'],[0.1429,'#329b4c'],[0.2856,'#329b4c'],[0.2857,'#596979'],[0.4285,'#596979'],[0.4286,'#987620'],[0.5713,'#987620'],[0.5714,'#3f5a7a'],[0.7142,'#3f5a7a'],[0.7143,'#a3134a'],[0.857,'#a3134a'],[0.8571,'#b85a08'],[0.9999,'#b85a08']]:[[0.0,'#e9ecef'],[0.1428,'#e9ecef'],[0.1429,'#2ca02c'],[0.2856,'#2ca02c'],[0.2857,'#adb5bd'],[0.4285,'#adb5bd'],[0.4286,'#d8a52a'],[0.5713,'#d8a52a'],[0.5714,'#8fa8c8'],[0.7142,'#8fa8c8'],[0.7143,'#c2185b'],[0.857,'#c2185b'],[0.8571,'#e8710a'],[0.9999,'#e8710a']]]}},[i]);}});}});}}
+ function paint(){{var dark=document.documentElement.classList.contains('dark');var c=dark?{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#e7edf4','hoverlabel.bgcolor':'#202b36','hoverlabel.bordercolor':'#536273','hoverlabel.font.color':'#e7edf4'}}:{{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)','font.color':'#20252b','hoverlabel.bgcolor':'#ffffff','hoverlabel.bordercolor':'#cfd7df','hoverlabel.font.color':'#20252b'}};var lines=EMS_DARK_LINES;document.querySelectorAll('.desktop-plot .plotly-graph-div').forEach(function(p){{Plotly.relayout(p,c);(p.layout.annotations||[]).forEach(function(a,i){{if(String(a.text||'').includes('Modus:')){{var u={{}};u['annotations['+i+'].font.color']=dark?'#e7edf4':'#555';Plotly.relayout(p,u);}}}});p.data.forEach(function(t,i){{if(lines[i]!==undefined){{if(t._emsHell===undefined)t._emsHell=t.line&&t.line.color;Plotly.restyle(p,{{'line.color':dark?lines[i]:t._emsHell}},[i]);}}if(t.meta==='mode_timeline'){{if(!t._emsLightColorscale)t._emsLightColorscale=t.colorscale;Plotly.restyle(p,{{colorscale:[dark?[[0,'#344250'],[.125,'#344250'],[.126,'#3f8f55'],[.25,'#3f8f55'],[.251,'#a98e2e'],[.375,'#a98e2e'],[.376,'#914e82'],[.5,'#914e82'],[.501,'#b96d23'],[.625,'#b96d23'],[.626,'#9f3434'],[.75,'#9f3434'],[.751,'#3475ad'],[.875,'#3475ad'],[.876,'#71318f'],[1,'#71318f']]:t._emsLightColorscale]}},[i]);}}if(t.meta==='load_timeline')Plotly.restyle(p,{{colorscale:[dark?[[0.0,'#263442'],[0.1249,'#263442'],[0.125,'#329b4c'],[0.2499,'#329b4c'],[0.25,'#596979'],[0.3749,'#596979'],[0.375,'#987620'],[0.4999,'#987620'],[0.5,'#3f5a7a'],[0.6249,'#3f5a7a'],[0.625,'#a3134a'],[0.7499,'#a3134a'],[0.75,'#b85a08'],[0.8749,'#b85a08'],[0.875,'#4c6478'],[0.9999,'#4c6478']]:[[0.0,'#e9ecef'],[0.1249,'#e9ecef'],[0.125,'#2ca02c'],[0.2499,'#2ca02c'],[0.25,'#adb5bd'],[0.3749,'#adb5bd'],[0.375,'#d8a52a'],[0.4999,'#d8a52a'],[0.5,'#8fa8c8'],[0.6249,'#8fa8c8'],[0.625,'#c2185b'],[0.7499,'#c2185b'],[0.75,'#e8710a'],[0.8749,'#e8710a'],[0.875,'#7f9bb5'],[0.9999,'#7f9bb5']]]}},[i]);}});}});}}
  theme.addEventListener('click',function(){{var dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light');label();paint();window.dispatchEvent(new Event('ems-theme-change'));}});label();paint();
  window.addEventListener('beforeinstallprompt',function(e){{e.preventDefault();prompt=e;install.style.display='block';}});
  install.addEventListener('click',function(){{if(prompt){{prompt.prompt();prompt.userChoice.finally(function(){{prompt=null;install.style.display='none';}});}}}});

@@ -429,7 +429,7 @@ def test_pv_confidence_block_renders_auto_basis():
     assert "10.06." in html                   # Datum lesbar formatiert
     assert "robust" in html                   # Basis-Klartext
     assert '<span class="an-dot ok"></span>' in html
-    assert "1/1 Tage robust · peak 1 T" in html
+    assert "1/1 Tage ohne Wette · peak 1 T" in html
 
 
 def test_thermal_feedback_header_summarizes_status():
@@ -618,7 +618,7 @@ def test_timeline_merges_soll_and_ist_into_one_row():
 
     Codes: 0 aus · 1 laeuft wie geplant · 2 deaktiviert · 3 Ist unbekannt
            4 freigegeben, heizt nicht · 5 geplant, laeuft nicht
-           6 laeuft ungeplant
+           6 laeuft ungeplant · 7 schaltet um
     """
     import numpy as np
     import pandas as pd
@@ -633,12 +633,18 @@ def test_timeline_merges_soll_and_ist_into_one_row():
         stages=[LoadStage("klein", 400, 1000,
                           power_topic="homie/pool/power")])]
     now = pd.Timestamp.now(tz=cfg.general.timezone).floor("15min")
-    index = pd.date_range(now - pd.Timedelta(hours=1), periods=8,
+    index = pd.date_range(now - pd.Timedelta(hours=2), periods=10,
                           freq="15min", tz=cfg.general.timezone)
     n = len(index)
-    # Vier Kombinationen in der Vergangenheit, danach Zukunft.
-    plan = np.array([1000.0, 1000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-    ist = np.array([1.0, 0.0, 1.0, 0.0, np.nan, np.nan, np.nan, np.nan])
+    # Alle Kombinationen in der Vergangenheit, danach Zukunft. Zehn Slots,
+    # weil ein Slot nicht gleichzeitig "ohne Flanke" und "direkt nach dem
+    # Umschalten" sein kann: die Flankenslots (2 und 3) tragen bewusst den
+    # eigenen Zustand "schaltet um" (Code 7), weil der Befehl wenige Sekunden
+    # NACH Slotbeginn hinausgeht und die Rueckmeldung davor gelesen wird.
+    plan = np.array([1000.0, 1000.0, 1000.0,
+                     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    ist = np.array([1.0, 0.0, 1.0, 1.0, 1.0, 0.0,
+                    np.nan, np.nan, np.nan, np.nan])
     table = pd.DataFrame({
         "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
         "price_ct_kwh": np.full(n, 25.0), "feedin_ct_kwh": np.full(n, 8.0),
@@ -653,12 +659,14 @@ def test_timeline_merges_soll_and_ist_into_one_row():
     row, labels, html = _timeline_row(table, cfg)
     assert labels == ["Pool / klein"], labels        # EINE Zeile je Stufe
     assert row[0] == 1, "Soll AN + Ist laeuft -> wie geplant"
-    assert row[1] == 5, "Soll AN + Ist aus -> geplant, laeuft nicht"
-    assert row[2] == 6, "Soll aus + Ist laeuft -> laeuft ungeplant"
-    assert row[3] == 0, "Soll aus + Ist aus -> aus"
-    # Vergangenheit ohne Rueckmeldung -> unbekannt, Zukunft -> nur Soll.
-    assert row[4] == 3
-    assert set(row[5:]) <= {0}
+    assert row[1] == 5, "Soll AN + Ist aus, ohne Flanke -> geplant, laeuft nicht"
+    assert row[3] == 7, "Flankenslot mit Abweichung -> schaltet um"
+    assert row[4] == 6, "Soll aus + Ist laeuft, ohne Flanke -> laeuft ungeplant"
+    assert row[5] == 0, "Soll aus + Ist aus -> aus"
+    # Vergangenheit und laufender Slot ohne Rueckmeldung -> unbekannt,
+    # Zukunft -> nur Soll (hier aus).
+    assert set(row[6:9]) == {3}
+    assert set(row[9:]) <= {0}
     # Plotly schreibt Nicht-ASCII escaped (l\u00e4uft) - auf den ASCII-Teil
     # pruefen, sonst schlaegt der Test aus dem falschen Grund fehl.
     for text in ("geplant, l", "nicht geplant", "Soll AN"):

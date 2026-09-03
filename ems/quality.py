@@ -175,35 +175,6 @@ def min_soc_window_wh(capacity_wh: float) -> float:
     return soc_step_wh(capacity_wh) * MIN_SOC_STEPS_PER_WINDOW
 
 
-def stage_feedback_on_plan_axis(actual, slot_minutes: float):
-    """Last-Rueckmeldung auf die Zeitachse des PLANS legen.
-
-    Die Rueckmeldung wird zu Beginn eines Zyklus gelesen und unter genau diesem
-    Zeitstempel archiviert (``ems/main._read_load_feedback`` schreibt mit
-    ``now``) - also BEVOR der Befehl fuer diesen Slot hinausgeht. Der Wert bei t
-    beschreibt damit das Ergebnis des Befehls von t-1, waehrend Plan und Befehl
-    Intervallgroessen sind: "Zustand WAEHREND des Slots".
-
-    Unbesehen auf denselben Index gelegt entsteht daraus genau ein Slot
-    Versatz, und der faellt an den Flanken auf: im ersten Slot einer Heizphase
-    steht "geplant, laeuft nicht", im ersten danach "laeuft, nicht geplant".
-    Gemessen ueber sechs Tage an der Pool-Waermepumpe (269 Slots): 13 solche
-    Meldungen, alle an einer Schaltflanke, keine davon ein echter Befund.
-
-    Verschoben wird die MESSUNG (nicht der Plan), weil an der gespeicherten
-    Spalte Historie und Kalibrierung haengen. Der jeweils NEUESTE Wert bleibt an
-    seinem Platz: fuer den laufenden Slot ist der aktuelle Zustand die richtige
-    Anzeige, sein Ergebnis steht noch nicht fest.
-    """
-    if actual is None or len(actual) == 0:
-        return actual
-    reihe = pd.Series(actual)
-    verschoben = reihe.shift(-1)
-    letzter = reihe.index[-1]
-    verschoben.loc[letzter] = reihe.loc[letzter]
-    return verschoben
-
-
 def planned_soc_on_measurement_axis(planned, slot_minutes: float):
     """Plan-SoC auf die Zeitachse der MESSUNG legen.
 

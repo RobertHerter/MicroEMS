@@ -236,18 +236,15 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
         g = read_radiation(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
         permit = read_load_cmd(db, ld.name, start, now, tz)
         stage_names = [stage.name for stage in ld.stages]
-        # Die Rueckmeldung ist eine Randmessung am Slotbeginn und beschreibt
-        # damit das Ergebnis des VORIGEN Slots; der Fit haelt sie gegen die
-        # Temperaturaenderung WAEHREND des Slots. Ohne Ausrichtung ist der
-        # Heizterm um einen Slot versetzt - bei 2-h-Fenstern (WINDOW_SLOTS=8)
-        # sind das bis zu 12 % des Fenstermittels, aber nur in Fenstern mit
-        # einer Schaltflanke.
-        from .quality import stage_feedback_on_plan_axis
-        stage_on = {
-            name: stage_feedback_on_plan_axis(
-                serie, config.general.slot_minutes)
-            for name, serie in read_load_stage_on(
-                db, ld.name, stage_names, start, now, tz).items()}
+        # NICHT verschoben: ein Slot Versatz waere physikalisch begruendbar
+        # (die Rueckmeldung wird zu Zyklusbeginn gelesen), aber die Messung
+        # widerlegt die Verallgemeinerung - bei WP Pinguin passt die
+        # Verschiebung, bei WP klein nicht (03.09.2026: 173 statt 166 Treffer
+        # bzw. 163 statt 169). Die kleine Stufe folgt offenbar der grossen und
+        # nicht unmittelbar unserem Befehl. Verschoben veraenderte der Fit die
+        # Heizleistungen um +11 % und -17 % - genug, um es nicht auf einer
+        # unbelegten Annahme zu tun.
+        stage_on = read_load_stage_on(db, ld.name, stage_names, start, now, tz)
         # Nur mit vollständig rückgemeldeten Stufen den Heizterm fitten. Sonst
         # bleibt der bewährte sicher-aus-Fit anhand permit=0 aktiv.
         if set(stage_on) != set(stage_names):
