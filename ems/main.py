@@ -832,9 +832,26 @@ def _audit_execution(config, now, live, e3dc=None):
             envelope_why = []
         envelope_bad = bool(envelope_why)
 
+        # planned["export_limit_w"] ist die Peak-LINIE des Optimierers, also ein
+        # ZIEL - keine Grenze, die jemand befohlen hat. Sie zu ueberschreiten
+        # heisst nur, dass mehr PV kam als geplant und der Akku sie nicht
+        # abnahm. Als Geraetebefund zaehlt allein die physische Einspeise-
+        # begrenzung aus der Konfiguration.
+        #
+        # Gemessen am 02.09.2026: fuenf Slots mit "Einspeisung ueber der
+        # Grenze", z.B. 6920 gegen 4274 W - bei max_export_w = None, also ohne
+        # jede echte Grenze. Dieselbe Verwechslung wie beim Akku (11f07ff):
+        # ein internes Optimierungsziel wurde fuer einen Befehl gehalten.
         limit = planned.get("export_limit_w")
-        export_bad = (limit is not None and actual["grid_export_w"]
-                      > float(limit) + config.monitoring.execution_grid_tolerance_w)
+        hard_export_limit_w = getattr(config.inverter, "max_export_w", None)
+        export_bad = (hard_export_limit_w is not None
+                      and actual["grid_export_w"]
+                      > float(hard_export_limit_w)
+                      + config.monitoring.execution_grid_tolerance_w)
+        # Die Linie bleibt sichtbar - als Prognosehinweis, nicht als Befund.
+        line_over = (limit is not None and not export_bad
+                     and actual["grid_export_w"] > float(limit)
+                     + config.monitoring.execution_grid_tolerance_w)
         model_bad = (float(planned.get("pv_curtail_w", 0.0) or 0.0) > 5.0
                      and planned.get("execution_path") == "model")
         failed = envelope_bad or export_bad or (
@@ -843,7 +860,7 @@ def _audit_execution(config, now, live, e3dc=None):
             cause, state = "model", "model_error"
         elif envelope_bad or export_bad:
             cause, state = "device", "device_error"
-        elif batt_bad or soc_bad or forecast_bad or grid_bad:
+        elif batt_bad or soc_bad or forecast_bad or grid_bad or line_over:
             cause, state = "forecast", "forecast_deviation"
         else:
             cause, state = "none", "ok"
@@ -869,7 +886,11 @@ def _audit_execution(config, now, live, e3dc=None):
                        f"{float(planned.get('soc') or 0.0):.1f} %")
         if export_bad:
             why.append(f"Einspeisung {_w(actual.get('grid_export_w'))} über der "
-                       f"Grenze von {_w(limit)}")
+                       f"Einspeisebegrenzung von {_w(hard_export_limit_w)}")
+        if line_over:
+            why.append(f"Einspeisung {_w(actual.get('grid_export_w'))} über der "
+                       f"Peak-Linie von {_w(limit)} - mehr PV als geplant, "
+                       f"keine Grenzverletzung")
         if cause == "forecast":
             why.append(f"PV {deviations.get('pv_w', 0.0):+.0f} W, Hauslast "
                        f"{deviations.get('load_w', 0.0):+.0f} W gegenüber der Prognose")
@@ -886,7 +907,12 @@ def _audit_execution(config, now, live, e3dc=None):
         audit = {"checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
                  "ok": ok, "state": state, "cause": cause, "message": message + ".",
                  "planned": planned, "actual": actual, "deviations": deviations,
-                 "meter": meter, "export_limit_ok": None if limit is None else not export_bad}
+                 "meter": meter,
+                 # Nur aussagekraeftig, wenn es eine echte Begrenzung gibt.
+                 "export_limit_ok": (None if hard_export_limit_w is None
+                                     else not export_bad),
+                 "export_line_w": None if limit is None else round(float(limit), 1),
+                 "export_line_exceeded": bool(line_over)}
         audit["battery_action"] = {
             "planned": expected_action, "actual": observed_action,
             "ok": not batt_bad,

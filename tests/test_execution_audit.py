@@ -390,6 +390,51 @@ def test_an_implausible_meter_reading_never_becomes_a_device_error(tmp_path):
     assert audit["cause"] != "device", audit["message"]
 
 
+def test_exceeding_the_peak_line_is_no_device_error_without_a_real_limit(
+        tmp_path):
+    """Die Peak-Linie ist ein ZIEL des Optimierers, keine befohlene Grenze.
+
+    Gemessen am 02.09.2026: fuenf Slots meldeten "Einspeisung ueber der
+    Grenze", z.B. 6920 gegen 4274 W - bei inverter.max_export_w = None, also
+    ohne jede echte Begrenzung. Real kam mehr PV als geplant und der Akku nahm
+    sie nicht ab. Dieselbe Verwechslung wie beim Akku (11f07ff): ein internes
+    Optimierungsziel wurde fuer einen Befehl gehalten.
+    """
+    cfg = _cfg(tmp_path)
+    cfg.inverter.max_export_w = None
+    _completed_plan(cfg, export_limit=1000.0)      # Peak-Linie 1000 W
+    # 1500 Wh Export in 15 min = 6000 W, also weit ueber Linie plus Toleranz
+    # (execution_grid_tolerance_w = 1500 W). Knoten geht auf:
+    # 8500 PV - 500 Last - 2000 Laden - 6000 Export = 0.
+    link = _EnergyLink({"pv_wh": 2125.0, "load_wh": 125.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 1500.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 52.0}, e3dc=link)
+    assert audit["cause"] != "device", audit["message"]
+    assert audit["export_limit_ok"] is None, (
+        "ohne echte Begrenzung ist die Aussage nicht sinnvoll")
+    assert audit["export_line_exceeded"] is True, (
+        "die Ueberschreitung bleibt sichtbar - nur eben als Prognosehinweis")
+    assert "Peak-Linie" in audit["message"], audit["message"]
+
+
+def test_exceeding_a_configured_export_limit_stays_a_device_error(tmp_path):
+    """Mit echter Einspeisebegrenzung bleibt die Ueberschreitung ein Befund."""
+    cfg = _cfg(tmp_path)
+    cfg.inverter.max_export_w = 4000.0
+    _completed_plan(cfg, export_limit=1000.0)
+    link = _EnergyLink({"pv_wh": 2125.0, "load_wh": 125.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 1500.0})
+    audit = _audit_execution(
+        cfg, TS + pd.Timedelta(minutes=75), {"soc_percent": 52.0}, e3dc=link)
+    assert audit["cause"] == "device", audit["message"]
+    assert audit["ok"] is False
+    assert audit["export_limit_ok"] is False
+    assert "Einspeisebegrenzung" in audit["message"], audit["message"]
+
+
 def test_completed_slot_separates_forecast_deviation(tmp_path):
     cfg = _cfg(tmp_path)
     _completed_plan(cfg)
