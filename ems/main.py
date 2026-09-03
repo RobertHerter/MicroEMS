@@ -3861,15 +3861,24 @@ def _build_display_frame(repo, config, now, history, result,
                 [("__load__", None)])
             for stage_name, stage_slug in display_stages:
                 suffix = f"_{stage_slug}" if stage_slug else ""
+                # Rueckmeldung auf die Plan-Achse legen: sie wird zu
+                # Zyklusbeginn gelesen und beschreibt damit das Ergebnis des
+                # VORIGEN Slots. Ohne das steht an jeder Schaltflanke eine
+                # Scheinabweichung (siehe quality.stage_feedback_on_plan_axis).
+                from .quality import stage_feedback_on_plan_axis
                 series = actual_stages.get(stage_name)
                 if series is not None and not series.empty:
                     col = f"actual_load_{_load_slug(load.name)}{suffix}_on"
-                    df[col] = series.reindex(full).where(historical_mask)
+                    df[col] = stage_feedback_on_plan_axis(
+                        series, config.general.slot_minutes
+                    ).reindex(full).where(historical_mask)
                 power = actual_power.get(stage_name)
                 if power is not None and not power.empty:
                     col = (f"actual_load_{_load_slug(load.name)}"
                            f"{suffix}_power_w")
-                    df[col] = power.reindex(full).where(historical_mask)
+                    df[col] = stage_feedback_on_plan_axis(
+                        power, config.general.slot_minutes
+                    ).reindex(full).where(historical_mask)
     except Exception as exc:  # Verlauf ist Diagnose, nie Lauf-kritisch
         log.warning("Historischer Sollfahrplan fürs Dashboard nicht lesbar: %s",
                     exc)

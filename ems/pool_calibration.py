@@ -236,7 +236,18 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
         g = read_radiation(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
         permit = read_load_cmd(db, ld.name, start, now, tz)
         stage_names = [stage.name for stage in ld.stages]
-        stage_on = read_load_stage_on(db, ld.name, stage_names, start, now, tz)
+        # Die Rueckmeldung ist eine Randmessung am Slotbeginn und beschreibt
+        # damit das Ergebnis des VORIGEN Slots; der Fit haelt sie gegen die
+        # Temperaturaenderung WAEHREND des Slots. Ohne Ausrichtung ist der
+        # Heizterm um einen Slot versetzt - bei 2-h-Fenstern (WINDOW_SLOTS=8)
+        # sind das bis zu 12 % des Fenstermittels, aber nur in Fenstern mit
+        # einer Schaltflanke.
+        from .quality import stage_feedback_on_plan_axis
+        stage_on = {
+            name: stage_feedback_on_plan_axis(
+                serie, config.general.slot_minutes)
+            for name, serie in read_load_stage_on(
+                db, ld.name, stage_names, start, now, tz).items()}
         # Nur mit vollständig rückgemeldeten Stufen den Heizterm fitten. Sonst
         # bleibt der bewährte sicher-aus-Fit anhand permit=0 aktiv.
         if set(stage_on) != set(stage_names):
