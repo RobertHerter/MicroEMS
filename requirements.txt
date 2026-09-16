@@ -27,7 +27,7 @@ influxdb-client>=1.50.0    # InfluxDB 2.x (Flux)
 paho-mqtt>=2.1.0
 
 # Dashboard (selbst-enthaltenes interaktives HTML)
-plotly>=6.9.0
+plotly>=7.0.0
 
 # Machine Learning (für Lastprognose)
 scikit-learn>=1.9.0
