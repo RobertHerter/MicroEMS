@@ -1108,6 +1108,37 @@ def read_base_house_load(path: str, loads: list, start, end, tz: str,
     return basis
 
 
+def ems_schaltet_last(load) -> bool:
+    """Gehoert die Energie dieser Last NICHT in die Grundlast?
+
+    Entscheidend ist der Schaltkanal, nicht ``enabled``. Wessen Relais das EMS
+    besitzt, das laeuft nur, wenn der Optimierer es plant - und der legt es
+    separat auf die Grundlast obendrauf. Wird so eine Last abgeschaltet, laeuft
+    sie gar nicht mehr; ihre gemessene Vergangenheit bleibt trotzdem steuerbare
+    Last und darf nicht rueckwirkend zur Grundlast werden.
+
+    Am 16.09.2026 tat sie genau das: mit dem Pool-Schalter im Dashboard fielen
+    178,6 kWh aus 35 Betriebstagen aus der Bereinigung und standen wieder als
+    Grundlast in der Trainingshistorie. Gemessen ueber elf poolfreie Tage
+    (05.-15.09., produktive Fenster, Modelle haelftig gemischt) kostet das
+    +37 W Bias und 3,4 Punkte WAPE, nachts +64 W und 8,1 Punkte.
+
+    Das Fenster der Bereinigung (disaggregation_lookback_days, 28 Tage) reicht
+    dafuer: die ganze Rueckmeldehistorie zu bereinigen war in derselben Messung
+    nicht besser (Bias +222 statt +217 W) und kostet 1,3 s je Planungslauf.
+
+    Umgekehrt haben die Waschmaschinen absichtlich kein ``control_topic`` - sie
+    laufen unabhaengig vom EMS weiter. Ihre Energie MUSS in der Grundlast
+    bleiben, sonst sagt die Prognose sie nie voraus und niemand plant sie ein.
+    """
+    if getattr(load, "enabled", False):
+        return True
+    if getattr(load, "type", None) == "thermal":
+        return any(getattr(stage, "control_topic", None)
+                   for stage in getattr(load, "stages", None) or [])
+    return bool(getattr(load, "control_topic", None))
+
+
 def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
                                  slot_minutes: int):
     """Gemessene Leistung steuerbarer Lasten auf dem Slotraster.
@@ -1120,7 +1151,7 @@ def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
     """
     lanes = {}
     for load in loads or []:
-        if not getattr(load, "enabled", False):
+        if not ems_schaltet_last(load):
             continue
         if getattr(load, "type", None) == "thermal":
             members = [

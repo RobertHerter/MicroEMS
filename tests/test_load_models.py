@@ -5,9 +5,11 @@ import pytest
 from ems import load_models
 from ems.config import ControllableLoad, LoadStage
 from ems.forecast import LoadForecaster
-from ems.local_history import (read_controllable_load_power,
+from ems.local_history import (read_base_house_load,
+                               read_controllable_load_power,
                                read_live_slot_averages, read_load_stage_power,
-                               write_live_sample, write_load_feedback)
+                               write_house_load, write_live_sample,
+                               write_load_feedback)
 from tests.test_synthetic import make_config
 
 
@@ -227,3 +229,78 @@ def test_measurement_beats_the_projected_profile(monkeypatch):
         cfg, LoadForecaster(cfg), total, idx[-1])
     assert training.median() == pytest.approx(1200.0)
     assert diag["coverage_percent"] == pytest.approx(100.0)
+
+
+
+def test_abgeschaltete_last_bleibt_aus_der_grundlast(tmp_path):
+    """Der Ein/Aus-Schalter darf die Messhistorie nicht umdeuten.
+
+    Der Pool wird im Dashboard abgeschaltet (Saisonende). Seine 178,6 kWh aus
+    dem Sommer blieben damit als Grundlast in der Trainingshistorie stehen -
+    die Prognose sagte Poolbetrieb voraus, der nie wieder stattfand.
+    """
+    path = str(tmp_path / "history.sqlite")
+    pool = ControllableLoad(
+        name="Pool", type="thermal", enabled=False,
+        stages=[LoadStage("WP", power_w=1000.0, heat_w=4000.0,
+                          control_topic="pool/wp/set",
+                          power_topic="pool/wp/power")])
+    start = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    for quarter, power in enumerate((0.0, 1000.0, 1000.0, 0.0)):
+        write_load_feedback(path, start + pd.Timedelta(minutes=15 * quarter),
+                            "Pool", "WP", {"on": power > 10.0,
+                                           "power_w": power, "fresh": True,
+                                           "age_seconds": 0.0})
+    measured, complete, labels = read_controllable_load_power(
+        path, [pool], start, start + pd.Timedelta(hours=1), TZ, 15)
+
+    assert labels == ["Pool/WP"]
+    assert measured.to_list() == [0.0, 1000.0, 1000.0, 0.0]
+    assert complete.all()
+
+
+def test_last_ohne_schaltkanal_zaehlt_zur_grundlast(tmp_path):
+    """Die Waschmaschinen haben absichtlich kein control_topic.
+
+    Das EMS misst sie nur; sie laufen unabhaengig weiter. Wuerde ihre Energie
+    abgezogen, saehe die Prognose sie nie - und der Optimierer plant sie auch
+    nicht ein, weil sie abgeschaltet sind.
+    """
+    path = str(tmp_path / "history.sqlite")
+    waschmaschine = ControllableLoad(
+        name="Waschmaschine", type="deferrable", enabled=False,
+        power_w=2000.0, runtime_minutes=60, power_topic="washer/power")
+    start = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    for quarter, power in enumerate((0.0, 1800.0, 1800.0, 0.0)):
+        write_load_feedback(path, start + pd.Timedelta(minutes=15 * quarter),
+                            "Waschmaschine", "__load__",
+                            {"on": power > 50.0, "power_w": power,
+                             "fresh": True, "age_seconds": 0.0})
+    measured, _complete, labels = read_controllable_load_power(
+        path, [waschmaschine], start, start + pd.Timedelta(hours=1), TZ, 15)
+
+    assert labels == []
+    assert measured.eq(0.0).all()
+
+
+def test_grundlast_folgt_dem_schaltkanal(tmp_path):
+    """Gegenprobe auf der Ebene, die Waechter und Archiv benutzen."""
+    path = str(tmp_path / "history.sqlite")
+    start = pd.Timestamp("2026-07-27 10:00", tz=TZ)
+    for quarter in range(4):
+        stamp = start + pd.Timedelta(minutes=15 * quarter)
+        write_load_feedback(path, stamp, "Pool", "WP",
+                            {"on": True, "power_w": 1000.0, "fresh": True,
+                             "age_seconds": 0.0})
+    write_house_load(path, {stamp.tz_convert("UTC").isoformat(): 1500.0
+                            for stamp in pd.date_range(start, periods=4,
+                                                       freq="15min")})
+    pool = ControllableLoad(
+        name="Pool", type="thermal", enabled=False,
+        stages=[LoadStage("WP", power_w=1000.0, heat_w=4000.0,
+                          control_topic="pool/wp/set",
+                          power_topic="pool/wp/power")])
+    basis = read_base_house_load(path, [pool], start,
+                                 start + pd.Timedelta(hours=1), TZ, 15)
+
+    assert basis.dropna().eq(500.0).all()

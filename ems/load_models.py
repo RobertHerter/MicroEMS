@@ -17,7 +17,8 @@ import numpy as np
 import pandas as pd
 
 from .loads import _season_mask
-from .local_history import (read_controllable_load_power,
+from .local_history import (ems_schaltet_last,
+                            read_controllable_load_power,
                             read_optimizer_forecast_snapshots)
 
 log = logging.getLogger("ems.load_models")
@@ -69,9 +70,11 @@ def status_summary() -> str:
 
 
 def _active_controllable_loads(config) -> list:
+    """Lasten, deren Energie aus der Grundlast gehoert (siehe
+    ``ems_schaltet_last``) - der Ein/Aus-Schalter zaehlt dabei nicht."""
     active = []
     for load in getattr(config, "controllable_loads", []):
-        if not load.enabled:
+        if not ems_schaltet_last(load):
             continue
         if load.type == "thermal":
             configured = any(
