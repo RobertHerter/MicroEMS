@@ -304,3 +304,25 @@ def test_grundlast_folgt_dem_schaltkanal(tmp_path):
                                  start + pd.Timedelta(hours=1), TZ, 15)
 
     assert basis.dropna().eq(500.0).all()
+
+
+def test_temperatur_residual_meldet_sammeln_und_verwerfen_getrennt():
+    """"52/6 Tage" las sich wie ein Fortschrittsbalken, war aber ein Urteil."""
+    zustand = load_models._STATUS
+    vorher = dict(zustand)
+    try:
+        zustand.update({"disaggregation": {}, "ensemble": {}, "temperature": {
+            "enabled": True, "learned": False, "folds": 3, "min_folds": 6}})
+        assert "sammelt 3/6 Tage" in load_models.status_summary()
+
+        zustand["temperature"] = {
+            "enabled": True, "learned": False, "folds": 52, "min_folds": 6,
+            "mae_before_w": 396.9, "mae_after_w": 395.4}
+        assert "verworfen (nur 0.4 % besser)" in load_models.status_summary()
+
+        zustand["temperature"] = {
+            "enabled": True, "learned": True, "folds": 52, "min_folds": 6}
+        assert "Temperatur-Residual aktiv" in load_models.status_summary()
+    finally:
+        zustand.clear()
+        zustand.update(vorher)

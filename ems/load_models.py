@@ -62,10 +62,21 @@ def status_summary() -> str:
             text += f", Empfehlung {recommendation}"
         parts.append(text)
     if temp.get("enabled"):
-        parts.append(
-            "Temperatur-Residual aktiv" if temp.get("learned")
-            else f"Temperatur-Residual {temp.get('folds', 0)}/"
-                 f"{temp.get('min_folds', 0)} Tage")
+        # "52/6 Tage" las sich wie ein Fortschrittsbalken, war aber ein
+        # ABGESCHLOSSENES Urteil: genug Tage, das Modell hat die 1-%-Huerde nur
+        # nicht genommen. Sammeln und Verwerfen auseinanderhalten.
+        folds, min_folds = temp.get("folds", 0), temp.get("min_folds", 0)
+        vorher, nachher = temp.get("mae_before_w"), temp.get("mae_after_w")
+        if temp.get("learned"):
+            parts.append("Temperatur-Residual aktiv")
+        elif folds < min_folds:
+            parts.append(
+                f"Temperatur-Residual sammelt {folds}/{min_folds} Tage")
+        elif vorher and nachher is not None and vorher > 0:
+            parts.append("Temperatur-Residual verworfen (nur "
+                         f"{100.0 * (1.0 - nachher / vorher):.1f} % besser)")
+        else:
+            parts.append("Temperatur-Residual verworfen (zu wenige Werte)")
     return " · ".join(parts) if parts else "Last-Zusatzmodelle deaktiviert"
 
 
