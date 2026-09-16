@@ -1,5 +1,5 @@
 # Reproduzierbare Installation: exakte Versionen der GESAMTEN Umgebung,
-# erzeugt mit `pip freeze` aus einem gruenen Testlauf (652 Tests).
+# erzeugt mit `pip freeze` aus einem gruenen Testlauf (750 Tests).
 #
 # Nicht von Hand pflegen. Der frueher hier gepflegte Auszug war unvollstaendig -
 # es fehlten highspy (Solver), scikit-learn (ML-Lastmodell), pvlib
@@ -12,7 +12,7 @@ charset-normalizer==3.4.7
 execnet==2.1.2
 h5py==3.16.0
 highspy==1.15.1
-holidays==0.103
+holidays==0.104
 idna==3.18
 influxdb==5.3.2
 influxdb_client==1.50.0
@@ -20,11 +20,11 @@ iniconfig==2.3.0
 joblib==1.5.3
 msgpack==1.2.1
 narwhals==2.23.0
-numpy==2.5.2
+numpy==2.5.3
 packaging==26.2
 paho-mqtt==2.1.0
 pandas==3.0.5
-plotly==6.9.0
+plotly==7.1.0
 pluggy==1.6.0
 PuLP==3.3.2
 pvlib==0.15.2
@@ -38,7 +38,7 @@ pytz==2026.2
 PyYAML==6.0.3
 reactivex==4.1.0
 requests==2.34.2
-ruff==0.16.4
+ruff==0.16.7
 scikit-learn==1.9.0
 scipy==1.18.0
 six==1.17.0

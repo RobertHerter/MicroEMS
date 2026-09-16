@@ -10,6 +10,7 @@ kalibrierung_profil.yaml
 dashboard.html
 dashboard_heute.html
 plotly.min.js
+plotly.min.js.version
 savings_state.json
 last_run_debug.json
 api_data.json

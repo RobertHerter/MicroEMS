@@ -471,13 +471,39 @@ def _control_banner(status) -> str:
 
 
 def _ensure_plotlyjs(out_path: str) -> None:
-    """Legt plotly.min.js neben die HTML (einmalig) -> läuft ohne Internet."""
+    """Legt plotly.min.js neben die HTML -> läuft ohne Internet.
+
+    Erneuert wird sie, sobald sich die installierte plotly-Version ändert. Die
+    HTML erzeugt plotly.py, gezeichnet wird sie von genau dem JS, das dieselbe
+    Version mitbringt - beides muss zusammenpassen. Vorher stand hier
+    "einmalig": am 16.09.2026 lag deshalb noch plotly.js v3.6.0 aus plotly.py
+    6.9.0 neben einer HTML, die plotly.py 7.1.0 für v4.1.1 geschrieben hatte.
+    Eine Hauptversion Unterschied, die kein Test sieht - die Testsuite startet
+    keinen Browser.
+
+    Geschrieben wird atomar (Temp + os.replace): der Dashboard-Server liefert
+    die Datei aus, und 4,8 MB halb geschrieben wären ein kaputtes Dashboard.
+    """
+    import plotly
     bundle = os.path.join(os.path.dirname(os.path.abspath(out_path)) or ".",
                           "plotly.min.js")
-    if not os.path.exists(bundle):
-        from plotly.offline import get_plotlyjs
-        with open(bundle, "w", encoding="utf-8") as fh:
-            fh.write(get_plotlyjs())
+    marke = bundle + ".version"
+    version = str(getattr(plotly, "__version__", ""))
+    try:
+        with open(marke, encoding="utf-8") as fh:
+            passend = fh.read().strip() == version
+    except OSError:
+        passend = False
+    if os.path.exists(bundle) and passend:
+        return
+    from plotly.offline import get_plotlyjs
+    tmp = bundle + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(get_plotlyjs())
+    os.replace(tmp, bundle)
+    with open(marke, "w", encoding="utf-8") as fh:
+        fh.write(version)
+    log.info("plotly.min.js für plotly %s neu geschrieben.", version)
 
 
 def _report_block(config: Config, now, violations) -> str:
