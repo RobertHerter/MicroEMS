@@ -30,7 +30,7 @@ paho-mqtt>=2.1.0
 plotly>=7.0.0
 
 # Machine Learning (für Lastprognose)
-scikit-learn>=1.9.0
+scikit-learn>=1.9.1
 
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0
