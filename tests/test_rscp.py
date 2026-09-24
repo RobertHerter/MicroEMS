@@ -838,3 +838,73 @@ def test_failed_watchdog_send_is_no_alarm_while_the_mode_still_works():
         raise ConnectionError("nicht erreichbar")
     link.read_live = kaputt
     assert link._mode_effective(4, 9484) is False
+
+
+def _netzladen_zeile(hb, netz=690, dc=648):
+    return {"batt_grid_charge_w": netz, "batt_dc_charge_w": dc,
+            "batt_ac_charge_w": netz, "batt_grid_discharge_w": 0,
+            "batt_charge_limit_w": hb.max_dc_charge_w,
+            "batt_discharge_limit_w": hb.max_discharge_w}
+
+
+def _scheitert_einmal(link, modus):
+    echt = link._set_power
+
+    def set_power(mode, value):
+        if mode == modus and not getattr(set_power, "gescheitert", False):
+            set_power.gescheitert = True
+            raise RuntimeError("Max retries reached")
+        return echt(mode, value)
+    link._set_power = set_power
+
+
+def test_gescheiterter_befehl_ist_kein_ausfall_wenn_der_watchdog_ihn_traegt():
+    """24.09.2026 15:01:30: "RSCP-Steuerung fehlgeschlagen (Max retries
+    reached)" und ein FEHLERalarm "E3DC-Steuer-Ausfall". Der neue Sollwert
+    (690 W Netz + 648 W PV = 1338 W) lag da schon beim Watchdog, der ihn alle
+    5 s neu sendet; im 5-s-Raster lud der Akku ab 15:01:57 mit 1150-1330 W -
+    also mit dem NEUEN Wert, nicht mit dem alten (1629 W). Dieselbe Sorte
+    Fehlalarm wie beim Watchdog selbst (17.08.), nur im Hauptbefehl."""
+    cfg, link = _link(control_enabled=True)
+    _scheitert_einmal(link, 4)
+    link.read_live = lambda force=False: {"battery_w": 1265.0}
+
+    status = link.apply_control(_netzladen_zeile(cfg.house_battery))
+
+    assert status["ok"] is not False           # kein Fehleralarm, kein Banner
+    assert status["state"] == "watchdog_carries"
+    assert (link._wd_mode, link._wd_value) == (4, 1338)
+    assert "Mode 4 senden" in status["message"]
+    link.close()
+
+
+def test_gescheiterter_befehl_bleibt_ausfall_wenn_der_akkufluss_widerspricht():
+    cfg, link = _link(control_enabled=True)
+    _scheitert_einmal(link, 4)
+    link.read_live = lambda force=False: {"battery_w": -900.0}   # entlaedt
+
+    status = link.apply_control(_netzladen_zeile(cfg.house_battery))
+
+    assert status["ok"] is False
+    assert status["state"] == "write_failed"
+    assert "Mode 4 senden" in status["message"]
+    link.close()
+
+
+def test_scheitert_die_freigabe_traegt_der_watchdog_den_befehl_nicht():
+    """Scheitert schon der erste Schritt, hat der Watchdog den neuen Sollwert
+    noch nicht - ein laufender Akkufluss beweist dann nichts ueber DIESEN
+    Befehl. Das bleibt ein echter Ausfall."""
+    cfg, link = _link(control_enabled=True)
+
+    def freigabe_kaputt(enable, max_charge=None, max_discharge=None):
+        raise RuntimeError("Max retries reached")
+    link._set_limits = freigabe_kaputt
+    link.read_live = lambda force=False: {"battery_w": 1265.0}
+
+    status = link.apply_control(_netzladen_zeile(cfg.house_battery))
+
+    assert status["ok"] is False
+    assert "Limits freigeben" in status["message"]
+    assert link._wd_mode == 0                  # nicht bewaffnet
+    link.close()

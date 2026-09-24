@@ -950,31 +950,42 @@ class E3DCLink:
             hb = self.cfg.house_battery
             gc = float(row.get("batt_grid_charge_w", 0.0))
             gd = float(row.get("batt_grid_discharge_w", 0.0))
+            # Welcher Schritt scheiterte, und traegt der Watchdog schon den NEUEN
+            # Sollwert? Beides entscheidet, ob ein Fehlschlag ein Ausfall ist.
+            schritt, bewaffnet = "Befehl vorbereiten", None
             try:
                 if gc > 5.0:
                     # Netzladen: Mode 4 (grid_charge), Wert = Gesamt-Ladeleistung
                     # (PV zuerst, Netz für den Rest). Verifiziert @8 kW.
                     total = round(float(row.get("batt_dc_charge_w", 0.0)) + gc)
+                    schritt = "Limits freigeben"
                     if self._set_limits(False) == -1:  # Limits aus, Mode regelt
                         raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 4, total
                     self._ensure_watchdog()
+                    bewaffnet = (4, total)
+                    schritt = "Mode 4 senden"
                     self._set_power(4, total)
                     log.info("RSCP: Netzladen aktiv, Mode 4, %d W (Watchdog).",
                              total)
+                    schritt = "Rücklesen"
                     return self._verify_limits(
                         False, hb.max_dc_charge_w, hb.max_discharge_w,
                         "grid_charge")
                 elif gd > 5.0 and self.cfg.optimization.allow_grid_discharge:
                     # Netz-Entladen: Mode 2 (discharge), Wert = Entladeleistung.
                     val = round(float(row.get("batt_discharge_w", 0.0)))
+                    schritt = "Limits freigeben"
                     if self._set_limits(False) == -1:
                         raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 2, val
                     self._ensure_watchdog()
+                    bewaffnet = (2, val)
+                    schritt = "Mode 2 senden"
                     self._set_power(2, val)
                     log.info("RSCP: Netz-Entladen aktiv, Mode 2, %d W (Watchdog).",
                              val)
+                    schritt = "Rücklesen"
                     return self._verify_limits(
                         False, hb.max_dc_charge_w, hb.max_discharge_w,
                         "grid_discharge")
@@ -982,21 +993,43 @@ class E3DCLink:
                     # auto + persistente Lade-/Entlade-Limits gemäß Plan
                     if self._wd_mode != 0:
                         self._wd_mode, self._wd_value = 0, 0
+                        schritt = "auf auto zurücksetzen"
                         self._set_power(0, 0)    # aktiv auf auto zurück
                     cl = float(row.get("batt_charge_limit_w", hb.max_dc_charge_w))
                     dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
                     limited = (cl < hb.max_dc_charge_w - 1
                                or dl < hb.max_discharge_w - 1)
+                    schritt = "Limits setzen"
                     if self._set_limits(limited, cl, dl) == -1:
                         raise RuntimeError("Setzen der SmartPower-Limits abgelehnt")
                     log.debug("RSCP: auto, Limit aktiv=%s "
                               "(Laden≤%.0f, Entladen≤%.0f).", limited, cl, dl)
+                    schritt = "Rücklesen"
                     status = self._verify_limits(limited, cl, dl, "limits")
                     (log.info if status.get("ok") else log.warning)(
                         "RSCP-Rücklesekontrolle: %s", status["message"])
                     return status
             except Exception as exc:
-                log.warning("RSCP-Steuerung fehlgeschlagen (%s).", exc)
+                # Am 24.09.2026 um 15:01 scheiterte "Mode 4 senden" mit "Max
+                # retries reached" und loeste einen FEHLERalarm aus - waehrend der
+                # Watchdog den neuen Sollwert (1338 W) schon hatte und ihn Sekunden
+                # spaeter sendete; der Akku lud danach mit 1150-1330 W. Dasselbe
+                # Kriterium wie beim Watchdog selbst (17.08.): nicht der
+                # Sendeerfolg zaehlt, sondern ob der Akkufluss widerspricht. Das
+                # gilt aber nur, wenn der Watchdog den NEUEN Befehl traegt -
+                # scheitert schon die Freigabe, beweist ein laufender Fluss nichts.
+                if bewaffnet is not None and self._mode_effective(*bewaffnet):
+                    log.warning(
+                        "RSCP: %s fehlgeschlagen (%s); der Watchdog trägt den "
+                        "neuen Sollwert Mode %d, %d W, der Akkufluss bestätigt "
+                        "ihn - kein Steuerausfall.", schritt, exc, *bewaffnet)
+                    return self._control_status(
+                        None, "watchdog_carries", f"mode_{bewaffnet[0]}",
+                        f"{schritt} fehlgeschlagen ({exc}); der Watchdog trägt "
+                        f"den neuen Sollwert, der Akkufluss bestätigt ihn.",
+                        expected={"mode": bewaffnet[0], "power_w": bewaffnet[1]})
+                log.warning("RSCP-Steuerung fehlgeschlagen beim Schritt "
+                            "'%s' (%s).", schritt, exc)
                 return self._control_status(
                     False, "write_failed", "control",
-                    f"E3DC-Steuerbefehl fehlgeschlagen: {exc}")
+                    f"E3DC-Steuerbefehl fehlgeschlagen ({schritt}): {exc}")
