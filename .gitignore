@@ -15,6 +15,7 @@ savings_state.json
 last_run_debug.json
 api_data.json
 e3dc_history.sqlite
+pv_nowcast_messung.csv
 backup/
 *.log
 

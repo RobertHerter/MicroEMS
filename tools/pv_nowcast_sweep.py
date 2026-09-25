@@ -69,6 +69,11 @@ verzoegerten am 24.09. den ersten Steuerbefehl des EMS um elf Minuten:
     OMP_NUM_THREADS=1 nice -n 19 python tools/pv_nowcast_sweep.py --von 2026-09-24
     OMP_NUM_THREADS=1 nice -n 19 python tools/pv_nowcast_sweep.py --tage 7 \\
         --variante ist --variante weit:max_factor=2.5,slots=16
+
+Ueber Wochen sammeln (die Snapshots reichen nur ~10 Tage zurueck):
+
+    OMP_NUM_THREADS=1 nice -n 19 python tools/pv_nowcast_sweep.py --tage 7 \\
+        --protokoll pv_nowcast_messung.csv
 """
 from __future__ import annotations
 
@@ -357,6 +362,11 @@ def main():
     ap.add_argument("--bis")
     ap.add_argument("--variante", action="append")
     ap.add_argument("--zeitlimit", type=float, default=60.0)
+    ap.add_argument("--protokoll",
+                    help="CSV, an die je Tag und Variante eine Zeile angehaengt "
+                         "wird; schon protokollierte Tage werden uebersprungen. "
+                         "Die Snapshots reichen nur ~10 Tage zurueck - ueber "
+                         "Wochen sammeln geht nur so.")
     args = ap.parse_args()
     cfg = load_config(args.config)
     tz = cfg.general.timezone
@@ -374,19 +384,52 @@ def main():
     for n, p in varianten:
         print(f"  {n:>9}: max_factor {p['max_factor']:.2f} (Boden {1/p['max_factor']:.2f}), "
               f"max_step {p['max_step']:.2f}, slots {p['slots']}, decay {p['decay']:.1f} h")
-    print(f"\n{'Tag':>11} {'gemessen':>9}" + "".join(f"{n:>11}" for n, _ in varianten)
-          + "   (netto ct; Varianten als Differenz zu 'ist')", flush=True)
+    print(f"\n{'Tag':>11} {'gemessen':>9} {'ist roh':>8}"
+          + "".join(f"{n:>11}" for n, _ in varianten)
+          + "   (gemessen/roh = Kosten; Varianten netto, als Differenz zu 'ist')",
+          flush=True)
+    schon = set()
+    if args.protokoll and os.path.exists(args.protokoll):
+        alt_df = pd.read_csv(args.protokoll)
+        schon = set(alt_df["tag"].astype(str))
+    heute = pd.Timestamp.now(tz=tz).date()
     con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
     summe = {n: 0.0 for n, _ in varianten}
     ok, t_start = 0, time.time()
     for tag in tage:
+        if str(tag) in schon:
+            print(f"{tag!s:>11}  schon protokolliert", flush=True)
+            continue
         erg, grund = rechne_tag(cfg, con, tag, varianten, args.zeitlimit)
         if erg is None:
             print(f"{tag!s:>11}  uebersprungen: {grund}", flush=True)
             continue
+        if args.protokoll and tag != heute:       # Teiltage nie festschreiben
+            zeilen = []
+            for n, p in varianten:
+                v = erg["v"][n]
+                zeilen.append({
+                    "tag": str(tag), "variante": n,
+                    "max_factor": p["max_factor"], "max_step": p["max_step"],
+                    "slots": p["slots"], "decay": p["decay"],
+                    "netto_ct": round(v["netto"], 2),
+                    "diff_zu_ist_ct": round(v["netto"] - erg["v"]["ist"]["netto"], 2),
+                    "netzladen_kwh": round(v["netzladen"], 3),
+                    "bezug_kwh": round(v["bezug"], 3),
+                    "loesungen": v["loesungen"],
+                    "nachbau_abw_w": round(erg["pruef"], 1),
+                    "gerechnet": pd.Timestamp.now(tz=tz).isoformat(timespec="seconds")})
+            neu_df = pd.DataFrame(zeilen)
+            neu_df.to_csv(args.protokoll, mode="a", index=False,
+                          header=not os.path.exists(args.protokoll))
         ok += 1
         basis = erg["v"]["ist"]["netto"]
-        zeile = f"{tag!s:>11} {erg['real'] if erg['real'] is not None else float('nan'):9.1f}"
+        # "gemessen" ist die echte Stromrechnung, "ist roh" dieselbe Groesse aus
+        # der Nachrechnung - so sieht man, ob die Rahmenausfuehrung die
+        # Wirklichkeit trifft. Die Spalte "ist" ist netto (mit Terminalwert).
+        zeile = (f"{tag!s:>11} "
+                 f"{erg['real'] if erg['real'] is not None else float('nan'):9.1f} "
+                 f"{erg['v']['ist']['kosten']:8.1f}")
         for n, _ in varianten:
             summe[n] += erg["v"][n]["netto"]
             zeile += (f"{basis:11.1f}" if n == "ist"
@@ -401,7 +444,7 @@ def main():
                   f"{v['loesungen']} Loesungen", flush=True)
     con.close()
     if ok:
-        print(f"\n{'Summe':>11} {'':>9}" + "".join(
+        print(f"\n{'Summe':>11} {'':>9} {'':>8}" + "".join(
             (f"{summe[n]:11.1f}" if n == "ist" else f"{summe[n]-summe['ist']:+11.1f}")
             for n, _ in varianten))
         print(f"\n{ok} Tage in {time.time()-t_start:.0f} s. Negativ = billiger als 'ist'.")
