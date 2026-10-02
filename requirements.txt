@@ -40,4 +40,4 @@ scikit-learn>=1.9.1
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0
 # Optional: freie PV-Ertragsprognose (ems/pvforecast.py, Alternative zu Solcast)
-pvlib>=0.15.2
+pvlib>=0.16.1
