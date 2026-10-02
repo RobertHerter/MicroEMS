@@ -3,12 +3,17 @@
 # Reproduzierbare Installation (exakt getestete Versionen): pip install -r requirements.lock
 
 PyYAML>=6.0.3
-pandas>=3.0.5
+pandas>=3.0.6
 numpy>=2.5.3
 python-dateutil>=2.9.0.post0
 
 # Optimierung (MILP). PuLP bringt den CBC-Solver bereits mit.
-PuLP>=3.3.2
+# OBERGRENZE <4: PuLP 4.0.0 (25.09.2026) nimmt die Grenzen von LpVariable nur
+# noch als Schluesselwort und streicht den eingebauten CBC (PULP_CBC_CMD), auf
+# den der Rueckfallpfad zugreift. Mit 4.0.0 scheiterte jeder Optimierungslauf
+# (TypeError in ems/optimizer.py). Die Umstellung ist eine eigene Aufgabe mit
+# vollem Testlauf gegen PuLP 4 - bis dahin bleibt es bei 3.x.
+PuLP>=3.3.2,<4
 # HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
 # mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
@@ -17,7 +22,7 @@ PuLP>=3.3.2
 highspy>=1.15.1
 
 # Feiertage (Verbrauchsprognose)
-holidays>=0.104
+holidays>=0.105
 
 # InfluxDB – beide Clients, je nach konfigurierter Version wird einer genutzt
 influxdb>=5.3.2          # InfluxDB 1.x (InfluxQL)
@@ -27,10 +32,10 @@ influxdb-client>=1.50.0    # InfluxDB 2.x (Flux)
 paho-mqtt>=2.1.0
 
 # Dashboard (selbst-enthaltenes interaktives HTML)
-plotly>=7.0.0
+plotly>=7.1.0
 
 # Machine Learning (für Lastprognose)
-scikit-learn>=1.9.0
+scikit-learn>=1.9.1
 
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0
