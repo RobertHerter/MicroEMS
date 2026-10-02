@@ -991,10 +991,24 @@ class E3DCLink:
                         "grid_discharge")
                 else:
                     # auto + persistente Lade-/Entlade-Limits gemäß Plan
+                    auto_hinweis = None
                     if self._wd_mode != 0:
                         self._wd_mode, self._wd_value = 0, 0
                         schritt = "auf auto zurücksetzen"
-                        self._set_power(0, 0)    # aktiv auf auto zurück
+                        try:
+                            self._set_power(0, 0)    # aktiv auf auto zurück
+                        except Exception as exc:
+                            # Kein Ausfall: der Watchdog ist schon abgestellt,
+                            # und ohne seine Sendung faellt das E3DC nach 10 s
+                            # von selbst auf auto (Fail-safe). Am 02.10.2026
+                            # 14:31 folgte der Akku danach exakt dem
+                            # Ueberschuss. Frueher brach der Zweig hier ab, und
+                            # die Grenzen des Slots wurden gar nicht gesetzt.
+                            auto_hinweis = (
+                                f"auf auto zurücksetzen fehlgeschlagen ({exc}); "
+                                "ohne Watchdog fällt das E3DC nach 10 s von "
+                                "selbst auf auto")
+                            log.warning("RSCP: %s.", auto_hinweis)
                     cl = float(row.get("batt_charge_limit_w", hb.max_dc_charge_w))
                     dl = float(row.get("batt_discharge_limit_w", hb.max_discharge_w))
                     limited = (cl < hb.max_dc_charge_w - 1
@@ -1006,6 +1020,8 @@ class E3DCLink:
                               "(Laden≤%.0f, Entladen≤%.0f).", limited, cl, dl)
                     schritt = "Rücklesen"
                     status = self._verify_limits(limited, cl, dl, "limits")
+                    if auto_hinweis:
+                        status["message"] = f"{status['message']} ({auto_hinweis})"
                     (log.info if status.get("ok") else log.warning)(
                         "RSCP-Rücklesekontrolle: %s", status["message"])
                     return status

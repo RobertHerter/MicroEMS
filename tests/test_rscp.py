@@ -908,3 +908,47 @@ def test_scheitert_die_freigabe_traegt_der_watchdog_den_befehl_nicht():
     assert "Limits freigeben" in status["message"]
     assert link._wd_mode == 0                  # nicht bewaffnet
     link.close()
+
+
+def _auto_zeile(hb, laden=None, entladen=None):
+    return {"batt_grid_charge_w": 0, "batt_dc_charge_w": 0,
+            "batt_ac_charge_w": 0, "batt_grid_discharge_w": 0,
+            "batt_charge_limit_w": laden if laden is not None else hb.max_dc_charge_w,
+            "batt_discharge_limit_w": (entladen if entladen is not None
+                                       else hb.max_discharge_w)}
+
+
+def test_gescheitertes_zuruecksetzen_auf_auto_ist_kein_ausfall():
+    """02.10.2026 14:31:25: nach einem Netzlade-Slot (Mode 4) scheiterte "auf
+    auto zuruecksetzen" mit "Max retries reached" - FEHLERalarm. Der Watchdog
+    war da schon abgestellt; ohne seine Sendung faellt das E3DC nach 10 s von
+    selbst auf auto (Fail-safe). Ab 14:32:06 folgte der Akku exakt dem
+    Ueberschuss (1656-1698 W gegen 1650-1703 W, Netz +-16 W)."""
+    cfg, link = _link(control_enabled=True)
+    link._wd_mode, link._wd_value = 4, 1084          # voriger Slot: Netzladen
+    _scheitert_einmal(link, 0)
+
+    status = link.apply_control(_auto_zeile(cfg.house_battery))
+
+    assert status["ok"] is not False                 # kein Fehleralarm
+    assert link._wd_mode == 0                         # Watchdog sendet nicht mehr
+    assert "auf auto zurücksetzen" in status["message"]
+    link.close()
+
+
+def test_nach_gescheitertem_zuruecksetzen_werden_die_grenzen_trotzdem_gesetzt():
+    """Bisher brach der Zweig an dieser Stelle ab - die Lade-/Entladegrenzen des
+    Slots wurden gar nicht gesetzt. Am 02.10. waren volle Grenzen geplant, das
+    fiel nicht auf; eine Begrenzung nach dem Netzladen waere still verloren."""
+    cfg, link = _link(control_enabled=True)
+    hb = cfg.house_battery
+    link._wd_mode, link._wd_value = 4, 1084
+    _scheitert_einmal(link, 0)
+
+    status = link.apply_control(_auto_zeile(hb, laden=2000))
+
+    fake = link._e3dc
+    assert fake.limits["enable"] is True
+    assert fake.limits["max_charge"] == 2000
+    assert status["ok"] is True                       # Grenzen bestaetigt
+    link.close()
