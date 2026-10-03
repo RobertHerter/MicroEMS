@@ -30,12 +30,22 @@ def test_power_headroom_caps_battery_power():
 
 
 def test_short_term_plan_stability_prefers_published_slot():
-    """Bei gleichen Preisen bleibt eine bereits publizierte Netzladung im
-    selben Folgeslot, statt bei jedem Lauf beliebig zu springen."""
+    """Eine bereits publizierte Netzladung bleibt im selben Folgeslot, statt
+    fuer einen Hauch billigeren Strom zu springen.
+
+    Frueher waren alle Preise gleich und der Test verliess sich darauf, dass der
+    Solver ohne Malus "zufaellig" woanders laedt - ein Gleichstand (15,625 ct in
+    jedem Slot), den PuLP 3 und PuLP 4 verschieden aufloesen. Jetzt ist der
+    letzte Slot um 0,01 ct billiger: ohne Malus ist Springen STRIKT besser, mit
+    Malus (0,75 ct fuer 3 kW) strikt schlechter. Exakt geloest, damit die
+    Abbruchtoleranz nicht ueber den Ausgang entscheidet."""
     idx = _day_index("2026-01-15")[:4]
+    price = np.array([20.0, 20.0, 20.0, 19.99])
 
     def solve(penalty):
         cfg = make_config()
+        cfg.optimization.solver_mip_gap = 0.0
+        cfg.optimization.solver_mip_gap_abs_ct = 0.0
         cfg.optimization.charge_strategy = "asap"
         cfg.optimization.terminal_soc_value = 100.0
         cfg.optimization.plan_change_penalty_ct_kw = penalty
@@ -50,7 +60,7 @@ def test_short_term_plan_stability_prefers_published_slot():
             "values": {"ac_1": 3000.0},
         })
         return Optimizer(cfg, stabilize_plan=True).solve(_inputs(
-            idx, pv=0.0, load=0.0, price=20.0, soc=9250.0)).table
+            idx, pv=0.0, load=0.0, price=price, soc=9250.0)).table
 
     try:
         floating = solve(0.0)
@@ -185,12 +195,19 @@ def test_battery_switch_penalty_avoids_multislot_hold_block():
 def test_battery_switch_penalty_avoids_partial_discharge_with_grid_import():
     """Regression 18.07. 01:45: Ein billigerer Einzelslot darf den Pausen-
     Malus nicht mit kleiner Teilentladung und gleichzeitigem Netzbezug umgehen.
+
+    Exakt geloest: es geht um Bruchteile eines Cents, weit unter der
+    Abbruchtoleranz (3 ct). Mit Toleranz lieferten PuLP 3 und PuLP 4 je eine
+    andere gueltige Loesung (0,27 bzw. 0,69 ct ueber dem Optimum), und nur die
+    von PuLP 4 enthielt zufaellig das Artefakt. Exakt sind beide bitgleich.
     """
     idx = _day_index("2026-01-15")[:8]
     price = np.array([33.0, 33.0, 33.0, 32.09, 33.01, 32.60, 35.665, 35.0])
 
     def solve(penalty):
         cfg = make_config()
+        cfg.optimization.solver_mip_gap = 0.0
+        cfg.optimization.solver_mip_gap_abs_ct = 0.0
         cfg.optimization.terminal_soc_value = 32.0
         cfg.optimization.battery_switch_penalty_ct = penalty
         cfg.optimization.battery_hold_penalty_ct_kwh = 1.0

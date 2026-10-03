@@ -33,6 +33,8 @@ import numpy as np
 import pandas as pd
 import pulp
 
+from .lp_compat import OPTIMAL, eingebauter_cbc, lp_solve, lp_var
+
 log = logging.getLogger("ems.planvalue")
 
 _LP_SOLVER = None
@@ -49,7 +51,14 @@ def _lp_solver():
     global _LP_SOLVER
     if _LP_SOLVER is None:
         coin = pulp.COIN_CMD(msg=0)
-        _LP_SOLVER = coin if coin.available() else pulp.PULP_CBC_CMD(msg=0)
+        eingebaut = eingebauter_cbc()
+        if coin.available():
+            _LP_SOLVER = coin
+        elif eingebaut is not None:
+            _LP_SOLVER = eingebaut(msg=0)
+        else:
+            # PuLP 4 ohne System-CBC: HiGHS ist ohnehin installiert.
+            _LP_SOLVER = pulp.HiGHS(msg=False)
     return _LP_SOLVER
 
 
@@ -132,7 +141,7 @@ def _best_allocation(price, cap_kwh, total_kwh, headroom_kwh, cheapest: bool):
     if total_kwh <= 1e-9 or n == 0:
         return None
     prob = pulp.LpProblem("timing", pulp.LpMinimize)
-    x = [pulp.LpVariable(f"x_{t}", 0, float(max(0.0, cap_kwh[t]))) for t in range(n)]
+    x = [lp_var(prob, f"x_{t}", 0, float(max(0.0, cap_kwh[t]))) for t in range(n)]
     sign = 1.0 if cheapest else -1.0
     prob += pulp.lpSum(sign * float(price[t]) * x[t] for t in range(n))
     prob += pulp.lpSum(x) == float(total_kwh)
@@ -143,8 +152,7 @@ def _best_allocation(price, cap_kwh, total_kwh, headroom_kwh, cheapest: bool):
         for t in range(n):
             running.append(x[t])
             prob += pulp.lpSum(running) <= float(max(0.0, headroom_kwh[t]))
-    prob.solve(_lp_solver())
-    if prob.status != pulp.LpStatusOptimal:
+    if lp_solve(prob, _lp_solver()) != OPTIMAL:
         return None
     values = np.array([float(v.value() or 0.0) for v in x])
     moved = values.sum()

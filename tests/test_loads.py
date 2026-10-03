@@ -8,6 +8,7 @@ import pulp
 
 from ems.config import ControllableLoad, LoadStage
 from ems.loads import add_controllable_loads
+from ems.lp_compat import lp_var
 from ems.optimizer import Optimizer
 from tests.test_optimizer import FREQ, TZ, _day_index, _inputs, _pv_gauss
 from tests.test_synthetic import make_config
@@ -68,7 +69,7 @@ def test_thermal_binary_horizon_relaxes_only_distant_blocks():
     inp = _inputs(idx, ambient_temp_c=np.full(len(idx), 20.0),
                   load_state={"pool": 27.0})
     prob = pulp.LpProblem("thermal_horizon", pulp.LpMinimize)
-    g_imp = [pulp.LpVariable(f"test_imp_{t}", 0) for t in range(len(idx))]
+    g_imp = [lp_var(prob, f"test_imp_{t}", 0) for t in range(len(idx))]
     add_controllable_loads(prob, cfg, inp, len(idx), DT_H, g_imp=g_imp)
     variables = {v.name: v for v in prob.variables()}
 

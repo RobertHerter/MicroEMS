@@ -42,6 +42,8 @@ import numpy as np
 import pandas as pd
 import pulp
 
+from .lp_compat import lp_var
+
 # Komfort-Malus je K·Slot Bandverletzung. GRÖSSENORDNUNG MIT BEDACHT: 1 K eine
 # Stunde lang verfehlt = 4*50 = 200 ct - mehr, als das Nachheizen von 1 K je
 # kostet (~2-3 kWh_el ~ 60-90 ct) -> Komfort dominiert die Energie-Ökonomie und
@@ -126,12 +128,12 @@ def _switch_penalty(prob, on, N, pen_ct, cost_terms, tag, initial_on=None):
     if pen_ct <= 0:
         return
     if initial_on is not None and N:
-        sw = pulp.LpVariable(f"{tag}_sw_0", 0)
+        sw = lp_var(prob, f"{tag}_sw_0", 0)
         prob += sw >= on[0] - int(bool(initial_on))
         prob += sw >= int(bool(initial_on)) - on[0]
         cost_terms.append(pen_ct * sw)
     for t in range(1, N):
-        sw = pulp.LpVariable(f"{tag}_sw_{t}", 0)
+        sw = lp_var(prob, f"{tag}_sw_{t}", 0)
         prob += sw >= on[t] - on[t - 1]
         cost_terms.append(pen_ct * sw)
 
@@ -142,7 +144,7 @@ def add_controllable_loads(prob, config, inp, N, dt, g_imp=None,
     ``solar_surplus_only = "spare_budget"``. Der Optimierer bildet daraus das
     kumulative Budget gegen Einspeisung + Abregelung - er kennt g_exp und curt,
     diese Funktion nicht."""
-    cl_power = [pulp.LpAffineExpression() for _ in range(N)]
+    cl_power = [pulp.lpSum([]) for _ in range(N)]
     cost_terms: list = []
     outputs: dict = {}
     mqtt_map: list = []
@@ -187,7 +189,7 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
                     hours, active, on_by_key):
     sg = _slug(ld.name)
     prof = np.asarray(ld.power_profile_w, dtype=float) if ld.power_profile_w else None
-    on = [pulp.LpVariable(f"cl_{sg}_{t}", cat="Binary") for t in range(N)]
+    on = [lp_var(prob, f"cl_{sg}_{t}", cat="Binary") for t in range(N)]
     on_by_key[ld.name] = on
 
     # Deadline: die Laufzeit muss innerhalb von deadline_hours ab JETZT (Slot 0)
@@ -236,7 +238,7 @@ def _add_deferrable(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_ma
             outputs.setdefault(f"load_{sg}_w", [None] * N)[t] = ld.power_w * on[t]
         req_slots = ld.runtime_minutes / (dt * 60.0)
         if req_slots > 0:
-            short = pulp.LpVariable(f"cl_{sg}_short", 0)
+            short = lp_var(prob, f"cl_{sg}_short", 0)
             prob += pulp.lpSum(on) + short >= req_slots
             cost_terms.append(_RUNTIME_PEN * short)
 
@@ -317,10 +319,10 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
     # angepasst, sonst würde z.B. starker Solar-Eintrag die Obergrenze sprengen).
     t_lb = min(ld.min_c - 10.0, float(T_off.min()) - 1.0)
     t_ub = max(max(ld.max_c, komfort_max) + 10.0, float(T_on.max()) + 1.0)
-    T = [pulp.LpVariable(f"clT_{sg}_{t}", t_lb, t_ub) for t in range(N + 1)]
+    T = [lp_var(prob, f"clT_{sg}_{t}", t_lb, t_ub) for t in range(N + 1)]
     prob += T[0] == T0
-    slack = [pulp.LpVariable(f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
-    slack_hi = [pulp.LpVariable(f"clShi_{sg}_{t}", 0) for t in range(N + 1)]  # über max_c
+    slack = [lp_var(prob, f"clSlo_{sg}_{t}", 0) for t in range(N + 1)]    # unter min_c
+    slack_hi = [lp_var(prob, f"clShi_{sg}_{t}", 0) for t in range(N + 1)]  # über max_c
 
     # Entscheidungsraster: ein träger thermischer Speicher braucht keine 15-min-
     # Schaltentscheidungen. Eine Binärvariable je BLOCK (Default 60 min) statt je
@@ -342,7 +344,7 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
         # Kostenwirkung, ohne den Branch-and-Bound-Baum über mehrere Tage zu
         # vervielfachen. Bevor sie real geschaltet werden, rücken sie in einem
         # Folgelauf automatisch in den binären Bereich.
-        blk_var = [pulp.LpVariable(
+        blk_var = [lp_var(prob, 
             f"cl_{sg}_{ssg}_b{b}", 0, 1,
             cat="Binary" if b < binary_blocks else "Continuous")
             for b in range(n_blocks)]
@@ -384,7 +386,7 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
             # Verdichter, die Obergrenze ist Physik (darueber heizt das Geraet
             # ohnehin nicht). Also weicht die Vorgabe, nicht der Plan. Dieselbe
             # Bauart wie die Laufzeit der verschiebbaren Lasten weiter oben.
-            fehlt = pulp.LpVariable(f"cl_{sg}_{ssg}_lock_{t}", 0)
+            fehlt = lp_var(prob, f"cl_{sg}_{ssg}_lock_{t}", 0)
             if was_on:
                 prob += stage_on[st.name][t] + fehlt >= 1
             else:
@@ -425,7 +427,7 @@ def _add_thermal(prob, ld, inp, N, dt, cl_power, cost_terms, outputs, mqtt_map,
                  + config.house_battery.max_ac_charge_w
                  + (config.vehicle.max_charge_w if config.vehicle.enabled else 0.0)
                  + sum(st.power_w for st in ld.stages) + 1000.0)
-        ng_slack = [pulp.LpVariable(f"clNG_{sg}_{t}", 0) for t in range(N)]
+        ng_slack = [lp_var(prob, f"clNG_{sg}_{t}", 0) for t in range(N)]
         for t in range(N):
             for st in ld.stages:
                 prob += g_imp[t] <= M_imp * (1 - stage_on[st.name][t]) + ng_slack[t]

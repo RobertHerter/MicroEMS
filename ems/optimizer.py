@@ -34,6 +34,8 @@ import pandas as pd
 import pulp
 
 from .config import Config
+from .lp_compat import (INFEASIBLE, OPTIMAL, eingebauter_cbc, lp_solve,
+                        lp_spalten, lp_var)
 
 log = logging.getLogger("ems.optimizer")
 _solver_serial = threading.Lock()
@@ -289,10 +291,10 @@ class _WarmHiGHS(pulp.HiGHS):
                 import highspy
                 col = [0.0] * lp.solverModel.getNumCol()
                 hits = 0
-                for var in lp.variables():
+                for spalte, var in lp_spalten(lp):
                     x = self.warm_values.get(var.name)
                     if x is not None:
-                        col[var.index] = float(x)
+                        col[spalte] = float(x)
                         hits += 1
                 if hits:
                     sol = highspy.HighsSolution()
@@ -402,11 +404,11 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
             v.lowBound = v.upBound = x
         # Keine relative oder absolute MIP-Lücke in der Politur: genau sie
         # soll die Artefakte der schnellen Hauptoptimierung entfernen.
-        prob.solve(make_solver(cfg, exact=True))
-        if prob.status == pulp.LpStatusOptimal:
+        status = lp_solve(prob, make_solver(cfg, exact=True))
+        if status == OPTIMAL:
             return True
         log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
-                  pulp.LpStatus[prob.status])
+                  status)
     except SolverCancelled:
         raise
     except Exception as exc:   # pragma: no cover - reine Absicherung
@@ -416,7 +418,6 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
             v.lowBound, v.upBound = lo, hi
     for v, x in snapshot.items():
         v.varValue = x
-    prob.status = pulp.LpStatusOptimal
     return False
 
 
@@ -518,7 +519,12 @@ def make_solver(cfg: Config, warm_values: Optional[dict] = None,
     coin = pulp.COIN_CMD(**kwargs)
     if coin.available():
         return coin
-    return pulp.PULP_CBC_CMD(**kwargs)
+    eingebaut = eingebauter_cbc()
+    if eingebaut is None:
+        raise RuntimeError(
+            "Kein CBC verfügbar: System-CBC (Paket coinor-cbc) fehlt, und ab "
+            "PuLP 4 ist der eingebaute nur noch über pulp[cbc] dabei.")
+    return eingebaut(**kwargs)
 
 
 class Optimizer:
@@ -626,7 +632,7 @@ class Optimizer:
                     30, int(getattr(cfg2.optimization, "solver_time_limit_s", 30)))
                 r = Optimizer(cfg2, store_warm=False, stabilize_plan=False,
                               diagnose_infeasible=False)._solve(inp)
-                return (not r.infeasible) and r.status == pulp.LpStatus[pulp.LpStatusOptimal]
+                return (not r.infeasible) and r.status == OPTIMAL
             except Exception:   # pragma: no cover - Diagnose darf nie werfen
                 return False
 
@@ -730,9 +736,9 @@ class Optimizer:
         standby_w = cfg.optimization.standby_discharge_w   # WR-Sockellast (#1)
 
         # ---- Entscheidungsvariablen ------------------------------------- #
-        dc = [pulp.LpVariable(f"dc_{t}", 0, max_dc) for t in range(N)]
-        ac = [pulp.LpVariable(f"ac_{t}", 0, max_ac) for t in range(N)]
-        dis = [pulp.LpVariable(f"dis_{t}", 0, max_dis) for t in range(N)]
+        dc = [lp_var(prob, f"dc_{t}", 0, max_dc) for t in range(N)]
+        ac = [lp_var(prob, f"ac_{t}", 0, max_ac) for t in range(N)]
+        dis = [lp_var(prob, f"dis_{t}", 0, max_dis) for t in range(N)]
         # PV-Abregelung – realistische Obergrenze je nach vorhandenem Aktor, damit
         # der Plan keine physikalisch unmögliche Abregelung annimmt:
         #  * steuerbares RSCP-Derating -> beliebig abregelbar (None).
@@ -758,20 +764,20 @@ class Optimizer:
                 return clip + max(0.0, float(inp.pv_w[t]) - load_t - static_cap)
             return clip
 
-        curt = [pulp.LpVariable(f"curt_{t}", 0, _curt_ub(t)) for t in range(N)]
-        g_imp = [pulp.LpVariable(f"gimp_{t}", 0) for t in range(N)]
-        g_exp = [pulp.LpVariable(f"gexp_{t}", 0) for t in range(N)]
-        is_ch = [pulp.LpVariable(f"isch_{t}", cat="Binary") for t in range(N)]
-        is_di = [pulp.LpVariable(f"isdi_{t}", cat="Binary") for t in range(N)]
+        curt = [lp_var(prob, f"curt_{t}", 0, _curt_ub(t)) for t in range(N)]
+        g_imp = [lp_var(prob, f"gimp_{t}", 0) for t in range(N)]
+        g_exp = [lp_var(prob, f"gexp_{t}", 0) for t in range(N)]
+        is_ch = [lp_var(prob, f"isch_{t}", cat="Binary") for t in range(N)]
+        is_di = [lp_var(prob, f"isdi_{t}", cat="Binary") for t in range(N)]
 
         # SoC-Zustände (Wh), soc[0] = Anfangswert
-        soc = [pulp.LpVariable(f"soc_{t}", hb.min_soc_wh, hb.max_soc_wh) for t in range(N + 1)]
+        soc = [lp_var(prob, f"soc_{t}", hb.min_soc_wh, hb.max_soc_wh) for t in range(N + 1)]
 
         if use_car:
-            car = [pulp.LpVariable(f"car_{t}", 0, veh.max_charge_w) for t in range(N)]
-            is_car = [pulp.LpVariable(f"iscar_{t}", cat="Binary") for t in range(N)]
+            car = [lp_var(prob, f"car_{t}", 0, veh.max_charge_w) for t in range(N)]
+            is_car = [lp_var(prob, f"iscar_{t}", cat="Binary") for t in range(N)]
             soc_car = [
-                pulp.LpVariable(f"soccar_{t}", veh.min_soc_wh, veh.capacity_wh)
+                lp_var(prob, f"soccar_{t}", veh.min_soc_wh, veh.capacity_wh)
                 for t in range(N + 1)
             ]
         else:
@@ -806,7 +812,7 @@ class Optimizer:
 
         # Binär je Slot: entweder Netzbezug ODER Einspeisung – nie gleichzeitig.
         # Damit schließen sich AC-Laden (Import) und Einspeisen physikalisch aus.
-        b_grid = [pulp.LpVariable(f"bgrid_{t}", cat="Binary") for t in range(N)]
+        b_grid = [lp_var(prob, f"bgrid_{t}", cat="Binary") for t in range(N)]
         # Big-M aus den Anlagenwerten ableiten statt fester 60 kW: knappe obere
         # Schranken für Import (Last + Auto + AC-Laden) und Export (PV + Ent-
         # laden). Engere Big-Ms beschleunigen CBC und skalieren mit der Anlage.
@@ -832,8 +838,8 @@ class Optimizer:
         # lädt jeder PV-Überschuss zuerst in den Akku – früh und deterministisch,
         # erst der echte Überlauf wird eingespeist. In Arbitrage-Slots (gd_allowed)
         # entfällt die Regel (dann darf der Akku ins Netz entladen).
-        is_full = [pulp.LpVariable(f"full_{t}", cat="Binary") for t in range(N)]
-        at_max = [pulp.LpVariable(f"atmax_{t}", cat="Binary") for t in range(N)]
+        is_full = [lp_var(prob, f"full_{t}", cat="Binary") for t in range(N)]
+        at_max = [lp_var(prob, f"atmax_{t}", cat="Binary") for t in range(N)]
         EPS_SOC = 20.0   # Wh
         EPS_P = 20.0     # W
         strategy = getattr(cfg.optimization, "charge_strategy", "asap")
@@ -850,7 +856,7 @@ class Optimizer:
         seasonal_peak = [_seasonal_peak_values(
             cfg.optimization, pd.Timestamp(d).tz_localize(
                 cfg.general.timezone) + pd.Timedelta(hours=12)) for d in _uniq]
-        export_line = [pulp.LpVariable(f"L_day_{i}", 0) for i in range(len(_uniq))]
+        export_line = [lp_var(prob, f"L_day_{i}", 0) for i in range(len(_uniq))]
         # Linie nur auf Tage anwenden, deren Nachmittags-/Erzeugungsspitze im
         # Horizont liegt. Reine Vormittags-Teiltage am Rand (letzter Tag) bekommen
         # KEINE Linie -> keine sinnlose 0-Linie/Zwangsladung am Horizontende.
@@ -968,7 +974,7 @@ class Optimizer:
 
         # Steuerbare/verschiebbare Lasten (Pool-WP etc.) – leere Liste = No-op.
         from .loads import add_controllable_loads
-        budget_power = [pulp.LpAffineExpression() for _ in range(N)]
+        budget_power = [pulp.lpSum([]) for _ in range(N)]
         cl_power, cl_cost, cl_outputs, cl_mqtt = add_controllable_loads(
             prob, cfg, inp, N, dt, g_imp=g_imp,
             budget_power=budget_power)
@@ -1086,7 +1092,7 @@ class Optimizer:
             # 'auto ohne Eingriff' verwirft - der betroffene Slot zahlt die
             # Strafe und wird als Alarm gemeldet, der Rest bleibt optimiert.
             if cfg.inverter.max_import_w is not None:
-                over = pulp.LpVariable(f"gimpover_{t}", 0)
+                over = lp_var(prob, f"gimpover_{t}", 0)
                 grid_overload.append(over)
                 prob += g_imp[t] <= cfg.inverter.max_import_w + over
 
@@ -1132,7 +1138,7 @@ class Optimizer:
                 # gesamte Optimierung unlösbar machen - stattdessen wird so
                 # viel wie möglich geladen und die Fehlmenge gemeldet.
                 if t in dep_slots:
-                    s = pulp.LpVariable(f"carshort_{t}", 0)
+                    s = lp_var(prob, f"carshort_{t}", 0)
                     prob += soc_car[t] + s >= veh.target_soc_wh
                     car_short.append(s)
 
@@ -1141,7 +1147,7 @@ class Optimizer:
         # die Fehlmenge ab, statt den Gesamtplan infeasible zu machen.
         late_short = []
         for d, target_t in late_target_slot.items():
-            short = pulp.LpVariable(f"lateshort_{d}", 0)
+            short = lp_var(prob, f"lateshort_{d}", 0)
             prob += soc[target_t + 1] + short >= hb.max_soc_wh
             late_short.append(short)
 
@@ -1149,7 +1155,7 @@ class Optimizer:
         # Horizont liegt, aber an ANDEREN Wochentagen eine kommt (Vorbereitung
         # auf die nächste Abfahrt). Gibt es gar keine Abfahrten, entfällt das.
         if use_car and not dep_slots and veh.has_any_departure:
-            s = pulp.LpVariable("carshort_end", 0)
+            s = lp_var(prob, "carshort_end", 0)
             prob += soc_car[N] + s >= veh.target_soc_wh
             car_short.append(s)
 
@@ -1202,7 +1208,7 @@ class Optimizer:
             cell_hold_thr = (max(0.0, min(100.0, float(getattr(
                 hb, "full_hold_soc_threshold_percent", 95.0))))
                 / 100.0 * hb.capacity_wh)
-            cell_hold = [pulp.LpVariable(f"hold_{t}", 0) for t in range(N)]
+            cell_hold = [lp_var(prob, f"hold_{t}", 0) for t in range(N)]
             for t in range(N):
                 prob += cell_hold[t] >= soc[t + 1] - cell_hold_thr   # Slotende-SoC
             cost_terms.append(cell_hold_pen * pulp.lpSum(cell_hold) * kwh)
@@ -1228,7 +1234,7 @@ class Optimizer:
         # unbekannt).
         pen_sw = cfg.optimization.car_switch_penalty_ct
         if use_car and pen_sw:
-            car_start = [pulp.LpVariable(f"carstart_{t}", 0, 1) for t in range(1, N)]
+            car_start = [lp_var(prob, f"carstart_{t}", 0, 1) for t in range(1, N)]
             for t in range(1, N):
                 prob += car_start[t - 1] >= is_car[t] - is_car[t - 1]
             cost_terms.append(pen_sw * pulp.lpSum(car_start))
@@ -1256,7 +1262,7 @@ class Optimizer:
                 # ueber die Mindestentladeleistung anheben.
                 if min(deficits[t - 1:t + 1]) <= 1.0:
                     continue
-                hold_block = pulp.LpVariable(f"batholdblock_{t}", 0, 1)
+                hold_block = lp_var(prob, f"batholdblock_{t}", 0, 1)
                 # Die Wiederaufnahme der Entladung beendet genau einen
                 # internen Halteblock, unabhängig von dessen Länge. Das
                 # natürliche Ende einer Entladephase am Mindest-SoC darf keinen
@@ -1269,9 +1275,9 @@ class Optimizer:
             # bleibt sie weiterhin erlaubt und ueberstimmt den Malus problemlos.
             material_w = 40.0
             for t in range(N):
-                has_import = pulp.LpVariable(
+                has_import = lp_var(prob, 
                     f"matimp_{t}", 0, 1, cat="Binary")
-                partial = pulp.LpVariable(
+                partial = lp_var(prob, 
                     f"partdis_{t}", 0, 1, cat="Binary")
                 material_import_flags[t] = has_import
                 partial_discharge_flags[t] = partial
@@ -1329,14 +1335,14 @@ class Optimizer:
                          "(Akkuvorrat %.2f, reserviert bis Sonne %.2f).",
                          _guthaben_wh / 1000.0, _vorrat_wh / 1000.0,
                          _bedarf_wh / 1000.0)
-            verbraucht = pulp.LpVariable("spare_used_0", 0)
-            uebrig = pulp.LpVariable("spare_free_0", 0)
+            verbraucht = lp_var(prob, "spare_used_0", 0)
+            uebrig = lp_var(prob, "spare_free_0", 0)
             prob += verbraucht == budget_power[0] * dt
             prob += uebrig == _guthaben_wh + (g_exp[0] + curt[0]) * dt
             prob += verbraucht <= uebrig
             for t in range(1, N):
-                v_neu = pulp.LpVariable(f"spare_used_{t}", 0)
-                u_neu = pulp.LpVariable(f"spare_free_{t}", 0)
+                v_neu = lp_var(prob, f"spare_used_{t}", 0)
+                u_neu = lp_var(prob, f"spare_free_{t}", 0)
                 prob += v_neu == verbraucht + budget_power[t] * dt
                 prob += u_neu == uebrig + (g_exp[t] + curt[t]) * dt
                 prob += v_neu <= u_neu
@@ -1403,7 +1409,7 @@ class Optimizer:
                 getattr(cfg.optimization, "allow_grid_discharge", False))
             for seg_no, (start, end) in enumerate(
                     deficit_segments if enforce_sufficiency else []):
-                sufficient = pulp.LpVariable(
+                sufficient = lp_var(prob, 
                     f"batsuff_{seg_no}", 0, 1, cat="Binary")
                 need_wh = pulp.lpSum(
                     (base_deficits[k] + car[k] + cl_power[k])
@@ -1423,10 +1429,10 @@ class Optimizer:
                              + BIGG * (1 - sufficient))
 
             for t in range(N):
-                has_energy = pulp.LpVariable(
+                has_energy = lp_var(prob, 
                     f"hasbat_{t}", 0, 1, cat="Binary")
                 hold_energy_flags[t] = has_energy
-                avoidable = pulp.LpVariable(f"avoidimp_{t}", 0, BIGG)
+                avoidable = lp_var(prob, f"avoidimp_{t}", 0, BIGG)
                 # has_energy muss 1 sein, sobald nach dem Slot mehr als der
                 # kleine Rundungs-/Sockelpuffer ueber Mindest-SoC verbleibt.
                 prob += (soc[t + 1] - hb.min_soc_wh
@@ -1518,7 +1524,7 @@ class Optimizer:
                     reserves.append((reserve_wh, window_slots))
 
             for i, (target, slots) in enumerate(reserves):
-                deficit = pulp.LpVariable(f"evres_deficit_{i}", 0)
+                deficit = lp_var(prob, f"evres_deficit_{i}", 0)
                 for t in slots:
                     prob += deficit >= target - soc[t + 1]
                 # deficit in Wh -> /1000 auf kWh (wie die p10-/Stabilitäts-Slacks)
@@ -1578,7 +1584,7 @@ class Optimizer:
                     prob += dc[t] - dc[t - 1] <= ramp_limit
                 ramp_pen = ramp_pen_by_day[slot_day[t]]
                 if ramp_pen:
-                    ramp = pulp.LpVariable(f"peakram_d{t}", 0)
+                    ramp = lp_var(prob, f"peakram_d{t}", 0)
                     prob += ramp >= dc[t] - dc[t - 1]
                     prob += ramp >= dc[t - 1] - dc[t]
                     cost_terms.append(ramp_pen * ramp / 1000.0)
@@ -1640,9 +1646,9 @@ class Optimizer:
                 # leichter machen. Die Min-Verknuepfung wird exakt binaer
                 # modelliert, damit das Ziel bei ausreichender PV bei 100 %
                 # gedeckelt bleibt.
-                target = pulp.LpVariable(
+                target = lp_var(prob, 
                     f"p10target_d{d}", hb.min_soc_wh, hb.max_soc_wh)
-                capped = pulp.LpVariable(
+                capped = lp_var(prob, 
                     f"p10cap_d{d}", 0, 1, cat="Binary")
                 anchor_target = soc[anchor_t] + total_charge_wh
                 target_big_m = usable_wh + total_charge_wh + 1.0
@@ -1659,7 +1665,7 @@ class Optimizer:
                     # entladen blockieren - genau dann muss sie entfallen.
                     if suffix[aj] <= 0.0:
                         continue
-                    slack = pulp.LpVariable(f"p10s_{t}", 0)
+                    slack = lp_var(prob, f"p10s_{t}", 0)
                     prob += (soc[t + 1] + slack
                              >= target - hb.charge_efficiency * suffix[aj] * dt)
                     cost_terms.append(P10_PEN_CT_KWH * slack / 1000.0)
@@ -1695,7 +1701,7 @@ class Optimizer:
                     if reachable >= floor_wh:
                         break          # Boden erreichbar -> Kette endet hier
                     reachable += hb.charge_efficiency * float(_surplus[t]) * dt
-                    slack = pulp.LpVariable(f"prefill_{t}", 0)
+                    slack = lp_var(prob, f"prefill_{t}", 0)
                     prob += soc[t + 1] + slack >= min(reachable, floor_wh)
                     cost_terms.append(prefill_pen * slack / 1000.0)
 
@@ -1718,7 +1724,7 @@ class Optimizer:
             for prefix, variables in decisions:
                 for t in range(stable_slots):
                     old = float(previous_plan.get(f"{prefix}_{t}", 0.0))
-                    delta = pulp.LpVariable(f"plan_delta_{prefix}_{t}", 0)
+                    delta = lp_var(prob, f"plan_delta_{prefix}_{t}", 0)
                     prob += delta >= variables[t] - old
                     prob += delta >= old - variables[t]
                     deltas.append(delta)
@@ -1741,7 +1747,7 @@ class Optimizer:
         seg_values = terminal_segment_values(
             cfg, inp.price_ct_kwh, inp.feedin_ct_kwh)
         usable_cap = hb.max_soc_wh - hb.min_soc_wh
-        term_seg = [pulp.LpVariable(f"termseg_{i}", 0, usable_cap / 3.0)
+        term_seg = [lp_var(prob, f"termseg_{i}", 0, usable_cap / 3.0)
                     for i in range(3)]
         prob += pulp.lpSum(term_seg) <= soc[N] - hb.min_soc_wh
         for i, v in enumerate(seg_values):
@@ -1759,7 +1765,7 @@ class Optimizer:
                  "Warmstart %s.", N, len(variables), binary_count,
                  len(prob.constraints()), "ja" if warm else "nein")
         _t0 = time.monotonic()
-        prob.solve(make_solver(cfg, warm_values=warm))
+        status = lp_solve(prob, make_solver(cfg, warm_values=warm))
         solve_s = time.monotonic() - _t0
         try:
             mip_gap = float(prob.solverModel.getInfo().mip_gap)
@@ -1774,8 +1780,7 @@ class Optimizer:
                         cfg.optimization.solver_time_limit_s)
         else:
             log.info("Solver fertig in %.1f s.", solve_s)
-        status = pulp.LpStatus[prob.status]
-        if prob.status != pulp.LpStatusOptimal:
+        if status != OPTIMAL:
             # Keine (verlässliche) Lösung: pulp.value() liefert dann None und
             # die Extraktion würde abstürzen. Stattdessen neutralen Fahrplan
             # liefern, damit weiterhin publiziert wird (setzt frühere Eingriffe
@@ -1785,7 +1790,7 @@ class Optimizer:
             neutral = self._neutral_result(inp, status)
             # Ursache eingrenzen (nur bei echter Infeasibility, nicht bei
             # Zeitlimit/anderem), damit der nächste Vorfall sofort erklärbar ist.
-            if self.diagnose_infeasible and status == pulp.LpStatus[pulp.LpStatusInfeasible]:
+            if self.diagnose_infeasible and status == INFEASIBLE:
                 try:
                     neutral.infeasible_reason = self._diagnose_infeasibility(inp)
                     log.error("Infeasibility-Diagnose: %s", neutral.infeasible_reason)
@@ -1925,9 +1930,9 @@ class Optimizer:
             warm_obj = pulp.value(prob.objective)
             saved = {v.name: v.varValue for v in variables}
             _tc = time.monotonic()
-            prob.solve(make_solver(cfg, warm_values=None))
+            cold_status = lp_solve(prob, make_solver(cfg, warm_values=None))
             cold_s = time.monotonic() - _tc
-            cold_ok = (prob.status == pulp.LpStatusOptimal
+            cold_ok = (cold_status == OPTIMAL
                        and cold_s < cfg.optimization.solver_time_limit_s - 2.0)
             cold_obj = pulp.value(prob.objective) if cold_ok else None
             if cold_ok:
