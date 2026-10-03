@@ -974,3 +974,74 @@ def test_a_partly_explained_deviation_still_warns(tmp_path):
 
     assert len(alerts.items) == 1
     assert alerts.items[0][0] == "warning", alerts.items[0][1]
+
+
+def _plan_slots(cfg, zeilen):
+    """Plan ueber mehrere Slots: {Slot: (akku_w, last_w)}."""
+    table = pd.DataFrame([{
+        "grid_import_w": 0.0, "grid_export_w": 0.0,
+        "batt_dc_charge_w": 0.0, "batt_ac_charge_w": 0.0,
+        "batt_discharge_w": -akku_w, "mode": "auto",
+        "batt_charge_limit_w": 5000.0, "batt_discharge_limit_w": 5000.0,
+        "batt_grid_charge_w": 0.0, "house_soc_percent": 50.0,
+        "house_load_w": last_w,
+    } for akku_w, last_w in zeilen.values()], index=list(zeilen))
+    write_execution_plan(cfg.e3dc_rscp.history_db_path, TS, table,
+                         initial_soc_percent=50.0)
+
+
+def _lastsprung_minute(monitor, link, slot):
+    """Eine Minute Lastsprung mit Zahlen, die sich - wie im Betrieb - mit
+    jedem Sample aendern; der ungeklaerte Rest bleibt bei 10 W."""
+    for k, sekunden in enumerate(range(0, 60, 5)):
+        link.values["house_load_w"] = 3348.0 + 7.0 * k
+        link.values["battery_w"] = -3338.0 - 7.0 * k
+        monitor.sample(slot + pd.Timedelta(seconds=sekunden))
+
+
+def test_bekannte_ursache_meldet_sich_nicht_bei_jeder_zahlenaenderung(tmp_path):
+    """03.10.2026: 971 Info-Meldungen "Live-Abweichung mit bekannter Ursache"
+    in drei Tagen, 953 davon Lastsprung - bei nur 12 Episoden. Der Ursachentext
+    traegt Live-Zahlen, und jede Aenderung galt als neue Ursache; dazu setzte
+    der Slotwechsel die Sperre zurueck. Der Test davor hatte konstante
+    Messwerte und konnte das nicht sehen."""
+    cfg = _cause_cfg(tmp_path)
+    viertel, stunde = pd.Timedelta(minutes=15), pd.Timedelta(minutes=75)
+    _plan_slots(cfg, {TS: (-930.0, 930.0), TS + viertel: (-930.0, 930.0),
+                      TS + stunde: (-930.0, 930.0)})
+    alerts = _Alerts()
+    link = _CauseLink(-3338.0, 3348.0)
+    monitor = _m._LiveExecutionMonitor(cfg, alerts, link)
+
+    _lastsprung_minute(monitor, link, TS)
+    _lastsprung_minute(monitor, link, TS + viertel)        # neuer Slot
+    infos = [text for stufe, text in alerts.items if stufe == "info"]
+    assert len(infos) == 1, infos
+    assert "Lastsprung" in infos[0]
+
+    # Nach der Sperrfrist darf dieselbe Ursache wieder EINMAL erscheinen.
+    _lastsprung_minute(monitor, link, TS + stunde)
+    infos = [text for stufe, text in alerts.items if stufe == "info"]
+    assert len(infos) == 2, infos
+
+
+def test_verschiedene_ursachen_melden_sich_getrennt(tmp_path):
+    """Die Sperre gilt je ART: eine SoC-Grenze direkt nach einem Lastsprung
+    ist eine neue Information und wird gemeldet."""
+    cfg = _cause_cfg(tmp_path)
+    cfg.house_battery.min_soc_percent = 10.0
+    viertel = pd.Timedelta(minutes=15)
+    _plan_slots(cfg, {TS: (-930.0, 930.0), TS + viertel: (0.0, 1256.0)})
+    alerts = _Alerts()
+    link = _CauseLink(-3338.0, 3348.0)
+    monitor = _m._LiveExecutionMonitor(cfg, alerts, link)
+
+    _lastsprung_minute(monitor, link, TS)
+    link.values.update(battery_w=-1932.0, house_load_w=1256.0, soc_percent=8.1)
+    for sekunden in range(0, 60, 5):
+        link.values["soc_percent"] = 8.1 - 0.1 * (sekunden // 5)
+        monitor.sample(TS + viertel + pd.Timedelta(seconds=sekunden))
+
+    infos = [text for stufe, text in alerts.items if stufe == "info"]
+    assert len(infos) == 2, infos
+    assert "Lastsprung" in infos[0] and "Untergrenze" in infos[1]

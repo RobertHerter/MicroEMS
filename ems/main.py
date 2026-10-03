@@ -959,6 +959,14 @@ def _audit_execution(config, now, live, e3dc=None):
 STRING_SAMPLE_S = 60.0
 
 
+# Eine Info-Meldung "mit bekannter Ursache" je Ursachen-ART hoechstens einmal in
+# dieser Zeit. Vorher hing die Sperre am Ursachen-TEXT, und der traegt Live-
+# Zahlen: jede Aenderung galt als neue Ursache, und der Slotwechsel setzte die
+# Sperre zurueck. Gemessen am 03.10.2026 ueber drei Tage: 971 Meldungen, davon
+# 953 Lastsprung bei nur 12 Episoden; mit dieser Sperre waeren es 15 gewesen.
+_INFO_SPERRE = pd.Timedelta(minutes=60)
+
+
 class _LiveExecutionMonitor:
     """Schnelle, vorlaeufige Planpruefung aus geglaetteten E3/DC-Livewerten."""
 
@@ -978,6 +986,8 @@ class _LiveExecutionMonitor:
         self.last_state = None
         self.last_cause = None
         self.last_write = None
+        # Letzte Info-Meldung je Ursachenart - bewusst NICHT je Slot.
+        self._info_zuletzt = {}
 
     def _sample_strings(self, now) -> None:
         """Strangleistungen sammeln und beim Slotwechsel als Mittel schreiben.
@@ -1109,18 +1119,21 @@ class _LiveExecutionMonitor:
             # vollen Toleranz koennte sich eine echte Regelabweichung von bis zu
             # 1500 W hinter einem Lastsprung verstecken.
             if abs(rest) <= 0.5 * float(mon.execution_battery_tolerance_w):
-                return (f"unprognostizierter Lastsprung {d_last:+.0f} W "
+                return ("lastsprung",
+                        f"unprognostizierter Lastsprung {d_last:+.0f} W "
                         f"(ungeklaerter Rest nur {rest:+.0f} W)")
         soc = self.samples[-1][1].get("soc_percent") if self.samples else None
         hb = self.config.house_battery
         if soc is not None:
             soc = float(soc)
             if soc <= hb.min_soc_percent + 1.0:
-                return (f"SoC {soc:.1f} % an der Untergrenze "
+                return ("soc_unten",
+                        f"SoC {soc:.1f} % an der Untergrenze "
                         f"{hb.min_soc_percent:.0f} % - dort kann das Geraet dem "
                         f"Plan nicht folgen")
             if soc >= hb.max_soc_percent - 1.0:
-                return (f"SoC {soc:.1f} % an der Obergrenze "
+                return ("soc_oben",
+                        f"SoC {soc:.1f} % an der Obergrenze "
                         f"{hb.max_soc_percent:.0f} % - dort kann das Geraet dem "
                         f"Plan nicht folgen")
         return None
@@ -1201,15 +1214,19 @@ class _LiveExecutionMonitor:
         # Erklärbare Abweichungen (Lastsprung, SoC-Grenze) sind keine
         # Regelfehler. Als Warnung erzogen sie nur dazu, die Meldung zu
         # überlesen - sechs am Tag auf dieser Anlage.
-        ursache = (self._deviation_cause(delta, planned, mon)
-                   if bad and self.bad_count >= consecutive else None)
+        erklaerung = (self._deviation_cause(delta, planned, mon)
+                      if bad and self.bad_count >= consecutive else None)
+        ursache_art, ursache = erklaerung if erklaerung else (None, None)
         if bad and self.bad_count >= consecutive and ursache is not None:
-            if self.publisher is not None and self.explained != ursache:
+            zuletzt = self._info_zuletzt.get(ursache_art)
+            if (self.publisher is not None
+                    and (zuletzt is None or now - zuletzt >= _INFO_SPERRE)):
                 self.publisher.publish_alert(
                     "info", "EMS-Live-Abweichung mit bekannter Ursache: "
                     f"{ursache}. Akku Soll {planned_w:.0f} W, Ist-Median "
                     f"{actual_w:.0f} W.")
-            self.explained = ursache
+                self._info_zuletzt[ursache_art] = now
+            self.explained = ursache_art
         elif bad and self.bad_count >= consecutive and not self.alarm:
             self.alarm = True
             self.explained = None
@@ -1250,7 +1267,7 @@ class _LiveExecutionMonitor:
         # Auch eine neu erkannte Ursache ist eine Aenderung: sie steht erst
         # fest, wenn die Entprellung durch ist - ohne diese Bedingung bliebe im
         # Audit die ursachenlose erste Probe stehen.
-        changed = state != self.last_state or ursache != self.last_cause
+        changed = state != self.last_state or ursache_art != self.last_cause
         due = (self.last_write is None
                or (now - self.last_write).total_seconds() >= 30.0)
         if changed or due:
@@ -1258,7 +1275,7 @@ class _LiveExecutionMonitor:
                 write_execution_audit(
                     self.config.e3dc_rscp.history_db_path, slot, audit)
                 self.last_state, self.last_write = state, now
-                self.last_cause = ursache
+                self.last_cause = ursache_art
             except Exception as exc:
                 log.debug("Vorläufiges Live-Audit nicht speicherbar (%s).", exc)
         return live
