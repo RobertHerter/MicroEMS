@@ -30,7 +30,7 @@ pandas==3.0.6
 plotly==7.1.0
 pluggy==1.6.0
 PuLP==4.0.0
-pvlib==0.15.2
+pvlib==0.16.1
 py3rijndael==0.3.3
 pydantic==2.13.5
 pydantic_core==2.46.5
@@ -50,6 +50,7 @@ six==1.17.0
 threadpoolctl==3.6.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+tzdata==2026.4
 tzlocal==5.4.4
 urllib3==2.7.0
 websocket-client==1.9.0
