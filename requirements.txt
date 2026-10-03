@@ -13,7 +13,7 @@ python-dateutil>=2.9.0.post0
 # bitgleich - welche Version laeuft, entscheidet der Lock. Den eingebauten
 # CBC gibt es ab 4.0 nur ueber pulp[cbc]; Docker-Image und Pi nutzen das
 # System-CBC (Paket coinor-cbc), der Produktivpfad ist ohnehin HiGHS.
-PuLP>=3.3.2,<5
+PuLP>=4.0.0,<5
 # HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
 # mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
