@@ -7,8 +7,10 @@
 # folgte, bekam ein EMS ohne Solver, ohne PV-Modell und ohne Geraeteanbindung.
 #
 # Neu erzeugen:  .venv/bin/pip freeze --exclude-editable > requirements.lock
+annotated-types==0.8.0
 certifi==2026.6.17
 charset-normalizer==3.4.7
+cpsat-logutils==1.0.0
 execnet==2.1.2
 h5py==3.16.0
 highspy==1.15.1
@@ -21,14 +23,17 @@ joblib==1.5.3
 msgpack==1.2.1
 narwhals==2.23.0
 numpy==2.5.3
+orloge==1.0.0
 packaging==26.2
 paho-mqtt==2.1.0
 pandas==3.0.6
 plotly==7.1.0
 pluggy==1.6.0
-PuLP==3.3.2
+PuLP==4.0.0
 pvlib==0.15.2
 py3rijndael==0.3.3
+pydantic==2.13.5
+pydantic_core==2.46.5
 pye3dc==0.10.0
 Pygments==2.20.0
 pytest==9.1.1
@@ -43,6 +48,7 @@ scikit-learn==1.9.1
 scipy==1.18.0
 six==1.17.0
 threadpoolctl==3.6.0
+typing-inspection==0.4.4
 typing_extensions==4.16.0
 tzlocal==5.4.4
 urllib3==2.7.0

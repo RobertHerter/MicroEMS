@@ -7,13 +7,13 @@ pandas>=3.0.6
 numpy>=2.5.3
 python-dateutil>=2.9.0.post0
 
-# Optimierung (MILP). PuLP bringt den CBC-Solver bereits mit.
-# OBERGRENZE <4: PuLP 4.0.0 (25.09.2026) nimmt die Grenzen von LpVariable nur
-# noch als Schluesselwort und streicht den eingebauten CBC (PULP_CBC_CMD), auf
-# den der Rueckfallpfad zugreift. Mit 4.0.0 scheiterte jeder Optimierungslauf
-# (TypeError in ems/optimizer.py). Die Umstellung ist eine eigene Aufgabe mit
-# vollem Testlauf gegen PuLP 4 - bis dahin bleibt es bei 3.x.
-PuLP>=3.3.2,<4
+# Optimierung (MILP). PuLP 4.0.0 (25.09.2026) bindet Variablen an das Problem
+# und meldet den Loesungsstatus anders; ems/lp_compat.py bedient 3.x und 4.x.
+# Am 03.10.2026 unter 3.3.2 und 4.0.0 je 756 Tests gruen und 13 echte Laeufe
+# bitgleich - welche Version laeuft, entscheidet der Lock. Den eingebauten
+# CBC gibt es ab 4.0 nur ueber pulp[cbc]; Docker-Image und Pi nutzen das
+# System-CBC (Paket coinor-cbc), der Produktivpfad ist ohnehin HiGHS.
+PuLP>=3.3.2,<5
 # HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
 # mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
