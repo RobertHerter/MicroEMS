@@ -4,7 +4,7 @@
 
 PyYAML>=6.0.3
 pandas>=3.0.6
-numpy>=2.5.3
+numpy>=2.5.4
 python-dateutil>=2.9.0.post0
 
 # Optimierung (MILP). PuLP 4.0.0 (25.09.2026) bindet Variablen an das Problem
