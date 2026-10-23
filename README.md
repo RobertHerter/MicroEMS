@@ -236,7 +236,8 @@ sudo chown -R ems:ems /opt/ems
 sudo cp ems.service \
         ems-kalibrierung.service ems-kalibrierung.timer \
         ems-savings.service ems-savings.timer \
-        ems-backup.service ems-backup.timer /etc/systemd/system/
+        ems-backup.service ems-backup.timer \
+        ems-alarm@.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ems.service \
         ems-kalibrierung.timer ems-savings.timer ems-backup.timer
@@ -268,6 +269,9 @@ Lebenszeichen ausbleibt). Die Timer:
   (`config.yaml` mit Zugangsdaten, Kalibrierprofile, Ersparnis-Status) via
   [backup.sh](backup.sh). **Für echte Sicherheit ein externes Ziel setzen**
   (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
+- **`ems-alarm@.service`** (kein Timer): scheitert einer der drei Läufe, startet
+  ihn systemd per `OnFailure=`. Er meldet auf `ems/alert` (Homey-Push) und im
+  Ereignisverlauf des Dashboards, welcher Schritt mit welchem Fehler abbrach.
 
 ### Alternativ: Docker (optional)
 

@@ -2,6 +2,9 @@
 Description=EMS Vorhersage-Kalibrierung (PV Solcast + Hausverbrauch)
 After=network-online.target influxdb.service
 Wants=network-online.target
+# Scheitert der Lauf, meldet ems-alarm@.service das per MQTT und im
+# Dashboard - sonst steht es nur im Journal.
+OnFailure=ems-alarm@%n.service
 
 [Service]
 Type=oneshot
@@ -21,6 +24,9 @@ ExecStart=/opt/ems/.venv/bin/python -m ems.battery_calibration --config /opt/ems
 # Lastprofil verschiebbarer Lasten aus der Verbrauchsrueckmeldung lernen
 # (Waschmaschine: Heizphase/Waschen/Schleudern statt konstanter Leistung).
 ExecStart=/opt/ems/.venv/bin/python -m ems.load_learning --config /opt/ems/config.yaml --apply
+# Prognosearchiv jenseits general.forecast_archive_raw_days (60 T) ausduennen
+# - ohne das waechst es um rund 14 MB pro Tag.
+ExecStart=/opt/ems/.venv/bin/python -m ems.archive_thinning --config /opt/ems/config.yaml --apply
 Environment=PYTHONUNBUFFERED=1
 # Haertung analog ems.service (kein Port noetig -> keine Capabilities).
 NoNewPrivileges=true

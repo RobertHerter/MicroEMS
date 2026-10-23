@@ -1,0 +1,21 @@
+[Unit]
+Description=EMS-Alarm: %i gescheitert
+# Gestartet von OnFailure=ems-alarm@%n.service in den Timer-Units. Meldet ueber
+# MQTT ems/alert (Homey-Push) und den Ereignisverlauf im Dashboard, welcher
+# Schritt mit welchem Fehler abbrach und wie viele danach ausfielen. Anlass: der
+# Sonntagslauf scheiterte im Oktober 2026 zwei Wochen lang unbemerkt.
+
+[Service]
+Type=oneshot
+User=ems
+Group=ems
+# Journal lesen: die Fehlerzeile stammt aus der Ausgabe genau dieses Laufs.
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/opt/ems
+ExecStart=/opt/ems/.venv/bin/python -m ems.unit_alarm --config /opt/ems/config.yaml --unit %i
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ems
+PrivateTmp=true

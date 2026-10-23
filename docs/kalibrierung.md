@@ -327,6 +327,13 @@ Nächster Termin und ob der letzte durchlief:
 systemctl list-timers ems-kalibrierung.timer
 ```
 
+Bricht ein Schritt ab, laufen die folgenden nicht mehr – im Oktober 2026 fielen
+so zwei Wochen lang alle Schritte nach der Pool-Kalibrierung aus, unbemerkt.
+Seitdem startet `OnFailure=` den Alarm `ems-alarm@.service`: eine Meldung auf
+`ems/alert` (Homey-Push) und im Ereignisverlauf des Dashboards, mit dem
+gescheiterten Schritt, der Fehlerzeile und der Zahl der ausgefallenen Schritte.
+Dasselbe gilt für `ems-savings` und `ems-backup`.
+
 Jeder Schritt läuft ohne `--apply` als reiner Trockenlauf – er misst und
 berichtet, schreibt aber nichts:
 

@@ -209,6 +209,7 @@ Der Dienst setzt aktive Modi alle 5 s per Watchdog neu (der E3DC fällt sonst na
 sudo tee /etc/systemd/system/ems-kalibrierung.service >/dev/null <<'UNIT'
 [Unit]
 Description=MicroEMS Kalibrierung
+OnFailure=ems-alarm@%n.service
 [Service]
 Type=oneshot
 User=ems
@@ -230,8 +231,13 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+sudo cp /opt/ems/ems-alarm@.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now ems-kalibrierung.timer
 ```
+
+`ems-alarm@.service` meldet einen abgebrochenen Lauf im Ereignisverlauf des
+Dashboards (und mit MQTT zusätzlich auf `ems/alert`) – sonst stünde er nur im
+Journal, und die Schritte nach dem gescheiterten fielen unbemerkt aus.
 
 Geschriebene Werte landen im Overlay `config_overrides.yaml`, `config.yaml` bleibt unangetastet.
 Der letzte Schritt löscht keine Messwerte, sondern dünnt nur das Prognosearchiv

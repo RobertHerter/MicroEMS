@@ -76,6 +76,37 @@ _RESET_WORDS = ("", "-", "auto", "default", "reset")
 _OFF_WORDS = ("off", "aus", "keine", "none", "urlaub", "holiday")
 
 
+def alert_payload(level: str, message: str) -> str:
+    """JSON fuer ems/alert - eine Form fuer den Dienst und fuer Einzelaufrufe."""
+    return json.dumps({
+        "level": level, "message": message,
+        # stdlib-datetime: astimezone() ohne Argument hängt die lokale
+        # Zeitzone an (pd.Timestamp.astimezone() verlangt zwingend ein tz
+        # und warf sonst bei JEDEM Alarm -> Alarme kamen nie an).
+        "time": datetime.now().astimezone().isoformat(),
+    })
+
+
+def publish_alert_once(cfg, level: str, message: str) -> bool:
+    """Einen Alarm aus einem KURZLEBIGEN Prozess senden (z.B. systemd-Hook).
+
+    Bewusst nicht ueber ``HomeyMqttPublisher``: dessen Verbindung setzt einen
+    Last Will (ems/status = offline, retained). Beendet sich der Prozess, ohne
+    sauber zu trennen, meldet der Broker den laufenden EMS-Dienst in Homey als
+    offline. ``publish.single`` verbindet ohne Will, mit zufaelliger Client-ID
+    (wirft also auch den Dienst nicht vom Broker) und trennt sauber.
+    False, wenn MQTT abgeschaltet ist."""
+    if not cfg.enabled:
+        return False
+    import paho.mqtt.publish as publish
+    auth = ({"username": cfg.username, "password": cfg.password}
+            if cfg.username else None)
+    publish.single(f"{cfg.base_topic}/alert", alert_payload(level, message),
+                   qos=int(cfg.qos), retain=False, hostname=cfg.host,
+                   port=int(cfg.port), auth=auth)
+    return True
+
+
 class HomeyMqttPublisher:
     def __init__(self, config: Config):
         self.cfg = config.mqtt
@@ -477,14 +508,8 @@ class HomeyMqttPublisher:
             return
         try:
             self._ensure_connected()
-            payload = json.dumps({
-                "level": level, "message": message,
-                # stdlib-datetime: astimezone() ohne Argument hängt die lokale
-                # Zeitzone an (pd.Timestamp.astimezone() verlangt zwingend ein tz
-                # und warf sonst bei JEDEM Alarm -> Alarme kamen nie an).
-                "time": datetime.now().astimezone().isoformat(),
-            })
-            self._pub(f"{self.cfg.base_topic}/alert", payload, retain=False)
+            self._pub(f"{self.cfg.base_topic}/alert",
+                      alert_payload(level, message), retain=False)
             log.info("MQTT-Alarm publiziert: [%s] %s", level, message)
         except Exception as exc:
             log.warning("MQTT-Alarm fehlgeschlagen (%s).", exc)

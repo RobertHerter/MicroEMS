@@ -1,5 +1,8 @@
 [Unit]
 Description=EMS Konfigurations-Backup (config.yaml, Kalibrierung, Ersparnis-Status)
+# Scheitert der Lauf, meldet ems-alarm@.service das per MQTT und im
+# Dashboard - sonst steht es nur im Journal.
+OnFailure=ems-alarm@%n.service
 
 [Service]
 Type=oneshot

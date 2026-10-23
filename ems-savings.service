@@ -2,6 +2,9 @@
 Description=EMS Ersparnis-Gegenpruefung gegen die E3DC-Zaehler (taeglich)
 After=network-online.target ems.service
 Wants=network-online.target
+# Scheitert der Lauf, meldet ems-alarm@.service das per MQTT und im
+# Dashboard - sonst steht es nur im Journal.
+OnFailure=ems-alarm@%n.service
 
 [Service]
 Type=oneshot
