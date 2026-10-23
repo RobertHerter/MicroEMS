@@ -36,6 +36,9 @@ plotly>=7.1.0
 
 # Machine Learning (für Lastprognose)
 scikit-learn>=1.9.1
+# Begrenzt die OpenMP-Threads des Preismodell-Trainings im Hintergrund
+# (ems/main.py). Kommt mit scikit-learn mit, wird aber direkt importiert.
+threadpoolctl>=3.6.0
 
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0

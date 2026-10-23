@@ -3207,8 +3207,17 @@ _last_grid_weather_fetch = 0.0
 _last_efficiency_check = 0.0
 _last_load_bias = None
 _last_monitor_diagnostics = {"efficiency": None, "execution_bias": None}
-_price_model = None
-_price_model_day = None
+_price_model = None          # zuletzt FERTIG trainiertes Preismodell
+_price_model_day = None      # Tag, für den zuletzt ein Training begonnen hat
+_price_model_thread = None   # laufendes Hintergrund-Training
+_price_model_lock = threading.Lock()
+# Nur der Dauerbetrieb lernt im Hintergrund (main() setzt das). Ein Einzellauf
+# wartet wie bisher - er wäre sonst vor dem Ende des Trainings vorbei.
+_price_model_async = False
+# OpenMP-Threads des Hintergrund-Trainings. Gemessen am 23.10.2026 auf dem Pi:
+# 1, 2 und 4 Threads gleich schnell (25 bis 40 s, Streuung größer als jeder
+# Unterschied) - einer nimmt dem laufenden Zyklus aber am wenigsten weg.
+_PRICE_MODEL_THREADS = 1
 
 
 def _refresh_weather_cache(config) -> None:
@@ -3271,18 +3280,47 @@ def _refresh_grid_weather(config) -> None:
 def _price_model_for(config):
     """Gelerntes Preismodell, höchstens einmal je Kalendertag neu trainiert.
 
-    Das Training kostet wenige Sekunden auf ~400 Tagen Historie - je Zyklus wäre
-    das Verschwendung, einmal täglich reicht (die Historie wächst um einen Tag).
-    None, wenn das Modell nicht einsatzbereit ist; der Aufrufer bleibt dann beim
-    bisherigen Schätzer.
+    Im Dauerbetrieb lernt es IM HINTERGRUND, der Zyklus wartet nie darauf: bis
+    das neue Modell fertig ist, gilt das vorige - nach einem Neustart die
+    bisherige Schätzung. Vom 10. bis 23.10.2026 lief das tägliche Training um
+    Mitternacht in den Genetik-Lauf von EOS (alle 15 min, auch um 00:01) und
+    dauerte dann 2,5 bis 19 Minuten statt rund 30 s; so lange kam kein
+    Steuerbefehl. Am 23.10. traf es ebenso den ersten Zyklus nach einem Neustart.
+    Weniger Threads halfen nicht (neben EOS brauchte auch einer über 100 s).
+
+    None, wenn kein einsatzbereites Modell vorliegt; der Aufrufer bleibt dann
+    beim bisherigen Schätzer.
     """
-    global _price_model, _price_model_day
+    global _price_model_day, _price_model_thread
     if not getattr(config.forecast, "price_model_enabled", True):
         return None
     today = pd.Timestamp.now(tz=config.general.timezone).date()
-    if _price_model is not None and _price_model_day == today:
-        return _price_model if _price_model.model is not None else None
+    with _price_model_lock:
+        faellig = (_price_model_day != today
+                   and (_price_model_thread is None
+                        or not _price_model_thread.is_alive()))
+        if faellig:
+            _price_model_day = today
+            if _price_model_async:
+                _price_model_thread = threading.Thread(
+                    target=_train_price_model, args=(config,),
+                    name="ems-price-model", daemon=True)
+                _price_model_thread.start()
+    if faellig and not _price_model_async:
+        _train_price_model(config)
+    with _price_model_lock:
+        model = _price_model
+    return model if model is not None and model.model is not None else None
+
+
+def _train_price_model(config) -> None:
+    """Preismodell lernen und erst FERTIG einsetzen. Scheitert das Training,
+    bleibt das vorige Modell in Gebrauch."""
+    global _price_model
+    started = _time.monotonic()
     try:
+        from threadpoolctl import threadpool_limits
+
         from .local_history import read_grid_weather, read_spot
         from .priceforecast import PriceModel
         db = config.e3dc_rscp.history_db_path
@@ -3292,17 +3330,22 @@ def _price_model_for(config):
         spot = read_spot(db, start, now, tz, config.general.slot_minutes)
         weather = read_grid_weather(db, start, now, tz)
         model = PriceModel(config)
-        model.fit(spot, weather,
-                  holdout_days=int(config.forecast.price_model_holdout_days),
-                  min_train_days=int(config.forecast.price_model_min_train_days))
-        _price_model, _price_model_day = model, today
-        log.info("Preismodell: %s", model.reason)
-        return model if model.model is not None else None
+        # Gilt nur für DIESEN Thread (OpenMP-Einstellung je Thread).
+        with threadpool_limits(limits=_PRICE_MODEL_THREADS, user_api="openmp"):
+            model.fit(spot, weather,
+                      holdout_days=int(config.forecast.price_model_holdout_days),
+                      min_train_days=int(config.forecast.price_model_min_train_days))
+        with _price_model_lock:
+            _price_model = model
+        log.info("Preismodell: %s (Training %.0f s%s)", model.reason,
+                 _time.monotonic() - started,
+                 ", im Hintergrund" if _price_model_async else "")
     except Exception as exc:
-        log.warning("Preismodell nicht trainierbar (%s) – Ähnliche-Tage-"
-                    "Schätzung bleibt aktiv.", exc)
-        _price_model, _price_model_day = None, today
-        return None
+        with _price_model_lock:
+            bisher = _price_model is not None and _price_model.model is not None
+        log.warning("Preismodell nicht trainierbar (%s) – %s.", exc,
+                    "das bisherige bleibt in Gebrauch" if bisher
+                    else "Ähnliche-Tage-Schätzung bleibt aktiv")
 
 
 def _read_temp(repo, config, start, end):
@@ -4767,6 +4810,8 @@ def main() -> None:
         run_once(config)
         return
 
+    global _price_model_async
+    _price_model_async = True
     interval = config.general.run_interval_minutes * 60
     # Kleiner Versatz, damit die neuen 15-Minuten-Werte (Preis, Zähler) schon in
     # der InfluxDB stehen, bevor gerechnet wird.

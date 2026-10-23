@@ -3,6 +3,9 @@
 """
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -219,3 +222,93 @@ def test_price_series_falls_back_without_grid_weather(tmp_path, monkeypatch):
                                        return_estimated=True)
     assert len(price) == 192 and price.notna().all()
     assert estimated.any()          # der Folgetag ist geschaetzt
+
+
+# --------------------------------------------------------------------------- #
+# Training im Hintergrund (ems/main.py)
+# --------------------------------------------------------------------------- #
+class _Modell:
+    """Ersatz fuer PriceModel: fit wartet auf eine Freigabe."""
+    freigabe = None
+    fits = []
+    fehler = None
+
+    def __init__(self, config):
+        self.model = None
+        self.reason = "Ersatz"
+
+    def fit(self, spot, weather, holdout_days, min_train_days):
+        from threadpoolctl import threadpool_info
+        _Modell.fits.append({i["num_threads"] for i in threadpool_info()
+                             if i["user_api"] == "openmp"})
+        assert _Modell.freigabe.wait(10)
+        if _Modell.fehler is not None:
+            raise _Modell.fehler
+        self.model = "neu"
+        return True
+
+
+@pytest.fixture
+def preismodell(monkeypatch):
+    import sklearn.ensemble  # noqa: F401 - laedt das OpenMP der HGB
+
+    import ems.local_history as lh
+    import ems.main as m
+    import ems.priceforecast as pf
+    bisher = _Modell(None)
+    bisher.model = "alt"
+    monkeypatch.setattr(pf, "PriceModel", _Modell)
+    monkeypatch.setattr(lh, "read_spot", lambda *a, **k: pd.Series(dtype="float64"))
+    monkeypatch.setattr(lh, "read_grid_weather", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(m, "_price_model", bisher)
+    monkeypatch.setattr(m, "_price_model_day", None)      # zuletzt gestern
+    monkeypatch.setattr(m, "_price_model_thread", None)
+    monkeypatch.setattr(m, "_price_model_async", True)
+    monkeypatch.setattr(_Modell, "freigabe", threading.Event())
+    monkeypatch.setattr(_Modell, "fits", [])
+    monkeypatch.setattr(_Modell, "fehler", None)
+    yield m
+    _Modell.freigabe.set()
+    if m._price_model_thread is not None:
+        m._price_model_thread.join(10)
+
+
+def test_cycle_does_not_wait_for_the_training_and_keeps_the_previous_model(preismodell):
+    """Vom 10. bis 23.10.2026 lief das taegliche Training um Mitternacht in den
+    Genetik-Lauf von EOS und dauerte bis 19 Minuten - so lange kam kein
+    Steuerbefehl, weil der Zyklus darauf wartete."""
+    m = preismodell
+    cfg = make_config()
+    t0 = time.monotonic()
+    assert m._price_model_for(cfg).model == "alt"
+    assert time.monotonic() - t0 < 2
+    assert m._price_model_thread.is_alive()
+    assert m._price_model_for(cfg).model == "alt"       # kein zweites Training
+
+    _Modell.freigabe.set()
+    m._price_model_thread.join(10)
+    assert m._price_model_for(cfg).model == "neu"
+    # Ein Training je Tag, mit einem OpenMP-Thread (gilt nur in SEINEM Thread).
+    assert _Modell.fits == [{m._PRICE_MODEL_THREADS}]
+
+
+def test_failed_training_keeps_the_previous_model(preismodell, caplog):
+    m = preismodell
+    _Modell.fehler = RuntimeError("Datenbank weg")
+    _Modell.freigabe.set()
+    cfg = make_config()
+    m._price_model_for(cfg)
+    m._price_model_thread.join(10)
+
+    assert m._price_model_for(cfg).model == "alt"
+    assert len(_Modell.fits) == 1                       # kein Neuversuch am selben Tag
+    assert "das bisherige bleibt in Gebrauch" in caplog.text
+
+
+def test_one_shot_run_waits_for_the_training(preismodell):
+    """Ein Einzellauf (ohne --loop) waere sonst vor dem Training vorbei."""
+    m = preismodell
+    m._price_model_async = False
+    _Modell.freigabe.set()
+    assert m._price_model_for(make_config()).model == "neu"
+    assert m._price_model_thread is None
