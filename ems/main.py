@@ -40,6 +40,7 @@ from .homey_mqtt import HomeyMqttPublisher
 from .influx import make_repository
 from .optimizer import (Optimizer, OptimizerInputs, SolverCancelled,
                         request_solver_cancel, solver_is_running)
+from .priceforecast import baseline_name
 from .quality import planned_soc_on_measurement_axis
 from .tariff import read_price_signal
 from . import solcast
@@ -2498,7 +2499,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             _p_level, _p_state = "current", "morgen real vorhanden"
         forecast_quality.append(_forecast_quality_entry(
             "Strompreis", total_slots, int(price_estimated.sum()),
-            "Ähnliche-Tage-Preisprognose", forecast_issue,
+            _last_price_fill or baseline_name(config), forecast_issue,
             level_override=_p_level, state_override=_p_state))
         if config.weather.enabled:
             forecast_quality.extend([
@@ -3207,6 +3208,7 @@ _last_grid_weather_fetch = 0.0
 _last_efficiency_check = 0.0
 _last_load_bias = None
 _last_monitor_diagnostics = {"efficiency": None, "execution_bias": None}
+_last_price_fill = None      # womit _price_series zuletzt Preise gefüllt hat
 _price_model = None          # zuletzt FERTIG trainiertes Preismodell
 _price_model_day = None      # Tag, für den zuletzt ein Training begonnen hat
 _price_model_thread = None   # laufendes Hintergrund-Training
@@ -3256,7 +3258,7 @@ def _refresh_grid_weather(config) -> None:
 
     EIN Open-Meteo-Call für alle Stützpunkte, höchstens alle ~30 min - die
     Indizes sind Stundenwerte, häufigeres Abrufen bringt nichts. Fehler sind
-    unkritisch: ohne frische Werte bleibt es bei der Ähnliche-Tage-Schätzung.
+    unkritisch: ohne frische Werte bleibt es bei der bisherigen Schätzung.
     """
     global _last_grid_weather_fetch
     if not getattr(config.forecast, "price_model_enabled", True):
@@ -3274,7 +3276,8 @@ def _refresh_grid_weather(config) -> None:
                  "Preisprognose aktualisiert.", n)
     except Exception as exc:
         log.warning("Deutschlandweite Wetter-Indizes nicht abrufbar (%s) – "
-                    "Preisschätzung bleibt bei Ähnliche-Tage.", exc)
+                    "Preisschätzung bleibt bei der %s.", exc,
+                    baseline_name(config))
 
 
 def _price_model_for(config):
@@ -3345,7 +3348,7 @@ def _train_price_model(config) -> None:
             bisher = _price_model is not None and _price_model.model is not None
         log.warning("Preismodell nicht trainierbar (%s) – %s.", exc,
                     "das bisherige bleibt in Gebrauch" if bisher
-                    else "Ähnliche-Tage-Schätzung bleibt aktiv")
+                    else f"{baseline_name(config)} bleibt aktiv")
 
 
 def _read_temp(repo, config, start, end):
@@ -3479,7 +3482,7 @@ def _source_status(config, now):
     tz = config.general.timezone
     # Spotpreis (Energy-Charts): bis wann liegen ECHTE Preise vor? Erwartung:
     # vormittags bis Ende heute; nach der Day-Ahead-Auktion (~14 Uhr) sollte
-    # der Folgetag da sein. Danach ergänzt die Ähnliche-Tage-Schätzung.
+    # der Folgetag da sein. Danach ergänzt die Preisschätzung.
     try:
         if config.tariff.enabled and config.tariff.type == "dynamic":
             from .local_history import read_spot
@@ -3697,8 +3700,9 @@ def _read_load_run_state(config, now):
 
 
 def _price_series(repo, config, index, now, return_estimated=False):
-    """Strompreis über `index`: Ist-Werte wo vorhanden, sonst Ähnliche-Tage-
-    Prognose für noch fehlende (Folgetag-)Preise – statt einer flachen ffill-Linie.
+    """Strompreis über `index`: Ist-Werte wo vorhanden, sonst eine Schätzung für
+    noch fehlende (Folgetag-)Preise – statt einer flachen ffill-Linie. Welches
+    Verfahren gefüllt hat, steht danach in ``_last_price_fill``.
     Preise dürfen negativ sein (clip_min=None).
     return_estimated=True: zusätzlich Bool-Maske, welche Slots geschätzt sind.
     """
@@ -3706,10 +3710,12 @@ def _price_series(repo, config, index, now, return_estimated=False):
     raw = read_price_signal(config, repo, index[0], index[-1] + slot).reindex(index)
     estimated = raw.isna()   # Slots ohne echten Börsenpreis -> Schätzung
     hist = pd.Series(dtype="float64")
+    global _last_price_fill
+    verfahren = []
     if estimated.any():
         # 1) Deutschlandweites Residuallast-Modell: der Day-Ahead folgt der
         #    Merit-Order über Last minus Wind/Solar. Nur wenn es sich gegen die
-        #    Ähnliche-Tage-Schätzung bewiesen hat (siehe ems/priceforecast.py).
+        #    bisherige Schätzung bewiesen hat (siehe ems/priceforecast.py).
         try:
             _refresh_grid_weather(config)
             model = _price_model_for(config)
@@ -3727,24 +3733,29 @@ def _price_series(repo, config, index, now, return_estimated=False):
                     # muss das Tarifmodell darüber (Aufschläge, Netz, MwSt).
                     from .tariff import apply_tariff
                     raw = raw.fillna(apply_tariff(guess, config).reindex(index))
+                    verfahren.append("Residuallast-Modell")
                     log.info("Fehlende Folgetag-Preise per Residuallast-Modell "
                              "ergänzt (%d Slots).", int(estimated.sum()))
         except Exception as exc:  # pragma: no cover
             log.warning("Residuallast-Preismodell nicht anwendbar (%s).", exc)
-        # 2) Rückfall: Ähnliche-Tage-Mittelung der eigenen Preishistorie.
+        # 2) Rückfall: LoadForecaster auf der eigenen Preishistorie - nach
+        #    forecast.method die Ähnliche-Tage-Mittelung oder die ML-Prognose.
         try:
             hist = read_price_signal(config, repo, now - timedelta(days=90), now).dropna()
             if raw.isna().any() and not hist.empty:
                 fc = LoadForecaster(config).forecast(
                     hist, index[0], len(index), clip_min=None, apply_correction=False)
                 raw = raw.fillna(fc.reindex(index))
-                log.info("Fehlende Folgetag-Preise per Ähnliche-Tage-Prognose ergänzt.")
+                verfahren.append(baseline_name(config))
+                log.info("Fehlende Folgetag-Preise per %s ergänzt.",
+                         baseline_name(config))
         except Exception as exc:  # pragma: no cover
             log.warning("Preis-Prognose fehlgeschlagen (%s).", exc)
     # Auch bei komplett ausgefallener Preisquelle bleibt der Optimierer
     # lauffähig. Median der echten Historie, sonst konfigurierter Fixpreis.
     remaining = raw.isna()
     if remaining.any():
+        verfahren.append("Medianpreis" if not hist.empty else "Festpreis")
         fallback = (float(hist.median()) if not hist.empty else
                     float(config.tariff.fixed_ct_kwh)
                     if config.tariff.enabled else 30.0)
@@ -3755,6 +3766,7 @@ def _price_series(repo, config, index, now, return_estimated=False):
     # Unsicherheits-Dämpfung: geschätzte Slots zur Mitte stauchen, damit auf
     # Phantom-Preistäler/-spitzen nicht spekuliert wird.
     price = dampen_estimated(price, estimated, config.forecast.price_damping)
+    _last_price_fill = " + ".join(verfahren) or None
     if return_estimated:
         return price, estimated
     return price

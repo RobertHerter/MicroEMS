@@ -13,7 +13,7 @@ Spotpreis-Historie, also ohne externe Modelldateien.
 Gemessen auf 60 Tagen rollierender Validierung (Anlage Herter, Juli 2026):
 MAE 2,51 ct/kWh gegen 3,40 ct/kWh der Ähnliche-Tage-Schätzung, besser an 50 von
 60 Tagen. Vor dem produktiven Einsatz prüft ``PriceModel`` das aber SELBST auf
-einem Holdout nach - gewinnt die Ähnliche-Tage-Schätzung, wird sie benutzt
+einem Holdout nach - gewinnt die bisherige Schätzung, wird sie benutzt
 (gleiches Prinzip wie die PV-Quellenwahl in ``ems/pv_eval.py``).
 """
 from __future__ import annotations
@@ -29,6 +29,17 @@ log = logging.getLogger("ems.priceforecast")
 _FEATURES = ("wind_index", "solar_index", "temp_index", "hour_sin", "hour_cos",
              "weekday", "holiday", "anchor_mean", "anchor_spread")
 
+
+
+def baseline_name(config) -> str:
+    """Name der bisherigen Preisschätzung, gegen die sich das Modell messen muss.
+
+    Sie ist ``LoadForecaster`` auf der eigenen Preishistorie und folgt damit
+    ``forecast.method`` - mit "ml" ist sie die ML-Prognose, nicht die
+    Ähnliche-Tage-Mittelung. Bis 23.10.2026 stand im Log trotzdem "Ähnliche
+    Tage"; die Entscheidung für oder gegen das Modell war davon nicht berührt."""
+    method = getattr(getattr(config, "forecast", None), "method", "similar_days")
+    return "ML-Prognose" if method == "ml" else "Ähnliche-Tage-Prognose"
 
 def _holiday_set(config) -> set:
     try:
@@ -79,7 +90,7 @@ def build_features(index: pd.DatetimeIndex, weather: pd.DataFrame,
 
 
 class PriceModel:
-    """Gelerntes Preismodell mit Selbstprüfung gegen die Ähnliche-Tage-Schätzung.
+    """Gelerntes Preismodell mit Selbstprüfung gegen die bisherige Schätzung.
 
     ``fit`` lernt auf der Spotpreis-Historie und bewertet sich auf einem
     Holdout der letzten Tage. ``predict`` liefert nur Werte, wenn das Modell
@@ -116,7 +127,7 @@ class PriceModel:
         return rows
 
     def _baseline(self, spot: pd.Series, start: pd.Timestamp, n: int):
-        """Dieselbe Ähnliche-Tage-Schätzung, die ohne Modell benutzt würde."""
+        """Dieselbe Schätzung, die ohne Modell benutzt würde (``baseline_name``)."""
         from .forecast import LoadForecaster
         history = spot[spot.index < start]
         if history.empty:
@@ -173,7 +184,8 @@ class PriceModel:
             self.reason = "Holdout nicht bewertbar"
             return False
         if self.mae_baseline is not None and self.mae_model >= self.mae_baseline:
-            self.reason = (f"Ähnliche Tage besser ({self.mae_baseline} ct gegen "
+            self.reason = (f"{baseline_name(self.config)} besser "
+                           f"({self.mae_baseline} ct gegen "
                            f"{self.mae_model} ct) - Modell nicht benutzt")
             self.model = None
             return False
@@ -185,7 +197,7 @@ class PriceModel:
         self.model = final
         self.trained_at = pd.Timestamp.now(tz="UTC")
         self.reason = (f"aktiv: MAE {self.mae_model} ct gegen "
-                       f"{self.mae_baseline} ct (Ähnliche Tage), "
+                       f"{self.mae_baseline} ct ({baseline_name(self.config)}), "
                        f"{self.train_days} Tage gelernt")
         return True
 

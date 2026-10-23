@@ -12,7 +12,7 @@ import pytest
 
 from ems.gridweather import POINTS, to_indices, wind_power_fraction
 from ems.local_history import read_grid_weather, write_grid_weather, write_spot
-from ems.priceforecast import PriceModel, build_features
+from ems.priceforecast import PriceModel, baseline_name, build_features
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
@@ -151,6 +151,27 @@ def test_model_beats_similar_days_on_a_weather_driven_price():
     assert st["train_days"] >= 100
 
 
+
+def test_baseline_name_follows_the_forecast_method():
+    """Mit forecast.method "ml" ist die bisherige Preisschaetzung die
+    ML-Prognose - im Log stand bis 23.10.2026 trotzdem "Aehnliche Tage"."""
+    cfg = make_config()
+    cfg.forecast.method = "ml"
+    assert baseline_name(cfg) == "ML-Prognose"
+    cfg.forecast.method = "similar_days"
+    assert baseline_name(cfg) == "Ähnliche-Tage-Prognose"
+
+
+def test_model_verdict_names_the_baseline_it_was_measured_against():
+    spot, weather = _synthetic_history()
+    cfg = make_config()
+    cfg.forecast.method = "ml"
+    model = PriceModel(cfg)
+    model.fit(spot, weather, holdout_days=10, min_train_days=60)
+    assert "ML-Prognose" in model.reason, model.reason
+    assert "Ähnliche" not in model.reason, model.reason
+
+
 def test_model_stands_down_when_similar_days_wins():
     """Bei einem rein kalendarischen Preis (jeden Tag identisch) hat das
     Wettermodell keinen Vorteil - dann muss es sich selbst abschalten."""
@@ -208,6 +229,7 @@ def test_price_series_falls_back_without_grid_weather(tmp_path, monkeypatch):
     cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
     monkeypatch.setattr(m, "_price_model", None, raising=False)
     monkeypatch.setattr(m, "_price_model_day", None, raising=False)
+    monkeypatch.setattr(m, "_last_price_fill", None)
     # Kein Netzabruf im Test.
     monkeypatch.setattr(m, "_refresh_grid_weather", lambda config: None)
 
@@ -222,6 +244,32 @@ def test_price_series_falls_back_without_grid_weather(tmp_path, monkeypatch):
                                        return_estimated=True)
     assert len(price) == 192 and price.notna().all()
     assert estimated.any()          # der Folgetag ist geschaetzt
+    # Ohne jede Preisquelle fuellt der Festpreis - und so steht es auch da.
+    assert m._last_price_fill == "Festpreis"
+
+
+def test_quality_display_names_the_estimator_that_filled(monkeypatch):
+    """Die Anzeige sagte immer "Aehnliche-Tage-Preisprognose" - auch wenn das
+    Residuallast-Modell oder (forecast.method: ml) die ML-Prognose fuellte."""
+    import ems.main as m
+
+    now = pd.Timestamp("2026-02-10 00:00", tz=TZ)
+    vergangen = pd.date_range(now - pd.Timedelta(days=20), now, freq="15min",
+                              tz=TZ, inclusive="left")
+    hist = pd.Series([20.0 + t.hour for t in vergangen], index=vergangen)
+    monkeypatch.setattr(m, "read_price_signal", lambda config, repo, start, end:
+                        hist[(hist.index >= start) & (hist.index < end)])
+    monkeypatch.setattr(m, "_refresh_grid_weather", lambda config: None)
+    monkeypatch.setattr(m, "_price_model_for", lambda config: None)
+    monkeypatch.setattr(m, "_last_price_fill", None)
+    index = pd.date_range(now, periods=96, freq="15min", tz=TZ)
+    for methode, name in (("similar_days", "Ähnliche-Tage-Prognose"),
+                          ("ml", "ML-Prognose")):
+        cfg = make_config()
+        cfg.forecast.method = methode
+        price = m._price_series(_Repo(), cfg, index, now)
+        assert price.notna().all()
+        assert m._last_price_fill == name
 
 
 # --------------------------------------------------------------------------- #
