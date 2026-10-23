@@ -403,3 +403,112 @@ def test_no_thermostat_follows_plan():
     pub.load_temps["homie/pool/temp"] = 29.5     # warm - egal, kein Thermostat
     assert pub._lane_command(lane, planned_on=False) == 0
     assert pub._lane_command(lane, planned_on=True) == 1
+
+
+class _Info:
+    def wait_for_publish(self, timeout=None):
+        return None
+
+
+class _PahoClient:
+    """Nimmt auf, was der Publisher am Broker taete. loop_start() ruft
+    on_connect wie der Netzwerk-Thread von paho nach dem CONNACK."""
+
+    def __init__(self, *args, **kwargs):
+        self.will = None
+        self.published = []
+        self.subscribed = []
+        self.connected = False
+
+    def username_pw_set(self, *args):
+        return None
+
+    def will_set(self, topic, payload, qos=0, retain=False):
+        self.will = (topic, payload, retain)
+
+    def connect(self, host, port, keepalive=60):
+        self.connected = True
+
+    def loop_start(self):
+        self.on_connect(self, None, None, 0, None)
+
+    def loop_stop(self):
+        return None
+
+    def disconnect(self):
+        self.connected = False
+
+    def is_connected(self):
+        return self.connected
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, retain))
+        return _Info()
+
+    def subscribe(self, topic, qos=0):
+        self.subscribed.append(topic)
+
+
+class _Sock:
+    def close(self):
+        return None
+
+
+def _connected(monkeypatch, service: bool):
+    import socket
+
+    import paho.mqtt.client as mqtt
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _Sock())
+    monkeypatch.setattr(mqtt, "Client", _PahoClient)
+    cfg, pub = _pub()
+    cfg.mqtt.enabled = True
+    if service:
+        pub.start()
+    else:
+        pub._ensure_connected()                 # wie run_once im Einzellauf
+    return f"{cfg.mqtt.base_topic}/status", pub, pub._client
+
+
+def _status_msgs(client, topic):
+    return [(p, r) for t, p, r in client.published if t == topic]
+
+
+def test_service_sets_online_on_every_connect_including_silent_reconnect(monkeypatch):
+    """paho verbindet nach einem Verbindungsverlust im Hintergrund neu; der
+    Broker hat dann den Last Will "offline" verteilt. Wurde "online" nur beim
+    ersten Connect gesetzt, blieb ems/status danach falsch stehen (23.10.2026)."""
+    topic, pub, client = _connected(monkeypatch, service=True)
+    assert client.will == (topic, "offline", True)
+    assert _status_msgs(client, topic) == [("online", True)]
+    assert topic in client.subscribed
+
+    client.published.clear()
+    pub._on_connect(client, None, None, 0, None)      # stiller Reconnect
+    assert _status_msgs(client, topic) == [("online", True)]
+
+
+def test_one_shot_run_leaves_the_service_status_alone(monkeypatch):
+    """Ein Einzellauf neben dem Dienst setzte beim Beenden "offline"."""
+    topic, pub, client = _connected(monkeypatch, service=False)
+    assert client.will is None
+    assert topic not in client.subscribed
+
+    pub._on_message(client, None, Msg(topic, "offline"))
+    pub.close()
+    assert _status_msgs(client, topic) == []
+
+
+def test_service_overrides_foreign_offline_but_not_its_own_shutdown(monkeypatch):
+    topic, pub, client = _connected(monkeypatch, service=True)
+    client.published.clear()
+
+    pub._on_message(client, None, Msg(topic, "online"))      # eigenes Echo
+    assert _status_msgs(client, topic) == []
+    pub._on_message(client, None, Msg(topic, "offline"))     # fremder Prozess
+    assert _status_msgs(client, topic) == [("online", True)]
+
+    client.published.clear()
+    pub.close()
+    # Das eigene "offline" kommt ueber das Abo zurueck - darf nicht geheilt werden.
+    pub._on_message(client, None, Msg(topic, "offline"))
+    assert _status_msgs(client, topic) == [("offline", True)]

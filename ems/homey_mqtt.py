@@ -12,11 +12,13 @@ Nur die Zeitplan-Tabelle (ems/schedule, reine Info) wird gemäß mqtt.retain
 retained.
 
 Liveness: Die Verbindung bleibt im Loop-Betrieb stehen. Beim Connect wird ein
-Last Will hinterlegt (ems/status = "offline", retained) und nach dem Connect
-ems/status = "online" (retained) publiziert. Stirbt der Prozess abnormal
-(Absturz, Stromausfall, kill), setzt der BROKER den Status selbst auf
-"offline" - Homey kann direkt darauf triggern statt nur auf Update-Alter.
-close() setzt "offline" beim regulären Beenden.
+Last Will hinterlegt (ems/status = "offline", retained) und bei JEDEM Connect
+- auch dem stillen Reconnect von paho - ems/status = "online" (retained)
+publiziert. Stirbt der Prozess abnormal (Absturz, Stromausfall, kill), setzt
+der BROKER den Status selbst auf "offline" - Homey kann direkt darauf triggern
+statt nur auf Update-Alter. close() setzt "offline" beim regulären Beenden.
+Den Status meldet nur der Dauerbetrieb; er liest ihn mit und stellt ein
+fremdes "offline" sofort richtig. Ein Einzellauf fasst ihn nicht an.
 
 Topic-Schema (base_topic = "ems"):
   ems/setpoint/batt_charge_limit_w      Ladelimit (Hardware-Max = frei laufen)
@@ -160,6 +162,13 @@ class HomeyMqttPublisher:
         # Enable/Disable je Last per ems/cmd/load/<slug>; leer = Konfigwert.
         self.load_overrides: Dict[str, bool] = {}
         self._load_defaults = {_slug(ld.name): ld.enabled for ld in self.loads}
+        # ems/status meldet nur der Dauerbetrieb (start()). Ein Einzellauf
+        # (python -m ems.main ohne --loop) neben dem Dienst setzte sonst beim
+        # Beenden "offline", obwohl der Dienst weiterlief.
+        self._meldet_status = False
+
+    def _status_topic(self) -> str:
+        return f"{self.cfg.base_topic}/status"
 
     def _connect(self):
         import socket
@@ -184,17 +193,18 @@ class HomeyMqttPublisher:
         # Last Will: der Broker setzt den Status selbst auf "offline", sobald
         # die Verbindung abnormal endet (Prozess-Absturz, Stromausfall, Netz-
         # verlust). retained, damit auch spätere Abonnenten den Zustand sehen.
-        status_topic = f"{self.cfg.base_topic}/status"
-        client.will_set(status_topic, "offline", qos=1, retain=True)
+        # "online" setzt _on_connect - bei JEDEM Connect, auch dem stillen
+        # Reconnect von paho.
+        if self._meldet_status:
+            client.will_set(self._status_topic(), "offline", qos=1, retain=True)
         client.connect(self.cfg.host, self.cfg.port, keepalive=60)
         client.loop_start()
-        info = client.publish(status_topic, "online", qos=1, retain=True)
-        try:
-            info.wait_for_publish(timeout=5)
-        except Exception as exc:  # pragma: no cover
-            log.debug("MQTT: Bestaetigung fuer 'online' ausgeblieben: %s", exc)
-        log.info("MQTT verbunden, Status 'online' (Last Will: %s = offline).",
-                 status_topic)
+        if self._meldet_status:
+            log.info("MQTT verbunden, Status 'online' (Last Will: %s = offline).",
+                     self._status_topic())
+        else:
+            log.info("MQTT verbunden (Einzellauf, %s bleibt unberuehrt).",
+                     self._status_topic())
         return client
 
     def get_load_temp(self, topic: str) -> Optional[float]:
@@ -320,6 +330,15 @@ class HomeyMqttPublisher:
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         # Signatur kompatibel zu Callback-API v1 (4 Argumente) und v2 (5).
         self._connected_at = pd.Timestamp.now(tz="UTC")
+        if self._meldet_status:
+            # Nach einem Verbindungsverlust hat der Broker den Last Will
+            # verteilt; paho verbindet im Hintergrund neu, ohne dass
+            # _ensure_connected davon erfaehrt. Wurde "online" nur beim ersten
+            # Connect gesetzt, blieb ems/status danach auf "offline" stehen -
+            # so am 23.10.2026 vorgefunden, bei seit Tagen laufendem Dienst.
+            client.publish(self._status_topic(), "online", qos=1, retain=True)
+            # Mitlesen, um ein fremdes "offline" zu ueberschreiben (_on_message).
+            client.subscribe(self._status_topic(), qos=1)
         client.subscribe(f"{self.cfg.base_topic}/cmd/#", qos=1)
         for topic in self._temp_topics:      # Pool-/Puffer-Ist-Temperatur
             client.subscribe(topic, qos=1)
@@ -331,6 +350,17 @@ class HomeyMqttPublisher:
             payload = msg.payload.decode("utf-8", "replace").strip().lower()
         except Exception:  # pragma: no cover
             payload = ""
+        if msg.topic == self._status_topic():
+            # Selbstheilung: "offline" bei laufendem Dienst stammt von einem
+            # anderen Prozess (Einzellauf alter Versionen, verspaeteter Will
+            # einer frueheren Verbindung) - sofort richtigstellen. Das eigene
+            # "online" kommt hier ebenfalls an und wird ignoriert.
+            ziel = client if client is not None else self._client
+            if self._meldet_status and payload == "offline" and ziel is not None:
+                log.info("MQTT: fremdes '%s = offline' bei laufendem Dienst - "
+                         "setze 'online'.", msg.topic)
+                ziel.publish(msg.topic, "online", qos=1, retain=True)
+            return
         if msg.topic in self._temp_topics:   # Ist-Temperatur einer thermischen Last
             try:
                 self.load_temps[msg.topic] = float(payload.replace(",", "."))
@@ -532,7 +562,12 @@ class HomeyMqttPublisher:
         self._client = self._connect()
 
     def start(self) -> None:
-        """Empfangsverbindung früh starten, bevor der erste EMS-Lauf rechnet."""
+        """Empfangsverbindung früh starten, bevor der erste EMS-Lauf rechnet.
+
+        Nur der Dauerbetrieb ruft start() und meldet damit ems/status - auch
+        wenn der Broker hier noch nicht erreichbar ist und erst ein späterer
+        Zyklus verbindet."""
+        self._meldet_status = True
         if self.cfg.enabled:
             self._ensure_connected()
 
@@ -545,15 +580,20 @@ class HomeyMqttPublisher:
 
     def close(self) -> None:
         """Sauber beenden: Status 'offline' setzen und Verbindung trennen
-        (beim regulären Disconnect verschickt der Broker den Last Will nicht)."""
+        (beim regulären Disconnect verschickt der Broker den Last Will nicht).
+        Ein Einzellauf laesst den Status des Dienstes unberuehrt."""
+        # Vor dem Senden abschalten: sonst kaeme das eigene "offline" ueber das
+        # Status-Abo zurueck und die Selbstheilung setzte wieder "online".
+        meldet, self._meldet_status = self._meldet_status, False
         if self._client is None:
             return
-        try:
-            info = self._client.publish(f"{self.cfg.base_topic}/status",
-                                        "offline", qos=1, retain=True)
-            info.wait_for_publish(timeout=5)
-        except Exception as exc:  # pragma: no cover
-            log.debug("MQTT: 'offline'-Status nicht bestaetigt: %s", exc)
+        if meldet:
+            try:
+                info = self._client.publish(self._status_topic(),
+                                            "offline", qos=1, retain=True)
+                info.wait_for_publish(timeout=5)
+            except Exception as exc:  # pragma: no cover
+                log.debug("MQTT: 'offline'-Status nicht bestaetigt: %s", exc)
         try:
             self._client.loop_stop()
             self._client.disconnect()
