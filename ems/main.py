@@ -3350,7 +3350,7 @@ _last_spot_fetch = 0.0
 
 
 def _refresh_spot(config):
-    """Day-Ahead-Spotpreis von Energy-Charts holen und lokal cachen (throttled,
+    """Day-Ahead-Spotpreis von Energy-Charts, bei Ausfall SMARD, lokal cachen (throttled,
     höchstens einmal je ~5 min). Holt jüngste Historie + Folgetag (Day-Ahead),
     damit der Optimierungshorizont echte Preise hat. Nur bei dynamischem Tarif."""
     if not (config.tariff.enabled and config.tariff.type == "dynamic"):
@@ -3358,18 +3358,32 @@ def _refresh_spot(config):
     global _last_spot_fetch
     if _time.time() - _last_spot_fetch <= 300:
         return
+    # Auch Ausfälle drosseln, damit mehrere Aufrufer nicht erneut warten.
+    _last_spot_fetch = _time.time()
     try:
         from .energycharts import fetch_spot
         from .local_history import write_spot
         today = pd.Timestamp.now(tz=config.general.timezone).normalize()
-        start = (today - pd.Timedelta(days=3)).date().isoformat()
-        end = (today + pd.Timedelta(days=2)).date().isoformat()
-        n = write_spot(config.e3dc_rscp.history_db_path,
-                       fetch_spot(config.tariff.bidding_zone, start, end))
-        _last_spot_fetch = _time.time()
-        log.info("Energy-Charts: %d Spot-Preiswerte aktualisiert.", n)
+        start = (today - pd.DateOffset(days=3)).date().isoformat()
+        end = (today + pd.DateOffset(days=2)).date().isoformat()
+        source = "Energy-Charts"
+        try:
+            prices = fetch_spot(config.tariff.bidding_zone, start, end)
+            if not prices:
+                raise ValueError("keine Spot-Preiswerte geliefert")
+        except Exception as exc:
+            if config.tariff.bidding_zone != "DE-LU":
+                raise
+            log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – versuche SMARD.", exc)
+            from .smard import fetch_spot as fetch_smard
+            source = "SMARD"
+            prices = fetch_smard(config.tariff.bidding_zone, start, end)
+            if not prices:
+                raise ValueError("SMARD: keine vollständigen Spot-Preistage geliefert")
+        n = write_spot(config.e3dc_rscp.history_db_path, prices)
+        log.info("%s: %d Spot-Preiswerte aktualisiert.", source, n)
     except Exception as exc:
-        log.warning("Energy-Charts-Abruf fehlgeschlagen (%s) – nutze Cache.", exc)
+        log.warning("Spotpreis-Aktualisierung fehlgeschlagen (%s) – nutze Cache.", exc)
 
 
 def _forecast_quality_entry(name: str, total_slots: int, replaced_slots: int,

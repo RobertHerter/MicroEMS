@@ -83,7 +83,7 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | `ems/influx.py` | InfluxDB 1.x (InfluxQL) / 2.x (Flux): Lesen/Schreiben, 15-min-Resampling |
 | `ems/local_history.py` | Lokale SQLite (Hauslast, Ist-Werte, Temperatur, Preis, PV-Prognose, Archive) + Quellen-Weichen |
 | `ems/weather.py` | Temperatur + Einstrahlung von Open-Meteo (kein Key) |
-| `ems/energycharts.py` + `ems/tariff.py` | Spotpreis (Energy-Charts) + Tarifmodell → Endkunden-Bezugspreis |
+| `ems/energycharts.py` + `ems/smard.py` + `ems/tariff.py` | Spotpreis (Energy-Charts, SMARD-Fallback) + Tarifmodell → Endkunden-Bezugspreis |
 | `ems/solcast.py` | PV-Vorhersage von Solcast (mehrere Keys/Resourcen) + Dispatcher der aktiven PV-Quelle |
 | `ems/pvforecast.py` | Freie PV-Ertragsprognose mit pvlib + lernendem Open-Meteo-Mehrmodell-Ensemble |
 | `ems/pv_ensemble.py` | Horizontabhängige Rolling-Origin-Gewichte und empirische P10/P90-Bänder |
@@ -168,6 +168,15 @@ Tabelle `spot_price`; das Tarifmodell rechnet daraus den Endkunden-Bezugspreis:
 netto  = spot·(1+markup_percent/100) + markup_ct_kwh + levies_ct_kwh + netzentgelt
 brutto = netto·(1+vat_percent/100)          # MwSt auf alles
 ```
+
+Bei Abruffehlern oder leerer Antwort springt für `DE-LU` automatisch
+[SMARD (Bundesnetzagentur)](https://www.smard.de/home/marktdaten/) ein
+(Reihe 4169, Viertelstunden, EUR/MWh → ct/kWh netto). Nur vollständige
+Markttage werden übernommen, einschließlich der 92/100 Slots bei Zeitumstellung.
+Energy-Charts bleibt die bevorzugte Quelle und überschreibt nach seiner Rückkehr
+dieselben Cache-Werte. Sind beide Quellen ausgefallen, bleiben Cache und
+Preisschätzung aktiv. Abrufversuche werden auch bei Ausfällen auf einmal je
+fünf Minuten begrenzt. Der Fallback ersetzt keine Erzeugungsdaten.
 
 Netzentgelt `static`/`included`/`14a` (§14a EnWG zeitvariabel). Tiefe Historie via
 `energycharts_backfill.py`. Fehlende Folgetag-Preise ergänzt die Ähnliche-Tage-Schätzung.

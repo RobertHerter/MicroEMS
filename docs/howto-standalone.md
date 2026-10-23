@@ -1,6 +1,6 @@
 # MicroEMS von 0 aufsetzen – nur mit einem E3DC, ohne InfluxDB
 
-Alle Fremdquellen sind kostenlos und ohne API-Key: Wetter von Open-Meteo, Spotpreis von Energy-Charts, PV-Prognose mit pvlib. Gebraucht wird nur der E3DC im LAN.
+Alle Fremdquellen sind kostenlos und ohne API-Key: Wetter von Open-Meteo, Spotpreis von Energy-Charts (bei Ausfall für DE-LU automatisch SMARD), PV-Prognose mit pvlib. Gebraucht wird nur der E3DC im LAN.
 
 ## 1. Voraussetzungen
 
