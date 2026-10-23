@@ -73,6 +73,23 @@ class FitResult:
         return self.a_solar_w_per_wm2 / surface_m2
 
 
+def nur_saison(ld, serie: pd.Series) -> pd.Series:
+    """Nur Messwerte aus der Saison der Last.
+
+    Ausserhalb der Saison steckt der Sensor nicht im Pool (deshalb loggt das
+    EMS dort auch keine Freigaben, siehe ``loads.in_season``). Seit dem
+    15.09.2026 lagen im 30-Tage-Fenster nur noch solche Werte; ein Fit darauf
+    haette mit --apply Unsinn ins Overlay geschrieben. Am Saisonanfang gilt
+    dasselbe fuer den Teil des Fensters, der noch im Winter liegt.
+    """
+    from .loads import in_season
+    if serie is None or len(serie) == 0:
+        return serie
+    maske = np.fromiter((in_season(ld, ts) for ts in serie.index),
+                        dtype=bool, count=len(serie))
+    return serie[maske]
+
+
 def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
                        permit: pd.Series, capacity_wh_per_k: float,
                        min_windows: int = 48,
@@ -101,7 +118,14 @@ def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
         "Ta": pd.Series(t_amb).reindex(grid, method="nearest", tolerance=tol),
         "G": pd.Series(g_solar).reindex(grid, method="nearest", tolerance=tol),
         # KEIN Auffüllen: nur wirklich geloggte Zyklen zählen als bekannt.
-        "p": pd.Series(permit).reindex(grid, method="nearest", tolerance=tol),
+        # Ohne eine einzige Freigabe hat die leere Serie einen ZAHLENindex, und
+        # reindex(method="nearest") auf das Zeitraster bricht daran ab - so am
+        # 11. und 18.10.2026, obwohl der Fit mit Stufen-Rueckmeldung die
+        # Freigaben gar nicht braucht.
+        "p": (pd.Series(permit, dtype="float64").reindex(
+                  grid, method="nearest", tolerance=tol)
+              if permit is not None and len(permit) else
+              pd.Series(np.nan, index=grid)),
     })
     stage_cols = []
     for name, series in stage_on.items():
@@ -231,7 +255,12 @@ def run(config_path: str, days: int = 30, apply: bool = False) -> int:
     for ld in getattr(config, "controllable_loads", []):
         if ld.type != "thermal":
             continue
-        t_pool = read_load_temp(db, ld.name, start, now, tz)
+        t_pool = nur_saison(ld, read_load_temp(db, ld.name, start, now, tz))
+        if t_pool is None or len(t_pool) == 0:
+            print(f"== {ld.name} ==")
+            print("  Ausserhalb der Saison - der Sensor steckt nicht im Pool, "
+                  "keine Kalibrierung.")
+            continue
         t_amb = read_temperature(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
         g = read_radiation(db, start, now, tz, f"{int(SLOT_HOURS * 60)}min")
         permit = read_load_cmd(db, ld.name, start, now, tz)

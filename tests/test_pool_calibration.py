@@ -241,3 +241,58 @@ def test_real_stage_feedback_roundtrip(tmp_path):
                                 base, base, TZ)
     assert total.iloc[0] == 1.0
     assert stages["WP1"].iloc[0] == 1.0 and stages["WP2"].iloc[0] == 0.0
+
+
+def test_fit_ohne_freigaben_mit_stufenrueckmeldung_stuerzt_nicht_ab():
+    """Sonntagslauf 11. und 18.10.2026: TypeError "Cannot compare dtypes
+    int64 and datetime64" - und weil die Unit ihre Schritte nacheinander
+    abarbeitet, liefen danach weder Akku-Kalibrierung noch Lastprofile,
+    Archiv-Ausduennung oder PV-Messung. Der Pool war aus: keine einzige
+    Freigabe im Fenster, aber 2877 Stufen-Rueckmeldungen (alle aus). Eine leere
+    Serie hat einen Zahlenindex, und ``reindex(..., method="nearest")`` auf ein
+    Zeitraster bricht daran - obwohl der Fit mit Stufen-Rueckmeldung die
+    Freigaben gar nicht braucht."""
+    idx = pd.date_range("2026-06-01", periods=12 * 96, freq="15min", tz=TZ)
+    hour = idx.hour + idx.minute / 60.0
+    ambient = pd.Series(19.0 + 3.0 * np.sin(2 * np.pi * hour / 24), index=idx)
+    solar = pd.Series(np.maximum(0.0, 700.0 * np.sin(np.pi * (hour - 6) / 14)),
+                      index=idx)
+    wp = pd.Series(((idx.dayofyear % 3 == 0) & (hour >= 2) & (hour < 5))
+                   .astype(float), index=idx)
+    temp = np.empty(len(idx) + 1)
+    temp[0] = 27.0
+    for i in range(len(idx)):
+        q = 4000.0 * wp.iloc[i] + 6.0 * solar.iloc[i] \
+            - 120.0 * (temp[i] - ambient.iloc[i])
+        temp[i + 1] = temp[i] + q * 0.25 / CAP
+    pool = pd.Series(temp[:-1], index=idx)
+
+    fit = fit_thermal_params(pool, ambient, solar, pd.Series(dtype="float64"),
+                             CAP, stage_on={"WP": wp})
+
+    assert fit is not None
+    assert fit.stage_heat_w["WP"] == pytest.approx(4000, rel=0.12)
+
+
+def test_nur_messwerte_aus_der_saison_gehen_in_den_fit():
+    """Ausserhalb der Saison steckt der Sensor nicht im Pool (siehe
+    test_in_season_guards_calibration_logging). Seit dem 15.09.2026 lagen nur
+    noch solche Werte im 30-Tage-Fenster; ein Fit darauf haette - mit --apply
+    - Unsinn ins Overlay geschrieben. Am Saisonanfang gilt dasselbe fuer den
+    Teil des Fensters, der noch im Winter liegt."""
+    from ems.config import ControllableLoad, LoadStage
+    from ems.pool_calibration import nur_saison
+    pool = ControllableLoad(name="Pool", type="thermal",
+                            season_from="04-15", season_to="09-15",
+                            stages=[LoadStage("WP", 400, 3000)])
+    idx = pd.date_range("2026-09-10", "2026-09-20 23:45", freq="15min", tz=TZ)
+    werte = pd.Series(25.0, index=idx)
+
+    rest = nur_saison(pool, werte)
+
+    assert rest.index.min() == pd.Timestamp("2026-09-10", tz=TZ)
+    assert rest.index.max().date() == pd.Timestamp("2026-09-15").date()
+    assert nur_saison(pool, werte[werte.index >= pd.Timestamp("2026-09-16", tz=TZ)]).empty
+    ohne = ControllableLoad(name="X", type="thermal",
+                            stages=[LoadStage("WP", 400, 3000)])
+    assert len(nur_saison(ohne, werte)) == len(werte)       # keine Saison = immer
