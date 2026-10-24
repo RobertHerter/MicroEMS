@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from ems.config import ControllableLoad
 from ems.optimizer import Optimizer, _warm_cache
@@ -265,6 +266,63 @@ def test_hold_penalty_cannot_be_evaded_with_minimum_discharge():
     assert (dis[:4] < 1.0).all(), \
         "Halte-Malus wird weiterhin mit Mindestentladung umgangen"
     assert (dis[4:] > 100.0).any(), "Hochpreisphase sollte Akkuenergie nutzen"
+
+
+@pytest.mark.parametrize("slot_minutes,remaining_wh", [
+    (5, 8.0), (15, 30.0), (30, 60.0), (60, 120.0),
+])
+def test_hold_rule_allows_grid_when_remainder_cannot_supply_minimum_discharge(
+        slot_minutes, remaining_wh):
+    """Restenergie reicht nicht fuer 100 W plus Verluste eines ganzen Slots.
+
+    Netzbezug muss moeglich sein, ohne Mindest-SoC oder Mindestleistung zu
+    verletzen. Der fruehere reine Sockellast-Puffer machte dies unloesbar.
+    """
+    cfg = make_config()
+    cfg.general.slot_minutes = slot_minutes
+    cfg.optimization.battery_hold_penalty_ct_kwh = 5.0
+    cfg.optimization.min_discharge_w = 100.0
+    cfg.optimization.standby_discharge_w = 40.0
+    cfg.house_battery.discharge_efficiency = 0.913
+    cfg.house_battery.max_ac_charge_w = 0.0
+    idx = pd.date_range("2026-10-24 07:00", periods=2,
+                        freq=f"{slot_minutes}min", tz="Europe/Berlin")
+    soc = cfg.house_battery.min_soc_wh + remaining_wh
+    result = Optimizer(cfg, store_warm=False, diagnose_infeasible=False).solve(
+        _inputs(idx, pv=0.0, load=800.0, price=20.0, soc=soc))
+
+    assert not result.infeasible
+    assert result.table["batt_discharge_w"].to_numpy() == pytest.approx([0.0, 0.0])
+    assert result.table["grid_import_w"].to_numpy() == pytest.approx([800.0, 800.0])
+    assert result.table["house_soc_wh"].to_numpy() == pytest.approx([soc, soc])
+
+
+def test_hold_rule_near_minimum_soc_replays_20261024_morning():
+    """Die ersten drei Slots des unloesbaren 06:30-Plans vom 24.10.2026.
+
+    Nach zwei Entladeslots bleiben 15..37 Wh ueber Mindest-SoC. Diese reichen
+    nicht fuer einen weiteren aktiven Slot; Netzbezug muss dann erlaubt sein.
+    """
+    cfg = make_config()
+    cfg.house_battery.capacity_wh = 18259.5
+    cfg.house_battery.min_soc_percent = 10.0
+    cfg.house_battery.discharge_efficiency = 0.913
+    cfg.house_battery.max_ac_charge_w = 0.0
+    cfg.optimization.charge_strategy = "asap"
+    cfg.optimization.battery_hold_penalty_ct_kwh = 5.0
+    cfg.optimization.min_discharge_w = 100.0
+    cfg.optimization.standby_discharge_w = 40.0
+    idx = pd.date_range("2026-10-24 06:30", periods=3, freq="15min", tz="Europe/Berlin")
+    result = Optimizer(cfg, store_warm=False, diagnose_infeasible=False).solve(
+        _inputs(idx, pv=0.0, load=[757.446, 785.759, 715.687],
+                price=[18.618, 19.194, 19.289], soc=2283.7))
+
+    assert not result.infeasible
+    table = result.table
+    assert (table["house_soc_wh"] >= cfg.house_battery.min_soc_wh - 0.1).all()
+    assert (table["batt_discharge_w"].iloc[:2] >= 100.0).all()
+    assert table["batt_discharge_w"].iloc[2] == pytest.approx(0.0)
+    assert table["grid_import_w"].iloc[2] == pytest.approx(715.687, abs=0.1)
 
 
 def test_energy_sufficiency_forbids_hold_until_next_pv_surplus():

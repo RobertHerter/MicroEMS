@@ -1360,12 +1360,13 @@ class Optimizer:
         hold_energy_flags = [None] * N
         if hold_pen:
             avoidable_import = []
-            # Nur echten numerischen/WR-Sockel-Puffer am Mindest-SoC als
-            # "keine nutzbare Energie mehr" behandeln. Der fruehere pauschale
-            # 100-Wh-Puffer erlaubte bis zu rund 0,4 kWh/Tag vorgezogenen
-            # Netzbezug und machte im p10-Fall eine kleine Vor-PV-Reserve
-            # attraktiv, obwohl der Akku noch liefern konnte.
-            soc_buffer_wh = max(1.0, standby_w * dt)
+            # Restenergie muss fuer einen ganzen Slot mit Mindestentladung
+            # UND WR-Sockellast reichen. Sonst verbietet min_dis die Entladung,
+            # waehrend has_energy den unvermeidbaren Netzbezug sperrt: Infeasible
+            # nahe Mindest-SoC (24.10.2026, 06:30). Physikalische Grenze statt
+            # pauschalem Wh-Puffer, passend zu Slotdauer und Wirkungsgrad.
+            soc_buffer_wh = max(
+                1.0, (min_dis / hb.discharge_efficiency + standby_w) * dt)
             usable_wh = max(1.0, hb.max_soc_wh - hb.min_soc_wh)
             base_deficits = np.maximum(
                 np.asarray(inp.house_load_w, dtype=float)
@@ -1434,7 +1435,7 @@ class Optimizer:
                 hold_energy_flags[t] = has_energy
                 avoidable = lp_var(prob, f"avoidimp_{t}", 0, BIGG)
                 # has_energy muss 1 sein, sobald nach dem Slot mehr als der
-                # kleine Rundungs-/Sockelpuffer ueber Mindest-SoC verbleibt.
+                # Mindestentlade-/Sockelpuffer ueber Mindest-SoC verbleibt.
                 prob += (soc[t + 1] - hb.min_soc_wh
                          <= soc_buffer_wh + usable_wh * has_energy)
                 local_import = g_imp[t] - ac[t]
