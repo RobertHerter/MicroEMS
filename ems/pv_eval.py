@@ -27,6 +27,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time
+
 from .quality import bias_w
 
 from . import pvforecast
@@ -318,7 +320,7 @@ def compare_sources(config, lookback_days=30, now=None, min_pv_w=50.0,
     db = config.e3dc_rscp.history_db_path
     now = pd.Timestamp(now).tz_convert(tz) if now is not None \
         else pd.Timestamp.now(tz=tz)
-    end = now.floor(f"{slot}min")
+    end = floor_time(now, f"{slot}min")
     start = end - pd.Timedelta(days=lookback_days)
 
     groups = {}
@@ -375,7 +377,7 @@ def _common_archive_metrics(config, lookback_days: int, now,
     """Beide Quellen auf exakt denselben Archiv-/Ist-Slots bewerten."""
     tz, slot = config.general.timezone, config.general.slot_minutes
     db = config.e3dc_rscp.history_db_path
-    end = pd.Timestamp(now).tz_convert(tz).floor(f"{slot}min")
+    end = floor_time(pd.Timestamp(now).tz_convert(tz), f"{slot}min")
     start = end - pd.Timedelta(days=lookback_days)
     sc_ids = solcast_source_ids(config)
     pv_ids = pvforecast.source_ids(config) if config.pv_model.arrays else []
@@ -531,7 +533,7 @@ def calibrate_band(config, lookback_days=60, now=None, min_pv_w=100.0,
     db = config.e3dc_rscp.history_db_path
     now = pd.Timestamp(now).tz_convert(tz) if now is not None \
         else pd.Timestamp.now(tz=tz)
-    end = now.floor(f"{slot}min")
+    end = floor_time(now, f"{slot}min")
     start = end - pd.Timedelta(days=lookback_days)
     sources = pvforecast.source_ids(config)
 

@@ -30,6 +30,8 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time
+
 from .config import Config, load_config
 from .dashboard import build_dashboard
 from .forecast import (LoadForecaster, dampen_estimated,
@@ -636,9 +638,8 @@ def _audit_execution(config, now, live, e3dc=None):
         slot = pd.Timedelta(minutes=config.general.slot_minutes)
         delay_minutes = max(float(config.general.slot_minutes), float(getattr(
             config.monitoring, "execution_meter_delay_minutes", 75.0) or 75.0))
-        audit_ts = (pd.Timestamp(now) - pd.Timedelta(
-            minutes=delay_minutes)).floor(
-                f"{config.general.slot_minutes}min")
+        audit_ts = floor_time(pd.Timestamp(now) - pd.Timedelta(
+            minutes=delay_minutes), f"{config.general.slot_minutes}min")
         audit_end = audit_ts + slot
         expected_windows = config.general.slot_minutes // 15
         try:
@@ -1001,7 +1002,7 @@ class _LiveExecutionMonitor:
         Vormittagsflanke systematisch daneben - derselbe Fehler, den die
         Leistungs-Istwerte hatten.
         """
-        slot = pd.Timestamp(now).floor(f"{self.config.general.slot_minutes}min")
+        slot = floor_time(now, f"{self.config.general.slot_minutes}min")
         if self._string_slot is not None and slot != self._string_slot:
             self._flush_strings(self._string_slot)
         self._string_slot = slot
@@ -1174,7 +1175,7 @@ class _LiveExecutionMonitor:
             return live
         from .local_history import (read_execution_plan_slot,
                                     write_execution_audit)
-        slot = now.floor(f"{self.config.general.slot_minutes}min")
+        slot = floor_time(now, f"{self.config.general.slot_minutes}min")
         planned = read_execution_plan_slot(
             self.config.e3dc_rscp.history_db_path, slot)
         if not planned or planned.get("battery_w") is None:
@@ -1293,8 +1294,8 @@ def _live_recalc_needed(config, e3dc, live=None):
         return None
     try:
         from .local_history import read_execution_plan_slot
-        slot = pd.Timestamp.now(tz=config.general.timezone).floor(
-            f"{config.general.slot_minutes}min")
+        slot = floor_time(pd.Timestamp.now(tz=config.general.timezone),
+                          f"{config.general.slot_minutes}min")
         planned = read_execution_plan_slot(config.e3dc_rscp.history_db_path, slot)
         if not planned or planned.get("grid_w") is None:
             return None
@@ -1788,7 +1789,7 @@ def _house_history_refresh_window(now, last, slot_minutes: int,
     """Sicheres RSCP-Historienfenster: gereift, überlappend, max. drei Tage."""
     freq = pd.Timedelta(minutes=slot_minutes)
     now = pd.Timestamp(now)
-    safe_end = (now - pd.Timedelta(minutes=settle_minutes)).floor(freq)
+    safe_end = floor_time(now - pd.Timedelta(minutes=settle_minutes), freq)
     if last is None:
         start = safe_end - timedelta(days=1)
     else:
@@ -1856,7 +1857,7 @@ def _settle_actual_slots(config, now) -> int:
     from .local_history import read_live_slot_averages, settle_actual_slots
 
     slot = pd.Timedelta(minutes=config.general.slot_minutes)
-    current = pd.Timestamp(now).floor(f"{config.general.slot_minutes}min")
+    current = floor_time(now, f"{config.general.slot_minutes}min")
     averages = read_live_slot_averages(
         config.e3dc_rscp.history_db_path, current - pd.Timedelta(hours=1),
         current + slot, config.general.timezone, config.general.slot_minutes,
@@ -1908,7 +1909,7 @@ PREDICTION_COLS = [
 
 def _now_slot(config: Config) -> pd.Timestamp:
     freq = f"{config.general.slot_minutes}min"
-    return pd.Timestamp.now(tz=config.general.timezone).floor(freq)
+    return floor_time(pd.Timestamp.now(tz=config.general.timezone), freq)
 
 
 def _control_slot(config: Config, plan_start) -> pd.Timestamp:
@@ -2489,7 +2490,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # sobald morgen real vorliegt; gelb, solange morgen (noch) geschätzt ist;
         # rot nur ohne jeden realen Preis.
         _est = price_estimated.to_numpy(dtype=bool)
-        _next_day_end = now.normalize() + pd.Timedelta(days=2)
+        _next_day_end = now.normalize() + pd.DateOffset(days=2)
         _next_day = opt_index < _next_day_end
         if int(price_estimated.sum()) >= total_slots or total_slots == 0:
             _p_level, _p_state = "replaced", "keine realen Preise"
@@ -2767,7 +2768,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     f"Ausführungs-Versatz {execution_bias['median_w']:+.0f} W "
                     f"im Median über {execution_bias['n']} Slots "
                     f"({execution_bias['kwh_per_day']:+.2f} kWh/Tag) – die "
-                    f"Anlage folgt den Sollwerten systematisch anders.")
+                    f"Anlage weicht vom ausführbaren Befehlsrahmen ab.")
             if (diagnostics_refreshed and efficiency_drift
                     and efficiency_drift.get("alert")):
                 publisher.publish_alert(
@@ -2800,7 +2801,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             try:
                 from .local_history import write_load_cmd
                 from .loads import in_season
-                slot_ts = pd.Timestamp(now).floor("15min")
+                slot_ts = floor_time(now, "15min")
                 for ld in getattr(config, "controllable_loads", []):
                     if ld.type != "thermal" or not ld.enabled \
                             or not in_season(ld, slot_ts):
@@ -3478,7 +3479,7 @@ def _source_status(config, now):
     genau das soll sichtbar werden, statt unbemerkt tagelang auf alten
     Daten zu optimieren."""
     out = []
-    now = pd.Timestamp(now).floor("15min")
+    now = floor_time(now, "15min")
     tz = config.general.timezone
     # Spotpreis (Energy-Charts): bis wann liegen ECHTE Preise vor? Erwartung:
     # vormittags bis Ende heute; nach der Day-Ahead-Auktion (~14 Uhr) sollte
@@ -3492,7 +3493,7 @@ def _source_status(config, now):
             sd = s.dropna()
             last = sd.index[-1] if len(sd) else None
             expected = (now.normalize()
-                        + pd.Timedelta(days=2 if now.hour >= 15 else 1)
+                        + pd.DateOffset(days=2 if now.hour >= 15 else 1)
                         - pd.Timedelta(minutes=15))
             if last is None or last < now:
                 lvl, det = "err", ("keine Daten" if last is None else

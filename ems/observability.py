@@ -12,6 +12,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time
+
 from .quality import MIN_SAMPLES, bias_w, enough, shortfall_note
 
 log = logging.getLogger("ems.observability")
@@ -695,8 +697,8 @@ def array_forecast_quality(config, days: int = 14, now=None) -> dict:
     # Auf das Slotraster runden: read_group_asof baut sein Raster ab ``start``,
     # ein schiefer Anfang trifft die archivierten Stundenwerte nie.
     raster = f"{config.general.slot_minutes}min"
-    current = current.floor(raster)
-    start = (current - pd.Timedelta(days=max(1, int(days)))).floor(raster)
+    current = floor_time(current, raster)
+    start = floor_time(current - pd.Timedelta(days=max(1, int(days))), raster)
     try:
         straenge = read_pv_strings(db, start, current, tz)
     except Exception:                                   # pragma: no cover
@@ -1037,7 +1039,7 @@ def _pv_nowcast_accuracy(config, start, now) -> dict:
         # Der Snapshot wird erst einige Sekunden nach dem auf 15 Minuten
         # gerundeten Optimierungs-Origin geschrieben. Für die Slotzuordnung
         # zählt derselbe gerundete Origin wie beim produktiven Faktor.
-        origin = issue.floor(f"{slot_minutes}min")
+        origin = floor_time(issue, f"{slot_minutes}min")
         targets = prod.index.intersection(base.index).intersection(actual.index)
         targets = targets[(targets >= origin) & (targets < origin + horizon)
                           & (targets >= start) & (targets < now)]

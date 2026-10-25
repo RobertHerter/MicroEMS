@@ -38,6 +38,8 @@ from typing import Dict, Optional
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time, ambiguous_wall_time
+
 from .config import Config
 
 log = logging.getLogger("ems.rscp")
@@ -365,13 +367,20 @@ class E3DCLink:
         (Backfill: eigenes Skript; zyklisch: nur wenige Fenster)."""
         out: Dict[str, float] = {}
         tz = self.cfg.general.timezone
-        t = pd.Timestamp(start).floor("15min")
-        end = pd.Timestamp(end).floor("15min")
+        t = floor_time(start, "15min")
+        end = floor_time(end, "15min")
         # In Ortszeit iterieren (tz-aware sicherstellen), damit die DST-korrekte
         # Verschiebung je Slot bestimmt werden kann.
         t = (t.tz_localize(tz) if t.tz is None else t.tz_convert(tz))
         end = (end.tz_localize(tz) if end.tz is None else end.tz_convert(tz))
         while t < end:
+            # Die Wandzeit-API hat keinen Offset/Fold-Parameter. Beide
+            # 02-Uhr-Stunden wuerden dieselbe Abfrage erzeugen; keine Energie
+            # doppelt als zwei verschiedene UTC-Fenster verbuchen.
+            if ambiguous_wall_time(t):
+                log.debug("RSCP Hauslast %s: doppelte Ortszeit nicht eindeutig lesbar.", t)
+                t += pd.Timedelta(minutes=15)
+                continue
             # Die E3DC-Historien-DB (get_db_data_timestamp) liegt in ORTSZEIT: sie
             # interpretiert den übergebenen Epoch als lokale Wandzeit. Ein echter
             # UTC-Epoch liefert das Fenster daher um den Zeitzonen-Offset verschoben
@@ -412,11 +421,15 @@ class E3DCLink:
         grid_power_in=Einspeisung, bat_power_in=Laden, bat_power_out=Entladen."""
         out: Dict[str, dict] = {}
         tz = self.cfg.general.timezone
-        t = pd.Timestamp(start).floor("15min")
-        end = pd.Timestamp(end).floor("15min")
+        t = floor_time(start, "15min")
+        end = floor_time(end, "15min")
         t = (t.tz_localize(tz) if t.tz is None else t.tz_convert(tz))
         end = (end.tz_localize(tz) if end.tz is None else end.tz_convert(tz))
         while t < end:
+            if ambiguous_wall_time(t):
+                log.debug("RSCP Energie %s: doppelte Ortszeit nicht eindeutig lesbar.", t)
+                t += pd.Timedelta(minutes=15)
+                continue
             local_epoch = int(t.timestamp() + t.utcoffset().total_seconds())
             try:
                 with self._lock:

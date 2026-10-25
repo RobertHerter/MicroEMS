@@ -278,6 +278,25 @@ Plattenplatz. Wer sie weglassen will, installiert von Hand:
                       plotly scikit-learn pye3dc pvlib highspy
 ```
 
+## Zeitumstellung und Ausführungsprüfung
+
+Das Betriebsraster wird auf der UTC-Zeitachse gerundet. Ein lokaler Tag hat
+bei der Zeitumstellung 92 beziehungsweise 100 Viertelstunden. Im Dashboard
+bleiben die beiden 02-Uhr-Stunden als CEST und CET getrennt sichtbar.
+
+Die E3DC-Historienabfrage verwendet lokale Wandzeit ohne Offset. Für die
+doppelte Stunde würde sie dieselben Werte zweimal liefern. Diese Fenster
+werden deshalb beim Historienimport und beim Zähler-Audit ausgelassen;
+eindeutig datierte Live-Messungen bleiben verfügbar. Fehlende Messungen
+dürfen nicht durch duplizierte Zählerwerte ersetzt werden.
+
+Der Ausführungsversatz misst die Abweichung von den tatsächlich befohlenen
+Akku-Limits und der unter gemessener Last/PV erreichbaren Leistung. Die freie
+Eigenverbrauchsregelung folgt der tatsächlichen Last; ihre Abweichung von
+einer Lastprognose ist kein Steuerungsfehler. Die rohe Planabweichung bleibt
+separat sichtbar. Ausgebliebenes Netzladen und überschrittene Limits zählen
+weiterhin als Ausführungsabweichungen.
+
 ## Optional
 
 * **MQTT ans Smart Home:** `mqtt.enabled: true` mit Broker-Daten. Läuft parallel zur RSCP-Steuerung.

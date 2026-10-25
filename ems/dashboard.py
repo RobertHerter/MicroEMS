@@ -284,10 +284,12 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
   // Die Grenzen kommen mit der EMS-Zeitzone vom Server. Eine UTC-Umwandlung
   // würde lokale Mitternacht im Sommer auf 22:00 des Vortags verschieben.
   var xaxis={{gridcolor:c.grid,tickformat:'%a %H:%M'}};
+  var absoluteTime=!!(src.layout.meta&&src.layout.meta.absolute_time);
+  if(absoluteTime){{['type','tickmode','tickvals','ticktext'].forEach(function(k){{xaxis[k]=src.layout.xaxis[k];}});}}
   if(hours==='all'){{xaxis.autorange=true;}}
-  else{{xaxis.range=ranges[hours];}}
+  else{{xaxis.range=absoluteTime?ranges[hours].map(function(v){{return Date.parse(v);}}):ranges[hours];}}
   var srcAxis=src.layout[axis==='y'?'yaxis':'yaxis'+axis.slice(1)]||{{}};
-  var layout={{height:420,autosize:true,hovermode:'x unified',separators:',.',showlegend:true,
+  var layout={{height:420,autosize:true,hovermode:src.layout.hovermode||'x unified',separators:',.',showlegend:true,
    paper_bgcolor:c.paper,plot_bgcolor:c.plot,font:{{color:c.font}},margin:{{l:48,r:12,t:18,b:85}},
    hoverlabel:{{bgcolor:document.documentElement.classList.contains('dark')?'#202b36':'#ffffff',
     bordercolor:document.documentElement.classList.contains('dark')?'#536273':'#cfd7df',
@@ -305,9 +307,10 @@ def _mobile_plot_block(now, has_loads: bool, temp_row: int | None) -> str:
  function desktopRange(){{
   var src=source();if(mobileView()||!src||!window.Plotly)return;
   var update={{}};
+  var absoluteTime=!!(src.layout.meta&&src.layout.meta.absolute_time);
   Object.keys(src.layout).filter(function(k){{return /^xaxis\\d*$/.test(k);}}).forEach(function(k){{
    if(hours==='all'){{update[k+'.autorange']=true;update[k+'.range']=null;}}
-   else{{update[k+'.autorange']=false;update[k+'.range']=ranges[hours];}}
+   else{{update[k+'.autorange']=false;update[k+'.range']=absoluteTime?ranges[hours].map(function(v){{return Date.parse(v);}}):ranges[hours];}}
   }});
   Plotly.relayout(src,update);
  }}
@@ -1754,7 +1757,10 @@ def _operations_block(solver, execution, timezone="Europe/Berlin",
             f"<div class='quality-detail'>{int(execution_bias.get('n', 0))} Zählerprüfungen"
             f" · {float(execution_bias.get('window_days', 0)):.0f}-Tage-Fenster"
             f" · Schwelle ±{float(execution_bias.get('threshold_w', 0)):.0f} W"
-            " · systematische Abweichung vom Sollfahrplan</div></article>")
+            " · Abweichung vom ausführbaren Befehlsrahmen"
+            + (f" · rohe Planabweichung {float(execution_bias['raw_median_w']):+.0f} W"
+               if execution_bias.get("raw_median_w") is not None else "")
+            + "</div></article>")
 
     infeasible = bool(plan_status.get("infeasible"))
     shortfall_wh = float(plan_status.get("car_target_shortfall_wh", 0.0) or 0.0)
@@ -1885,20 +1891,25 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
     t = table
     x = t.index
     now = pd.Timestamp.now(tz=x.tz)
-    # Zeitachse der SPUREN als naive Ortszeit-Strings statt ISO mit UTC-Versatz.
+    # Ohne Offsetwechsel genuegt die kompakte Wanduhr-Achse. Am Umstellungstag
+    # braucht Plotly absolute Millisekunden: naive 02:15 wuerde beide Slots
+    # uebereinanderlegen. Lokale Beschriftungen erhalten CEST/CET zur Trennung.
+    absolute_time = len({ts.utcoffset() for ts in x}) > 1
+    # Ohne Offsetwechsel: Zeitachse als kompakte naive Ortszeit-Strings.
     # Plotly rechnet Datumsangaben ohnehin als Wanduhrzeit - die Achse zeigt
     # heute schon Ortszeit, sonst laege alles zwei Stunden daneben -, der
     # Versatz kostet also nur Bytes. Und er kostet sie 30-mal: JEDE Spur traegt
     # eine eigene Kopie derselben 288 Zeitstempel (gemessen 8 KB je Spur,
-    # 244 KB einer 580-KB-Seite). Umgerechnet wird weiter JE PUNKT durch pandas,
-    # nicht ueber ein unterstelltes gleichmaessiges Raster - sonst waeren die
-    # beiden Zeitumstellungstage im Jahr falsch.
+    # 244 KB einer 580-KB-Seite). Bei Offsetwechsel bleibt hingegen jeder
+    # Punkt auf der eindeutigen absoluten Zeitachse.
     # WICHTIG: alles, was auf derselben Achse sitzt (Formen, Anmerkungen), muss
     # dasselbe Format benutzen, sonst verrutscht es gegen die Kurven.
-    def _xp(ts) -> str:
-        return pd.Timestamp(ts).tz_localize(None).strftime("%Y-%m-%d %H:%M")
+    def _xp(ts):
+        stamp = pd.Timestamp(ts)
+        return (int(stamp.timestamp() * 1000) if absolute_time else
+                stamp.tz_localize(None).strftime("%Y-%m-%d %H:%M"))
 
-    xp = x.tz_localize(None).strftime("%Y-%m-%d %H:%M").tolist()
+    xp = [_xp(ts) for ts in x]
     load_temp_actual = load_temp_actual or {}
 
     # Günstige Kennzahl für den (eingeklappten) Analyse-Panel-Titel + Ampel:
@@ -2487,7 +2498,7 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                     # Eigener Index (Open-Meteo-Raster), deshalb hier dieselbe
                     # Umrechnung wie fuer xp - eine Spur im ISO-Format auf einer
                     # sonst naiven Achse wuerde gegen alle anderen verrutschen.
-                    x=amb.index.tz_localize(None).strftime("%Y-%m-%d %H:%M"),
+                    x=[_xp(ts) for ts in amb.index],
                     y=amb.values, name="Außentemperatur", mode="lines",
                     line=dict(color="#7f7f7f", width=1.5, dash="dot"),
                     hovertemplate="Außentemperatur: %{y:.1f} °C<extra></extra>",
@@ -2520,7 +2531,22 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
                            text=f"<b>{_WD[day.weekday()]} "
                                 f"{day.strftime('%d.%m.')}</b>",
                            font=dict(size=12, color="#666"))
-        day += pd.Timedelta(days=1)
+        day += pd.DateOffset(days=1)
+
+    if absolute_time:
+        hours = x[x.minute == 0]
+        ticks = hours[(hours.hour % 3 == 0) | (hours.hour == 2)]
+        fig.update_xaxes(type="linear", tickmode="array",
+                         tickvals=[_xp(ts) for ts in ticks],
+                         ticktext=[ts.strftime("%d.%m. %H:%M %Z") for ts in ticks])
+        for trace in fig.data:
+            if trace.x is None or not len(trace.x) or trace.x[0] is None:
+                continue
+            labels = [pd.Timestamp(v, unit="ms", tz="UTC").tz_convert(x.tz)
+                      .strftime("%d.%m. %H:%M %Z") for v in trace.x]
+            trace.text = ([labels] * len(trace.y) if trace.type == "heatmap" else labels)
+            template = trace.hovertemplate or "%{y}<extra></extra>"
+            trace.hovertemplate = "%{text}<br>" + template.replace("%{x|%H:%M}", "%{text}")
 
     fig.update_yaxes(title_text="W", row=1, col=1)
     fig.update_yaxes(title_text="%", range=[0, 101], row=2, col=1)
@@ -2565,7 +2591,8 @@ def build_dashboard(config: Config, table: pd.DataFrame, total_cost_ct: float,
         # darunter durchscheinen, und die ist per CSS sofort in der richtigen
         # Farbe (das Theme-Skript im <head> laeuft vor dem ersten Paint).
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        hovermode="x unified",
+        hovermode="closest" if absolute_time else "x unified",
+        meta={"absolute_time": absolute_time},
         # Ohne harte Distanzgrenze nimmt Plotly im Unified-Hover für eine
         # Zukunftsprognose noch den letzten Istpunkt links vom Jetzt-Marker
         # hinzu. Dann trägt der Kasten z.B. 11:45, enthält aber Istwerte von

@@ -35,6 +35,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time, ceil_time
+
 from .quality import BOUNDS
 
 log = logging.getLogger("ems.pool_calibration")
@@ -105,8 +107,8 @@ def fit_thermal_params(t_pool: pd.Series, t_amb: pd.Series, g_solar: pd.Series,
     if (t_pool is None or len(t_pool) == 0 or
             (not stage_on and (permit is None or len(permit) == 0))):
         return None
-    grid = pd.date_range(t_pool.index.min().floor(freq),
-                         t_pool.index.max().ceil(freq), freq=freq)
+    grid = pd.date_range(floor_time(t_pool.index.min(), freq),
+                         ceil_time(t_pool.index.max(), freq), freq=freq)
     tol = pd.Timedelta(freq)
     # Alle Reihen auf das 15-min-Raster mit method="nearest" ziehen: Ta/G aus der
     # Wetterhistorie sind (anders als Annahme) NICHT bündig auf :00/:15 - ihr

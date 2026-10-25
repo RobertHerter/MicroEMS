@@ -194,7 +194,10 @@ def _seed_audits(db, deviation_w, n=200, tail=False):
             dev = -1500.0
         write_execution_audit(db, base + pd.Timedelta(minutes=15 * k), {
             "ok": True, "state": "ok", "message": "",
-            "planned": {"battery_w": 0.0}, "actual": {"battery_w": dev},
+            "planned": {"battery_w": 0.0, "charge_limit_w": 0.0,
+                        "discharge_limit_w": 0.0, "grid_charge_w": 0.0},
+            "actual": {"battery_w": dev, "pv_w": 0.0, "load_w": 500.0,
+                       "soc": 50.0},
             "deviations": {"battery_w": dev}})
 
 
@@ -233,6 +236,42 @@ def test_execution_bias_needs_a_day_of_data(tmp_path):
     _seed_audits(cfg.e3dc_rscp.history_db_path, -120.0, n=20)
     assert DriftMonitor(cfg).check_execution_bias(
         pd.Timestamp("2026-01-12 06:00", tz="UTC")) is None
+
+
+@pytest.mark.parametrize("state", ["ok", "forecast_deviation"])
+def test_execution_bias_does_not_call_load_forecast_error_a_device_bias(monkeypatch, state):
+    from ems.drift import DriftMonitor
+    from ems import local_history
+    rows = [{"ts": t.isoformat(), "state": state,
+             "planned": {"battery_w": -500.0, "pv_w": 0.0, "load_w": 500.0,
+                         "charge_limit_w": 5000.0, "discharge_limit_w": 5000.0,
+                         "grid_charge_w": 0.0},
+             "actual": {"battery_w": -620.0, "pv_w": 0.0, "load_w": 620.0,
+                        "soc": 50.0},
+             "deviations": {"battery_w": -120.0}}
+            for t in pd.date_range("2026-01-10", periods=100, freq="15min", tz="UTC")]
+    monkeypatch.setattr(local_history, "read_execution_audits", lambda *a, **kw: rows)
+    out = DriftMonitor(make_config()).check_execution_bias(pd.Timestamp("2026-01-12", tz="UTC"))
+    assert out is not None and out["n"] == 100
+    assert not out["alert"]
+    assert out["median_w"] == pytest.approx(0.0)
+    assert out["raw_median_w"] == pytest.approx(-120.0)
+
+
+def test_execution_bias_includes_real_device_errors(monkeypatch):
+    from ems.drift import DriftMonitor
+    from ems import local_history
+    rows = [{"ts": t.isoformat(), "state": "device_error",
+             "planned": {"battery_w": 1000.0, "charge_limit_w": 2000.0,
+                         "discharge_limit_w": 0.0, "grid_charge_w": 1000.0},
+             "actual": {"battery_w": 0.0, "pv_w": 0.0, "load_w": 500.0,
+                        "soc": 50.0},
+             "deviations": {"battery_w": -1000.0}}
+            for t in pd.date_range("2026-01-10", periods=100, freq="15min", tz="UTC")]
+    monkeypatch.setattr(local_history, "read_execution_audits", lambda *a, **kw: rows)
+    out = DriftMonitor(make_config()).check_execution_bias(pd.Timestamp("2026-01-12", tz="UTC"))
+    assert out is not None and out["alert"]
+    assert out["median_w"] == pytest.approx(-1000.0)
 
 
 # --------------------------------------------------------------------------- #

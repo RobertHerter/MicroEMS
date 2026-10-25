@@ -19,10 +19,11 @@ from ems.dashboard import build_dashboard
 from tests.test_synthetic import make_config
 
 
-def _render(tmp_path) -> str:
+def _render(tmp_path, index=None) -> str:
     cfg = make_config(tmp_html=str(tmp_path / "dash.html"))
-    index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
-                          tz=cfg.general.timezone)
+    if index is None:
+        index = pd.date_range("2026-07-29 10:00", periods=8, freq="15min",
+                              tz=cfg.general.timezone)
     n = len(index)
     table = pd.DataFrame({
         "house_load_w": np.full(n, 800.0), "pv_w": np.zeros(n),
@@ -136,6 +137,18 @@ def test_all_traces_share_one_time_format(tmp_path):
     assert not iso, f"Spuren im alten ISO-Format: {iso}"
     for a in achsen:
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", str(a[0])), a[0]
+
+
+def test_dashboard_distinguishes_both_hours_on_dst_day(tmp_path):
+    start = pd.Timestamp("2026-10-25", tz="Europe/Berlin")
+    grid = pd.date_range(start, start + pd.DateOffset(days=1), freq="15min", inclusive="left")
+    traces, layout = _figure(_render(tmp_path, grid))
+    xs = next(t["x"] for t in traces if t.get("name") == "Börsenpreis")
+    assert len(xs) == 100 and len(set(xs)) == 100
+    assert np.diff(xs) == pytest.approx(np.full(99, 900000))
+    assert layout["meta"]["absolute_time"]
+    labels = layout["xaxis"]["ticktext"]
+    assert "25.10. 02:00 CEST" in labels and "25.10. 02:00 CET" in labels
 
 
 def test_each_controllable_load_gets_its_own_colour(tmp_path):

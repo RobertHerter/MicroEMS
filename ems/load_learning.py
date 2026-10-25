@@ -28,6 +28,8 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time
+
 from .quality import BOUNDS
 
 log = logging.getLogger("ems.load_learning")
@@ -196,7 +198,7 @@ def _feedback_series(config, load, start, end) -> pd.Series:
     # Mehrere Stufen/Meldungen je Slot: aufsummieren waere doppelt gezaehlt,
     # wenn dasselbe Geraet mehrfach meldet - der Maximalwert je Slot trifft die
     # tatsaechliche Leistungsaufnahme.
-    return raw.groupby(raw.index.floor(freq)).max().sort_index()
+    return raw.groupby(floor_time(raw.index, freq)).max().sort_index()
 
 
 def run(config_path: str, days: int = 30, apply: bool = False,

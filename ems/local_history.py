@@ -18,6 +18,8 @@ from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
+
+from .time_utils import floor_time, ceil_time
 from .loads import load_power_columns
 
 log = logging.getLogger("ems.local_history")
@@ -690,7 +692,7 @@ def read_optimizer_forecast_origins(path: str, start, end, tz: str,
     selected = {}
     for issue_text, blob in rows:
         issue = pd.Timestamp(issue_text).tz_convert(tz)
-        selected[issue.floor(freq)] = blob
+        selected[floor_time(issue, freq)] = blob
     records = []
     for target, blob in selected.items():
         try:
@@ -1038,7 +1040,7 @@ def read_live_slot_averages(path: str, start, end, tz: str,
             continue
         cursor = left
         while cursor < right:
-            slot = cursor.floor(freq)
+            slot = floor_time(cursor, freq)
             boundary = min(slot + freq, right)
             a = (cursor - t0).total_seconds() / gap
             b = (boundary - t0).total_seconds() / gap
@@ -1181,7 +1183,7 @@ def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
                 "uses_power": bool(power_topic)}
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
     freq = f"{int(slot_minutes)}min"
-    grid = pd.date_range(begin.floor(freq), finish.ceil(freq),
+    grid = pd.date_range(floor_time(begin, freq), ceil_time(finish, freq),
                          freq=freq, inclusive="left")
     if not lanes:
         return (pd.Series(0.0, index=grid, dtype="float64"),
@@ -1201,7 +1203,7 @@ def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
         key = (str(name), str(stage))
         if key not in by_lane or not fresh:
             continue
-        stamp = pd.Timestamp(ts).tz_convert(tz).floor(freq)
+        stamp = floor_time(pd.Timestamp(ts).tz_convert(tz), freq)
         if stamp not in by_lane[key].index:
             continue
         value = power_w if lanes[key]["uses_power"] else None
@@ -1318,7 +1320,7 @@ def read_load_stage_run_state(path: str, name: str, stage: str, now,
     current = pd.Timestamp(now)
     if current.tzinfo is None:
         current = current.tz_localize("UTC")
-    cutoff = current.floor(f"{max(1, int(slot_minutes))}min").tz_convert("UTC")
+    cutoff = floor_time(current, f"{max(1, int(slot_minutes))}min").tz_convert("UTC")
     try:
         con = _con(path)
         rows = con.execute(
@@ -1726,8 +1728,8 @@ def read_temperature(path: str, start, end, tz: str, freq: str) -> pd.Series:
     # exaktes reindex(grid) beim Verbraucher (Forecaster/Kalibrierung) träfe
     # keinen Punkt -> alles NaN. So ist das Raster IMMER phasengleich zu den
     # (ebenfalls gefloorten) Verbraucher-Rastern, unabhängig vom Aufrufer.
-    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
-                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
+    grid = pd.date_range(floor_time(pd.Timestamp(start).tz_convert(tz), freq),
+                         ceil_time(pd.Timestamp(end).tz_convert(tz), freq), freq=freq,
                          inclusive="left")
     if len(grid) == 0:
         return hourly
@@ -1792,8 +1794,8 @@ def read_grid_weather(path: str, start, end, tz: str,
     if freq is None:
         return frame
     local = frame.tz_convert(tz)
-    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
-                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
+    grid = pd.date_range(floor_time(pd.Timestamp(start).tz_convert(tz), freq),
+                         ceil_time(pd.Timestamp(end).tz_convert(tz), freq), freq=freq,
                          inclusive="left")
     if len(grid) == 0:
         return local
@@ -1822,8 +1824,8 @@ def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:
     hourly = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
     # start/end hart aufs Slot-Boundary (floor/ceil), damit das Raster
     # phasengleich zu den Verbraucher-Rastern ist - siehe read_temperature.
-    grid = pd.date_range(pd.Timestamp(start).tz_convert(tz).floor(freq),
-                         pd.Timestamp(end).tz_convert(tz).ceil(freq), freq=freq,
+    grid = pd.date_range(floor_time(pd.Timestamp(start).tz_convert(tz), freq),
+                         ceil_time(pd.Timestamp(end).tz_convert(tz), freq), freq=freq,
                          inclusive="left")
     if len(grid) == 0:
         return hourly.clip(lower=0.0)
@@ -2182,7 +2184,7 @@ def read_optimizer_forecast_snapshots(path: str, start, end, tz: str,
     selected = {}
     for issue_text, blob in rows:
         issue = pd.Timestamp(issue_text).tz_convert("UTC")
-        selected[issue.floor(f"{stride}h")] = (issue, blob)
+        selected[floor_time(issue, f"{stride}h")] = (issue, blob)
     out = []
     for issue, blob in selected.values():
         try:

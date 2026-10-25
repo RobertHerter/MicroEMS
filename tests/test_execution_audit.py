@@ -788,6 +788,37 @@ def _monitor(tmp_path, stub):
     return _m._LiveExecutionMonitor(cfg, None, stub), cfg
 
 
+def test_live_monitor_survives_both_repeated_hours(tmp_path):
+    from ems.local_history import read_pv_strings
+    mon, cfg = _monitor(tmp_path, _StringStub([{0: 800.0}]))
+    cfg.forecast.live_nowcast_enabled = True
+    first = pd.Timestamp("2026-10-25T02:15:00+02:00").tz_convert(TZ)
+    second = pd.Timestamp("2026-10-25T02:15:00+01:00").tz_convert(TZ)
+    for ts in (first, second, second + pd.Timedelta(minutes=15)):
+        mon._string_last = 0.0
+        assert mon.sample(ts)["pv_w"] == 1000.0
+    values = read_pv_strings(cfg.e3dc_rscp.history_db_path,
+                            first, second + pd.Timedelta(minutes=15), TZ)
+    assert first in values.index and second in values.index
+    assert values.index.is_unique
+
+
+@pytest.mark.parametrize("offset", ["+02:00", "+01:00"])
+def test_meter_audit_targets_the_correct_repeated_hour(tmp_path, monkeypatch, offset):
+    import sys
+    ts = pd.Timestamp(f"2026-10-25T02:15:00{offset}").tz_convert(TZ)
+    monkeypatch.setattr(sys.modules[__name__], "TS", ts)
+    cfg = _cfg(tmp_path)
+    _completed_plan(cfg)
+    link = _EnergyLink({"pv_wh": 625.0, "load_wh": 125.0,
+                        "bat_in_wh": 500.0, "bat_out_wh": 0.0,
+                        "grid_import_wh": 0.0, "grid_export_wh": 0.0})
+    audit = _audit_execution(cfg, ts + pd.Timedelta(minutes=75),
+                             {"soc_percent": 52.0}, e3dc=link)
+    assert audit["ok"]
+    assert link.calls == [(ts, ts + pd.Timedelta(minutes=15))]
+
+
 def test_strings_are_stored_as_the_slot_mean(tmp_path):
     """Nicht der letzte Wert, sondern das Mittel.
 

@@ -16,6 +16,8 @@ import time
 import numpy as np
 import pandas as pd
 
+from .time_utils import floor_time
+
 from .loads import _season_mask
 from .local_history import (ems_schaltet_last,
                             read_controllable_load_power,
@@ -203,7 +205,7 @@ def candidate_forecasts(forecaster, history: pd.Series, start,
             if method == "ml":
                 retrain_h = max(
                     1, int(config.forecast.load_ensemble_ml_retrain_hours))
-                cutoff = pd.Timestamp(start).floor(f"{retrain_h}h")
+                cutoff = floor_time(start, f"{retrain_h}h")
                 lower = cutoff - pd.Timedelta(days=max(
                     30, config.forecast.load_ensemble_ml_lookback_days))
                 bounded = history[
@@ -437,7 +439,7 @@ def _learn_temperature(config, rows: pd.DataFrame) -> tuple[dict | None, dict]:
 
 def analyze(config, now, evaluation_actual: pd.Series):
     """Archivbasierte Gewichte und Temperaturmodell höchstens stündlich lernen."""
-    key = (pd.Timestamp(now).floor("1h"),
+    key = (floor_time(now, "1h"),
            int(pd.Series(evaluation_actual).notna().sum()))
     if (_ANALYSIS_CACHE["key"] == key and _ANALYSIS_CACHE["value"] is not None
             and time.monotonic() - _ANALYSIS_CACHE["at"] < 3600.0):

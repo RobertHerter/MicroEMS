@@ -667,6 +667,16 @@ def test_house_load_15min_queries_local_time():
     assert list(data.keys())[0].startswith("2026-07-01T04:00:00")
 
 
+def test_repeated_hour_is_not_read_twice_as_different_energy():
+    import pandas as pd
+    cfg, link = _link()
+    start = pd.Timestamp("2026-10-24T23:45Z").tz_convert("Europe/Berlin")
+    end = pd.Timestamp("2026-10-25T02:15Z").tz_convert("Europe/Berlin")
+    expected = {"2026-10-24T23:45:00+00:00", "2026-10-25T02:00:00+00:00"}
+    for reader in (link.read_house_load_15min, link.read_energy_15min):
+        assert set(reader(start, end)) == expected
+
+
 def test_house_load_15min_skips_unfinished_zero_balance():
     """Unfertige E3DC-Fenster dürfen keine dauerhaften 0-Werte erzeugen."""
     import pandas as pd

@@ -243,7 +243,7 @@ class DriftMonitor:
         return out
 
     def check_execution_bias(self, now: pd.Timestamp) -> Optional[dict]:
-        """Einseitigen Ausführungsversatz über ein Fenster aufsummieren.
+        """Einseitige Abweichung vom ausfuehrbaren Befehlsrahmen aufsummieren.
 
         Der Ausführungs-Audit prüft je Slot gegen die gereifte Zählerenergie -
         Zeitbezug korrekt, aber er summiert NICHT auf. Ein Versatz von wenigen
@@ -252,6 +252,7 @@ class DriftMonitor:
         einseitig ist (Rauschen wechselt das Vorzeichen).
         """
         from .local_history import read_execution_audits
+        from .execution import battery_execution_deviation
 
         try:
             rows = read_execution_audits(
@@ -262,22 +263,29 @@ class DriftMonitor:
             log.warning("Ausführungs-Bias nicht prüfbar (%s).", exc)
             return None
         cutoff = now - timedelta(days=self.exec_days)
-        values = []
+        values, raw_values = [], []
         for row in rows or []:
             # Nur zählerbasierte Prüfungen: die Live-Variante mittelt ~1 min
             # und gegen einen 15-min-Sollwert gestellt streut sie um ±1 kW -
             # das wäre Rauschen, kein Versatz.
-            if str(row.get("state", "")) not in ("ok", "deviation"):
+            if str(row.get("state", "")) not in (
+                    "ok", "deviation", "forecast_deviation", "device_error"):
                 continue
             try:
                 ts = pd.Timestamp(row.get("ts"))
                 if ts.tzinfo is None:
                     ts = ts.tz_localize("UTC")
-                if ts < cutoff:
+                if ts < cutoff or ts >= now:
                     continue
-                dev = (row.get("deviations") or {}).get("battery_w")
-                if dev is not None and pd.notna(dev):
-                    values.append(float(dev))
+                dev = battery_execution_deviation(
+                    row.get("planned") or {}, row.get("actual") or {},
+                    self.cfg.house_battery.min_soc_percent)
+                if dev is None:
+                    continue
+                values.append(dev)
+                raw = (row.get("deviations") or {}).get("battery_w")
+                if raw is not None and pd.notna(raw):
+                    raw_values.append(float(raw))
             except Exception:      # einzelne kaputte Zeile ignorieren
                 continue
         if not enough("drift_window", len(values)):
@@ -295,6 +303,9 @@ class DriftMonitor:
         share = (float((nonzero > 0).mean()) if len(nonzero) else 0.5)
         one_sided = max(share, 1.0 - share)
         out = {"median_w": round(median_w, 1), "mean_w": round(mean_w, 1),
+               "basis": "command_envelope",
+               "raw_median_w": (round(float(pd.Series(raw_values).median()), 1)
+                                if raw_values else None),
                "kwh_per_day": round(median_w * 24.0 / 1000.0, 2),
                "same_sign_share": round(one_sided, 2), "n": len(values),
                "window_days": round(float(self.exec_days), 1),
@@ -307,7 +318,7 @@ class DriftMonitor:
             log.warning(
                 "Ausführungs-Versatz: Median %+.0f W über %d Slots "
                 "(%.0f %% gleiches Vorzeichen) = %+.2f kWh/Tag. Die Anlage "
-                "folgt den Sollwerten systematisch anders als geplant.",
+                "weicht systematisch vom ausführbaren Befehlsrahmen ab.",
                 median_w, len(values), 100.0 * one_sided, out["kwh_per_day"])
         else:
             log.info("Ausführungs-Versatz: Median %+.0f W, Mittel %+.0f W "
