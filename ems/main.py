@@ -979,7 +979,9 @@ class _LiveExecutionMonitor:
         # 5-s-Takt. Einmal je Minute reicht fuer ein belastbares Slotmittel und
         # belastet den Watchdog nicht, der nebenher den Akkumodus halten muss.
         self.string_samples = []
-        self._string_last = 0.0
+        # None = noch nie gelesen. Nicht 0.0: monotonic() zaehlt ab Systemstart,
+        # in der ersten Minute nach dem Booten griffe sonst schon die Sperre.
+        self._string_last = None
         self._string_slot = None
         self.slot = None
         self.bad_count = self.good_count = 0
@@ -1008,7 +1010,8 @@ class _LiveExecutionMonitor:
         self._string_slot = slot
 
         jetzt = _time.monotonic()
-        if jetzt - self._string_last < STRING_SAMPLE_S:
+        if (self._string_last is not None
+                and jetzt - self._string_last < STRING_SAMPLE_S):
             return
         self._string_last = jetzt
         try:

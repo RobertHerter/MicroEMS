@@ -795,7 +795,7 @@ def test_live_monitor_survives_both_repeated_hours(tmp_path):
     first = pd.Timestamp("2026-10-25T02:15:00+02:00").tz_convert(TZ)
     second = pd.Timestamp("2026-10-25T02:15:00+01:00").tz_convert(TZ)
     for ts in (first, second, second + pd.Timedelta(minutes=15)):
-        mon._string_last = 0.0
+        mon._string_last = None
         assert mon.sample(ts)["pv_w"] == 1000.0
     values = read_pv_strings(cfg.e3dc_rscp.history_db_path,
                             first, second + pd.Timedelta(minutes=15), TZ)
@@ -833,7 +833,7 @@ def test_strings_are_stored_as_the_slot_mean(tmp_path):
     mon, cfg = _monitor(tmp_path, stub)
     slot = pd.Timestamp("2026-08-05 08:00", tz=TZ)
     for k in range(3):
-        mon._string_last = 0.0          # Minutensperre fuer den Test loesen
+        mon._string_last = None          # Minutensperre fuer den Test loesen
         mon._sample_strings(slot + pd.Timedelta(minutes=k))
     mon._sample_strings(slot + pd.Timedelta(minutes=15))   # Slotwechsel -> Flush
 
@@ -853,6 +853,17 @@ def test_strings_are_not_polled_every_five_seconds(tmp_path):
     for _ in range(20):
         mon._sample_strings(slot)
     assert stub.aufrufe == 1, "Minutensperre greift nicht"
+
+
+def test_strings_are_read_right_after_boot(tmp_path, monkeypatch):
+    """monotonic() zaehlt ab Systemstart. Auf einem frisch gebooteten Rechner
+    (CI-Runner, Pi nach Stromausfall) darf die Minutensperre den ersten Abruf
+    nicht blockieren - so scheiterte CI am 09.11.2026 an drei Tests."""
+    monkeypatch.setattr(_m._time, "monotonic", lambda: 30.0)
+    stub = _StringStub([{0: 1000.0}])
+    mon, _ = _monitor(tmp_path, stub)
+    mon._sample_strings(pd.Timestamp("2026-08-05 08:00", tz=TZ))
+    assert stub.aufrufe == 1
 
 
 def test_strings_survive_a_device_without_them(tmp_path):
