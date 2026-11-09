@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from typing import Dict, Optional
 
 import numpy as np
@@ -45,6 +46,40 @@ from .config import Config
 log = logging.getLogger("ems.rscp")
 
 WATCHDOG_RESEND_S = 5.0   # < 10 s E3DC-Watchdog
+# Nach einem Moduswechsel braucht der E3DC, bis der Akku folgt. Am 09.11.2026
+# stand er nach dem Netzladebefehl (165 W bzw. 155 W, SoC 0 %) noch rund 60 s
+# bei -12 W und schwankte danach bis etwa 170 s zwischen -324 und +228 W, bevor
+# er gleichmaessig lud. Genau in dieser Zeit scheiterten einzelne Watchdog-
+# Sendungen, und die Wirkungspruefung sah keinen Ladestrom: zwei FEHLERalarme
+# fuer eine Steuerung, die funktionierte. In der Anlaufzeit wird eine Panne nur
+# protokolliert; scheitern die Sendungen danach weiter und widerspricht der
+# Fluss, alarmiert der Watchdog wie bisher.
+WATCHDOG_ANLAUF_S = 240.0
+# Die Wirkungspruefung mittelt den Akkufluss ueber dieses Fenster. Bei kleinen
+# Sollwerten schwankt er stark: am 09.11. lud der Akku im Mittel mit ~140 W
+# (Soll 165 W), einzelne 5-s-Werte lagen aber bei 72 W - unter der halben
+# Sollleistung.
+AKKUFLUSS_FENSTER_S = 60.0
+
+
+def rscp_ursache(exc: BaseException) -> str:
+    """Fehlertext samt eigentlicher Ursache.
+
+    pye3dc wiederholt jede Anfrage dreimal und meldet danach nur "Max retries
+    reached" - ob die Verbindung riss oder der E3DC die Anfrage mit einem
+    RSCP-Fehlercode (z.B. RSCP_ERR_AGAIN) ablehnte, steht nur in der
+    vorangegangenen Ausnahme. Python haengt sie als ``__context__`` an.
+    """
+    teile = [str(exc) or type(exc).__name__]
+    ursache = exc.__cause__ or exc.__context__
+    gesehen = {id(exc)}
+    while ursache is not None and id(ursache) not in gesehen:
+        gesehen.add(id(ursache))
+        text = str(ursache)
+        teile.append(f"{type(ursache).__name__}: {text}" if text
+                     else type(ursache).__name__)
+        ursache = ursache.__cause__ or ursache.__context__
+    return " <- ".join(teile)
 
 
 class E3DCLink:
@@ -63,6 +98,9 @@ class E3DCLink:
         self._wd_stop = threading.Event()
         self._wd_mode = 0
         self._wd_value = 0
+        # (monotone Zeit, Akku-W) der letzten Live-Lesungen - für die
+        # gemittelte Wirkungsprüfung des Watchdogs.
+        self._akkufluss: deque = deque(maxlen=64)
         # Persistente Lade-/Entlade-Begrenzung aktiv? (EMS_POWER_LIMITS_USED).
         # Anders als Mode 3/4 hat sie KEINEN E3DC-Watchdog -> beim Beenden/Absturz
         # ausdrücklich freigeben, sonst bleibt der Akku unbegrenzt gedrosselt.
@@ -270,6 +308,7 @@ class E3DCLink:
                               exc)
                     battery = {}
             self._live_cache = self._map_live(poll, battery)
+            self._merke_akkufluss(self._live_cache.get("battery_w"))
             return self._live_cache
         except Exception as exc:
             log.warning("RSCP read_live fehlgeschlagen (%s).", exc)
@@ -820,6 +859,9 @@ class E3DCLink:
         if not live or live.get("battery_w") is None:
             return False
         batt = float(live["battery_w"])
+        mittel = self._mittlerer_akkufluss()
+        if mittel is not None:
+            batt = mittel
         schwelle = 0.5 * abs(float(value))
         if mode == 1:                                   # halten
             return abs(batt) <= max(100.0, 0.1 * abs(float(value)))
@@ -829,38 +871,68 @@ class E3DCLink:
             return batt >= schwelle
         return False
 
+    def _merke_akkufluss(self, battery_w, jetzt: Optional[float] = None) -> None:
+        if battery_w is None:
+            return
+        try:
+            wert = float(battery_w)
+        except (TypeError, ValueError):
+            return
+        verlauf = getattr(self, "_akkufluss", None)
+        if verlauf is not None:
+            verlauf.append((time.monotonic() if jetzt is None else jetzt, wert))
+
+    def _mittlerer_akkufluss(self, jetzt: Optional[float] = None) -> Optional[float]:
+        """Mittlerer Akkufluss der Live-Lesungen im Fenster, None ohne Werte."""
+        jetzt = time.monotonic() if jetzt is None else jetzt
+        werte = [w for t, w in list(getattr(self, "_akkufluss", ()))
+                 if 0.0 <= jetzt - t <= AKKUFLUSS_FENSTER_S]
+        return float(np.mean(werte)) if werte else None
+
     def _watchdog_loop(self) -> None:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
+        gesehen, seit = None, time.monotonic()
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
             mode, value = self._wd_mode, self._wd_value
+            if mode != gesehen:                 # Moduswechsel: Anlauf beginnt
+                gesehen, seit = mode, time.monotonic()
             if mode in (1, 2, 3, 4):
-                try:
-                    self._set_power(mode, value)
-                    if self._watchdog_failed and self._alarm_callback:
-                        self._alarm_callback(
-                            "info", "E3DC-Steuer-Watchdog wiederhergestellt.")
-                    self._watchdog_failed = False
-                except Exception as exc:  # pragma: no cover
-                    if self._mode_effective(mode, value):
-                        # Sendung gescheitert, Modus wirkt trotzdem: kein Alarm.
-                        log.debug(
-                            "RSCP-Watchdog-Sendung fehlgeschlagen (%s), der "
-                            "Modus %d wirkt aber weiter - kein Steuerausfall.",
-                            exc, mode)
-                        continue
-                    log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s).", exc)
-                    status = self._control_status(
-                        False, "watchdog_failed", f"mode_{mode}",
-                        f"E3DC-Steuer-Watchdog ausgefallen: {exc}",
-                        expected={"mode": mode, "power_w": value})
-                    self._watchdog_failed = True
-                    now = time.time()
-                    repeat_s = max(
-                        60.0, float(self.rc.control_alarm_repeat_minutes) * 60.0)
-                    if (self._alarm_callback
-                            and now - self._last_watchdog_alarm >= repeat_s):
-                        self._alarm_callback("error", status["message"])
-                        self._last_watchdog_alarm = now
+                self._watchdog_senden(mode, value, time.monotonic() - seit)
+
+    def _watchdog_senden(self, mode: int, value: int,
+                         seit_wechsel_s: float) -> None:
+        """Eine Watchdog-Sendung. Alarm nur, wenn die Steuerung wirklich weg ist:
+        Sendung gescheitert, Anlaufzeit vorbei und der Akkufluss widerspricht."""
+        try:
+            self._set_power(mode, value)
+            if self._watchdog_failed and self._alarm_callback:
+                self._alarm_callback(
+                    "info", "E3DC-Steuer-Watchdog wiederhergestellt.")
+            self._watchdog_failed = False
+            return
+        except Exception as exc:
+            ursache = rscp_ursache(exc)
+        if self._mode_effective(mode, value):
+            # Sendung gescheitert, Modus wirkt trotzdem: kein Alarm.
+            log.debug("RSCP-Watchdog-Sendung fehlgeschlagen (%s), der Modus %d "
+                      "wirkt aber weiter - kein Steuerausfall.", ursache, mode)
+            return
+        if seit_wechsel_s < WATCHDOG_ANLAUF_S:
+            log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s), %.0f s nach "
+                        "dem Wechsel auf Modus %d - der E3DC laeuft noch an, "
+                        "noch kein Alarm.", ursache, seit_wechsel_s, mode)
+            return
+        log.warning("RSCP-Watchdog-Sendung fehlgeschlagen (%s).", ursache)
+        status = self._control_status(
+            False, "watchdog_failed", f"mode_{mode}",
+            f"E3DC-Steuer-Watchdog ausgefallen: {ursache}",
+            expected={"mode": mode, "power_w": value})
+        self._watchdog_failed = True
+        now = time.time()
+        repeat_s = max(60.0, float(self.rc.control_alarm_repeat_minutes) * 60.0)
+        if self._alarm_callback and now - self._last_watchdog_alarm >= repeat_s:
+            self._alarm_callback("error", status["message"])
+            self._last_watchdog_alarm = now
 
     def _ensure_watchdog(self) -> None:
         if self._wd_thread is None or not self._wd_thread.is_alive():
@@ -1018,7 +1090,8 @@ class E3DCLink:
                             # Ueberschuss. Frueher brach der Zweig hier ab, und
                             # die Grenzen des Slots wurden gar nicht gesetzt.
                             auto_hinweis = (
-                                f"auf auto zurücksetzen fehlgeschlagen ({exc}); "
+                                "auf auto zurücksetzen fehlgeschlagen "
+                                f"({rscp_ursache(exc)}); "
                                 "ohne Watchdog fällt das E3DC nach 10 s von "
                                 "selbst auf auto")
                             log.warning("RSCP: %s.", auto_hinweis)
@@ -1047,18 +1120,19 @@ class E3DCLink:
                 # Sendeerfolg zaehlt, sondern ob der Akkufluss widerspricht. Das
                 # gilt aber nur, wenn der Watchdog den NEUEN Befehl traegt -
                 # scheitert schon die Freigabe, beweist ein laufender Fluss nichts.
+                ursache = rscp_ursache(exc)
                 if bewaffnet is not None and self._mode_effective(*bewaffnet):
                     log.warning(
                         "RSCP: %s fehlgeschlagen (%s); der Watchdog trägt den "
                         "neuen Sollwert Mode %d, %d W, der Akkufluss bestätigt "
-                        "ihn - kein Steuerausfall.", schritt, exc, *bewaffnet)
+                        "ihn - kein Steuerausfall.", schritt, ursache, *bewaffnet)
                     return self._control_status(
                         None, "watchdog_carries", f"mode_{bewaffnet[0]}",
-                        f"{schritt} fehlgeschlagen ({exc}); der Watchdog trägt "
+                        f"{schritt} fehlgeschlagen ({ursache}); der Watchdog trägt "
                         f"den neuen Sollwert, der Akkufluss bestätigt ihn.",
                         expected={"mode": bewaffnet[0], "power_w": bewaffnet[1]})
                 log.warning("RSCP-Steuerung fehlgeschlagen beim Schritt "
-                            "'%s' (%s).", schritt, exc)
+                            "'%s' (%s).", schritt, ursache)
                 return self._control_status(
                     False, "write_failed", "control",
-                    f"E3DC-Steuerbefehl fehlgeschlagen ({schritt}): {exc}")
+                    f"E3DC-Steuerbefehl fehlgeschlagen ({schritt}): {ursache}")

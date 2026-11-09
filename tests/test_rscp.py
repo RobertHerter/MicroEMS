@@ -962,3 +962,93 @@ def test_nach_gescheitertem_zuruecksetzen_werden_die_grenzen_trotzdem_gesetzt():
     assert fake.limits["max_charge"] == 2000
     assert status["ok"] is True                       # Grenzen bestaetigt
     link.close()
+
+
+def _max_retries(code="RSCP_ERR_AGAIN"):
+    """So meldet pye3dc eine abgelehnte Anfrage: CommunicationError mit dem
+    RSCP-Fehlercode, nach drei Wiederholungen ueberdeckt von SendError."""
+    from e3dc._e3dc import SendError
+    from e3dc._e3dc_rscp_local import CommunicationError
+    try:
+        try:
+            raise CommunicationError(code)
+        except Exception:
+            raise SendError("Max retries reached")
+    except SendError as exc:
+        return exc
+
+
+def test_rscp_ursache_nennt_den_e3dc_fehlercode():
+    """Bis 09.11.2026 stand in Log und Alarm nur "Max retries reached" - ob die
+    Verbindung riss oder der E3DC ablehnte, war nicht zu erkennen."""
+    from ems.rscp import rscp_ursache
+    assert rscp_ursache(_max_retries()) == \
+        "Max retries reached <- CommunicationError: RSCP_ERR_AGAIN"
+    # Netzfehler: pye3dc macht daraus eine CommunicationError ohne Text
+    from e3dc._e3dc_rscp_local import CommunicationError
+    try:
+        try:
+            raise TimeoutError("timed out")
+        except Exception:
+            raise CommunicationError
+    except CommunicationError as exc:
+        assert rscp_ursache(exc) == "CommunicationError <- TimeoutError: timed out"
+    assert rscp_ursache(RuntimeError("kaputt")) == "kaputt"
+
+
+def test_watchdog_panne_im_anlauf_ist_kein_alarm_danach_mit_ursache():
+    """09.11.2026, 00:46: Netzladen 165 W bei SoC 0 %. Der Akku stand noch 60 s
+    bei -12 W, schwankte dann bis ~170 s und lud danach gleichmaessig. Die
+    Watchdog-Pannen nach 73, 123 und 154 s loesten einen FEHLERalarm aus."""
+    cfg, link = _link(control_enabled=True)
+    alarme = []
+    link.set_alarm_callback(lambda level, text: alarme.append((level, text)))
+
+    def lehnt_ab(mode, value):
+        raise _max_retries()
+    link._set_power = lehnt_ab
+    link.read_live = lambda force=False: {"battery_w": -12.0}   # noch kein Laden
+
+    for sekunden in (73, 123, 154):
+        link._watchdog_senden(4, 165, float(sekunden))
+    assert alarme == [] and not link._watchdog_failed
+
+    # Nach der Anlaufzeit, Akku folgt weiter nicht: echter Ausfall, mit Ursache.
+    link._watchdog_senden(4, 165, 300.0)
+    assert link._watchdog_failed
+    (level, text), = alarme
+    assert level == "error"
+    assert "RSCP_ERR_AGAIN" in text
+    assert link._last_control_status["state"] == "watchdog_failed"
+    link.close()
+
+
+def test_wirkungspruefung_mittelt_den_akkufluss():
+    """Bei 165 W Soll lud der Akku am 09.11. im Mittel mit ~140 W, einzelne
+    5-s-Werte lagen bei 72 W - unter der halben Sollleistung."""
+    import time as _t
+    cfg, link = _link()
+    link.read_live = lambda force=False: {"battery_w": 72.0}
+    jetzt = _t.monotonic()
+    for i, w in enumerate([120, 126, 180, 201, 78, 147, 120, 126]):
+        link._merke_akkufluss(w, jetzt=jetzt - 40 + 5 * i)
+    assert link._mode_effective(4, 165) is True
+
+    # Unruhige Anlaufphase (00:48): im Mittel kein Laden -> nicht bestaetigt.
+    cfg, link = _link()
+    link.read_live = lambda force=False: {"battery_w": 99.0}
+    for i, w in enumerate([-171, -12, -12, 78, -285, -306, -165, 99]):
+        link._merke_akkufluss(w, jetzt=jetzt - 40 + 5 * i)
+    assert link._mode_effective(4, 165) is False
+
+    # Werte aelter als das Fenster zaehlen nicht mit.
+    cfg, link = _link()
+    link.read_live = lambda force=False: {"battery_w": 150.0}
+    link._merke_akkufluss(-900.0, jetzt=jetzt - 300)
+    assert link._mode_effective(4, 165) is True
+
+
+def test_read_live_merkt_den_akkufluss():
+    cfg, link = _link()
+    link.read_live(force=True)
+    assert link._mittlerer_akkufluss() == 900.0
