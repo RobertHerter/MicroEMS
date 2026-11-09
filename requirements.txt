@@ -3,7 +3,7 @@
 # Reproduzierbare Installation (exakt getestete Versionen): pip install -r requirements.lock
 
 PyYAML>=6.0.3
-pandas>=3.0.6
+pandas>=3.1.0
 numpy>=2.5.4
 python-dateutil>=2.9.0.post0
 
@@ -13,7 +13,9 @@ python-dateutil>=2.9.0.post0
 # bitgleich - welche Version laeuft, entscheidet der Lock. Den eingebauten
 # CBC gibt es ab 4.0 nur ueber pulp[cbc]; Docker-Image und Pi nutzen das
 # System-CBC (Paket coinor-cbc), der Produktivpfad ist ohnehin HiGHS.
-PuLP>=3.3.2,<5
+# Seit 09.11.2026 mindestens 4.2.0: 13 echte Laeufe unter 4.0.0 und 4.2.0
+# bitgleich (Plan und Kosten).
+PuLP>=4.2.0,<5
 # HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
 # mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
@@ -22,7 +24,7 @@ PuLP>=3.3.2,<5
 highspy>=1.15.1
 
 # Feiertage (Verbrauchsprognose)
-holidays>=0.106
+holidays>=0.107
 
 # InfluxDB – beide Clients, je nach konfigurierter Version wird einer genutzt
 influxdb>=5.3.2          # InfluxDB 1.x (InfluxQL)
@@ -38,7 +40,7 @@ plotly>=7.1.0
 scikit-learn>=1.9.1
 # Begrenzt die OpenMP-Threads des Preismodell-Trainings im Hintergrund
 # (ems/main.py). Kommt mit scikit-learn mit, wird aber direkt importiert.
-threadpoolctl>=3.6.0
+threadpoolctl>=3.7.0
 
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0
