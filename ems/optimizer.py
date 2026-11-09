@@ -168,11 +168,17 @@ _WARM_SLOT_PREFIXES = frozenset({
     "isac", "acblk",
 })
 
-# Kleinste Netzladeleistung je Slot eines Netzladeblocks (W). Liegt deutlich
-# über der Befehlsschwelle (5 W), damit jeder Slot mit isac=1 real als
-# Netzladebefehl rausgeht: ein Block darf nicht über "Netzladen mit 0 W"
-# zwei getrennte Ladungen zu einer zusammenrechnen.
-GRID_CHARGE_SLOT_MIN_W = 50.0
+# Kleinste Netzladeleistung je Slot eines Netzladeblocks (W). Kleinstleistung
+# setzt der E3DC nur träge um (09.11.2026: 155-165 W brauchten 1-3 min Anlauf,
+# Befehle bis 300 W wurden teils abgelehnt). Außerdem muss jeder Blockslot
+# sicher über der Mikro-Netzladen-Schwelle der Tabelle (MICRO_GRID_CHARGE_W)
+# liegen: Mit 50 W hielt der Solver am 09.11. um 12:00 einen fertigen Block
+# über vier 50-W-Slots "offen", die Tabelle strich sie, und übrig blieb eine
+# 0,63-kWh-Nachladung um 13:00.
+GRID_CHARGE_SLOT_MIN_W = 500.0
+# Netzladen unter dieser Leistung gibt die Plantabelle nie als Befehl aus
+# (MIP-Gap-Rauschen außerhalb des Mindestmengen-Fensters).
+MICRO_GRID_CHARGE_W = 100.0
 # Die Mindestmenge gilt für Netzladeblöcke, die in den ersten Stunden des
 # Horizonts beginnen. Ausgeführt wird nur der erste Slot; später liegende
 # Blöcke werden bei jedem Lauf neu geplant und fallen unter die Regel, sobald
@@ -2049,7 +2055,7 @@ class Optimizer:
             # würde real Mode-4-Netzladen erzwingen. ac <= g_imp (Modell) macht
             # das Streichen exakt bilanz-konsistent (Import sinkt um denselben
             # Betrag); die SoC-Abweichung (< 25 Wh) liegt in der Toleranz.
-            if 0.0 < ac_v < 100.0:
+            if 0.0 < ac_v < MICRO_GRID_CHARGE_W:
                 imp_v = max(0.0, imp_v - ac_v)
                 ac_v = 0.0
             # Abregel-Krümel (MIP-Gap-Rauschen) deterministisch bereinigen: wird

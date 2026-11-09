@@ -53,6 +53,10 @@ def test_short_term_plan_stability_prefers_published_slot():
         cfg.optimization.plan_stability_hours = 1.0
         cfg.optimization.battery_hold_penalty_ct_kwh = 0.0
         cfg.optimization.battery_switch_penalty_ct = 0.0
+        # Die publizierte Ladung (3 kW, 0,72 kWh in den Akku; Platz 0,75 kWh)
+        # liegt unter der Mindestmenge je Netzladung - hier geht es nur um die
+        # Planstabilitaet.
+        cfg.optimization.min_grid_charge_kwh = 0.0
         _warm_cache.clear()
         _warm_cache.update({
             "start": idx[0] - pd.Timedelta(minutes=15),

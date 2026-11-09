@@ -3709,8 +3709,8 @@ def _read_grid_charge_run_wh(config, now) -> float:
     wh = read_grid_charge_run_wh(config.e3dc_rscp.history_db_path, now,
                                  config.general.slot_minutes)
     if wh > 0.0:
-        log.info("Laufende Netzladung: %.2f kWh aus dem Netz bisher befohlen.",
-                 wh / 1000.0)
+        log.info("Netzladeblock bis Slotbeginn: %.2f kWh aus dem Netz "
+                 "befohlen (zählt auf die Mindestmenge).", wh / 1000.0)
     return wh
 
 

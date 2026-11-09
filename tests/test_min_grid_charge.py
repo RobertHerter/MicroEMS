@@ -167,3 +167,42 @@ def test_laufende_netzladung_aus_dem_fahrplan(tmp_path):
     # Slot 05:15: davor lief 4 kW.
     assert read_grid_charge_run_wh(pfad, idx[1], slot) == 1000.0
     assert read_grid_charge_run_wh(str(tmp_path / "fehlt.sqlite"), idx[1], slot) == 0.0
+
+
+def _bruecken_fall(idx):
+    """Fertiger Block im Vorlauf, dann teuer, dann ein billiger Slot mit wenig Bedarf."""
+    n = len(idx)
+    preis = np.full(n, 50.0)
+    preis[:4] = 40.0
+    preis[4] = 10.0
+    last = np.zeros(n)
+    last[5:13] = 300.0
+    return preis, last
+
+
+def test_kein_block_ueber_kleinstleistung_verlaengern(monkeypatch):
+    """09.11.2026 12:00: 50-W-Slots hielten einen fertigen Block offen, die Tabelle
+    strich sie (< 100 W) und übrig blieb eine 0,63-kWh-Nachladung."""
+    import ems.optimizer as opt
+
+    idx = _day_index("2026-01-15")[:16]
+    preis, last = _bruecken_fall(idx)
+    cfg = _cfg(1.0)
+
+    def loesen():
+        inp = _inputs(idx, load=last, price=preis,
+                      soc=cfg.house_battery.min_soc_wh, grid_charge_run_wh=2200.0)
+        return Optimizer(cfg).solve(inp), inp
+
+    # Gegenprobe mit der alten 50-W-Grenze: der Fehler tritt auf.
+    monkeypatch.setattr(opt, "GRID_CHARGE_SLOT_MIN_W", 50.0)
+    alt, inp = loesen()
+    assert _grid_charge_blocks(cfg, alt.table["batt_grid_charge_w"], inp) is not None
+    monkeypatch.undo()
+
+    res, inp = loesen()
+    assert not res.infeasible
+    assert _grid_charge_blocks(cfg, res.table["batt_grid_charge_w"], inp) is None
+    werte = res.table["batt_grid_charge_w"].to_numpy(dtype=float)
+    aktiv = werte[werte > 5.0]
+    assert (aktiv >= opt.GRID_CHARGE_SLOT_MIN_W - 1.0).all(), aktiv
