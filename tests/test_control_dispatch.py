@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import threading
 
+import pandas as pd
 import pytest
 
 import ems.main as m
@@ -311,9 +312,13 @@ def test_status_api_payload_observability(tmp_path):
     assert code == 200 and "7d" in obj and "30d" in obj
     assert obj["7d"]["pv"]["n"] == 0 and obj["7d"]["load"]["n"] == 0
     assert obj["trend"] == []          # #3: Trend-Reihe (leer auf frischer DB)
+    # Die API begrenzt den Tag auf die letzten 90 Tage. Ein fester Tag
+    # (frueher der 28.07.2026) liess den Test ab dem 26.10.2026 scheitern.
+    tag = (pd.Timestamp.now(tz=cfg.general.timezone)
+           - pd.Timedelta(days=1)).date().isoformat()
     obj, code = m._status_api_payload(
-        "/api/forecast-analysis.json", cfg, {"day": ["2026-07-28"]})
-    assert code == 200 and obj["vintages"]["day"] == "2026-07-28"
+        "/api/forecast-analysis.json", cfg, {"day": [tag]})
+    assert code == 200 and obj["vintages"]["day"] == tag
     assert obj["heatmaps"]["pv"]["samples"] == 0
     obj, code = m._status_api_payload("/api/battery-health.json", cfg)
     assert code == 200 and obj["n"] == 0 and "cycles_equiv" in obj
