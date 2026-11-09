@@ -22,6 +22,7 @@ Modellannahmen (dokumentiert):
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import threading
@@ -70,6 +71,11 @@ class OptimizerInputs:
     # {"Pool/WP": {"on": bool, "minutes": Laufdauer}}. Daraus erzwingt das
     # Thermomodell Mindest-Ein-/Aus-Zeiten auch nach einer Neuplanung.
     load_run_state: Optional[dict] = None
+    # Netzseitige Energie (Wh) des Netzladeblocks, der bis zum Horizontbeginn
+    # lief (aus dem publizierten Fahrplan). 0 = vor Slot 0 kein Netzladen. Damit
+    # zaehlt beim Neuplanen mitten in einer Netzladung das schon Geladene auf
+    # die Mindestmenge (optimization.min_grid_charge_kwh).
+    grid_charge_run_wh: float = 0.0
     # Unveränderter Börsenpreis. Nur dieser entscheidet über
     # zero_at_negative_price; None hält alte Debug-Snapshots kompatibel.
     spot_price_ct_kwh: Optional[np.ndarray] = None
@@ -159,7 +165,58 @@ _WARM_SLOT_PREFIXES = frozenset({
     "car", "iscar", "soccar", "carshort", "carstart",
     "batholdblock", "matimp", "partdis", "hasbat", "avoidimp", "p10s", "hold",
     "plan_delta_dc", "plan_delta_ac", "plan_delta_dis", "plan_delta_car",
+    "isac", "acblk",
 })
+
+# Kleinste Netzladeleistung je Slot eines Netzladeblocks (W). Liegt deutlich
+# über der Befehlsschwelle (5 W), damit jeder Slot mit isac=1 real als
+# Netzladebefehl rausgeht: ein Block darf nicht über "Netzladen mit 0 W"
+# zwei getrennte Ladungen zu einer zusammenrechnen.
+GRID_CHARGE_SLOT_MIN_W = 50.0
+# Die Mindestmenge gilt für Netzladeblöcke, die in den ersten Stunden des
+# Horizonts beginnen. Ausgeführt wird nur der erste Slot; später liegende
+# Blöcke werden bei jedem Lauf neu geplant und fallen unter die Regel, sobald
+# sie in dieses Fenster rücken. Über den ganzen 48-h-Horizont kostete die
+# Regel in archivierten Netzladenächten das 3- bis 11-fache an Solverzeit
+# (bis 55 s statt 11 s), mit 6 h blieb sie beim bisherigen Niveau.
+GRID_CHARGE_MIN_WINDOW_H = 6.0
+
+
+def grid_charge_min_slots(N: int, dt: float) -> int:
+    """Anzahl Slots ab Horizontbeginn, in denen die Mindestmenge gilt."""
+    return max(0, min(int(N), int(math.ceil(GRID_CHARGE_MIN_WINDOW_H / dt - 1e-9))))
+
+
+def _add_min_grid_charge(prob, cfg, inp, ac, N: int, dt: float,
+                         max_ac: float) -> None:
+    """Jeder Netzladeblock bringt 0 oder mindestens min_grid_charge_kwh in den Akku.
+
+    Ein Block sind zusammenhängende Slots mit Netzladen (isac=1). acblk[t] ist
+    die im Block bis Slot t geladene Akkuenergie (Wh, auf die Mindestmenge
+    gekappt) und fällt mit isac=0 auf 0. Endet ein Block nach Slot t-1, muss
+    acblk[t-1] die Mindestmenge erreicht haben. Ein Block, der schon vor dem
+    Horizont lief (inp.grid_charge_run_wh), startet mit seiner Menge und darf in
+    Slot 0 jederzeit enden - Geladenes lässt sich nicht zurücknehmen. Ein Block,
+    der über das Regelfenster (GRID_CHARGE_MIN_WINDOW_H) hinausreicht, ist offen.
+    """
+    hb = cfg.house_battery
+    min_wh = max(0.0, float(getattr(cfg.optimization, "min_grid_charge_kwh", 0.0)))
+    min_wh = min(min_wh * 1000.0, max(0.0, hb.max_soc_wh - hb.min_soc_wh))
+    fenster = grid_charge_min_slots(N, dt)
+    if min_wh <= 0.0 or max_ac <= 0.0 or fenster <= 0:
+        return
+    eta = hb.eff_ac_charge
+    vorlauf_wh = max(0.0, float(getattr(inp, "grid_charge_run_wh", 0.0) or 0.0))
+    is_ac = [lp_var(prob, f"isac_{t}", cat="Binary") for t in range(fenster)]
+    blk = [lp_var(prob, f"acblk_{t}", 0, min_wh) for t in range(fenster)]
+    for t in range(fenster):
+        prob += ac[t] <= max_ac * is_ac[t]
+        prob += ac[t] >= min(GRID_CHARGE_SLOT_MIN_W, max_ac) * is_ac[t]
+        davor = blk[t - 1] if t > 0 else min(min_wh, eta * vorlauf_wh)
+        prob += blk[t] <= davor + eta * dt * ac[t]
+        prob += blk[t] <= min_wh * is_ac[t]
+        if t > 0:
+            prob += blk[t - 1] >= min_wh * (is_ac[t - 1] - is_ac[t])
 
 
 def _complete_pv10(pv10_w, expected_pv_w):
@@ -1141,6 +1198,8 @@ class Optimizer:
                     s = lp_var(prob, f"carshort_{t}", 0)
                     prob += soc_car[t] + s >= veh.target_soc_wh
                     car_short.append(s)
+
+        _add_min_grid_charge(prob, cfg, inp, ac, N, dt, max_ac)
 
         # Late-Ziel weich absichern: 100 % bzw. der konfigurierte maximale SoC
         # am Ende des nutzbaren PV-Fensters. Bei zu wenig PV bildet der Slack

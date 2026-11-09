@@ -498,6 +498,13 @@ class OptimizationConfig:
     # Mindest-Entladeleistung (W): Entladen ist 0 ODER >= diesem Wert (semi-
     # kontinuierlich) - verhindert stundenlanges Trickle-Entladen. 0 = aus.
     min_discharge_w: float = 0.0
+    # Mindestmenge je Netzladung (kWh in den Akku): ein zusammenhaengender
+    # Netzladeblock bringt 0 ODER mindestens so viel Energie in den Akku. Ohne
+    # Untergrenze plante der Optimierer Kleinstladungen (09.11.2026: 165 W fuer
+    # einen Slot = 37 Wh, um 0,4 ct/kWh Preisunterschied mitzunehmen), die der
+    # E3DC erst nach 1-3 min Anlauf und mit schlechtem Wirkungsgrad umsetzt.
+    # 0 = aus.
+    min_grid_charge_kwh: float = 1.0
     # Leistungs-Reserve (%): plant Akku-Lade/-Entladeleistung und WR-Durchsatz
     # nur bis (100 - x) % der Nennwerte. Lässt dem Echtzeit-Regler Reserve für
     # Sub-Slot-Lastspitzen (15-min-Mittelung sieht diese nicht). Hinweis: kann an
@@ -1445,6 +1452,7 @@ def load_config(path: str) -> Config:
         plan_stability_hours=float(o.get("plan_stability_hours", 4.0)),
         standby_discharge_w=float(o.get("standby_discharge_w", 0.0)),
         min_discharge_w=float(o.get("min_discharge_w", 0.0)),
+        min_grid_charge_kwh=float(o.get("min_grid_charge_kwh", 1.0)),
         power_headroom_percent=float(o.get("power_headroom_percent", 0.0)),
         evening_reserve_soc_percent=float(o.get("evening_reserve_soc_percent", 0.0)),
         evening_reserve_start=_parse_time(str(o.get("evening_reserve_start", "16:00"))),

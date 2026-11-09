@@ -485,6 +485,10 @@ optimization:
   # Mindest-Entladeleistung (W): Entladen ist 0 ODER >= diesem Wert - verhindert
   # stundenlanges Trickle-Entladen. 0 = aus, z.B. 150-300 W.
   min_discharge_w: 0.0
+  # Mindestmenge je Netzladung (kWh, die im Akku ankommen): ein Netzladeblock
+  # bringt 0 ODER mindestens so viel in den Akku - keine Kleinstladungen, die
+  # der Speicher nur träge und mit schlechtem Wirkungsgrad umsetzt. 0 = aus.
+  min_grid_charge_kwh: 1.0
   # Leistungs-Reserve (%): plant Akku-Lade/-Entladung und WR-Durchsatz nur bis
   # (100 - x) % der Nennwerte -> Reserve für Sub-Slot-Lastspitzen (die 15-min-
   # Mittelung sieht diese nicht). Kann an sonnigen Tagen minimale PV-Abregelung

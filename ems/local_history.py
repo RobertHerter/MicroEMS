@@ -582,6 +582,39 @@ def write_execution_plan(path: str, issued_at, table: pd.DataFrame,
     return len(replace_rows)
 
 
+def read_grid_charge_run_wh(path: str, now, slot_minutes: int) -> float:
+    """Netzseitige Energie (Wh) des Netzladeblocks direkt vor dem aktuellen Slot.
+
+    Grundlage ist der publizierte Sollfahrplan: zusammenhängende Vorslots mit
+    Netzladebefehl, rückwärts ab dem Vorslot. 0, wenn der Vorslot kein
+    Netzladen war oder der Fahrplan fehlt. Der Fahrplan überlebt einen
+    Dienstneustart, ein laufender Block bleibt also erkennbar.
+    """
+    minutes = max(1, int(slot_minutes))
+    slot = pd.Timedelta(minutes=minutes)
+    current = pd.Timestamp(now)
+    if current.tzinfo is None:
+        current = current.tz_localize("UTC")
+    cutoff = floor_time(current, f"{minutes}min").tz_convert("UTC")
+    try:
+        con = _con(path)
+        rows = con.execute(
+            "SELECT ts, grid_charge_w FROM execution_plan WHERE ts<? "
+            "ORDER BY ts DESC LIMIT 192", (cutoff.isoformat(),)).fetchall()
+        con.close()
+    except Exception:
+        return 0.0
+    total = 0.0
+    expected = cutoff - slot
+    for raw_ts, watt in rows:
+        ts = pd.Timestamp(raw_ts)
+        if abs(ts - expected) > slot / 2 or watt is None or float(watt) <= 5.0:
+            break
+        total += float(watt) * minutes / 60.0
+        expected = ts - slot
+    return total
+
+
 def read_execution_plan_slot(path: str, ts) -> Optional[dict]:
     key = pd.Timestamp(ts).tz_convert("UTC").isoformat()
     try:

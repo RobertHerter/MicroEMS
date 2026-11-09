@@ -26,7 +26,8 @@ import pandas as pd
 
 from .config import Config
 from .loads import load_power_columns
-from .optimizer import OptimizerInputs, OptimizerResult, natural_battery_step
+from .optimizer import (OptimizerInputs, OptimizerResult, grid_charge_min_slots,
+                        natural_battery_step)
 
 TOL_W = 5.0        # Leistungs-Toleranz (Rundung in der Tabelle: 0.1 W)
 TOL_WH = 10.0      # SoC-/Energie-Toleranz
@@ -156,6 +157,43 @@ def economic_comparison(config: Config, result: OptimizerResult,
     return plan_cost, b_cost
 
 
+def _grid_charge_blocks(config: Config, grid_charge_w: pd.Series,
+                        inputs: Optional[OptimizerInputs]) -> Optional[Violation]:
+    """Abgeschlossene Netzladeblöcke unter der Mindestmenge melden.
+
+    Geprüft wird nur das Regelfenster am Horizontbeginn (wie im Optimierer).
+    Ein Block, der schon vor dem Horizont lief, darf in Slot 0 enden (seine
+    Vorlauf-Energie zählt mit); ein Block über das Fenster hinaus ist offen.
+    """
+    min_wh = 1000.0 * float(getattr(config.optimization, "min_grid_charge_kwh", 0.0))
+    hb = config.house_battery
+    min_wh = min(min_wh, max(0.0, hb.max_soc_wh - hb.min_soc_wh))
+    if min_wh <= 0.0 or grid_charge_w.empty:
+        return None
+    eta = hb.eff_ac_charge
+    dt = config.general.dt_hours
+    werte = grid_charge_w.fillna(0.0).to_numpy(dtype=float)
+    fenster = grid_charge_min_slots(len(werte), dt)
+    an = werte > 5.0
+    vorlauf = float(getattr(inputs, "grid_charge_run_wh", 0.0) or 0.0) if inputs else 0.0
+    zu_klein = pd.Series(False, index=grid_charge_w.index)
+    t = 0
+    while t < fenster:
+        if not an[t]:
+            t += 1
+            continue
+        start = t
+        energie = eta * (vorlauf if start == 0 else 0.0)
+        while t < fenster and an[t]:
+            energie += eta * werte[t] * dt
+            t += 1
+        if t < fenster and energie < min_wh - TOL_WH:
+            zu_klein.iloc[start:t] = True
+    return _mask_violation(
+        "power.grid_charge_min", "error", zu_klein,
+        f"Netzladung bringt weniger als {min_wh / 1000.0:.2f} kWh in den Akku")
+
+
 def _mask_violation(rule, severity, mask: pd.Series, detail) -> Optional[Violation]:
     idx = list(mask.index[mask.fillna(False)])
     if not idx:
@@ -213,6 +251,7 @@ def validate_plan(config: Config, result: OptimizerResult,
         f"Gesamt-Laden über Grenze {hb.max_total_charge_w:.0f} W"))
     add(_mask_violation("power.discharge", "error", dis > hb.max_discharge_w + TOL_W,
         f"Entladen über Grenze {hb.max_discharge_w:.0f} W"))
+    add(_grid_charge_blocks(config, col("batt_grid_charge_w"), inputs))
 
     add(_mask_violation("mutex.charge_discharge", "error",
         (dc + ac > TOL_W) & (dis > TOL_W), "gleichzeitiges Laden UND Entladen"))

@@ -56,7 +56,7 @@ from ems.optimizer import (Optimizer, OptimizerInputs,        # noqa: E402
 FELDER = ("house_load_w", "pv_w", "price_ct_kwh", "feedin_ct_kwh", "pv10_w",
           "ambient_temp_c", "solar_w_m2")
 DURCHREICHEN = ("load_state", "load_feedback", "car_present",
-                "initial_car_soc_wh")
+                "initial_car_soc_wh", "grid_charge_run_wh")
 
 
 def _payload(con, snapshot_id):

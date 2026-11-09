@@ -1993,6 +1993,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         load_feedback, load_feedback_status = _read_load_feedback(
             config, publisher, now)
         load_run_state = _read_load_run_state(config, now)
+        grid_charge_run_wh = _read_grid_charge_run_wh(config, now)
         # Konfigurierten Horizont modellieren; optional kontrolliert bis zur
         # nächsten Mitternacht erweitern. Ohne Option bleiben es konstant 48 h.
         opt_index = _optimization_index(config, now)
@@ -2581,6 +2582,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             load_state=load_state,
             load_feedback=load_feedback,
             load_run_state=load_run_state,
+            grid_charge_run_wh=grid_charge_run_wh,
             spot_price_ct_kwh=spot_price.values.astype(float),
         )
         # Ist-Temperatur thermischer Lasten für den Dashboard-Verlauf mitschreiben –
@@ -3698,6 +3700,18 @@ def _read_load_run_state(config, now):
             if state is not None:
                 out[f"{ld.name}/{stage.name}"] = state
     return out or None
+
+
+def _read_grid_charge_run_wh(config, now) -> float:
+    """Netzseitige Energie des Netzladeblocks, der bis zum aktuellen Slot lief."""
+    from .local_history import read_grid_charge_run_wh
+
+    wh = read_grid_charge_run_wh(config.e3dc_rscp.history_db_path, now,
+                                 config.general.slot_minutes)
+    if wh > 0.0:
+        log.info("Laufende Netzladung: %.2f kWh aus dem Netz bisher befohlen.",
+                 wh / 1000.0)
+    return wh
 
 
 def _price_series(repo, config, index, now, return_estimated=False):

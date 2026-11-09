@@ -89,6 +89,8 @@ def save_snapshot(config: Config, now, inputs, result, violations,
                             if inputs.solar_w_m2 is not None else None),
             "load_state": (inputs.load_state or None),
             "load_feedback": (inputs.load_feedback or None),
+            "grid_charge_run_wh": round(float(
+                getattr(inputs, "grid_charge_run_wh", 0.0) or 0.0), 1),
         },
         "plan": {c: arr(t[c]) for c in t.columns
                  if pd.api.types.is_numeric_dtype(t[c])},
