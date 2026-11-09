@@ -654,80 +654,113 @@ def test_load_bias_warns_only_on_change(tmp_path, caplog):
         assert len(warnungen()) == 1, "Warnung wiederholt sich"
 
 
-def test_ac_charge_efficiency_is_measured_from_grid_phases():
-    """ac_charge_efficiency war eine Annahme (0,90), waehrend Entladen und
-    Kapazitaet gemessen werden - obwohl der Wert jede Netzlade-Arbitrage
-    entscheidet. Gemessen wird die GRID-Seite gegen den SoC-Zuwachs, nur ueber
-    zusammenhaengende Phasen: auf einzelnen Slots liefert die 1-%-Quantisierung
-    Wirkungsgrade ueber 1 (am 17.08.2026 real 1,14 auf vier Slots)."""
+def _netzlade_frame(eta=0.94, ladungen=5, ac_w=5000.0, haus=600.0, pv=0.0):
+    """Netzladeslots zwischen ruhigen Slots, Hauslast wie beim E3DC als Bilanzrest.
+
+    Der E3DC meldet house = pv + grid - battery; die Wandlungsverluste landen
+    dadurch in der "Hauslast" (09.11.2026: in allen 21 echten Netzladeslots).
+    """
     import numpy as np
-    import pandas as pd
+    zeilen, ts = [], pd.Timestamp("2026-11-02 11:00", tz=TZ)
+    for k in range(ladungen):
+        for laedt in (False, False, True, False, False):
+            grid = haus + (ac_w if laedt else 0.0)
+            batt = pv + (eta * ac_w if laedt else 0.0)
+            if not laedt:
+                grid = haus - pv           # PV deckt einen Teil der Last
+                batt = 0.0
+            zeilen.append((ts, grid, batt, pv + grid - batt, pv))
+            ts += pd.Timedelta(minutes=15)
+        ts += pd.Timedelta(hours=6)
+    f = pd.DataFrame(zeilen, columns=["ts", "grid_w", "battery_w", "house_w", "pv_w"])
+    f["soc"] = np.nan
+    return f.set_index("ts")
+
+
+def test_ac_charge_efficiency_is_measured_from_the_house_load_jump():
+    """Die E3DC-Hauslast ist ein Bilanzrest: SoC- oder Leistungsbilanzen sehen
+    den Wechselrichterverlust nie. Er steckt im Sprung der Hauslast gegen die
+    Nachbarslots - auch wenn PV auf der DC-Seite mitlaedt."""
     from ems.battery_calibration import fit_ac_charge_efficiency
 
-    kapazitaet, dt, eff = 20000.0, 0.25, 0.85
-    idx = pd.date_range("2026-08-20 13:00", periods=8, freq="15min",
-                        tz="Europe/Berlin")
-    netz_netto = 4000.0
-    gespeichert = netz_netto * len(idx) * dt * eff          # Wh
-    hub = gespeichert / kapazitaet * 100.0
-    frame = pd.DataFrame({
-        "soc": np.linspace(40.0, 40.0 + hub, len(idx)),
-        "grid_w": np.full(len(idx), netz_netto + 800.0),
-        "house_w": np.full(len(idx), 800.0),
-        "pv_w": np.zeros(len(idx)),
-        "battery_w": np.full(len(idx), netz_netto)}, index=idx)
-
-    res = fit_ac_charge_efficiency(frame, kapazitaet, dt)
-    assert res["n_windows"] == 1, res
-    # letzter Slot zaehlt beim SoC-Ende mit -> kleine Abweichung erlaubt
-    assert res["efficiency"] == pytest.approx(eff, abs=0.03), res["efficiency"]
-
-    # PV-Ueberschuss mischt den DC-Pfad ein -> Phase wird verworfen
-    mit_pv = frame.copy()
-    mit_pv["pv_w"] = 3000.0
-    assert fit_ac_charge_efficiency(mit_pv, kapazitaet, dt)["n_windows"] == 0
-
-    # oberhalb 90 % SoC tapert der Ladestrom -> ebenfalls verworfen
-    hoch = frame.copy()
-    hoch["soc"] = np.linspace(92.0, 92.0 + hub, len(idx))
-    assert fit_ac_charge_efficiency(hoch, kapazitaet, dt)["n_windows"] == 0
+    for pv in (0.0, 1500.0):
+        res = fit_ac_charge_efficiency(_netzlade_frame(pv=pv), 0.25, 0.98)
+        assert res["n_slots"] == 5, (pv, res)
+        assert res["inverter_efficiency"] == pytest.approx(0.94, abs=0.002)
+        assert res["efficiency"] == pytest.approx(0.94 * 0.98, abs=0.002)
+        assert res["dispersion"] == pytest.approx(0.0, abs=0.001)
 
 
-def test_ac_charge_efficiency_is_only_applied_with_enough_evidence(tmp_path):
-    """Uebernahme wie bei den anderen Werten: gedaempft, mit Mindest-Stichprobe
-    und Streuungsgatter. Netzladen faellt nur in wenigen Slots je Tag an,
-    deshalb ist das Streuungsgatter hier straffer."""
+def test_ac_charge_measurement_ignores_unusable_slots():
+    from ems.battery_calibration import (AC_MIN_SLOTS_REPORT,
+                                         fit_ac_charge_efficiency)
+
+    # Kleine Ladungen: Verlust in der Groesse normaler Lastschwankungen.
+    klein = fit_ac_charge_efficiency(_netzlade_frame(ac_w=2000.0), 0.25, 0.98)
+    assert klein["n_slots"] == 0 and klein["efficiency"] is None
+    # Zu wenige Slots fuer einen Messwert.
+    wenig = fit_ac_charge_efficiency(
+        _netzlade_frame(ladungen=AC_MIN_SLOTS_REPORT - 1), 0.25, 0.98)
+    assert wenig["efficiency"] is None
+    assert wenig["n_slots"] == AC_MIN_SLOTS_REPORT - 1
+    # Ohne ruhige Nachbarn keine Basis fuer die Hauslast.
+    f = _netzlade_frame()
+    f["battery_w"] = 5000.0
+    f["house_w"] = f["pv_w"] + f["grid_w"] - f["battery_w"]
+    assert fit_ac_charge_efficiency(f, 0.25, 0.98)["n_slots"] == 0
+
+
+def test_ac_charge_efficiency_is_never_applied_automatically(tmp_path, capsys):
+    """Der Sonntagslauf ruft --apply; der AC-Wert bleibt trotzdem eine bewusste
+    Setzung in config.yaml (Methode neu seit 09.11.2026)."""
     import os
-    from ems.battery_calibration import (AC_APPLY_MAX_DISPERSION,
-                                         AC_APPLY_MIN_WINDOWS,
-                                         maybe_apply_ac_charge)
+    from ems.battery_calibration import run
     from ems.config import load_config
+    from ems.local_history import write_actuals
+
     beispiel = os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "config.example.yaml")
     ziel = tmp_path / "config.yaml"
-    with open(beispiel, encoding="utf-8") as fh:
-        ziel.write_text(fh.read(), encoding="utf-8")
+    text = open(beispiel, encoding="utf-8").read()
+    db = tmp_path / "hist.sqlite"
+    ziel.write_text(text.replace("history_db_path: ",
+                                 f"history_db_path: {db}  # ", 1), encoding="utf-8")
     cfg = load_config(str(ziel))
-    alt = float(cfg.house_battery.eff_ac_charge)
+    assert cfg.e3dc_rscp.history_db_path == str(db)
+    vorher = float(cfg.house_battery.eff_ac_charge)
+    jetzt = pd.Timestamp.now(tz=TZ).floor("15min") - pd.Timedelta(days=3)
+    frame = _netzlade_frame(eta=0.80, ladungen=8)
+    frame.index = frame.index - frame.index[0] + jetzt
+    for ts, row in frame.iterrows():
+        write_actuals(str(db), ts, {"battery_w": row["battery_w"], "soc_percent": 50.0,
+                                    "pv_w": row["pv_w"], "house_load_w": row["house_w"],
+                                    "grid_w": row["grid_w"]})
+    run(str(ziel), days=30, apply=True)
+    bericht = capsys.readouterr().out
+    assert "8 Netzladeslots" in bericht, bericht
+    assert "Akkuklemme 0.8 (Median" in bericht, bericht
+    assert load_config(str(ziel)).house_battery.eff_ac_charge == vorher
+    overlay = tmp_path / "config_overrides.yaml"
+    assert not overlay.exists() or "ac_charge_efficiency" not in overlay.read_text()
 
-    # zu wenige Phasen -> nichts
-    assert maybe_apply_ac_charge(
-        {"efficiency": 0.84, "n_windows": AC_APPLY_MIN_WINDOWS - 1,
-         "hours": 20.0, "dispersion": 0.01}, cfg, str(ziel)) is None
-    # zu unruhig -> nichts
-    assert maybe_apply_ac_charge(
-        {"efficiency": 0.84, "n_windows": AC_APPLY_MIN_WINDOWS + 2,
-         "hours": 20.0, "dispersion": AC_APPLY_MAX_DISPERSION + 0.01},
-        cfg, str(ziel)) is None
-    # physikalisch unmoeglich -> nichts (die 1,14 vom 17.08.2026)
-    assert maybe_apply_ac_charge(
-        {"efficiency": 1.14, "n_windows": 9, "hours": 20.0,
-         "dispersion": 0.01}, cfg, str(ziel)) is None
-    # genug Belege -> gedaempft uebernommen
-    res = maybe_apply_ac_charge(
-        {"efficiency": 0.84, "n_windows": 9, "hours": 20.0,
-         "dispersion": 0.02}, cfg, str(ziel))
-    assert res is not None
-    erwartet = round(0.5 * 0.84 + 0.5 * alt, 3)
-    assert res["ac_charge_efficiency"] == erwartet
-    assert load_config(str(ziel)).house_battery.eff_ac_charge == erwartet
+
+def test_drift_card_shows_the_ac_charge_measurement(tmp_path):
+    """Die Qualitaetskarte vergleicht die neue Messung mit dem Modellwert."""
+    from ems.drift import DriftMonitor
+    from ems.local_history import write_actuals
+
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "hist.sqlite")
+    cfg.house_battery.charge_efficiency = 0.98
+    cfg.house_battery.ac_charge_efficiency = 0.93
+    frame = _netzlade_frame(eta=0.94, ladungen=5)
+    for ts, row in frame.iterrows():
+        write_actuals(cfg.e3dc_rscp.history_db_path, ts,
+                      {"battery_w": row["battery_w"], "soc_percent": 50.0,
+                       "pv_w": row["pv_w"], "house_load_w": row["house_w"],
+                       "grid_w": row["grid_w"]})
+    out = DriftMonitor(cfg).check_ac_charge_model(frame.index[-1] + pd.Timedelta(hours=1))
+    assert out["windows"] == 5
+    assert out["inverter_efficiency"] == pytest.approx(0.94, abs=0.002)
+    assert out["measured"] == pytest.approx(0.921, abs=0.002)
+    assert out["alert"] is False

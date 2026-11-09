@@ -128,14 +128,9 @@ class DriftMonitor:
     def check_ac_charge_model(self, now: pd.Timestamp) -> Optional[dict]:
         """AC-Ladewirkungsgrad (Netz -> Speicher) gegen den Modellwert pruefen.
 
-        Der Wert war bis 18.08.2026 eine reine ANNAHME (0,90), waehrend Entladen
-        und Kapazitaet gemessen werden - er entscheidet aber jede Netzlade-
-        Arbitrage: bei 26 ct Einkauf und 32 ct Nachtpreis frassen die
-        Wandlungsverluste 5,8 der 6,2 ct Spanne.
-
-        Rueckgabe None, solange keine belastbaren Netz-Ladephasen vorliegen.
-        Netzladen faellt nur in wenigen Slots je Tag an, deshalb dauert das
-        laenger als bei den anderen Werten.
+        Der Wert entscheidet jede Netzlade-Arbitrage. Gemessen wird der Sprung
+        der E3DC-Hauslast in Netzladeslots (siehe ems/battery_calibration.py);
+        die Karte zeigt "sammelt", solange zu wenige Slots vorliegen.
         """
         from .battery_calibration import fit_ac_charge_efficiency
         from .local_history import read_actual
@@ -151,8 +146,8 @@ class DriftMonitor:
                 "grid_w": read_actual(db, "grid_w", start, now, tz),
                 "house_w": read_actual(db, "house_w", start, now, tz),
                 "pv_w": read_actual(db, "pv_w", start, now, tz)})
-            fit = fit_ac_charge_efficiency(frame, hb.capacity_wh,
-                                          self.cfg.general.dt_hours)
+            fit = fit_ac_charge_efficiency(frame, self.cfg.general.dt_hours,
+                                          hb.charge_efficiency)
         except Exception as exc:  # pragma: no cover
             log.debug("AC-Ladewirkungsgrad nicht pruefbar (%s).", exc)
             return None
@@ -163,7 +158,7 @@ class DriftMonitor:
             # Sammelzustand: dass der Modellwert eine ANNAHME ist, ist die
             # wichtigere Information als sein Zahlenwert.
             return {"measured": None, "model": round(model, 3),
-                    "windows": fit.get("n_windows", 0),
+                    "windows": fit.get("n_slots", 0),
                     "hours": fit.get("hours", 0.0),
                     "window_days": round(float(self.eff_days), 1),
                     "evaluated_at": pd.Timestamp(now).isoformat(),
@@ -171,7 +166,8 @@ class DriftMonitor:
         deviation = 100.0 * (gemessen - model) / max(1e-6, model)
         out = {"measured": gemessen, "model": round(model, 3),
                "deviation_percent": round(deviation, 1),
-               "windows": fit.get("n_windows", 0), "hours": fit.get("hours", 0.0),
+               "windows": fit.get("n_slots", 0), "hours": fit.get("hours", 0.0),
+               "inverter_efficiency": fit.get("inverter_efficiency"),
                "grid_kwh": fit.get("grid_kwh"),
                "dispersion": fit.get("dispersion"),
                "window_days": round(float(self.eff_days), 1),
@@ -181,9 +177,9 @@ class DriftMonitor:
         if out["alert"]:
             log.warning(
                 "AC-Ladewirkungsgrad: gemessen %.3f gegen Modell %.3f "
-                "(%+.1f %%, %d Phasen / %.1f h). Jede Netzlade-Arbitrage haengt "
-                "daran - 'python -m ems.battery_calibration --apply' fuehrt ihn "
-                "nach.", gemessen, model, deviation,
+                "(%+.1f %%, %d Netzladeslots / %.1f h). Jede Netzlade-Arbitrage "
+                "haengt daran - house_battery.ac_charge_efficiency in config.yaml "
+                "pruefen.", gemessen, model, deviation,
                 out["windows"], float(out["hours"] or 0.0))
         return out
 

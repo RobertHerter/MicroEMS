@@ -346,7 +346,9 @@ house_battery:
   charge_efficiency: 0.96     # DC-Laden aus PV, 0..1
   discharge_efficiency: 0.96  # 0..1
   # AC-Laden (Netz) läuft zusätzlich durch den Wechselrichter -> real
-  # schlechter als DC-Laden. Weglassen = wie charge_efficiency.
+  # schlechter als DC-Laden. Weglassen = wie charge_efficiency. Messen:
+  # python -m ems.battery_calibration (Abschnitt AC-Ladewirkungsgrad, aus dem
+  # Hauslast-Sprung beim Netzladen); wird nie automatisch übernommen.
   ac_charge_efficiency: 0.92
   # Zellschonung (optional): sanfte Strafe je kWh·h, die der SoC oberhalb der
   # Schwelle gehalten wird. Macht langes Verweilen bei ~100 % leicht

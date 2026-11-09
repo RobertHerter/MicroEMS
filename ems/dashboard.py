@@ -1726,7 +1726,7 @@ def _operations_block(solver, execution, timezone="Europe/Berlin",
                 f"{float(ac_charge.get('model', 0)):.3f} ist eine "
                 f"Annahme</div>"
                 f"<div class='quality-detail'>"
-                f"{int(ac_charge.get('windows', 0))} brauchbare Netz-Ladephasen "
+                f"{int(ac_charge.get('windows', 0))} brauchbare Netzladeslots "
                 f"in {float(ac_charge.get('window_days', 0)):.0f} Tagen"
                 " · entscheidet die Netzlade-Arbitrage</div></article>")
         else:
@@ -1740,7 +1740,7 @@ def _operations_block(solver, execution, timezone="Europe/Berlin",
                 f" · Modell {float(ac_charge.get('model', 0)):.3f}</div>"
                 f"<div class='quality-detail'>Abweichung "
                 f"{float(ac_charge.get('deviation_percent', 0)):+.1f} %"
-                f" · {int(ac_charge.get('windows', 0))} Netz-Ladephasen / "
+                f" · {int(ac_charge.get('windows', 0))} Netzladeslots / "
                 f"{float(ac_charge.get('hours', 0) or 0):.1f} h"
                 " · entscheidet die Netzlade-Arbitrage</div></article>")
 
