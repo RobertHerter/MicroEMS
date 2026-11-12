@@ -73,16 +73,31 @@ def _keep_rowids(frame: pd.DataFrame, buckets: list) -> set:
     die mindestens dem Bucket entspricht.
 
     Genau die waehlt ``read_group_asof`` fuer diesen Lead aus ("juengste
-    Prognose mit issue_ts <= target_ts - lead"). Damit bleibt jede Leseabfrage
-    auf den Buckets nach dem Ausduennen bitgleich. Die naechstliegende Zeile zu
+    Prognose mit issue_ts <= target_ts - lead"), fuer die rechte Stuetzstelle
+    zusaetzlich mit Lead + Intervalllaenge. Damit bleibt jede Leseabfrage auf
+    den Buckets nach dem Ausduennen bitgleich. Die naechstliegende Zeile zu
     nehmen genuegt NICHT: eine Vorlaufzeit knapp unter dem Bucket wird von der
     Abfrage nie gesehen, der Lead liefe dann ins Leere.
     """
+    # Seit 12.11.2026 interpoliert read_group_asof zwischen den Marken; die
+    # rechte Stuetzstelle liest es mit Lead + Intervalllaenge der Quelle
+    # (kein Blick in die Zukunft). Auch diese Zeile muss bleiben.
+    intervall_h = {}
+    for quelle, gruppe in frame.groupby("source", sort=False):
+        marken = pd.to_datetime(gruppe["target_ts"].drop_duplicates(),
+                                format="ISO8601", utc=True).sort_values()
+        schritt = marken.diff().median()
+        intervall_h[quelle] = (schritt.total_seconds() / 3600.0
+                               if pd.notna(schritt) else 0.0)
     behalten = set()
-    for _, gruppe in frame.groupby(["source", "target_ts"], sort=False):
+    for (quelle, _), gruppe in frame.groupby(["source", "target_ts"], sort=False):
         sortiert = gruppe.sort_values("lead_h")
         lead = sortiert["lead_h"].to_numpy()
-        for bucket in buckets:
+        p_h = intervall_h.get(quelle, 0.0)
+        alle = set(buckets)
+        if p_h > 0.26:                 # groeber als das 15-min-Raster
+            alle |= {b + p_h for b in buckets}
+        for bucket in sorted(alle):
             passend = lead >= bucket - 1e-9
             if not passend.any():
                 continue          # diesen Lead gibt es fuer den Slot ohnehin nicht

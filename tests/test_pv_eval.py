@@ -275,3 +275,71 @@ def test_lead_bound_compares_identical_timestamp_formats(tmp_path):
         # genau die Ausgabe mit dieser Vorlaufzeit, nicht die vom Vortag
         assert float(s.iloc[0]) == 1000.0 + lead, (
             f"Lead {lead} h liefert {float(s.iloc[0])} statt {1000.0 + lead}")
+
+
+# --------------------------------------------------------------------------- #
+# Archiv zwischen den Marken (seit 12.11.2026)
+# --------------------------------------------------------------------------- #
+def _utc(stamp):
+    return pd.Timestamp(stamp, tz="UTC")
+
+
+def _ausgabe(db, quelle, issue, werte):
+    local_history.write_pv_forecast_archive(
+        db, quelle, _utc(issue),
+        {_utc(t).isoformat(): (v, v, v) for t, v in werte.items()})
+
+
+def _lesen(db, von, bis, lead=0.0):
+    s = pv_eval.read_group_asof(db, ["pvmodel:X"], _utc(von).tz_convert(TZ),
+                                _utc(bis).tz_convert(TZ), TZ, 15, "pv", lead)
+    s.index = s.index.tz_convert("UTC")
+    return s
+
+
+def test_archive_read_interpolates_without_looking_ahead(tmp_path):
+    """Zwischen den Stundenmarken wird interpoliert. Die rechte Stuetzstelle
+    stammt aus einer Prognose, die VOR dem Slot erstellt war - nicht aus der
+    juengsten fuer ihre eigene Marke (die kam hier erst um 10:40)."""
+    db = str(tmp_path / "hist.sqlite")
+    _ausgabe(db, "pvmodel:X", "2026-06-10 09:00",
+             {"2026-06-10 10:00": 100.0, "2026-06-10 11:00": 200.0,
+              "2026-06-10 12:00": 300.0})
+    _ausgabe(db, "pvmodel:X", "2026-06-10 10:40",
+             {"2026-06-10 11:00": 900.0, "2026-06-10 12:00": 950.0})
+    s = _lesen(db, "2026-06-10 10:00", "2026-06-10 12:00")
+    assert s[_utc("2026-06-10 10:00")] == 100.0        # auf der Marke wie bisher
+    assert s[_utc("2026-06-10 10:15")] == 125.0        # 3/4 * 100 + 1/4 * 200
+    assert s[_utc("2026-06-10 11:00")] == 900.0
+    assert s[_utc("2026-06-10 11:15")] == 912.5        # 3/4 * 900 + 1/4 * 950
+
+
+def test_archive_read_falls_back_without_a_strict_right_point(tmp_path):
+    """Gibt es fuer die rechte Marke keine Prognose von vor dem Slot, gilt
+    ersatzweise die juengste fuer diese Marke (hoechstens ein Intervall
+    Vorgriff) - besser als eine Luecke."""
+    db = str(tmp_path / "hist.sqlite")
+    _ausgabe(db, "pvmodel:X", "2026-06-10 08:00", {"2026-06-10 10:00": 100.0})
+    _ausgabe(db, "pvmodel:X", "2026-06-10 10:40",
+             {"2026-06-10 11:00": 900.0, "2026-06-10 12:00": 950.0})
+    s = _lesen(db, "2026-06-10 10:00", "2026-06-10 11:00")
+    assert s[_utc("2026-06-10 10:15")] == 0.75 * 100.0 + 0.25 * 900.0
+
+
+def test_archive_read_holds_the_interval_mean_at_the_end(tmp_path):
+    """Nach der letzten Marke liegt der Slot noch in deren Stunde."""
+    db = str(tmp_path / "hist.sqlite")
+    _ausgabe(db, "pvmodel:X", "2026-06-10 08:00",
+             {"2026-06-10 10:00": 100.0, "2026-06-10 11:00": 200.0})
+    s = _lesen(db, "2026-06-10 10:00", "2026-06-10 12:00")
+    assert list(s[_utc("2026-06-10 11:00"):]) == [200.0] * 4
+
+
+def test_archive_read_of_quarter_hour_sources_is_unchanged(tmp_path):
+    """Quellen im Slot-Raster brauchen keine Interpolation."""
+    db = str(tmp_path / "hist.sqlite")
+    _ausgabe(db, "pvmodel:X", "2026-06-10 08:00",
+             {t: float(i) for i, t in enumerate(pd.date_range(
+                 "2026-06-10 10:00", periods=4, freq="15min"))})
+    s = _lesen(db, "2026-06-10 10:00", "2026-06-10 11:00")
+    assert list(s) == [0.0, 1.0, 2.0, 3.0]

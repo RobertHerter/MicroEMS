@@ -193,28 +193,28 @@ def read_actual_pv(db: str, start, end, tz: str, slot_minutes: int) -> pd.Series
     return s.resample(f"{slot_minutes}min").mean().reindex(grid)
 
 
-def read_group_asof(db: str, sources: List[str], start, end, tz: str,
-                    slot_minutes: int, which: str = "pv",
-                    lead_hours: float = 0.0) -> pd.Series:
-    """Rolling-Origin-Summe einer Quellgruppe: je Zielslot der jüngste
-    Forecast mit issue_ts <= target_ts - lead_hours, über die Quellen summiert."""
-    if not sources:
-        return pd.Series(dtype="float64")
-    col = _COL[which]
-    grid = _grid(start, end, tz, slot_minutes)
+# Wie weit die rechte Stuetzstelle hinter ihrem strengen Stichtag liegen darf,
+# bevor auf den linken Stichtag zurueckgefallen wird (s. read_group_asof).
+RECHTS_MAX_ALTER_H = 3.0
+
+
+def _asof_punkte(db: str, sources: List[str], start, end, col: str,
+                 cut_hours: float) -> pd.DataFrame:
+    """Je Zielmarke die Summe der juengsten Prognosen mit
+    issue_ts <= target_ts - cut_hours (je Quelle) und die aelteste der dabei
+    benutzten Ausgabezeiten. Index UTC, Spalten value/issue."""
     s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     placeholders = ",".join("?" * len(sources))
-    # Maximale issue_ts je (source, target) unter der Lead-Schranke, pro Zeile
-    # aus target_ts gerechnet. strftime statt datetime, weil die Schranke mit
-    # issue_ts als STRING verglichen wird: datetime() liefert
-    # "2026-05-24 10:00:00" (Leerzeichen, ohne Offset), issue_ts steht als
-    # "2026-05-24T10:00:00+00:00" da. Beim Vergleich gewinnt dann das "T"
-    # gegen das Leerzeichen, und jede Ausgabe mit GLEICHEM Datum fiel heraus -
-    # die wirksame Vorlaufzeit war bis zu einen Tag groesser als angefordert.
-    lead_sql = (
-        f"strftime('%Y-%m-%dT%H:%M:%S+00:00', target_ts, '-{lead_hours} hours')"
-        if lead_hours else "target_ts")
+    # strftime statt datetime, weil die Schranke mit issue_ts als STRING
+    # verglichen wird: datetime() liefert "2026-05-24 10:00:00" (Leerzeichen,
+    # ohne Offset), issue_ts steht als "2026-05-24T10:00:00+00:00" da. Beim
+    # Vergleich gewinnt dann das "T" gegen das Leerzeichen, und jede Ausgabe
+    # mit GLEICHEM Datum fiel heraus - die wirksame Vorlaufzeit war bis zu
+    # einen Tag groesser als angefordert.
+    minuten = int(round(cut_hours * 60.0))
+    cut_sql = (f"strftime('%Y-%m-%dT%H:%M:%S+00:00', target_ts, "
+               f"'-{minuten} minutes')" if minuten else "target_ts")
     try:
         con = sqlite3.connect(db, timeout=10)
         rows = con.execute(
@@ -222,9 +222,9 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
             f" SELECT source, target_ts, max(issue_ts) issue_ts"
             f" FROM pv_forecast_archive"
             f" WHERE source IN ({placeholders})"
-            f" AND target_ts >= ? AND target_ts < ? AND issue_ts <= {lead_sql}"
+            f" AND target_ts >= ? AND target_ts < ? AND issue_ts <= {cut_sql}"
             f" GROUP BY source, target_ts)"
-            f" SELECT a.target_ts, sum(a.{col})"
+            f" SELECT a.target_ts, sum(a.{col}), min(a.issue_ts)"
             f" FROM pv_forecast_archive a JOIN latest l"
             f" ON a.source=l.source AND a.target_ts=l.target_ts"
             f" AND a.issue_ts=l.issue_ts"
@@ -235,9 +235,71 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
         log.debug("read_group_asof fehlgeschlagen: %s", exc)
         rows = []
     if not rows:
-        return pd.Series(dtype="float64")
+        return pd.DataFrame(columns=["value", "issue"])
     idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
-    return pd.Series([float(r[1]) for r in rows], index=idx).tz_convert(tz).reindex(grid)
+    return pd.DataFrame({
+        "value": [float(r[1]) for r in rows],
+        "issue": pd.to_datetime([r[2] for r in rows], utc=True,
+                                format="ISO8601")}, index=idx)
+
+
+def read_group_asof(db: str, sources: List[str], start, end, tz: str,
+                    slot_minutes: int, which: str = "pv",
+                    lead_hours: float = 0.0) -> pd.Series:
+    """Rolling-Origin-Summe einer Quellgruppe auf dem Slot-Raster: je Zielslot
+    der Stand, den der Optimierer mit ``lead_hours`` Vorlauf gesehen haette.
+
+    Gespeichert sind Intervallmittel auf dem Intervall-ANFANG (Solcast 30 min,
+    pvlib 60 min). Slots dazwischen werden - wie im Betrieb (read_pv_forecast)
+    - linear zwischen Intervall-Anfang S und naechstem Anfang S+P interpoliert.
+    Bis 12.11.2026 gab es nur Werte auf den Marken: Kalibrierung und
+    Quellenwahl sahen bei pvlib nur jede vierte Viertelstunde (421 statt 1760
+    Fit-Slots), wendeten die Faktoren aber auf alle an.
+
+    Ohne Blick in die Zukunft: die linke Stuetzstelle S gilt mit
+    issue_ts <= S - lead (wie bisher; Werte AUF einer Marke bleiben bitgleich),
+    die rechte S+P mit issue_ts <= S - lead, also eine Intervalllaenge frueher
+    als ihre eigene Marke - sonst kaeme sie aus einer Prognose, die nach dem
+    Slot erstellt wurde. Gemessen 13.10.-11.11.: der Vorgriff haette pvlib, das
+    viertelstuendlich neu rechnet, im Quellenvergleich rund 1 WAPE-Punkt
+    geschenkt. Fehlt eine solche rechte Prognose oder ist sie mehr als
+    RECHTS_MAX_ALTER_H aelter (vor dem 12.11.2026 ausgeduennte Historie), gilt
+    ersatzweise die linke Schranke - mit hoechstens einer Intervalllaenge
+    Vorgriff.
+    """
+    if not sources:
+        return pd.Series(dtype="float64")
+    col = _COL[which]
+    grid = _grid(start, end, tz, slot_minutes)
+    slot = pd.Timedelta(minutes=slot_minutes)
+    # Rand mitlesen: der erste Slot braucht den Intervall-Anfang davor, der
+    # letzte die naechste Marke als rechte Stuetzstelle (Intervalle <= 2 h).
+    von = pd.Timestamp(start) - pd.Timedelta(hours=2)
+    bis = pd.Timestamp(end) + pd.Timedelta(hours=2)
+    links = _asof_punkte(db, sources, von, bis, col, lead_hours)
+    if links.empty:
+        return pd.Series(dtype="float64")
+    schritt = pd.Series(links.index).diff().median()
+    if pd.isna(schritt) or schritt <= slot:
+        # Quelle im Slot-Raster: nichts zu interpolieren
+        return links["value"].tz_convert(tz).reindex(grid)
+    p_h = schritt.total_seconds() / 3600.0
+    rechts = _asof_punkte(db, sources, von, bis, col, lead_hours + p_h)
+    schranke = rechts.index - pd.Timedelta(hours=lead_hours + p_h
+                                           + RECHTS_MAX_ALTER_H)
+    rechts = rechts.loc[rechts["issue"] >= schranke, "value"]
+    rechts = rechts.combine_first(links["value"])
+
+    t = grid.tz_convert("UTC")
+    anfang = t.floor(schritt)
+    w = ((t - anfang) / schritt).to_numpy(dtype=float)
+    lv = links["value"].reindex(anfang).to_numpy(dtype=float)
+    rv = rechts.reindex(anfang + schritt).to_numpy(dtype=float)
+    # Ohne rechte Stuetzstelle (Horizontende, Luecke) liegt der Slot trotzdem
+    # im Intervall S - dort gilt dessen Mittelwert.
+    rv = np.where(np.isnan(rv), lv, rv)
+    werte = np.where(w == 0.0, lv, (1.0 - w) * lv + w * rv)
+    return pd.Series(werte, index=grid)
 
 
 def read_group_cache(db: str, sources: List[str], start, end, tz: str,

@@ -115,3 +115,28 @@ def test_nothing_to_do_while_the_archive_is_young(tmp_path):
     res = thin_pv_forecast_archive(db, NOW, 60, BUCKETS, apply=True)
     assert res["scanned"] == 0
     assert res["members_deleted"] == res["thinned_deleted"] == 0
+
+
+def test_thinning_keeps_the_strict_right_point_of_hourly_sources(tmp_path):
+    """Stuendliche Quellen werden zwischen den Marken interpoliert, die rechte
+    Stuetzstelle mit Lead + 1 h. Auch diese Zeile ueberlebt das Ausduennen -
+    der Lesewert bleibt bitgleich."""
+    db = str(tmp_path / "hist.sqlite")
+    ziele = pd.date_range(NOW - pd.Timedelta(days=80), periods=4, freq="60min",
+                          tz=TZ)
+    for ziel in ziele:
+        for i in range(12):                          # alle 15 min, 3 h zurueck
+            issue = ziel - pd.Timedelta(minutes=15 * (i + 1))
+            write_pv_forecast_archive(
+                db, "pvmodel:Ost", issue.tz_convert("UTC"),
+                {ziel.tz_convert("UTC").isoformat(): (1000.0 + i, 0.0, 0.0)})
+    ende = ziele[-1] + pd.Timedelta(minutes=45)
+    vorher = pv_eval.read_group_asof(db, ["pvmodel:Ost"], ziele[0], ende, TZ,
+                                     15, "pv", 0.0)
+    # zwischen den Marken: 3/4 der juengsten (Lead 0,25 h) + 1/4 der
+    # Prognose mit mindestens 1 h Lead fuer die naechste Marke
+    assert vorher.iloc[1] == 0.75 * 1000.0 + 0.25 * 1003.0
+    thin_pv_forecast_archive(db, NOW, 60, BUCKETS, apply=True)
+    nachher = pv_eval.read_group_asof(db, ["pvmodel:Ost"], ziele[0], ende, TZ,
+                                      15, "pv", 0.0)
+    pd.testing.assert_series_equal(nachher, vorher)
