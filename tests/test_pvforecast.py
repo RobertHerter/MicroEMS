@@ -246,21 +246,20 @@ def _spy_solarposition(monkeypatch):
     return gesehen
 
 
-def test_solar_position_uses_the_interval_midpoint(monkeypatch):
-    """Open-Meteo liefert INTERVALL-MITTELWERTE, gestempelt auf den Anfang.
+def test_solar_position_uses_the_true_interval_midpoint(monkeypatch):
+    """Open-Meteo stempelt Strahlung auf das Intervall-ENDE ("preceding hour
+    mean": 10:00 = Mittel 09:00-10:00). Die Sonne gehoert in die Mitte davor.
 
-    Wird die Sonnenposition auf der Zeitmarke statt in der Intervallmitte
-    gerechnet, transponiert das Modell ein Stundenmittel mit dem Sonnenstand vom
-    Stundenbeginn. Das ist kein Rauschen, sondern ein Versatz mit Richtung:
-    morgens zu wenig, nachmittags zu viel.
+    Bis 12.11.2026 galt die Marke als Intervall-Anfang, die Sonne stand bei
+    Marke + 30 min - eine volle Stunde zu spaet - und die Prognose lag im Mittel
+    37 min hinter der Ist-PV.
     """
     gesehen = _spy_solarposition(monkeypatch)
     cfg = _cfg([PvArray("Sued", 5.0, 30, 180)])
     pvforecast.compute(cfg, _maps())
 
     times = gesehen["times"]
-    assert times[0] == UTC_DAY[0] + pd.Timedelta(minutes=30)
-    assert (times == UTC_DAY + pd.Timedelta(minutes=30)).all()
+    assert (times == UTC_DAY - pd.Timedelta(minutes=30)).all()
 
 
 def test_midpoint_follows_the_data_cadence(monkeypatch):
@@ -279,47 +278,66 @@ def test_midpoint_follows_the_data_cadence(monkeypatch):
             "wind_speed_10m": m(np.full(len(viertel), 2.0))}
 
     gesehen = _spy_solarposition(monkeypatch)
-    pvforecast.compute(_cfg([PvArray("Sued", 5.0, 30, 180)]), maps)
-    assert gesehen["times"][0] == viertel[0] + pd.Timedelta(minutes=7.5)
+    out = pvforecast.compute(_cfg([PvArray("Sued", 5.0, 30, 180)]), maps)
+    assert gesehen["times"][0] == viertel[0] - pd.Timedelta(minutes=7.5)
+    stempel = pd.to_datetime(sorted(out["pvmodel:Sued"]), utc=True)
+    assert stempel[0] == viertel[0] - pd.Timedelta(minutes=15)
 
 
-def test_result_keeps_the_irradiance_timestamps(monkeypatch):
-    """Die Sonnenposition wird versetzt gerechnet, aber auf dem Raster der
-    Einstrahlung ausgewertet - sonst passten die Reihen nicht zusammen und die
-    Ausgabe traege die verschobenen Zeitmarken."""
+def test_result_is_stamped_at_the_interval_start():
+    """Ausgabe auf dem Intervall-ANFANG - dieselbe Konvention wie Solcast
+    (period_end - period) in der pv_forecast-Tabelle. Sonst laege pvlib beim
+    Auslesen eine halbe Stunde hinter Solcast."""
     cfg = _cfg([PvArray("Sued", 5.0, 30, 180)])
     out = pvforecast.compute(cfg, _maps())
     stempel = pd.to_datetime(sorted(out["pvmodel:Sued"]), utc=True)
-    assert (stempel == UTC_DAY).all()
+    assert (stempel == UTC_DAY - pd.Timedelta(hours=1)).all()
 
 
-def test_midpoint_moves_the_yield_towards_the_morning():
-    """Wirkungsrichtung festnageln: die Korrektur verschiebt den
-    Energieschwerpunkt nach VORN, nicht nach hinten."""
+def test_interval_value_matches_the_preceding_hour():
+    """Der Wert, den Open-Meteo um 12:00 meldet, gehoert zur Stunde 11-12 und
+    landet dort - nicht in 12-13."""
+    cfg = _cfg([PvArray("Sued", 5.0, 30, 180)])
+    maps = _maps()
+    stunde = UTC_DAY[12]
+    for feld in ("shortwave_radiation", "direct_normal_irradiance",
+                 "diffuse_radiation"):
+        maps[feld] = {k: (v if k == stunde.isoformat() else 0.0)
+                      for k, v in maps[feld].items()}
+    out = pvforecast.compute(cfg, maps)["pvmodel:Sued"]
+    erzeugt = {pd.Timestamp(k): v[0] for k, v in out.items() if v[0] > 0}
+    assert list(erzeugt) == [stunde - pd.Timedelta(hours=1)]
+
+
+def test_fix_moves_the_yield_about_an_hour_earlier():
+    """Wirkungsrichtung festnageln: gegen die alte Lesart (Marke = Anfang,
+    Sonne bei Marke + 30 min) liegt der Energieschwerpunkt jetzt deutlich
+    frueher - gemessen waren es 37 min Verspaetung."""
     import pvlib
     cfg = _cfg([PvArray("Ost", 5.0, 30, 90), PvArray("West", 5.0, 30, 270)])
     maps = _maps()
 
-    def schwerpunkt(out):
+    def schwerpunkt(out, versatz_h=0.0):
         werte, stunden = [], []
         for reihe in out.values():
             for stamp, v in reihe.items():
                 werte.append(v[0])
                 ts = pd.Timestamp(stamp).tz_convert("Europe/Berlin")
-                stunden.append(ts.hour + ts.minute / 60.0)
+                stunden.append(ts.hour + ts.minute / 60.0 + versatz_h)
         w = np.array(werte)
         return float((np.array(stunden) * w).sum() / w.sum())
 
     neu = schwerpunkt(pvforecast.compute(cfg, maps))
 
-    # Alte Variante nachstellen: Sonnenposition auf der Zeitmarke.
+    # Alte Lesart nachstellen: Sonne eine Stunde spaeter (Marke + 30 min statt
+    # Marke - 30 min), Ausgabe auf der Marke statt eine Stunde davor.
     original = pvlib.solarposition.get_solarposition
     try:
         pvlib.solarposition.get_solarposition = (
             lambda times, *a, **k: original(
-                pd.DatetimeIndex(times) - pd.Timedelta(minutes=30), *a, **k))
-        alt = schwerpunkt(pvforecast.compute(cfg, maps))
+                pd.DatetimeIndex(times) + pd.Timedelta(hours=1), *a, **k))
+        alt = schwerpunkt(pvforecast.compute(cfg, maps), versatz_h=1.0)
     finally:
         pvlib.solarposition.get_solarposition = original
 
-    assert neu < alt, "Korrektur muss den Schwerpunkt nach vorn ziehen"
+    assert 0.5 < alt - neu < 1.5, (alt, neu)

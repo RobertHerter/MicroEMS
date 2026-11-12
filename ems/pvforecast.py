@@ -132,24 +132,31 @@ def compute(config, maps: dict) -> dict:
     ghi = series("shortwave_radiation").fillna(0.0).clip(lower=0.0)
     dni = series("direct_normal_irradiance").fillna(0.0).clip(lower=0.0)
     dhi = series("diffuse_radiation").fillna(0.0).clip(lower=0.0)
-    temp_air = series("temperature_2m").interpolate(limit=6).fillna(15.0)
-    wind = series("wind_speed_10m").fillna(1.0).clip(lower=0.0)
 
-    # Open-Meteo liefert INTERVALL-MITTELWERTE, gestempelt auf den Intervall-
-    # ANFANG. Die Sonnenposition gehoert deshalb in die Intervall-MITTE, nicht
-    # auf die Zeitmarke - sonst wird ein Stundenmittel mit dem Sonnenstand vom
-    # Stundenbeginn transponiert.
+    # Open-Meteo stempelt die Strahlung auf das Intervall-ENDE: der Wert um
+    # 10:00 ist das Mittel 09:00-10:00 ("preceding hour mean", Doku der
+    # Forecast-, Modell- und Archiv-API). Bis 12.11.2026 galt die Marke hier als
+    # Intervall-ANFANG: die Prognose lag 37 min zu spaet (Median ueber 22 Tage,
+    # 13.10.-11.11.; morgens 0,61 x Ist, nachmittags 1,43 x), und die Sonne
+    # stand fuer die Transposition eine volle Stunde zu weit.
     #
-    # Die Folge ist keine Streuung, sondern ein Versatz mit Richtung: morgens
-    # steht die Sonne zum Intervallbeginn tiefer als im Mittel (Ertrag zu
-    # niedrig), nachmittags hoeher (zu hoch). Der Energieschwerpunkt wandert um
-    # eine halbe Intervalllaenge nach hinten. Gemessen am 05.08.2026 ueber sieben
-    # Tage: Ist 13,0 h, Solcast 13,0 h, pvlib 13,6 h - bei einer Ost/West-Anlage,
-    # deren Schwerpunkt per Konstruktion beim Sonnenhoechststand liegen muss.
+    # Daher: Sonnenstand in der echten Intervallmitte (Marke - halber
+    # Schritt), Ausgabe auf dem Intervall-ANFANG (Marke - Schritt) - dieselbe
+    # Konvention wie Solcast (period_end - period) in der pv_forecast-Tabelle.
     schritt = pd.Series(idx).diff().median()
     if pd.isna(schritt) or schritt <= pd.Timedelta(0):
         schritt = pd.Timedelta(hours=1)
-    mitte = idx + schritt / 2
+    mitte = idx - schritt / 2
+
+    # Temperatur und Wind sind Momentanwerte auf der Marke; fuers Intervall
+    # gilt das Mittel aus Anfang und Ende.
+    def intervallmittel(s):
+        return ((s + s.shift(1)) / 2.0).fillna(s)
+
+    temp_air = intervallmittel(
+        series("temperature_2m").interpolate(limit=6)).fillna(15.0)
+    wind = intervallmittel(series("wind_speed_10m")).fillna(1.0).clip(lower=0.0)
+
     solpos = pvlib.solarposition.get_solarposition(
         mitte, config.general.latitude, config.general.longitude,
         temperature=temp_air.to_numpy())
@@ -164,7 +171,7 @@ def compute(config, maps: dict) -> dict:
         m = {}
         for ts, w in dc.items():
             w = float(w)
-            m[ts.isoformat()] = (
+            m[(ts - schritt).isoformat()] = (
                 w, w * max(0.0, 1.0 - cfg.p10_uncertainty),
                 w * (1.0 + cfg.p90_uncertainty))
         out[f"pvmodel:{array.name}"] = m
@@ -244,6 +251,17 @@ def refresh(config, force: bool = False) -> int:
     for src, m in per_source.items():
         n += local_history.write_pv_forecast(db, src, m)
         local_history.write_pv_forecast_archive(db, src, issue, m)
+    # Ab hier tragen die pvlib-Zeilen den Intervall-Anfang. Die Migration der
+    # aelteren Zeilen (python -m ems.pvlib_stempel) braucht diese Grenze, falls
+    # sie erst nach dem ersten Lauf des neuen Codes ausgefuehrt wird.
+    try:
+        from .pvlib_stempel import merke_neue_konvention
+        stempel = [ts for outputs in model_outputs.values()
+                   for mapping in outputs.values() for ts in mapping]
+        if stempel:
+            merke_neue_konvention(db, issue, min(stempel))
+    except Exception as exc:   # pragma: no cover - reine Buchfuehrung
+        log.debug("Merker fuer die pvlib-Stempel nicht gesetzt (%s).", exc)
     _ensemble_status.update(
         updated=issue.isoformat(), models=list(model_outputs),
         weights=diagnostics["weights"], residuals=diagnostics["residuals"],
