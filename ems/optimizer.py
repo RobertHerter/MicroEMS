@@ -129,6 +129,10 @@ class OptimizerResult:
 # --------------------------------------------------------------------------- #
 _warm_cache: dict = {}
 
+# Erlaubte Abweichung zwischen HiGHS-Zielwert und dem Ziel der gelieferten
+# Spaltenwerte (ct); darüber gilt die Lösung als unstimmig (_WarmHiGHS).
+ZIEL_TOLERANZ_CT = 0.01
+
 # HiGHS kann einen laufenden Solve aus einem zweiten Thread sauber abbrechen.
 # Das ist wichtig fuer systemctl stop/restart: ohne cancelSolve blieb der Dienst
 # bis zum Solver-Zeitlimit im nativen C++-Aufruf haengen.
@@ -317,8 +321,12 @@ def _shifted_warm_values(new_start, slot_minutes: int) -> Optional[dict]:
 
 
 def _store_warm_solution(prob, start, slot_minutes: int) -> None:
-    """Lösung fürs Warmstarten des nächsten Laufs merken (nur Werte != 0;
-    fehlende Variablen starten ohnehin bei 0).
+    """Lösung fürs Warmstarten des nächsten Laufs merken - AUCH die Nullen.
+
+    Der Start geht dünn an HiGHS (nur bekannte Spalten, s. _WarmHiGHS); was
+    hier fehlt, muss HiGHS selbst ergänzen. Ohne die Nullen kostete das im
+    Replay (18 echte Folgeläufe, 12.11.2026) 7 % (highspy 1.15.1) bis 41 %
+    (1.16.0) mehr Solverzeit, mit ihnen so viel wie der frühere dichte Start.
 
     Die Lade-/Entlade-Ein-Aus-Binären (isch_/isdi_) werden BEWUSST NICHT
     übernommen: sie sind aus der LP-Relaxation billig herleitbar, aber ein
@@ -331,42 +339,81 @@ def _store_warm_solution(prob, start, slot_minutes: int) -> None:
     vals = {}
     for v in prob.variables():
         x = v.varValue
-        if x is not None and abs(x) > 1e-9 and not v.name.startswith(("isch_", "isdi_")):
+        if x is not None and not v.name.startswith(("isch_", "isdi_")):
             vals[v.name] = float(x)
     _warm_cache.clear()
     _warm_cache.update({"start": pd.Timestamp(start), "slot_min": slot_minutes,
                         "values": vals})
 
 
+def _highs_ziel_abweichung(h) -> Optional[float]:
+    """|gemeldeter Zielwert - Zielwert der gelieferten Spaltenwerte| oder None,
+    wenn HiGHS keine Lösung hat.
+
+    Für eine echte Lösung sind beide gleich (bis auf Rundung). highspy 1.16.0
+    lieferte nach einem unvollständigen Warmstart "Optimal" mit Ziel -863,25,
+    die Spaltenwerte ergaben aber -791,25 (echtes Optimum -848,29): ein leerer,
+    deutlich schlechterer Plan, der keine Regel verletzt - eine Prüfung der
+    Nebenbedingungen allein (PuLP valid()) fände ihn nicht."""
+    if not h.getSolution().value_valid:
+        return None
+    gemeldet = float(h.getInfo().objective_function_value)
+    if not math.isfinite(gemeldet):
+        return None
+    modell = h.getLp()
+    x = np.asarray(h.getSolution().col_value, dtype=float)
+    kosten = np.asarray(modell.col_cost_, dtype=float)
+    return abs(gemeldet - (float(kosten @ x) + float(modell.offset_)))
+
+
+def _highs_ziel_stimmig(h) -> bool:
+    abw = _highs_ziel_abweichung(h)
+    if abw is None:
+        return True
+    gemeldet = abs(float(h.getInfo().objective_function_value))
+    return abw <= max(ZIEL_TOLERANZ_CT, 1e-6 * gemeldet)
+
+
 class _WarmHiGHS(pulp.HiGHS):
     """pulp.HiGHS + MIP-Startlösung via highspy.setSolution (der PuLP-Wrapper
-    selbst kennt keinen Warmstart). Ein unvollständiger/unpassender Start ist
-    unkritisch: HiGHS prüft ihn, repariert Kontinuierliches per LP oder
-    verwirft ihn kommentarlos."""
+    selbst kennt keinen Warmstart).
+
+    Übergeben werden NUR die bekannten Spalten (dünn: Index + Wert); die übrigen
+    ergänzt HiGHS selbst. Früher ging ein dichter Vektor mit 0 für alle
+    unbekannten Spalten hinein - ein meist unzulässiger Start, den highspy bis
+    1.15 verwarf, 1.16.0 aber in einen falschen "Optimal"-Plan übernahm.
+
+    Sicherheitsnetz nach jedem Lauf: passt der gemeldete Zielwert nicht zu den
+    gelieferten Werten, wird ohne Startlösung neu gerechnet (Warnung im Log)."""
 
     def __init__(self, warm_values=None, **kwargs):
         super().__init__(**kwargs)
         self.warm_values = warm_values or {}
 
+    def _setze_start(self, lp) -> bool:
+        if not self.warm_values:
+            return False
+        try:
+            spalten, werte = [], []
+            for spalte, var in lp_spalten(lp):
+                x = self.warm_values.get(var.name)
+                if x is not None:
+                    spalten.append(spalte)
+                    werte.append(float(x))
+            if not spalten:
+                return False
+            lp.solverModel.setSolution(
+                len(spalten), np.asarray(spalten, dtype=np.int32),
+                np.asarray(werte, dtype=np.float64))
+            log.info("Warmstart: %d Variablen aus dem letzten Lauf vorbelegt.",
+                     len(spalten))
+            return True
+        except Exception as exc:   # pragma: no cover - nur defensive Hülle
+            log.debug("Warmstart übersprungen (%s).", exc)
+            return False
+
     def callSolver(self, lp):
-        if self.warm_values:
-            try:
-                import highspy
-                col = [0.0] * lp.solverModel.getNumCol()
-                hits = 0
-                for spalte, var in lp_spalten(lp):
-                    x = self.warm_values.get(var.name)
-                    if x is not None:
-                        col[spalte] = float(x)
-                        hits += 1
-                if hits:
-                    sol = highspy.HighsSolution()
-                    sol.col_value = col
-                    lp.solverModel.setSolution(sol)
-                    log.info("Warmstart: %d Variablen aus dem letzten Lauf vorbelegt.",
-                             hits)
-            except Exception as exc:   # pragma: no cover - nur defensive Hülle
-                log.debug("Warmstart übersprungen (%s).", exc)
+        mit_start = self._setze_start(lp)
         watcher_done = threading.Event()
 
         def _cancel_watcher():
@@ -384,12 +431,41 @@ class _WarmHiGHS(pulp.HiGHS):
         watcher.start()
         try:
             super().callSolver(lp)
+            if not _solver_cancel.is_set():
+                self._pruefe_ziel(lp, mit_start)
         finally:
             _solver_active.clear()
             watcher_done.set()
             watcher.join(timeout=0.5)
         if _solver_cancel.is_set():
             raise SolverCancelled("Optimierung wegen Dienstende abgebrochen")
+
+    def _pruefe_ziel(self, lp, mit_start: bool) -> None:
+        h = lp.solverModel
+        if _highs_ziel_stimmig(h):
+            return
+        abw = _highs_ziel_abweichung(h)
+        if not mit_start:
+            log.warning("HiGHS: gemeldeter Zielwert weicht um %.2f ct von der "
+                        "gelieferten Lösung ab (ohne Warmstart) - Plan prüfen.",
+                        abw)
+            return
+        log.warning("HiGHS: gemeldeter Zielwert weicht um %.2f ct von der "
+                    "gelieferten Lösung ab - Warmstart verworfen, rechne kalt "
+                    "neu (highspy %s).", abw, _highspy_version(h))
+        h.clearSolver()
+        super().callSolver(lp)
+        if not _highs_ziel_stimmig(h):
+            log.warning("HiGHS: Zielwert passt auch kalt nicht zur Lösung "
+                        "(Abweichung %.2f ct) - Plan prüfen.",
+                        _highs_ziel_abweichung(h) or 0.0)
+
+
+def _highspy_version(h) -> str:
+    try:
+        return str(h.version())
+    except Exception:   # pragma: no cover - defensiv
+        return "?"
 
 
 def terminal_segment_values(cfg, price_ct_kwh, feedin_ct_kwh) -> list:
