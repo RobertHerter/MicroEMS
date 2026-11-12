@@ -13,7 +13,7 @@ charset-normalizer==3.4.7
 cpsat-logutils==1.0.0
 execnet==2.1.2
 h5py==3.16.0
-highspy==1.15.1
+highspy==1.16.0
 holidays==0.108
 idna==3.18
 influxdb==5.3.2

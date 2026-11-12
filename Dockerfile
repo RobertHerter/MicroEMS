@@ -20,7 +20,7 @@ WORKDIR /app
 
 # Requirements zuerst -> Docker-Layer-Cache für die (teure) Installation.
 COPY requirements.txt ./
-# highspy samt Obergrenze steht in requirements.txt.
+# highspy steht samt Mindestversion in requirements.txt.
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Anwendungspaket + die für die geplanten Jobs nötigen Top-Level-Skripte.

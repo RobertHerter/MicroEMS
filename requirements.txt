@@ -22,13 +22,12 @@ PuLP>=4.2.0,<5
 # es, faellt der Optimierer sichtbar auf CBC zurueck - lauffaehig, aber ohne
 # garantierten Determinismus.
 #
-# Obergrenze seit 12.11.2026: highspy 1.16.0 (11.11.) uebernimmt einen
-# unvollstaendigen MIP-Start (setSolution, nicht belegte Spalten = 0) offenbar
-# ungeprueft: im Planstabilitaets-Test meldete es "Optimal" mit einem Ziel
-# BESSER als das echte Optimum (-863 statt -848) und lieferte einen leeren
-# Plan. Ohne Warmstart rechnet 1.16.0 richtig; drei echte Folgelaeufe mit
-# Warmstart waren unauffaellig. Erst nach Klaerung anheben.
-highspy>=1.15.1,<1.16
+# 1.16.0 uebernahm den frueher dicht uebergebenen MIP-Start (unbekannte
+# Spalten = 0) in einen falschen "Optimal"-Plan. Seit dem Warmstart-Fix
+# (duenner Start + Zielwert-Pruefung in ems/optimizer.py, _WarmHiGHS) laeuft
+# es korrekt; neue Versionen trotzdem nicht blind uebernehmen, sondern
+# tests/test_highs_warmstart.py und ein Replay echter Folgelaeufe pruefen.
+highspy>=1.16.0
 
 # Feiertage (Verbrauchsprognose)
 holidays>=0.107
