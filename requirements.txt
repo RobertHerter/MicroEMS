@@ -21,7 +21,14 @@ PuLP>=4.2.0,<5
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
 # es, faellt der Optimierer sichtbar auf CBC zurueck - lauffaehig, aber ohne
 # garantierten Determinismus.
-highspy>=1.15.1
+#
+# Obergrenze seit 12.11.2026: highspy 1.16.0 (11.11.) uebernimmt einen
+# unvollstaendigen MIP-Start (setSolution, nicht belegte Spalten = 0) offenbar
+# ungeprueft: im Planstabilitaets-Test meldete es "Optimal" mit einem Ziel
+# BESSER als das echte Optimum (-863 statt -848) und lieferte einen leeren
+# Plan. Ohne Warmstart rechnet 1.16.0 richtig; drei echte Folgelaeufe mit
+# Warmstart waren unauffaellig. Erst nach Klaerung anheben.
+highspy>=1.15.1,<1.16
 
 # Feiertage (Verbrauchsprognose)
 holidays>=0.107
