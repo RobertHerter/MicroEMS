@@ -1,3 +1,4 @@
+import logging
 import time
 from types import SimpleNamespace
 
@@ -5,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 import ems.main as main
-from ems.optimizer import OptimizerInputs
+from ems.optimizer import OptimizerInputs, SolverCancelled
 from tests.test_synthetic import make_config
 
 
@@ -70,6 +71,46 @@ def test_automatic_shadow_comparison_contains_three_strategies(monkeypatch):
     assert set(main._shadow_curves["series"]["modes"]) == {
         "asap", "peak", "late"}
     assert len(main._shadow_curves["series"]["timestamp"]) == 2
+
+
+def test_shadow_comparison_cancelled_by_shutdown_is_not_an_error(
+        monkeypatch, caplog):
+    """Dienstende bricht den laufenden Solve ab (SolverCancelled). Das ist
+    kein Fehler: frueher stand bei jedem Neustart waehrend des Vergleichs ein
+    ERROR mit Traceback "Automatischer Modusvergleich fehlgeschlagen" im Log."""
+    cfg = make_config()
+    cfg.optimization.charge_strategy = "auto"
+    cfg.monitoring.shadow_compare_enabled = True
+    idx = pd.date_range("2026-07-22 12:00", periods=2, freq="15min",
+                        tz="Europe/Berlin")
+    inp = OptimizerInputs(
+        index=idx, house_load_w=np.zeros(2), pv_w=np.zeros(2),
+        price_ct_kwh=np.ones(2), feedin_ct_kwh=np.zeros(2),
+        initial_house_soc_wh=1000.0)
+
+    class CancelledOptimizer:
+        def __init__(self, candidate, **kwargs):
+            pass
+
+        def solve(self, inputs):
+            raise SolverCancelled("Optimierung wegen Dienstende abgebrochen")
+
+    monkeypatch.setattr(main, "Optimizer", CancelledOptimizer)
+    monkeypatch.setattr(main, "validate_plan", lambda *args: [])
+    monkeypatch.setattr(main, "_record_dashboard_event", lambda *args, **kwargs: None)
+    main._shadow_status.update(state="idle", result=None)
+    with caplog.at_level(logging.INFO, logger="ems.main"):
+        main._start_shadow_comparison(
+            cfg, inp, _result(10.0, 60.0, auto_peak=True), [])
+        deadline = time.time() + 2.0
+        while (main._shadow_status["state"] in ("queued", "running")
+               and time.time() < deadline):
+            time.sleep(0.01)
+    assert main._shadow_status["state"] == "cancelled"
+    assert main._shadow_status["result"] is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not any(r.exc_info for r in caplog.records)
+    assert "wegen Dienstende abgebrochen" in caplog.text
 
 
 def test_comparison_metrics_count_intervention_slots():

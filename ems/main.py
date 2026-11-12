@@ -598,6 +598,13 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
                     details={"active": active, "configured_mode": configured,
                              "recommended": recommended,
                              "saving_eur": max(0.0, saving)})
+        except SolverCancelled:
+            # Dienstende/Neustart bricht den Solve ab - kein Fehler; der
+            # naechste Prozess vergleicht beim ersten Zyklus neu.
+            with _runtime_lock:
+                _shadow_status.update(state="cancelled", finished_at=_runtime_iso(),
+                                      message="Schattenvergleich wegen Dienstende abgebrochen")
+            log.info("Automatischer Modusvergleich wegen Dienstende abgebrochen.")
         except Exception as exc:
             with _runtime_lock:
                 _shadow_status.update(state="error", finished_at=_runtime_iso(),
