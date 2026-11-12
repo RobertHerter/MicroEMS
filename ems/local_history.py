@@ -1824,6 +1824,14 @@ def read_grid_weather(path: str, start, end, tz: str,
     idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
     frame = pd.DataFrame([r[1:] for r in rows], index=idx, columns=cols,
                          dtype="float64")
+    # Open-Meteo stempelt Strahlung auf das Intervall-ENDE ("preceding hour
+    # mean": 10:00 = Mittel 09:00-10:00), Wind und Temperatur sind Momentan-
+    # werte auf der Marke. Fuer die Stunde H gilt deshalb der Strahlungswert
+    # der Marke H+1. Bis 12.11.2026 bekam das Preismodell das Mittel der
+    # Stunde davor; im Holdout (4 x 14 Tage) war der Unterschied klein
+    # (MAE 4,99 -> 4,95 ct), das Modell hatte den Versatz weitgehend gelernt.
+    frame["solar_index"] = (frame["solar_index"].shift(-1, freq="h")
+                            .reindex(frame.index).ffill(limit=1))
     if freq is None:
         return frame
     local = frame.tz_convert(tz)
@@ -1860,12 +1868,33 @@ def read_radiation(path: str, start, end, tz: str, freq: str) -> pd.Series:
     grid = pd.date_range(floor_time(pd.Timestamp(start).tz_convert(tz), freq),
                          ceil_time(pd.Timestamp(end).tz_convert(tz), freq), freq=freq,
                          inclusive="left")
+    # Open-Meteo stempelt die Strahlung auf das Intervall-ENDE ("preceding hour
+    # mean": 10:00 = Mittel 09:00-10:00). Der Wert gehoert in die Mitte seiner
+    # Stunde, ausgewertet wird in der Slotmitte - Optimierer (solarer
+    # Waermeeintrag) und Pool-Fit lesen je Slot den Mittelwert ueber den Slot.
+    # Bis 12.11.2026 kam die Strahlung so 37,5 min zu spaet; der Pool-Fit
+    # (Sommer 13.07.-15.09.) erklaert mit dem richtigen Zeitbezug mehr
+    # (R² 0,837 -> 0,859), der Solarkoeffizient steigt um 6 %.
+    schritt = pd.Series(hourly.index).diff().median()
+    if pd.isna(schritt) or schritt <= pd.Timedelta(0):
+        schritt = pd.Timedelta(hours=1)
+    mittig = hourly.copy()
+    mittig.index = hourly.index - schritt / 2
     if len(grid) == 0:
-        return hourly.clip(lower=0.0)
+        return mittig.clip(lower=0.0)
+    punkte = grid + pd.Timedelta(freq) / 2
     step_min = max(1.0, pd.Timedelta(freq).total_seconds() / 60.0)
     limit = max(1, int(120.0 / step_min))
-    out = (hourly.reindex(hourly.index.union(grid)).interpolate(
-           method="time", limit=limit, limit_area="inside").reindex(grid))
+    out = (mittig.reindex(mittig.index.union(punkte)).interpolate(
+           method="time", limit=limit, limit_area="inside").reindex(punkte))
+    # Zwischen Datenrand und erster/letzter Stundenmitte gibt es nichts zu
+    # interpolieren, der Slot liegt aber noch in der gemittelten Stunde -
+    # dort gilt deren Mittelwert.
+    kopf = (punkte >= hourly.index.min() - schritt) & (punkte < mittig.index.min())
+    schwanz = (punkte > mittig.index.max()) & (punkte < hourly.index.max())
+    out[kopf] = mittig.iloc[0]
+    out[schwanz] = mittig.iloc[-1]
+    out.index = grid
     return out.clip(lower=0.0)   # Einstrahlung ist nie negativ (Interpolationsrand)
 
 

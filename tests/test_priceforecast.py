@@ -85,6 +85,20 @@ def test_grid_weather_roundtrip(tmp_path):
     assert len(fine) == 12 and str(fine.index.tz) == TZ
 
 
+def test_grid_weather_solar_index_covers_the_hour_ahead(tmp_path):
+    """Open-Meteo stempelt Strahlung auf das Intervall-ENDE: fuer die Stunde H
+    (Lieferung H..H+1) gilt der Wert der Marke H+1. Wind und Temperatur sind
+    Momentanwerte und bleiben auf ihrer Marke."""
+    db = str(tmp_path / "hist.sqlite")
+    times = pd.date_range("2026-01-10", periods=4, freq="h", tz="UTC")
+    write_grid_weather(db, {t.isoformat(): (0.1 * (i + 1), 100.0 * (i + 1), float(i))
+                            for i, t in enumerate(times)})
+    frame = read_grid_weather(db, times[0], times[-1] + pd.Timedelta(hours=1), TZ)
+    assert list(frame["solar_index"]) == pytest.approx([200.0, 300.0, 400.0, 400.0])
+    assert list(frame["wind_index"]) == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert list(frame["temp_index"]) == pytest.approx([0.0, 1.0, 2.0, 3.0])
+
+
 # --------------------------------------------------------------------------- #
 # Merkmale
 # --------------------------------------------------------------------------- #

@@ -4,6 +4,7 @@ fetch_archive liefern ein Tupel (temp_map, radiation_map))."""
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from ems import weather
 from ems.local_history import (read_radiation, read_temperature,
@@ -42,8 +43,27 @@ def test_radiation_roundtrip_and_resample(tmp_path):
     s = read_radiation(db, base.tz_convert(TZ), (base + pd.Timedelta(hours=2)).tz_convert(TZ),
                        TZ, "15min")
     assert len(s) == 8
-    assert abs(s.iloc[0] - 0.0) < 1e-6
+    # Open-Meteo-Wert = Mittel der Stunde DAVOR, gehoert in deren Mitte:
+    # 0 bei 23:30, 100 bei 00:30 UTC. Slot 00:00-00:15 (Mitte 00:07:30)
+    # liegt bei 62,5 - nicht beim Wert der Marke 00:00.
+    assert s.iloc[0] == pytest.approx(62.5)
     assert (s >= 0.0).all()
+
+
+def test_radiation_value_belongs_to_the_preceding_hour(tmp_path):
+    """Der Wert, den Open-Meteo um 12:00 UTC meldet, ist die Stunde 11-12
+    ("preceding hour mean"). Bis 12.11.2026 landete er in 12-13 UTC: der
+    solare Waermeeintrag des Pools kam 37,5 min zu spaet."""
+    db = str(tmp_path / "w.sqlite")
+    base = pd.Timestamp("2026-07-01 08:00", tz="UTC")
+    write_radiation(db, {(base + pd.Timedelta(hours=i)).isoformat():
+                         (600.0 if i == 4 else 0.0) for i in range(9)})
+    s = read_radiation(db, base.tz_convert(TZ),
+                       (base + pd.Timedelta(hours=8)).tz_convert(TZ), TZ, "15min")
+    utc = s.tz_convert("UTC")
+    schwerpunkt = (utc * (utc.index.hour + utc.index.minute / 60 + 7.5 / 60)).sum() / utc.sum()
+    assert schwerpunkt == pytest.approx(11.5, abs=0.01)
+    assert utc.idxmax().hour == 11
 
 
 def test_temperature_roundtrip_and_resample(tmp_path):
