@@ -60,6 +60,14 @@ WATCHDOG_ANLAUF_S = 240.0
 # (Soll 165 W), einzelne 5-s-Werte lagen aber bei 72 W - unter der halben
 # Sollleistung.
 AKKUFLUSS_FENSTER_S = 60.0
+# Ab diesem mittleren Akkufluss gilt ein Lade-/Entlademodus als wirksam, auch
+# wenn die halbe Sollleistung noch nicht erreicht ist. Der E3DC faehrt das
+# Netzladen nur mit ~1 kW/min hoch: am 10.11. (5319 W Soll) und 11.11.2026
+# (5754 W) lud der Akku 4 min nach dem Befehl erst mit 2,5 bzw. 3,0 kW,
+# gleichmaessig steigend - und beide Male ging ein FEHLERalarm raus. Faellt die
+# Steuerung wirklich aus, kehrt der E3DC nach 10 s in den Automatikmodus zurueck;
+# ohne PV entlaedt der Akku dann oder steht, statt mit 500 W zu laden.
+WIRKSAM_AB_W = 500.0
 
 
 def rscp_ursache(exc: BaseException) -> str:
@@ -855,14 +863,16 @@ class E3DCLink:
         try:
             live = self.read_live(force=True)
         except Exception:
-            return False
-        if not live or live.get("battery_w") is None:
-            return False
-        batt = float(live["battery_w"])
-        mittel = self._mittlerer_akkufluss()
-        if mittel is not None:
-            batt = mittel
-        schwelle = 0.5 * abs(float(value))
+            live = None
+        # Der Verlauf zuerst: lehnt der E3DC eine Sendung ab (ALREADY_IN_USE),
+        # scheitert oft auch die Lesung direkt danach. Das ist kein Beleg fuer
+        # einen Ausfall, solange die letzten 60 s den Modus zeigen.
+        batt = self._mittlerer_akkufluss()
+        if batt is None:
+            if not live or live.get("battery_w") is None:
+                return False
+            batt = float(live["battery_w"])
+        schwelle = min(0.5 * abs(float(value)), WIRKSAM_AB_W)
         if mode == 1:                                   # halten
             return abs(batt) <= max(100.0, 0.1 * abs(float(value)))
         if mode == 2:                                   # entladen

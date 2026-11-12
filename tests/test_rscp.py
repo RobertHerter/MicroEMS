@@ -1052,3 +1052,40 @@ def test_read_live_merkt_den_akkufluss():
     cfg, link = _link()
     link.read_live(force=True)
     assert link._mittlerer_akkufluss() == 900.0
+
+
+def test_langsam_hochfahrendes_netzladen_gilt_als_wirksam():
+    """10.11.2026 02:50 und 11.11. 06:05: Netzladen mit 5319 bzw. 5754 W, der
+    E3DC fuhr mit ~1 kW/min hoch. 4 min nach dem Befehl lud der Akku erst mit
+    2,5 bzw. 3,0 kW - unter der halben Sollleistung -, eine einzelne Sendung
+    scheiterte mit RSCP_ERR_ALREADY_IN_USE, und es ging ein FEHLERalarm raus."""
+    import time as _t
+    cfg, link = _link(control_enabled=True)
+    alarme = []
+    link.set_alarm_callback(lambda level, text: alarme.append((level, text)))
+
+    def lehnt_ab(mode, value):
+        raise _max_retries("RSCP_ERR_ALREADY_IN_USE")
+    link._set_power = lehnt_ab
+
+    def besetzt(force=False):
+        raise ConnectionError("E3DC beschaeftigt")
+    link.read_live = besetzt                # auch die Lesung danach scheitert
+    jetzt = _t.monotonic()
+    rampe = [1431, 1440, 1620, 1809, 1900, 1983, 2080, 2172, 2260, 2343, 2420, 2487]
+    for i, w in enumerate(rampe):           # echte 5-s-Werte, 01:49-01:50 UTC
+        link._merke_akkufluss(w, jetzt=jetzt - 58 + 5 * i)
+    assert link._mode_effective(4, 5319) is True
+    link._watchdog_senden(4, 5319, 241.0)
+    assert alarme == [] and not link._watchdog_failed
+
+    # Echter Ausfall: E3DC zurueck im Automatikmodus, nachts entlaedt der Akku.
+    cfg, link = _link(control_enabled=True)
+    link.read_live = lambda force=False: {"battery_w": -420.0}
+    for i in range(12):
+        link._merke_akkufluss(-420.0, jetzt=jetzt - 58 + 5 * i)
+    assert link._mode_effective(4, 5319) is False
+    # Ohne jede Lesung bleibt es unbestaetigt.
+    cfg, link = _link(control_enabled=True)
+    link.read_live = besetzt
+    assert link._mode_effective(4, 5319) is False
