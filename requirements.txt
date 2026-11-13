@@ -5,7 +5,7 @@
 PyYAML>=6.0.3
 pandas>=3.1.0
 numpy>=2.5.4
-python-dateutil>=2.9.0.post0
+python-dateutil>=4.0.0
 
 # Optimierung (MILP). PuLP 4.0.0 (25.09.2026) bindet Variablen an das Problem
 # und meldet den Loesungsstatus anders; ems/lp_compat.py bedient 3.x und 4.x.
