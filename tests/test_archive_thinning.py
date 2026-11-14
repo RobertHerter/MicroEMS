@@ -133,9 +133,11 @@ def test_thinning_keeps_the_strict_right_point_of_hourly_sources(tmp_path):
     ende = ziele[-1] + pd.Timedelta(minutes=45)
     vorher = pv_eval.read_group_asof(db, ["pvmodel:Ost"], ziele[0], ende, TZ,
                                      15, "pv", 0.0)
-    # zwischen den Marken: 3/4 der juengsten (Lead 0,25 h) + 1/4 der
-    # Prognose mit mindestens 1 h Lead fuer die naechste Marke
-    assert vorher.iloc[1] == 0.75 * 1000.0 + 0.25 * 1003.0
+    # hinter der Intervallmitte (Slot :30 = Mitte :37,5): 7/8 der juengsten
+    # (Lead 0,25 h) + 1/8 der Prognose mit mindestens 1 h Lead fuer das
+    # naechste Intervall
+    assert vorher.iloc[1] == 1000.0
+    assert vorher.iloc[2] == 0.875 * 1000.0 + 0.125 * 1003.0
     thin_pv_forecast_archive(db, NOW, 60, BUCKETS, apply=True)
     nachher = pv_eval.read_group_asof(db, ["pvmodel:Ost"], ziele[0], ende, TZ,
                                       15, "pv", 0.0)

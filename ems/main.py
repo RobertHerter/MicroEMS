@@ -601,10 +601,12 @@ def _start_shadow_comparison(config, inputs: OptimizerInputs,
         except SolverCancelled:
             # Dienstende/Neustart bricht den Solve ab - kein Fehler; der
             # naechste Prozess vergleicht beim ersten Zyklus neu.
+            # Erst loggen, dann den Status setzen: wer auf den Status wartet,
+            # findet die Meldung dann sicher vor.
+            log.info("Automatischer Modusvergleich wegen Dienstende abgebrochen.")
             with _runtime_lock:
                 _shadow_status.update(state="cancelled", finished_at=_runtime_iso(),
                                       message="Schattenvergleich wegen Dienstende abgebrochen")
-            log.info("Automatischer Modusvergleich wegen Dienstende abgebrochen.")
         except Exception as exc:
             with _runtime_lock:
                 _shadow_status.update(state="error", finished_at=_runtime_iso(),
@@ -1293,6 +1295,71 @@ class _LiveExecutionMonitor:
         return live
 
 
+def _cross_site_post(headers) -> bool:
+    """Stammt ein POST von einer FREMDEN Webseite (CSRF)?
+
+    Browser senden bei seitenfremden POSTs - auch bei einfachen Formularen mit
+    ``text/plain`` - den Header ``Origin`` (moderne zusaetzlich
+    ``Sec-Fetch-Site``). Passt dessen Host nicht zum angesprochenen ``Host``,
+    wird abgelehnt. Geraete ohne Browser (Node-RED, Homey, curl) senden keinen
+    ``Origin`` und bleiben unberuehrt."""
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site == "cross-site":
+        return True
+    origin = (headers.get("Origin") or "").strip()
+    if not origin:
+        return False
+    if origin.lower() == "null":       # sandboxed iframe, data:-/file:-Seite
+        return True
+    try:
+        from urllib.parse import urlsplit
+        origin_host = (urlsplit(origin).netloc or "").lower()
+    except ValueError:
+        return True
+    host = (headers.get("Host") or "").strip().lower()
+    return not origin_host or origin_host != host
+
+
+class _RecalcGate:
+    """Entprellung des Auto-Recalc (config.recalc).
+
+    - geprueft wird hoechstens alle ``check_seconds`` (vorher: im 5-s-Takt der
+      Live-Stichprobe, die Einstellung war wirkungslos),
+    - erst ZWEI aufeinanderfolgende Ueberschreitungen loesen aus (eine einzelne
+      Probe faengt den Akku mitten im Nachregeln),
+    - danach ruht die Pruefung fuer eine Sperrzeit, damit nicht Recalc an
+      Recalc folgt, solange die Abweichung anhaelt."""
+
+    HITS_REQUIRED = 2
+
+    def __init__(self, check_seconds: float, lockout_seconds: float = None):
+        self.check_s = max(10.0, float(check_seconds))
+        self.lockout_s = (max(300.0, 3.0 * self.check_s)
+                          if lockout_seconds is None else float(lockout_seconds))
+        self._last_check = None
+        self._hits = 0
+        self._blocked_until = 0.0
+
+    def due(self, now: float) -> bool:
+        if now < self._blocked_until:
+            return False
+        return self._last_check is None or now - self._last_check >= self.check_s
+
+    def observe(self, delta, now: float):
+        """Ergebnis einer faelligen Pruefung melden. Rueckgabe: Abweichung,
+        wenn jetzt neu gerechnet werden soll, sonst None."""
+        self._last_check = now
+        if delta is None:
+            self._hits = 0
+            return None
+        self._hits += 1
+        if self._hits < self.HITS_REQUIRED:
+            return None
+        self._hits = 0
+        self._blocked_until = now + self.lockout_s
+        return delta
+
+
 def _live_recalc_needed(config, e3dc, live=None):
     """Weicht die gemessene Netzleistung im laufenden Slot stark vom Sollwert ab?
     Rückgabe: Abweichung (W) bei Überschreitung, sonst None. Netz ist hier das
@@ -1338,7 +1405,12 @@ def _publish_execution_alarm(publisher, config, audit) -> None:
             "warning", "EMS-Ausführung weicht wiederholt vom Plan ab: "
             + audit["message"])
         _execution_alarm["failed"] = True
-    elif audit.get("ok") and _execution_alarm["failed"]:
+    elif (_execution_alarm["failed"] and confirmed and confirmed[0]["ok"]
+          and audit.get("ok")
+          and audit.get("state") not in ("startup", "data_waiting")
+          and not str(audit.get("state", "")).startswith("live_")):
+        # Warte-/Start-Audits tragen ok=True, sagen aber nichts ueber die
+        # Ausfuehrung - sie duerfen den Alarm nicht entwarnen (Flattern).
         publisher.publish_alert("info", "EMS-Ausführung folgt wieder dem Sollplan.")
         _execution_alarm["failed"] = False
 
@@ -1587,6 +1659,11 @@ def _dispatch_control(action, payload, *, config, publisher, e3dc, config_path,
             raise ValueError("E3/DC-Steuerung ist ausgeschaltet")
         watts = float(payload.get("watts", 0) or 0)
         minutes = float(payload.get("minutes", 15) or 15)
+        if not (np.isfinite(watts) and watts >= 0.0):
+            raise ValueError("watts muss eine Zahl >= 0 sein")
+        # Ohne gueltige Dauer entstand frueher ein UNBEFRISTETER Eingriff.
+        if not (np.isfinite(minutes) and 1.0 <= minutes <= 24 * 60):
+            raise ValueError("minutes muss zwischen 1 und 1440 liegen")
         return e3dc.manual_power(act, watts, minutes * 60.0)
     if action == "battery_schedule":
         if schedule_runner is None:
@@ -1980,7 +2057,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         try:
             from .rscp import E3DCLink
             e3dc = E3DCLink(config)
-            e3dc.set_alarm_callback(publisher.publish_alert)
+            if publisher is not None:   # Einzellauf ohne MQTT
+                e3dc.set_alarm_callback(publisher.publish_alert)
         except Exception as exc:
             log.warning("RSCP-Anbindung nicht verfügbar (%s).", exc)
     try:
@@ -1988,7 +2066,15 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         # Runtime-Status auf "error" fallen (via except -> _runtime_fail) und darf
         # NICHT auf "running" hängen bleiben (Dashboard zeigte sonst ewig "läuft").
         repo = make_repository(config)
-        _reload_calibration_overrides(config)
+        try:
+            _reload_calibration_overrides(config)
+        except Exception as exc:
+            # Der Dienst hat eine gueltige Config im Speicher. Eine gerade halb
+            # editierte config.yaml oder ein unpassender Overlay-Wert darf
+            # nicht jeden Zyklus zu Fall bringen - weiter mit dem alten Stand,
+            # der naechste Zyklus versucht es erneut.
+            log.warning("Kalibrier-/Overlay-Werte nicht neu geladen (%s) - "
+                        "weiter mit dem bisherigen Stand.", exc)
         now = _now_slot(config)
         freq = f"{config.general.slot_minutes}min"
         # Per MQTT gesetzte Overrides (ems/cmd/car_departure_time,
@@ -2166,7 +2252,9 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         if n_load_fallback:
             log.warning("Lastprognose: %d fehlende Slots durch %.0f W ersetzt.",
                         n_load_fallback, config.forecast.fallback_load_w)
-        house_load = house_series.values
+        # Beschreibbare KOPIE: seit pandas 3 (Copy-on-Write) ist .values
+        # schreibgeschuetzt - der Slot-0-Anker scheiterte daran stumm.
+        house_load = house_series.to_numpy(dtype=float, copy=True)
         load_p10_opt = load_p10.reindex(opt_index)
         load_p90_opt = load_p90.reindex(opt_index)
 
@@ -2271,7 +2359,7 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             from .sanity import sanitize_inputs
             price, pv, pv10, house_series = sanitize_inputs(
                 config, price=price, pv=pv, pv10=pv10, load=house_series)
-            house_load = house_series.values
+            house_load = house_series.to_numpy(dtype=float, copy=True)
 
         # Live-Werte optional direkt vom E3DC (RSCP) statt aus der InfluxDB.
         # force=True: im Loop-Betrieb frisch pollen (kein Zyklus-übergreifender Cache).
@@ -2345,6 +2433,14 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                                     fill=False).mean()
                 if np.isfinite(m):
                     house_load[0] = max(0.0, float(m))
+        except Exception as exc:
+            # Kein debug: ein stumm gescheiterter Anker blieb monatelang
+            # unbemerkt (pandas-3-Umstellung).
+            log.warning("Slot-0-Anker (Last) fehlgeschlagen (%s).", exc)
+        # PV getrennt: ein Fehler beim Last-Anker darf den PV-Anker nicht
+        # mitreißen (und umgekehrt).
+        try:
+            slot_td = pd.Timedelta(freq)
             if (live and live.get("pv_w") is not None
                     and np.isfinite(float(live["pv_w"]))):
                 pv.iloc[0] = max(0.0, float(live["pv_w"]))
@@ -2355,8 +2451,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                     pv.iloc[0] = max(0.0, float(m))
             log.debug("Slot-0-Anker: Last %.0f W, PV %.0f W.",
                       house_load[0], pv.iloc[0])
-        except Exception as exc:  # pragma: no cover
-            log.debug("Slot-0-Anker fehlgeschlagen (%s).", exc)
+        except Exception as exc:
+            log.warning("Slot-0-Anker (PV) fehlgeschlagen (%s).", exc)
 
         # Anfangs-SoC Haus: bevorzugt RSCP-Live, sonst InfluxDB.
         lookback = now - timedelta(hours=6)
@@ -2538,7 +2634,11 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
         try:
             from .local_history import write_optimizer_forecast_archive
             archive_series = {
-                "house_load_w": house_series,
+                # Inklusive Slot-0-Anker: archiviert wird, was der
+                # Optimierer wirklich bekam.
+                "house_load_w": pd.Series(
+                    np.asarray(house_load, dtype=float),
+                    index=house_series.index, name=house_series.name),
                 "house_load_p10_w": load_p10_opt,
                 "house_load_p90_w": load_p90_opt,
                 "pv_w": pv,
@@ -3014,9 +3114,13 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             if getattr(config.dashboard, "api_enabled", False):
                 api_file = os.path.join(os.path.dirname(config.dashboard.output_path) or ".", "api_data.json")
                 try:
+                    # Atomar wie das Dashboard: ein Abruf waehrend des
+                    # Schreibens saehe sonst eine halbe Datei.
+                    api_tmp = f"{api_file}.{os.getpid()}.tmp"
                     display.reset_index().rename(columns={"index": "timestamp"}).to_json(
-                        api_file, orient="records", date_format="iso"
+                        api_tmp, orient="records", date_format="iso"
                     )
+                    os.replace(api_tmp, api_file)
                 except Exception as exc:
                     log.warning("Fehler beim Schreiben von %s: %s", api_file, exc)
         # Das teure ML-Schattenmodell bewusst erst nach erfolgreicher
@@ -3750,8 +3854,13 @@ def _price_series(repo, config, index, now, return_estimated=False):
                 weather = read_grid_weather(
                     config.e3dc_rscp.history_db_path, index[0],
                     index[-1] + slot, config.general.timezone)
+                # Bis zum Horizontende lesen: der heutige Tag ist laengst
+                # vollstaendig veroeffentlicht und ist - wie im Training - der
+                # Anker fuer morgen. predict nimmt den Anker nie aus dem
+                # Prognosetag selbst.
                 spot_hist = read_spot_signal(
-                    config, repo, now - timedelta(days=3), now).dropna()
+                    config, repo, now - timedelta(days=3),
+                    index[-1] + slot).dropna()
                 guess = model.predict(index[estimated], weather, spot_hist)
                 if guess is not None:
                     # Das Modell schätzt den BÖRSENPREIS - für den Optimierer
@@ -4433,6 +4542,12 @@ self.addEventListener("fetch",e=>{const u=new URL(e.request.url);if(u.origin!==l
         def do_POST(self):
             if not self._authed():
                 return
+            if _cross_site_post(self.headers):
+                # CSRF: eine fremde Webseite im Browser eines Heimnetz-Geraets
+                # darf keine Steuerbefehle absetzen (gespeicherte Basic-Auth-
+                # Daten sendet der Browser sonst mit).
+                self._reply({"error": "Fremdseiten-Anfrage abgelehnt"}, 403)
+                return
             path = self.path.split("?")[0]
             route = _resolve_post_route(path, config)
             if route[0] == "error":
@@ -4941,15 +5056,24 @@ def main() -> None:
     # RSCP-Lade-/Entlade-Limits freigegeben werden (EMS_POWER_LIMITS_USED=false) –
     # sie haben keinen Watchdog. (Bei SIGKILL/Stromausfall unmöglich; dann heilt
     # der nächste Zyklus nach dem systemd-Neustart die Grenze selbst.)
-    shutdown = {"requested": False}
+    shutdown = {"requested": False, "in_cycle": False}
+    recalc_gate = None
 
     def _handle_signal(signum, _frame):
         shutdown["requested"] = True
         if solver_is_running():
             log.info("Dienstende angefordert – laufender Solver wird abgebrochen.")
-            request_solver_cancel()
-        else:
-            raise SystemExit(0)
+            request_solver_cancel(final=True)
+            if shutdown["in_cycle"]:
+                # Der Hauptthread steckt selbst im Zyklus: run_once endet mit
+                # SolverCancelled bzw. die Schleife sieht shutdown["requested"].
+                return
+            # Der Solver gehoert einem Hintergrundlauf (Modusvergleich,
+            # What-if), der Hauptthread wartet nur auf die naechste Marke.
+            # Frueher kehrte der Handler hier zurueck und der Dienst wartete
+            # bis zu 15 min weiter -> systemd beendete ihn nach 90 s per
+            # SIGKILL, ohne dass close() die Limits freigab (12.11.2026).
+        raise SystemExit(0)
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
@@ -4958,6 +5082,7 @@ def main() -> None:
         while True:
             if _service_restart_requested.is_set():
                 break
+            shutdown["in_cycle"] = True
             try:
                 run_once(config, publisher, e3dc)
             except SolverCancelled:
@@ -4966,6 +5091,8 @@ def main() -> None:
             except Exception as exc:  # pragma: no cover
                 log.exception("Fehler im EMS-Zyklus – fahre fort.")
                 publisher.publish_alert("error", f"EMS-Zyklus fehlgeschlagen: {exc}")
+            finally:
+                shutdown["in_cycle"] = False
             if shutdown["requested"]:
                 break
             if _service_restart_requested.is_set():
@@ -4983,6 +5110,10 @@ def main() -> None:
             # jeder Schritt eine große Live-Abweichung vom Plan (Auto-Recalc).
             check = (max(10.0, config.recalc.check_seconds)
                      if config.recalc.enabled else None)
+            if check is None:
+                recalc_gate = None
+            elif recalc_gate is None or recalc_gate.check_s != check:
+                recalc_gate = _RecalcGate(check)
             live_check = None
             if (e3dc is not None and (
                     config.forecast.live_nowcast_enabled
@@ -5007,7 +5138,11 @@ def main() -> None:
                              "Zyklus startet sofort.")
                     break
                 live = live_execution.sample()
-                delta = _live_recalc_needed(config, e3dc, live=live)
+                delta = None
+                if recalc_gate is not None and recalc_gate.due(_time.time()):
+                    delta = recalc_gate.observe(
+                        _live_recalc_needed(config, e3dc, live=live),
+                        _time.time())
                 if delta is not None:
                     log.info("Große Live-Abweichung (%.0f W Netz vs. Plan) – "
                              "Neuberechnung sofort.", delta)

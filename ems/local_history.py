@@ -10,9 +10,12 @@ Schlüssel = UTC-ISO-Zeitstempel (monoton, DST-sicher). Werte = W (Mittel des
 """
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import os
 import sqlite3
+import threading
 import zlib
 from typing import Dict, Optional
 
@@ -25,8 +28,82 @@ from .loads import load_power_columns
 log = logging.getLogger("ems.local_history")
 
 
+# Wartezeit auf eine fremde Sperre (s). Bewusst laenger als ein Kalibrier-
+# oder Analyse-Leser typischerweise braucht.
+BUSY_TIMEOUT_S = 30
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_DONE: set = set()
+
+
+def _schema_key(path: str):
+    try:
+        st = os.stat(path)
+        return (os.path.abspath(path), st.st_ino)
+    except OSError:
+        return None
+
+
+def connect(path: str, *, timeout: float = BUSY_TIMEOUT_S) -> sqlite3.Connection:
+    """Verbindung zur Historie OHNE Schema-Anlage, im WAL-Modus.
+
+    WAL: Leser sperren Schreiber nicht mehr aus (und umgekehrt). Im alten
+    Rollback-Journal reichte EIN Leser ueber die Wartezeit, damit ein COMMIT
+    des Dienstes scheiterte und dessen halboffene Transaktion die Datei
+    dauerhaft sperrte (Vorfall 14.11.2026). Der Modus wird in der Datei
+    gespeichert; das Umschalten braucht einmalig alleinigen Zugriff und wird
+    sonst beim naechsten Aufruf erneut versucht."""
+    con = sqlite3.connect(path, timeout=timeout)
+    try:
+        con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+        try:
+            con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            pass   # gerade gesperrt oder Nur-Lese-Medium: Modus bleibt
+    except BaseException:
+        con.close()
+        raise
+    return con
+
+
 def _con(path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(path, timeout=10)
+    """Verbindung mit sichergestelltem Schema.
+
+    Das Schema wird je Prozess und Datei nur EINMAL angelegt - vorher lief der
+    ganze CREATE/ALTER-Block bei jedem Aufruf. Scheitert der Aufbau, wird die
+    Verbindung geschlossen statt in einem Traceback weiterzuleben; bei
+    "database is locked" raeumt ein gc-Lauf zuvor liegengebliebene
+    Verbindungen ab (Referenzzyklen ueber Tracebacks) und es wird einmal
+    wiederholt."""
+    for attempt in (0, 1):
+        con = connect(path)
+        try:
+            key = _schema_key(path)
+            if key is None or key not in _SCHEMA_DONE:
+                with _SCHEMA_LOCK:
+                    _schema(con)
+                    key = _schema_key(path)
+                    if key is not None:
+                        _SCHEMA_DONE.add(key)
+            return con
+        except sqlite3.OperationalError as exc:
+            try:
+                con.rollback()
+            except sqlite3.Error:
+                pass
+            con.close()
+            if attempt == 0 and "locked" in str(exc).lower():
+                del exc
+                gc.collect()
+                continue
+            raise
+        except BaseException:
+            con.close()
+            raise
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _schema(con: sqlite3.Connection) -> None:
     con.execute("CREATE TABLE IF NOT EXISTS house_load ("
                 " ts TEXT PRIMARY KEY, w REAL NOT NULL)")
     # Live-Ist-Werte des E3DC je Zyklus (Ersatz für die InfluxDB-Ist-Signale).
@@ -222,7 +299,6 @@ def _con(path: str) -> sqlite3.Connection:
                 " ts TEXT PRIMARY KEY, report_json TEXT NOT NULL,"
                 " profile_json TEXT NOT NULL)")
     con.commit()
-    return con
 
 
 def write_forecast_accuracy(path: str, day: str, acc: dict) -> None:
@@ -1271,19 +1347,33 @@ def read_controllable_load_power(path: str, loads: list, start, end, tz: str,
     return total.astype("float64"), complete.astype("bool"), labels
 
 
-def write_pv_actual(path: str, mapping: Dict[str, float]) -> int:
+def write_pv_actual(path: str, mapping: Dict[str, float], *,
+                    overwrite: bool = False) -> int:
     """UPSERT historischer Ist-PV {UTC-ISO -> W} in actuals.pv_w. Andere Spalten
-    (house_w/grid_w/…) bleiben unberührt – für den einmaligen PV-Ist-Import."""
+    (house_w/grid_w/…) bleiben unberührt – für den einmaligen PV-Ist-Import.
+
+    Vorhandene Werte bleiben stehen: actuals.pv_w traegt im Betrieb die SELBST
+    gemessenen Slotmittel, und ein erneuter Importlauf darf sie nicht durch
+    die groebere Influx-Sicht ersetzen. Gefuellt werden nur fehlende Slots und
+    NULL-Werte; ``overwrite=True`` ersetzt ausdruecklich.
+
+    Rueckgabe: Zahl der tatsaechlich geschriebenen Werte.
+    """
     if not mapping:
         return 0
+    sql = ("INSERT INTO actuals(ts, pv_w) VALUES(?, ?) "
+           "ON CONFLICT(ts) DO UPDATE SET pv_w=excluded.pv_w")
+    if not overwrite:
+        # WHERE statt COALESCE: so zaehlt total_changes nur echte Aenderungen.
+        sql += " WHERE actuals.pv_w IS NULL"
     con = _con(path)
-    con.executemany(
-        "INSERT INTO actuals(ts, pv_w) VALUES(?, ?) "
-        "ON CONFLICT(ts) DO UPDATE SET pv_w=excluded.pv_w",
-        [(k, float(v)) for k, v in mapping.items()])
-    con.commit()
-    con.close()
-    return len(mapping)
+    try:
+        before = con.total_changes
+        con.executemany(sql, [(k, float(v)) for k, v in mapping.items()])
+        con.commit()
+        return con.total_changes - before
+    finally:
+        con.close()
 
 
 def read_actual(path: str, field: str, start, end, tz: str) -> pd.Series:
@@ -2056,42 +2146,180 @@ def write_weather_forecast_archive(path: str, issue_time,
     return len(rows)
 
 
+# Marken einer Quelle, die weiter auseinander liegen als das hier (und als der
+# eigene Quellschritt), gelten als Luecke: darueber wird nicht interpoliert.
+INTERVALL_MAX_LUECKE = pd.Timedelta(minutes=90)
+# Wie weit die PV-Leser ueber [start, end) hinaus Marken mitlesen: der erste
+# Slot braucht den Intervall-Anfang davor, der letzte die Marke danach.
+_PV_RAND = pd.Timedelta(hours=2)
+
+
+def quellschritt(index) -> Optional[pd.Timedelta]:
+    """Intervalllaenge einer Quelle aus dem Abstand ihrer Marken: der
+    HAEUFIGSTE Abstand (bei Gleichstand der kleinere). Fehlende Marken
+    vergroessern einzelne Abstaende, aber nicht den haeufigsten - ein Median
+    laege bei wenigen Marken zwischen zwei Rastern. None, wenn weniger als
+    zwei Marken vorliegen."""
+    marken = pd.DatetimeIndex(index).unique().sort_values()
+    if len(marken) < 2:
+        return None
+    abstaende = pd.Series(marken).diff().dropna()
+    abstaende = abstaende[abstaende > pd.Timedelta(0)]
+    if abstaende.empty:
+        return None
+    return pd.Timedelta(abstaende.mode().min())
+
+
+def intervallmittel_auf_slots(src: pd.Series, grid: pd.DatetimeIndex,
+                              slot_minutes: int, *, rechts=None,
+                              schritt=None, ersatz_schritt=None) -> pd.Series:
+    """Intervallmittel EINER Quelle aufs Slotraster bringen - Mitte zu Mitte.
+
+    ``src`` traegt Mittelwerte ueber [Marke, Marke + L) auf dem Intervall-
+    ANFANG (Solcast L = 30 min, pvlib L = 60 min; L kommt aus dem Abstand der
+    Marken). Ein solches Mittel steht fuer die Intervall-MITTE, ein Slot fuer
+    seine Slotmitte. Bis 14.11.2026 wurde linear zwischen den Marken
+    interpoliert, als waeren es Momentanwerte am Stempel: die Kurve lag um
+    (L - Slot)/2 zu frueh - gemessen ueber 32 Tage -23,6 min bei pvlib (Soll
+    -22,5) und -6,1 min bei Solcast (Soll -7,5).
+
+    * Zwischen zwei benachbarten Intervallmitten wird linear interpoliert.
+    * Raender und Luecken: nichts wird extrapoliert. Vor der ersten und nach
+      der letzten Mitte gilt innerhalb des eigenen Intervalls dessen Mittel,
+      ausserhalb NaN. Liegen zwei Marken weiter auseinander als
+      max(L, INTERVALL_MAX_LUECKE), wird nicht ueber die Luecke interpoliert.
+    * Gerechnet wird in UTC - die Zeitumstellung aendert nichts.
+    * Quellen im Slotraster (L = Slot) kommen unveraendert heraus.
+
+    ``rechts`` (optional, fuer Rolling-Origin-Leser): Werte derselben Marken
+    aus STRENGER datierten Prognosen. Sie ersetzen die rechte Stuetzstelle,
+    solange der Slot vor deren Marke beginnt - sonst kaeme sie aus einer
+    Prognose, die erst nach dem Slot erstellt wurde. Fehlt dort ein Wert, gilt
+    der aus ``src``. Mit ``rechts`` wird nur zwischen direkt benachbarten
+    Intervallen interpoliert.
+
+    ``ersatz_schritt``: L, wenn es sich nicht ableiten laesst (eine einzige
+    Marke); Standard ist die Slotlaenge.
+    """
+    grid = pd.DatetimeIndex(grid)
+    out = pd.Series(np.nan, index=grid, dtype="float64")
+    if src is None or len(grid) == 0:
+        return out
+    s = pd.Series(src, dtype="float64").dropna()
+    if s.empty:
+        return out
+    s.index = pd.DatetimeIndex(s.index).tz_convert("UTC")
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+    slot = pd.Timedelta(minutes=slot_minutes)
+    laenge = (schritt if schritt is not None else quellschritt(s.index))
+    if laenge is None:
+        laenge = ersatz_schritt if ersatz_schritt is not None else slot
+    laenge_ns = int(pd.Timedelta(laenge).value)
+    slot_ns = int(slot.value)
+    marken = s.index.as_unit("ns").asi8
+    werte = s.to_numpy(dtype=float)
+    n = len(marken)
+    mitten = marken + laenge_ns // 2
+    anfang = grid.tz_convert("UTC").as_unit("ns").asi8
+    x = anfang + slot_ns // 2
+    i = np.searchsorted(mitten, x, side="right") - 1
+    j = i + 1
+    hat_l, hat_r = i >= 0, j < n
+    ii, jj = np.clip(i, 0, n - 1), np.clip(j, 0, n - 1)
+    wert_l, wert_r = werte[ii], werte[jj]
+    luecke_ns = laenge_ns
+    if rechts is None:
+        luecke_ns = max(laenge_ns, int(INTERVALL_MAX_LUECKE.value))
+    else:
+        r = pd.Series(rechts, dtype="float64")
+        if len(r):
+            r.index = pd.DatetimeIndex(r.index).tz_convert("UTC")
+            r = r[~r.index.duplicated(keep="last")]
+        streng = r.reindex(s.index).to_numpy(dtype=float)
+        streng = np.where(np.isnan(streng), werte, streng)
+        wert_r = np.where(anfang < marken[jj], streng[jj], wert_r)
+    bruecke = hat_l & hat_r & ((marken[jj] - marken[ii]) <= luecke_ns)
+    abstand = np.where(bruecke, mitten[jj] - mitten[ii], 1)
+    w = np.where(bruecke, (x - mitten[ii]) / abstand, 0.0)
+    # Ohne Nachbarn (Rand, Luecke) haelt der Slot das Mittel SEINES Intervalls.
+    im_linken = hat_l & (x < marken[ii] + laenge_ns)
+    im_rechten = hat_r & (x >= marken[jj])
+    halten = np.where(im_linken, wert_l, np.where(im_rechten, werte[jj], np.nan))
+    out[:] = np.where(bruecke, (1.0 - w) * wert_l + w * wert_r, halten)
+    return out
+
+
+def _quellen_kombinieren(je_quelle: dict, grid: pd.DatetimeIndex, combine: str,
+                         require_complete: bool = False) -> pd.Series:
+    """Slotreihen mehrerer Quellen summieren bzw. mitteln (NaN, wo keine - oder
+    bei ``require_complete`` nicht jede - Quelle liefert)."""
+    wide = pd.DataFrame(je_quelle, index=grid)
+    if require_complete:
+        wide = wide.where(wide.notna().all(axis=1))
+    if combine == "sum":
+        return wide.sum(axis=1, min_count=1)
+    return wide.mean(axis=1)
+
+
 def read_pv_forecast_asof(path: str, issue_time, start, end, tz: str,
                           slot_minutes: int, combine: str,
-                          which: str = "pv") -> pd.Series:
-    """Je Quelle jüngsten PV-Snapshot mit issue_ts <= Origin lesen."""
+                          which: str = "pv", sources=None) -> pd.Series:
+    """Je Quelle jüngsten PV-Snapshot mit issue_ts <= Origin lesen.
+
+    sources: NUR diese Quellen (wie bei read_pv_forecast). Das Archiv enthaelt
+    Solcast-Quellen, ``pvmodel:*`` UND die Ensemble-Mitglieder
+    ``pvmodel-member:*`` nebeneinander; ohne Filter addierte ``combine="sum"``
+    alle zehn (gemessen 28.487 W statt 6.823 W). Aufrufer uebergeben dieselben
+    IDs, die der Betrieb liest (ems/solcast._local_pv).
+
+    Jede Quelle wird fuer sich mit ihrer eigenen Aufloesung aufs Slotraster
+    gebracht (intervallmittel_auf_slots), erst danach wird kombiniert. Vorher
+    hielt ein ffill(limit=1) jeden Wert nur einen Unter-Slot - bei
+    Stundenquellen blieb jede zweite halbe Stunde leer (Saegezahn)."""
     col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
-    agg = "sum" if combine == "sum" else "avg"
     issue_iso = pd.Timestamp(issue_time).tz_convert("UTC").isoformat()
-    s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
-    e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
+    s_utc = (pd.Timestamp(start) - _PV_RAND).tz_convert("UTC").isoformat()
+    e_utc = (pd.Timestamp(end) + _PV_RAND).tz_convert("UTC").isoformat()
+    srcs = list(dict.fromkeys(sources or []))
+    if sources is not None and not srcs:
+        return pd.Series(dtype="float64")
+    quellfilter = (f" AND source IN ({','.join('?' for _ in srcs)})"
+                   if srcs else "")
     try:
         con = _con(path)
-        rows = con.execute(
-            f"WITH latest AS ("
-            " SELECT source, target_ts, max(issue_ts) issue_ts"
-            " FROM pv_forecast_archive"
-            " WHERE issue_ts <= ? AND target_ts >= ? AND target_ts < ?"
-            " GROUP BY source, target_ts)"
-            f" SELECT a.target_ts, {agg}(a.{col})"
-            " FROM pv_forecast_archive a JOIN latest l"
-            " ON a.source=l.source AND a.target_ts=l.target_ts"
-            " AND a.issue_ts=l.issue_ts"
-            f" WHERE a.{col} IS NOT NULL GROUP BY a.target_ts ORDER BY a.target_ts",
-            (issue_iso, s_utc, e_utc)).fetchall()
-        con.close()
+        try:
+            rows = con.execute(
+                "WITH latest AS ("
+                " SELECT source, target_ts, max(issue_ts) issue_ts"
+                " FROM pv_forecast_archive"
+                " WHERE issue_ts <= ? AND target_ts >= ? AND target_ts < ?"
+                f"{quellfilter}"
+                " GROUP BY source, target_ts)"
+                f" SELECT a.source, a.target_ts, a.{col}"
+                " FROM pv_forecast_archive a JOIN latest l"
+                " ON a.source=l.source AND a.target_ts=l.target_ts"
+                " AND a.issue_ts=l.issue_ts"
+                f" WHERE a.{col} IS NOT NULL ORDER BY a.target_ts",
+                (issue_iso, s_utc, e_utc, *srcs)).fetchall()
+        finally:
+            con.close()
     except Exception:
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
-    src = pd.Series([r[1] for r in rows], index=idx,
-                    dtype="float64").tz_convert(tz)
     grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz),
                          freq=f"{slot_minutes}min", inclusive="left")
-    spl = max(1, 30 // slot_minutes)
-    return src.reindex(src.index.union(grid)).ffill(limit=spl - 1).reindex(grid)
+    frame = pd.DataFrame(rows, columns=["source", "ts", "value"])
+    frame["ts"] = pd.to_datetime(frame["ts"], utc=True, format="ISO8601")
+    # Eine einzelne Marke verraet ihre Intervalllaenge nicht: wie bisher gilt
+    # dann das 30-min-Raster von Solcast.
+    je_quelle = {
+        name: intervallmittel_auf_slots(
+            part.set_index("ts")["value"], grid, slot_minutes,
+            ersatz_schritt=pd.Timedelta(minutes=max(30, slot_minutes)))
+        for name, part in frame.groupby("source", sort=False)}
+    return _quellen_kombinieren(je_quelle, grid, combine)
 
 
 def read_weather_forecast_asof(path: str, issue_time, start, end, tz: str,
@@ -2355,7 +2583,9 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
     which: 'pv' | 'p10' | 'p90'. combine: 'sum' (Arrays addieren) | 'mean'
     (redundante Quellen mitteln). Gröbere Quellschritte werden ZEITLICH auf das
     Slot-Raster interpoliert (auflösungsagnostisch: Solcast 30-min ODER pvlib
-    stündlich); nach dem letzten Punkt NaN. Leer, wenn nichts vorhanden.
+    stündlich), und zwar von Intervallmitte zu Slotmitte
+    (intervallmittel_auf_slots); nach dem Ende des letzten Intervalls NaN.
+    Leer, wenn nichts vorhanden.
 
     sources: NUR diese Quellen einbeziehen (Filter). WICHTIG, seit Solcast und
     das pvlib-Schattenmodell GLEICHZEITIG in dieselbe Tabelle schreiben - ohne
@@ -2364,69 +2594,58 @@ def read_pv_forecast(path: str, start, end, tz: str, slot_minutes: int,
     nur Zeitpunkte behalten, an denen ALLE Quellen liefern (dropna how=any).
     expected_sources: veralteter Alias (filtern UND require_complete zugleich)."""
     col = {"pv": "pv_w", "p10": "pv10_w", "p90": "pv90_w"}[which]
-    agg = "sum" if combine == "sum" else "avg"
     if expected_sources is not None:          # Rückwärtskompatibler Alias
         sources, require_complete = expected_sources, True
-    s_utc = (pd.Timestamp(start) - pd.Timedelta(hours=1)).tz_convert("UTC").isoformat()
-    # Rechts einen Quellschritt mitlesen: Der Slot direkt vor ``end`` braucht
-    # bei 30-/60-minütlichen Quellen den Stützpunkt exakt auf ``end`` zur
-    # Interpolation. Die frühere SQL-Grenze < end ließ deshalb abhängig von
-    # der Viertelstunde genau den letzten PV- und p10-Slot als NaN stehen.
-    # Das Ausgaberaster bleibt [start, end); limit_area="inside" extrapoliert
-    # weiterhin niemals über den letzten echten Quellwert hinaus.
-    e_utc = (pd.Timestamp(end) + pd.Timedelta(hours=1)).tz_convert(
-        "UTC").isoformat()
+    # Am Rand Marken mitlesen: der erste Slot braucht den Intervall-Anfang
+    # davor, der Slot direkt vor ``end`` die Marke danach als Stuetzstelle.
+    # Das Ausgaberaster bleibt [start, end); extrapoliert wird nie.
+    s_utc = (pd.Timestamp(start) - _PV_RAND).tz_convert("UTC").isoformat()
+    e_utc = (pd.Timestamp(end) + _PV_RAND).tz_convert("UTC").isoformat()
+    srcs = list(dict.fromkeys(sources or []))
+    quellfilter = (f" AND source IN ({','.join('?' for _ in srcs)})"
+                   if srcs else "")
     try:
         con = _con(path)
-        srcs = list(dict.fromkeys(sources or []))
-        if srcs:
-            marks = ",".join("?" for _ in srcs)
-            raw_rows = con.execute(
-                f"SELECT ts, source, {col} FROM pv_forecast "
-                f"WHERE ts >= ? AND ts < ? AND {col} IS NOT NULL "
-                f"AND source IN ({marks}) ORDER BY ts",
-                (s_utc, e_utc, *srcs)).fetchall()
-            if raw_rows:
-                frame = pd.DataFrame(raw_rows, columns=["ts", "source", "value"])
-                wide = frame.pivot_table(index="ts", columns="source",
-                                         values="value", aggfunc="last")
-                wide = wide.reindex(columns=srcs)
-                if require_complete:
-                    # nur Zeitpunkte, an denen ALLE Quellen liefern
-                    wide = wide.dropna(how="any")
-                combined = (wide.sum(axis=1) if combine == "sum"
-                            else wide.mean(axis=1))
-                rows = list(combined.dropna().items())
-            else:
-                rows = []
-        else:
+        try:
             rows = con.execute(
-                f"SELECT ts, {agg}({col}) FROM pv_forecast WHERE ts >= ? AND ts < ? "
-                f"AND {col} IS NOT NULL GROUP BY ts ORDER BY ts",
-                (s_utc, e_utc)).fetchall()
-        con.close()
+                f"SELECT source, ts, {col} FROM pv_forecast "
+                f"WHERE ts >= ? AND ts < ? AND {col} IS NOT NULL"
+                f"{quellfilter} ORDER BY ts",
+                (s_utc, e_utc, *srcs)).fetchall()
+        finally:
+            con.close()
     except Exception:
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
-    idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
-    src = pd.Series([r[1] for r in rows], index=idx, dtype="float64").tz_convert(tz)
+    frame = pd.DataFrame(rows, columns=["source", "ts", "value"])
+    frame["ts"] = pd.to_datetime(frame["ts"], utc=True, format="ISO8601")
     grid = pd.date_range(pd.Timestamp(start).tz_convert(tz),
                          pd.Timestamp(end).tz_convert(tz),
                          freq=f"{slot_minutes}min", inclusive="left")
     if len(grid) == 0:
-        return src
-    # Zeitliche Interpolation auf das Slot-Raster: bridge't sowohl Solcasts
-    # 30-min als auch pvlibs stündliche Quellschritte glatt. limit deckt bis
-    # ~90 min Lücke ab; limit_area="inside" verhindert Extrapolation über den
-    # letzten echten Punkt hinaus (danach bleibt NaN -> löst die Schätzung /
-    # Frische-Erkennung aus, wie bisher). ffill(limit=1) hielt vorher nur EINEN
-    # Sub-Slot -> bei Stundenwerten NaN-Löcher alle 30 min (Zackenkurve).
-    step_min = max(1.0, float(slot_minutes))
-    limit = max(1, int(90.0 / step_min))
-    allidx = src.index.union(grid)
-    return (src.reindex(allidx).interpolate(method="time", limit=limit,
-                                            limit_area="inside").reindex(grid))
+        summe = frame.groupby("ts")["value"]
+        return (summe.sum() if combine == "sum"
+                else summe.mean()).tz_convert(tz)
+    # JEDE Quelle mit ihrer eigenen Aufloesung aufs Slotraster (Solcast 30 min,
+    # pvlib stuendlich), Intervallmitte zu Slotmitte; erst danach kombinieren.
+    # Vorher wurde linear zwischen den Marken interpoliert, als waeren es
+    # Momentanwerte am Stempel - die Kurve lag (L - Slot)/2 zu frueh. Nach dem
+    # Ende des letzten Intervalls bleibt NaN (-> Schaetzung/Frische-Erkennung).
+    je_quelle = {
+        name: intervallmittel_auf_slots(part.set_index("ts")["value"], grid,
+                                        slot_minutes)
+        for name, part in frame.groupby("source", sort=False)}
+    if srcs:
+        je_quelle = {name: je_quelle.get(
+            name, pd.Series(np.nan, index=grid, dtype="float64"))
+            for name in srcs}
+    out = _quellen_kombinieren(je_quelle, grid, combine, require_complete)
+    if require_complete and not out.notna().any():
+        # wie bisher: kein einziger vollstaendiger Zeitpunkt -> leer (der
+        # Aufrufer faellt dann auf seine Ersatzquelle zurueck)
+        return pd.Series(dtype="float64")
+    return out
 
 
 def log_solcast_call(path: str, api_key: str, resource: str, ts_iso: str) -> None:

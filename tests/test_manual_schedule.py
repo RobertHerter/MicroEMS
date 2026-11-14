@@ -103,3 +103,115 @@ def test_idle_plan_ignores_watts_and_starts_mode(tmp_path):
     assert row["watts"] == 0.0
     runner._tick()
     assert link.calls[-1][0:2] == ("idle", 0.0)
+
+
+def test_runner_retries_start_when_soc_is_missing_once(tmp_path, monkeypatch):
+    """Ein einzelner Abruf ohne SoC darf den Eintrag nicht endgültig verwerfen."""
+    from ems import manual_schedule
+    monkeypatch.setattr(manual_schedule, "_SOC_RETRY_SECONDS", 0.0)
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    link = FakeLink(soc=50.0)
+    answers = [None, {}, {"soc_percent": 50.0}]
+    link.read_live = lambda force=False: answers.pop(0)
+    runner = ManualScheduleRunner(cfg, link)
+    row = runner.add({"action": "charge",
+                      "start": pd.Timestamp.now(tz=cfg.general.timezone).isoformat(),
+                      "watts": 2500, "duration_minutes": 30})
+
+    runner._tick()
+    assert runner.store.get(row["id"])["status"] == "planned"
+    runner._tick()
+    assert runner.store.get(row["id"])["status"] == "planned"
+    assert not link.calls
+    runner._tick()
+    assert runner.store.get(row["id"])["status"] == "running"
+    assert link.calls[-1][0:2] == ("charge", 2500.0)
+
+
+def test_runner_throttles_soc_retries(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    link = FakeLink(soc=50.0)
+    reads = []
+    link.read_live = lambda force=False: reads.append(1)
+    runner = ManualScheduleRunner(cfg, link)
+    runner.add({"action": "charge",
+                "start": pd.Timestamp.now(tz=cfg.general.timezone).isoformat(),
+                "watts": 2500, "duration_minutes": 30})
+    runner._tick()
+    runner._tick()
+    assert len(reads) == 1          # zweiter Tick liegt in der Wartezeit
+
+
+def test_runner_marks_window_missed_during_downtime_as_skipped(tmp_path):
+    """Ein Fenster, das komplett im Dienststillstand lag, ist nie gelaufen."""
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    link = FakeLink(soc=50.0)
+    runner = ManualScheduleRunner(cfg, link)
+    now = pd.Timestamp.now(tz=cfg.general.timezone)
+    row = runner.store.add("charge", now - pd.Timedelta(hours=2), 2500, 30,
+                           max_watts=5000, now=now - pd.Timedelta(hours=3))
+
+    runner._tick()
+
+    saved = runner.store.get(row["id"])
+    assert saved["status"] == "skipped"
+    assert "verstrichen" in saved["note"]
+    assert not link.calls
+
+
+def test_runner_completes_plan_that_actually_ran(tmp_path):
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    link = FakeLink(soc=50.0)
+    runner = ManualScheduleRunner(cfg, link)
+    now = pd.Timestamp.now(tz=cfg.general.timezone)
+    row = runner.store.add("charge", now - pd.Timedelta(hours=2), 2500, 30,
+                           max_watts=5000, now=now - pd.Timedelta(hours=3))
+    runner.store.set_status(row["id"], "running")
+
+    runner._tick()
+
+    assert runner.store.get(row["id"])["status"] == "completed"
+
+
+def test_store_closes_connection_when_statement_fails(tmp_path, monkeypatch):
+    import sqlite3
+    store = ManualScheduleStore(str(tmp_path / "history.sqlite"), "Europe/Berlin")
+    opened = []
+
+    class Broken:
+        closed = False
+
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self):
+            self.closed = True
+
+    def broken_con():
+        opened.append(Broken())
+        return opened[-1]
+
+    monkeypatch.setattr(store, "_con", broken_con)
+    now = pd.Timestamp.now(tz="Europe/Berlin")
+    calls = (lambda: store.get(1), store.active, store.list,
+             lambda: store.set_status(1, "running"), lambda: store.delete(1),
+             lambda: store.add("charge", now + pd.Timedelta(minutes=5), 3000,
+                               60, max_watts=9000, now=now))
+    for call in calls:
+        with pytest.raises(sqlite3.OperationalError):
+            call()
+    assert len(opened) == len(calls) and all(c.closed for c in opened)
+
+
+def test_store_uses_shared_wal_connection(tmp_path):
+    store = ManualScheduleStore(str(tmp_path / "history.sqlite"), "Europe/Berlin")
+    con = store._con()
+    try:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert con.execute("PRAGMA busy_timeout").fetchone()[0] >= 10000
+    finally:
+        con.close()

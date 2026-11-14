@@ -12,7 +12,8 @@ import pytest
 
 from ems.gridweather import POINTS, to_indices, wind_power_fraction
 from ems.local_history import read_grid_weather, write_grid_weather, write_spot
-from ems.priceforecast import PriceModel, baseline_name, build_features
+from ems.priceforecast import (_FEATURES, PriceModel, baseline_name,
+                               build_features)
 from tests.test_synthetic import make_config
 
 TZ = "Europe/Berlin"
@@ -374,3 +375,73 @@ def test_one_shot_run_waits_for_the_training(preismodell):
     _Modell.freigabe.set()
     assert m._price_model_for(make_config()).model == "neu"
     assert m._price_model_thread is None
+
+
+# --------------------------------------------------------------------------- #
+# Preisanker im Betrieb = Preisanker im Training
+# --------------------------------------------------------------------------- #
+_FEATURE_POS = {name: pos for pos, name in enumerate(_FEATURES)}
+
+
+class _Recorder:
+    """Modell-Attrappe: merkt sich die Merkmalsmatrix."""
+
+    def predict(self, x):
+        self.x = x
+        return np.zeros(len(x))
+
+
+def _anchor_setup(known_until):
+    start = pd.Timestamp("2026-03-09", tz=TZ)
+    hist = pd.date_range(start, pd.Timestamp(known_until, tz=TZ), freq="15min",
+                         inclusive="left")
+    # Vorvortag 20 ct, Vortag 10..14 ct (Mittel 12, Spanne 4), heute 50 ct.
+    spot = pd.Series(20.0, index=hist)
+    yesterday = hist.date == pd.Timestamp("2026-03-10").date()
+    spot[yesterday] = np.where(hist[yesterday].hour < 12, 10.0, 14.0)
+    spot[hist.date == pd.Timestamp("2026-03-11").date()] = 50.0
+    target = pd.date_range(pd.Timestamp("2026-03-12", tz=TZ), periods=96,
+                           freq="15min")
+    hours = pd.date_range(start, periods=24 * 5, freq="h").tz_convert("UTC")
+    weather = pd.DataFrame({"wind_index": 0.5, "solar_index": 100.0,
+                            "temp_index": 5.0}, index=hours)
+    model = PriceModel(make_config())
+    model.model = _Recorder()
+    return model, spot, weather, target
+
+
+def test_predict_ignores_the_unfinished_day_as_anchor():
+    """Im Betrieb endet die Preisreihe bei "jetzt" (hier 10:00 = 40 Slots).
+    Der angebrochene Tag darf nicht als Anker dienen - das Training kennt nur
+    den vollständigen Vortag."""
+    model, spot, weather, target = _anchor_setup("2026-03-11 10:00")
+    assert model.predict(target, weather, spot) is not None
+    x = model.model.x
+    assert x[:, _FEATURE_POS["anchor_mean"]] == pytest.approx(12.0)
+    assert x[:, _FEATURE_POS["anchor_spread"]] == pytest.approx(4.0)
+
+
+def test_predict_uses_the_day_before_the_forecast_when_it_is_complete():
+    """Liegt der Vortag des Prognosetags vollständig vor (alle veröffentlichten
+    Slots übergeben), ist er der Anker - exakt wie in ``_day_rows``."""
+    model, spot, weather, target = _anchor_setup("2026-03-12 00:00")
+    model.predict(target, weather, spot)
+    assert model.model.x[:, _FEATURE_POS["anchor_mean"]] == pytest.approx(50.0)
+    rows = model._day_rows(
+        pd.concat([spot, pd.Series(30.0, index=target)]), weather)
+    trained = {str(day.date()): x for day, x, _ in rows}["2026-03-12"]
+    assert trained[:, _FEATURE_POS["anchor_mean"]] == pytest.approx(50.0)
+    assert np.allclose(trained, model.model.x)
+
+
+def test_predict_never_takes_the_anchor_from_the_forecast_day_itself():
+    model, spot, weather, target = _anchor_setup("2026-03-12 12:00")
+    spot[spot.index >= target[0]] = 99.0
+    model.predict(target[60:], weather, spot)
+    assert model.model.x[:, _FEATURE_POS["anchor_mean"]] == pytest.approx(50.0)
+
+
+def test_predict_without_a_complete_day_does_not_guess():
+    model, spot, weather, target = _anchor_setup("2026-03-11 10:00")
+    partial = spot[spot.index >= pd.Timestamp("2026-03-11", tz=TZ)]
+    assert model.predict(target, weather, partial) is None

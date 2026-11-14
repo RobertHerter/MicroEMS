@@ -274,3 +274,303 @@ def test_ignored_overlay_keys_are_reported(caplog):
     assert any("binary_horizon_hours" in m and "nicht angewandt" in m
                for m in meldungen), meldungen
     assert not any("max_c" in m for m in meldungen)
+
+
+# --------------------------------------------------------------------------- #
+# Overlay-Schreiben: eindeutige Temp-Datei, gemeinsame Sperre, kein stilles
+# Ueberschreiben eines unlesbaren Overlays
+# --------------------------------------------------------------------------- #
+def _beispiel(tmp_path, aendern=None):
+    """config.example.yaml nach tmp_path kopieren, optional veraendert."""
+    beispiel = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "config.example.yaml")
+    with open(beispiel, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    if aendern is not None:
+        aendern(doc)
+    ziel = tmp_path / "config.yaml"
+    ziel.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True),
+                    encoding="utf-8")
+    return ziel
+
+
+def test_save_override_uses_a_unique_temp_file(tmp_path):
+    """Die feste ``.tmp``-Datei teilten sich gleichzeitige Schreiber. Eine
+    fremde Datei dieses Namens darf weder ueberschrieben noch verbraucht
+    werden, und es bleibt keine Temp-Datei liegen."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("{}\n")
+    fremd = tmp_path / "config_overrides.yaml.tmp"
+    fremd.write_text("halb geschrieben von einem anderen Prozess")
+    save_override(str(cfg), "optimization.charge_strategy", "peak")
+    assert fremd.read_text() == "halb geschrieben von einem anderen Prozess"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "config.yaml", "config_overrides.yaml", "config_overrides.yaml.tmp"]
+
+
+def test_save_override_keeps_a_broken_overlay_for_repair(tmp_path, caplog):
+    """Ein kaputtes Overlay wurde durch ``{}`` plus den neuen Schluessel
+    ersetzt - alle kalibrierten Werte waren unwiederbringlich weg."""
+    import logging
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("{}\n")
+    overlay = tmp_path / "config_overrides.yaml"
+    kaputt = "house_battery:\n  capacity_wh: [unbalanced\n"
+    overlay.write_text(kaputt)
+    with caplog.at_level(logging.ERROR, logger="ems.config"):
+        save_override(str(cfg), "optimization.charge_strategy", "late")
+    defekt = list(tmp_path.glob("config_overrides.yaml.defekt-*"))
+    assert len(defekt) == 1, "die kaputte Datei muss erhalten bleiben"
+    assert defekt[0].read_text() == kaputt
+    assert yaml.safe_load(overlay.read_text()) == {
+        "optimization": {"charge_strategy": "late"}}
+    assert any("kaputt" in r.getMessage() for r in caplog.records)
+
+
+def test_save_override_does_not_overwrite_an_unreadable_overlay(
+        tmp_path, monkeypatch):
+    """Lesefehler (Rechte, E/A): frueher wie "leer" behandelt und die Datei
+    ueberschrieben. Jetzt Fehler, die Datei bleibt unangetastet."""
+    import builtins
+    import ems.config as config_module
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("{}\n")
+    overlay = tmp_path / "config_overrides.yaml"
+    inhalt = "house_battery:\n  capacity_wh: 12345\n"
+    overlay.write_text(inhalt)
+
+    def gesperrt(pfad, mode="r", *args, **kwargs):
+        if str(pfad) == str(overlay) and "r" in mode:
+            raise PermissionError(13, "Permission denied", str(pfad))
+        return builtins.open(pfad, mode, *args, **kwargs)
+
+    monkeypatch.setattr(config_module, "open", gesperrt, raising=False)
+    with pytest.raises(OSError, match="NICHT ueberschrieben"):
+        save_override(str(cfg), "optimization.charge_strategy", "late")
+    monkeypatch.undo()
+    assert overlay.read_text() == inhalt
+
+
+def test_save_override_replaces_a_colliding_scalar(tmp_path):
+    """Stand unter einem Zwischenschluessel ein Skalar, landete der neue Wert
+    in einem losgeloesten Dict - die Aenderung ging still verloren."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("{}\n")
+    (tmp_path / "config_overrides.yaml").write_text("optimization: 5\n")
+    save_override(str(cfg), "optimization.charge_strategy", "peak")
+    assert yaml.safe_load((tmp_path / "config_overrides.yaml").read_text()) == {
+        "optimization": {"charge_strategy": "peak"}}
+
+
+def test_save_override_waits_for_the_shared_overlay_lock(tmp_path):
+    """save_override laeuft unter OVERLAY_LOCK - haelt ein anderer Schreiber
+    (der Editor) die Sperre, wartet es, statt dazwischenzuschreiben."""
+    import threading
+    import ems.config as config_module
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("{}\n")
+    overlay = tmp_path / "config_overrides.yaml"
+    worker = threading.Thread(
+        target=save_override,
+        args=(str(cfg), "optimization.charge_strategy", "peak"))
+    with config_module.OVERLAY_LOCK:
+        worker.start()
+        worker.join(0.3)
+        assert worker.is_alive() and not overlay.exists()
+    worker.join(5)
+    assert not worker.is_alive() and overlay.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Validierung: strikte Booleans, Wertebereiche, unbekannte Schluessel
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("wert,erwartet", [
+    (True, True), (False, False), (1, True), (0, False), (None, False),
+    ("", False), ("true", True), ("False", False), (" Ja ", True),
+    ("nein", False), ("on", True), ("OFF", False), ("1", True), ("0", False)])
+def test_parse_bool_accepts_the_documented_spellings(wert, erwartet):
+    from ems.config import parse_bool
+    assert parse_bool(wert, "x.y") is erwartet
+
+
+@pytest.mark.parametrize("wert", ["vielleicht", "flase", 2, 0.5, [], {}])
+def test_parse_bool_rejects_everything_else(wert):
+    from ems.config import parse_bool
+    with pytest.raises(ValueError, match="x.y"):
+        parse_bool(wert, "x.y")
+
+
+def test_string_false_does_not_enable_real_control(tmp_path):
+    """bool("false") ist True: aus ``control_enabled: "false"`` wurde eine
+    eingeschaltete E3/DC-Steuerung, die real in den Speicher eingreift."""
+    from ems.config import load_config
+
+    def setze(doc):
+        doc["e3dc_rscp"]["control_enabled"] = "false"
+        doc["optimization"]["allow_grid_discharge"] = "false"
+        doc["dashboard"]["controls_enabled"] = "nein"
+        doc["mqtt"]["enabled"] = "ja"
+        doc["influxdb"]["signals"]["vehicle_soc"]["optional"] = "true"
+    c = load_config(str(_beispiel(tmp_path, setze)))
+    assert c.e3dc_rscp.control_enabled is False
+    assert c.optimization.allow_grid_discharge is False
+    assert c.dashboard.controls_enabled is False
+    assert c.mqtt.enabled is True
+    assert c.influxdb.signals["vehicle_soc"].optional is True
+
+
+def test_unparseable_boolean_names_its_path(tmp_path):
+    from ems.config import load_config
+    pfad = _beispiel(tmp_path, lambda d: d["e3dc_rscp"].update(
+        control_enabled="aus?"))
+    with pytest.raises(ValueError, match=r"e3dc_rscp\.control_enabled"):
+        load_config(str(pfad))
+
+
+def test_load_override_enabled_string_is_read_strictly():
+    lasten = parse_controllable_loads(
+        [{"name": "Pool", "type": "thermal", "enabled": True, "stages": []}],
+        {"Pool": {"enabled": "false"}})
+    assert lasten[0].enabled is False
+
+
+@pytest.mark.parametrize("abschnitt,schluessel,wert,treffer", [
+    ("house_battery", "min_soc_percent", 95, "min_soc_percent"),
+    ("house_battery", "max_soc_percent", 120, "max_soc_percent"),
+    ("house_battery", "min_soc_percent", -5, "min_soc_percent"),
+    ("house_battery", "charge_efficiency", 96, "charge_efficiency"),
+    ("house_battery", "discharge_efficiency", 0, "discharge_efficiency"),
+    ("house_battery", "ac_charge_efficiency", 1.2, "ac_charge_efficiency"),
+    ("house_battery", "capacity_wh", 0, "capacity_wh"),
+    ("general", "run_interval_minutes", 0, "run_interval_minutes"),
+    ("optimization", "charge_strategy", "peek", "charge_strategy"),
+    ("optimization", "solver", "gurobi", "solver"),
+    ("e3dc_rscp", "batt_sign", 0, "batt_sign"),
+    ("e3dc_rscp", "batt_sign", 2, "batt_sign"),
+])
+def test_nonsense_values_are_rejected_with_a_clear_message(
+        tmp_path, abschnitt, schluessel, wert, treffer):
+    """Diese Werte liessen den Dienst bisher starten: vertauschtes SoC-Band,
+    Wirkungsgrad in Prozent, Tippfehler in Solver/Strategie (lief dann still
+    mit CBC bzw. asap)."""
+    from ems.config import load_config
+
+    def setze(doc):
+        if abschnitt == "house_battery" and schluessel == "min_soc_percent" \
+                and wert == 95:
+            doc[abschnitt]["max_soc_percent"] = 90
+        doc[abschnitt][schluessel] = wert
+    with pytest.raises(ValueError, match=treffer):
+        load_config(str(_beispiel(tmp_path, setze)))
+
+
+def test_solver_and_strategy_are_read_case_insensitively(tmp_path):
+    """make_solver verglich schon bisher klein geschrieben; "Peak" lief dagegen
+    still als asap."""
+    from ems.config import load_config
+
+    def setze(doc):
+        doc["optimization"]["solver"] = "HiGHS"
+        doc["optimization"]["charge_strategy"] = "Peak"
+        doc["e3dc_rscp"]["batt_sign"] = -1
+    c = load_config(str(_beispiel(tmp_path, setze)))
+    assert c.optimization.solver == "highs"
+    assert c.optimization.charge_strategy == "peak"
+    assert c.e3dc_rscp.batt_sign == -1.0
+
+
+def test_unknown_keys_are_reported_with_a_suggestion(tmp_path, caplog):
+    """Tippfehler wurden kommentarlos ignoriert: die Einstellung wirkte nicht
+    und nichts wies darauf hin. Nur Warnung - aeltere Configs muessen starten."""
+    import logging
+    from ems.config import load_config
+
+    def setze(doc):
+        doc["optimization"]["allow_grid_dischrage"] = True
+        doc["dashbord"] = {"enabled": True}
+        doc["house_battery"]["voellig_fremd_xyz"] = 1
+        doc["influxdb"]["signals"]["battery_soc"]["agregation"] = "last"
+        doc["controllable_loads"] = [{
+            "name": "Pool", "type": "thermal", "thermostat_an": True,
+            "window": {"von": 8},
+            "stages": [{"name": "klein", "power_w": 400, "heat_wat": 1}]}]
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        c = load_config(str(_beispiel(tmp_path, setze)))
+    assert c.optimization.allow_grid_discharge is False      # laedt trotzdem
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "'optimization.allow_grid_dischrage'" in text
+    assert "meintest du 'allow_grid_discharge'?" in text
+    assert "'dashbord'" in text and "meintest du 'dashboard'?" in text
+    assert "'house_battery.voellig_fremd_xyz' wird ignoriert." in text
+    assert "meintest du 'aggregation'?" in text
+    assert "controllable_loads[Pool].thermostat_an" in text
+    assert "controllable_loads[Pool].window.von" in text
+    assert "controllable_loads[Pool].stages[klein].heat_wat" in text
+
+    # je Datei nur einmal - der Dienst laedt die Config immer wieder
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        load_config(str(tmp_path / "config.yaml"))
+    assert not [r for r in caplog.records if "unbekannter" in r.getMessage()]
+
+
+def test_example_config_and_legacy_keys_raise_no_unknown_key_warning(
+        tmp_path, caplog):
+    """Die Schluesselliste muss vollstaendig sein: weder die Beispiel-Config
+    noch die weiter gelesenen Alt-Schluessel duerfen eine Warnung ausloesen."""
+    import logging
+    from ems.config import load_config
+
+    def alt(doc):
+        doc["weather"]["latitude"] = 48.1
+        doc["weather"]["longitude"] = 11.5
+        doc["forecast"]["holiday_country"] = "DE"
+        doc["forecast"]["holiday_subdivision"] = "BY"
+        doc["optimization"]["battery_hold_penalty_ct"] = 4.0
+        doc["influxdb"]["v1"]["timeout"] = 20
+        doc["controllable_loads_overrides"] = {"Pool": {"enabled": False}}
+        doc["controllable_loads"] = [
+            {"name": "Pool", "type": "thermal", "pv_surplus_only": True,
+             "temp_max_age_minutes": 30,
+             "season": {"from": "04-15", "to": "10-15"},
+             "stages": [{"name": "klein", "power_w": 400, "heat_w": 3000,
+                         "mqtt_topic": "pool/set"}]},
+            {"name": "Wama", "type": "deferrable", "mqtt_topic": "wama/start",
+             "window": {"from": 8, "to": 22}}]
+    for nr, aendern in enumerate((None, alt)):
+        ordner = tmp_path / str(nr)
+        ordner.mkdir()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="ems.config"):
+            load_config(str(_beispiel(ordner, aendern)))
+        assert not [r.getMessage() for r in caplog.records
+                    if "unbekannter" in r.getMessage()]
+
+
+def test_control_switched_off_does_not_break_curtailment_config(
+        tmp_path, caplog):
+    """Der Dashboard-Schalter "E3/DC-Steuerung aus" schreibt control_enabled:
+    false ins Overlay. Mit curtailment_control_enabled: true in der config.yaml
+    warf load_config danach ValueError - jeder Zyklus scheiterte, und nach
+    einem Neustart startete der Dienst nicht mehr."""
+    import logging
+    from ems.config import load_config
+
+    def setze(doc):
+        doc["e3dc_rscp"]["control_enabled"] = True
+        doc["e3dc_rscp"]["curtailment_control_enabled"] = True
+    cfg = _beispiel(tmp_path, setze)
+    c = load_config(str(cfg))
+    assert c.e3dc_rscp.curtailment_control_enabled is True
+
+    save_override(str(cfg), "e3dc_rscp.control_enabled", False)
+    with caplog.at_level(logging.WARNING, logger="ems.config"):
+        c = load_config(str(cfg))                     # vorher: ValueError
+    assert c.e3dc_rscp.control_enabled is False
+    assert c.e3dc_rscp.curtailment_control_enabled is False
+    assert any("Abregelsteuerung bleibt inaktiv" in r.getMessage()
+               for r in caplog.records)
+
+    save_override(str(cfg), "e3dc_rscp.control_enabled", True)
+    c = load_config(str(cfg))
+    assert c.e3dc_rscp.curtailment_control_enabled is True

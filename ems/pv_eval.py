@@ -21,7 +21,7 @@ summiert und gegen die Gesamt-Ist-PV der Anlage gemessen.
 from __future__ import annotations
 
 import logging
-import sqlite3
+from contextlib import closing
 from typing import List, Optional
 
 import numpy as np
@@ -32,6 +32,8 @@ from .time_utils import floor_time
 from .quality import bias_w
 
 from . import pvforecast
+from .local_history import (connect, intervallmittel_auf_slots,
+                            quellschritt)
 
 log = logging.getLogger("ems.pv_eval")
 
@@ -178,12 +180,11 @@ def read_actual_pv(db: str, start, end, tz: str, slot_minutes: int) -> pd.Series
     s_utc = pd.Timestamp(start).tz_convert("UTC").isoformat()
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     try:
-        con = sqlite3.connect(db, timeout=10)
-        rows = con.execute(
-            "SELECT ts, pv_w FROM actuals "
-            "WHERE ts >= ? AND ts < ? AND pv_w IS NOT NULL ORDER BY ts",
-            (s_utc, e_utc)).fetchall()
-        con.close()
+        with closing(connect(db)) as con:
+            rows = con.execute(
+                "SELECT ts, pv_w FROM actuals "
+                "WHERE ts >= ? AND ts < ? AND pv_w IS NOT NULL ORDER BY ts",
+                (s_utc, e_utc)).fetchall()
     except Exception:
         rows = []
     if not rows:
@@ -216,21 +217,22 @@ def _asof_punkte(db: str, sources: List[str], start, end, col: str,
     cut_sql = (f"strftime('%Y-%m-%dT%H:%M:%S+00:00', target_ts, "
                f"'-{minuten} minutes')" if minuten else "target_ts")
     try:
-        con = sqlite3.connect(db, timeout=10)
-        rows = con.execute(
-            f"WITH latest AS ("
-            f" SELECT source, target_ts, max(issue_ts) issue_ts"
-            f" FROM pv_forecast_archive"
-            f" WHERE source IN ({placeholders})"
-            f" AND target_ts >= ? AND target_ts < ? AND issue_ts <= {cut_sql}"
-            f" GROUP BY source, target_ts)"
-            f" SELECT a.target_ts, sum(a.{col}), min(a.issue_ts)"
-            f" FROM pv_forecast_archive a JOIN latest l"
-            f" ON a.source=l.source AND a.target_ts=l.target_ts"
-            f" AND a.issue_ts=l.issue_ts"
-            f" WHERE a.{col} IS NOT NULL GROUP BY a.target_ts ORDER BY a.target_ts",
-            (*sources, s_utc, e_utc)).fetchall()
-        con.close()
+        with closing(connect(db)) as con:
+            rows = con.execute(
+                f"WITH latest AS ("
+                f" SELECT source, target_ts, max(issue_ts) issue_ts"
+                f" FROM pv_forecast_archive"
+                f" WHERE source IN ({placeholders})"
+                f" AND target_ts >= ? AND target_ts < ?"
+                f" AND issue_ts <= {cut_sql}"
+                f" GROUP BY source, target_ts)"
+                f" SELECT a.target_ts, sum(a.{col}), min(a.issue_ts)"
+                f" FROM pv_forecast_archive a JOIN latest l"
+                f" ON a.source=l.source AND a.target_ts=l.target_ts"
+                f" AND a.issue_ts=l.issue_ts"
+                f" WHERE a.{col} IS NOT NULL"
+                f" GROUP BY a.target_ts ORDER BY a.target_ts",
+                (*sources, s_utc, e_utc)).fetchall()
     except Exception as exc:
         log.debug("read_group_asof fehlgeschlagen: %s", exc)
         rows = []
@@ -250,22 +252,28 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
     der Stand, den der Optimierer mit ``lead_hours`` Vorlauf gesehen haette.
 
     Gespeichert sind Intervallmittel auf dem Intervall-ANFANG (Solcast 30 min,
-    pvlib 60 min). Slots dazwischen werden - wie im Betrieb (read_pv_forecast)
-    - linear zwischen Intervall-Anfang S und naechstem Anfang S+P interpoliert.
-    Bis 12.11.2026 gab es nur Werte auf den Marken: Kalibrierung und
-    Quellenwahl sahen bei pvlib nur jede vierte Viertelstunde (421 statt 1760
-    Fit-Slots), wendeten die Faktoren aber auf alle an.
+    pvlib 60 min). Ein solches Mittel steht fuer die Intervall-MITTE; der
+    Slotwert wird - wie im Betrieb (read_pv_forecast), mit demselben Helfer
+    ``local_history.intervallmittel_auf_slots`` - an der SLOTMITTE zwischen
+    zwei benachbarten Intervallmitten interpoliert. Bis 14.11.2026 wurde
+    zwischen den Marken interpoliert, als waeren es Momentanwerte am Stempel:
+    pvlib lag damit im Mittel 23,6 min zu frueh, Solcast 6,1 min (32 Tage).
+    Davor (bis 12.11.2026) gab es nur Werte auf den Marken.
 
-    Ohne Blick in die Zukunft: die linke Stuetzstelle S gilt mit
-    issue_ts <= S - lead (wie bisher; Werte AUF einer Marke bleiben bitgleich),
-    die rechte S+P mit issue_ts <= S - lead, also eine Intervalllaenge frueher
-    als ihre eigene Marke - sonst kaeme sie aus einer Prognose, die nach dem
-    Slot erstellt wurde. Gemessen 13.10.-11.11.: der Vorgriff haette pvlib, das
-    viertelstuendlich neu rechnet, im Quellenvergleich rund 1 WAPE-Punkt
-    geschenkt. Fehlt eine solche rechte Prognose oder ist sie mehr als
-    RECHTS_MAX_ALTER_H aelter (vor dem 12.11.2026 ausgeduennte Historie), gilt
-    ersatzweise die linke Schranke - mit hoechstens einer Intervalllaenge
-    Vorgriff.
+    Ohne Blick in die Zukunft: jedes Intervall S gilt mit issue_ts <= S - lead
+    (wie bisher). Liegt der Slot im Intervall S und braucht das FOLGENDE
+    Intervall S+P als rechte Stuetzstelle, gilt fuer dieses issue_ts <=
+    S - lead, also eine Intervalllaenge frueher als seine eigene Marke - sonst
+    kaeme es aus einer Prognose, die nach dem Slot erstellt wurde. Gemessen
+    13.10.-11.11.: der Vorgriff haette pvlib, das viertelstuendlich neu
+    rechnet, im Quellenvergleich rund 1 WAPE-Punkt geschenkt. Fehlt eine solche
+    Prognose oder ist sie mehr als RECHTS_MAX_ALTER_H aelter (vor dem
+    12.11.2026 ausgeduennte Historie), gilt ersatzweise die normale Schranke -
+    mit hoechstens einer Intervalllaenge Vorgriff. Die linke Stuetzstelle
+    (vorheriges Intervall) ist ohnehin aelter als der Slot.
+
+    Raender und Luecken: ohne Nachbarintervall haelt der Slot das Mittel seines
+    eigenen Intervalls; ausserhalb jedes Intervalls bleibt NaN.
     """
     if not sources:
         return pd.Series(dtype="float64")
@@ -279,33 +287,27 @@ def read_group_asof(db: str, sources: List[str], start, end, tz: str,
     links = _asof_punkte(db, sources, von, bis, col, lead_hours)
     if links.empty:
         return pd.Series(dtype="float64")
-    schritt = pd.Series(links.index).diff().median()
-    if pd.isna(schritt) or schritt <= slot:
+    schritt = quellschritt(links.index)
+    if schritt is None or schritt <= slot:
         # Quelle im Slot-Raster: nichts zu interpolieren
         return links["value"].tz_convert(tz).reindex(grid)
     p_h = schritt.total_seconds() / 3600.0
     rechts = _asof_punkte(db, sources, von, bis, col, lead_hours + p_h)
-    schranke = rechts.index - pd.Timedelta(hours=lead_hours + p_h
-                                           + RECHTS_MAX_ALTER_H)
-    rechts = rechts.loc[rechts["issue"] >= schranke, "value"]
-    rechts = rechts.combine_first(links["value"])
-
-    t = grid.tz_convert("UTC")
-    anfang = t.floor(schritt)
-    w = ((t - anfang) / schritt).to_numpy(dtype=float)
-    lv = links["value"].reindex(anfang).to_numpy(dtype=float)
-    rv = rechts.reindex(anfang + schritt).to_numpy(dtype=float)
-    # Ohne rechte Stuetzstelle (Horizontende, Luecke) liegt der Slot trotzdem
-    # im Intervall S - dort gilt dessen Mittelwert.
-    rv = np.where(np.isnan(rv), lv, rv)
-    werte = np.where(w == 0.0, lv, (1.0 - w) * lv + w * rv)
-    return pd.Series(werte, index=grid)
+    if rechts.empty:
+        rechts = pd.Series(dtype="float64")
+    else:
+        schranke = rechts.index - pd.Timedelta(hours=lead_hours + p_h
+                                               + RECHTS_MAX_ALTER_H)
+        rechts = rechts.loc[rechts["issue"] >= schranke, "value"]
+    return intervallmittel_auf_slots(links["value"], grid, slot_minutes,
+                                     rechts=rechts, schritt=schritt)
 
 
 def read_group_cache(db: str, sources: List[str], start, end, tz: str,
                      slot_minutes: int, which: str = "pv") -> pd.Series:
     """Übergangs-Fallback: Quellgruppe aus dem Live-Cache (pv_forecast),
-    je Zielslot über die Quellen summiert. Kein echtes Rolling-Origin."""
+    je Zielslot über die Quellen summiert. Kein echtes Rolling-Origin.
+    Zeitbezug wie read_group_asof (Intervallmitte zu Slotmitte)."""
     if not sources:
         return pd.Series(dtype="float64")
     col = _COL[which]
@@ -314,20 +316,20 @@ def read_group_cache(db: str, sources: List[str], start, end, tz: str,
     e_utc = pd.Timestamp(end).tz_convert("UTC").isoformat()
     placeholders = ",".join("?" * len(sources))
     try:
-        con = sqlite3.connect(db, timeout=10)
-        rows = con.execute(
-            f"SELECT ts, sum({col}) FROM pv_forecast"
-            f" WHERE source IN ({placeholders}) AND ts >= ? AND ts < ?"
-            f" AND {col} IS NOT NULL GROUP BY ts ORDER BY ts",
-            (*sources, s_utc, e_utc)).fetchall()
-        con.close()
+        with closing(connect(db)) as con:
+            rows = con.execute(
+                f"SELECT ts, sum({col}) FROM pv_forecast"
+                f" WHERE source IN ({placeholders}) AND ts >= ? AND ts < ?"
+                f" AND {col} IS NOT NULL GROUP BY ts ORDER BY ts",
+                (*sources, s_utc, e_utc)).fetchall()
     except Exception as exc:
         log.debug("read_group_cache fehlgeschlagen: %s", exc)
         rows = []
     if not rows:
         return pd.Series(dtype="float64")
     idx = pd.to_datetime([r[0] for r in rows], utc=True, format="ISO8601")
-    return pd.Series([float(r[1]) for r in rows], index=idx).tz_convert(tz).reindex(grid)
+    return intervallmittel_auf_slots(
+        pd.Series([float(r[1]) for r in rows], index=idx), grid, slot_minutes)
 
 
 def _pairs(forecast: pd.Series, actual: pd.Series, min_pv_w: float) -> pd.DataFrame:

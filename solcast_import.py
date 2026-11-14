@@ -25,7 +25,7 @@ import pandas as pd
 
 from ems.config import load_config
 from ems.influx import InfluxRepository
-from ems.local_history import write_pv_forecast
+from ems.local_history import connect, write_pv_forecast
 
 log = logging.getLogger("ems.solcast_import")
 
@@ -33,15 +33,23 @@ _HIST_SOURCE = "influx_hist"
 
 
 def _live_start(db: str):
-    """Frühester Live-Zeitstempel (tz-aware UTC) oder None."""
+    """Frühester Live-Zeitstempel (tz-aware UTC) oder None.
+
+    None heisst ausschliesslich "es gibt noch keine Live-Daten" (Tabelle fehlt
+    oder ist leer). Jeder andere Lesefehler (gesperrte oder beschaedigte
+    Datenbank) wird NICHT geschluckt: sonst hielte der Import ihn fuer "keine
+    Live-Daten" und schriebe ueber den gesamten Live-Zeitraum.
+    """
     import sqlite3
-    try:
-        con = sqlite3.connect(db)
-        row = con.execute("SELECT min(ts) FROM pv_forecast WHERE source!=?",
-                          (_HIST_SOURCE,)).fetchone()
-        con.close()
-    except Exception:
-        return None
+    from contextlib import closing
+    with closing(connect(db)) as con:
+        try:
+            row = con.execute("SELECT min(ts) FROM pv_forecast WHERE source!=?",
+                              (_HIST_SOURCE,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return None
+            raise
     return pd.Timestamp(row[0]) if row and row[0] else None
 
 
@@ -60,7 +68,13 @@ def main() -> int:
     now = pd.Timestamp.now(tz=config.general.timezone)
 
     # Obergrenze = Beginn der Live-Abdeckung (exklusiv), sonst jetzt.
-    cutoff = _live_start(db)
+    try:
+        cutoff = _live_start(db)
+    except Exception as exc:
+        print(f"Abbruch: Live-Beginn in {db} nicht lesbar ({exc}). Ohne ihn "
+              "würde der Import den Live-Zeitraum überschreiben – nichts "
+              "importiert.")
+        return 3
     if cutoff is None:
         cutoff = now.tz_convert("UTC")
         print("Hinweis: noch keine Live-Solcast-Daten – importiere bis jetzt.")

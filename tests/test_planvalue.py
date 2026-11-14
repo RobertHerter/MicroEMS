@@ -197,3 +197,98 @@ def test_tiny_residual_load_stays_feasible_with_minimum_discharge():
     assert (imp[20:23] + table["batt_discharge_w"].to_numpy(float)[20:23]
             >= np.array([50.0, 70.0, 70.0])).all()
     assert (np.minimum(imp, exp) <= 1.0).all()
+
+
+# --------------------------------------------------------------------------- #
+# Kalendertage und Ausrichtung des fixierten 00:00-Plans
+# --------------------------------------------------------------------------- #
+def test_day_bounds_folgen_dem_kalendertag_an_der_zeitumstellung():
+    from ems.planvalue import _day_bounds
+    cfg = make_config()
+    for day, hours in (("2026-10-25", 25), ("2026-03-29", 23), ("2026-01-15", 24)):
+        start, end = _day_bounds(cfg, day)
+        assert start == pd.Timestamp(day, tz=TZ)
+        assert end == pd.Timestamp(day, tz=TZ).tz_localize(None).tz_localize(TZ) \
+            + pd.Timedelta(hours=hours)
+        assert end == end.normalize()
+
+
+def test_completed_days_ohne_luecke_nach_der_fruehjahrsumstellung(monkeypatch):
+    from types import SimpleNamespace
+    from ems import planvalue
+
+    class _TS:
+        @staticmethod
+        def now(tz=None):
+            return pd.Timestamp("2026-03-31 09:00", tz=tz)
+
+    monkeypatch.setattr(planvalue, "pd", SimpleNamespace(
+        Timestamp=_TS, DateOffset=pd.DateOffset, Timedelta=pd.Timedelta))
+    assert planvalue._completed_days(make_config(), 3) == [
+        "2026-03-28", "2026-03-29", "2026-03-30"]
+
+
+def _regret_with_snapshot(monkeypatch, snapshot_start_offset_min):
+    """regret_analysis mit Attrappen; der Snapshot-Leser liefert wie die echte
+    Historie den juengsten Lauf vor der Stichzeit (00:00:05 bzw. 00:15:05)."""
+    from ems import local_history, planvalue
+    cfg = make_config()
+    day = pd.Timestamp("2026-01-15", tz=TZ)
+    seen = {}
+
+    def load_range(config, start, end):
+        idx = pd.date_range(start, end, freq="15min", inclusive="left")
+        price = np.full(len(idx), 20.0)
+        return _data(idx, price, np.zeros(len(idx)), np.full(len(idx), 500.0),
+                     np.zeros(len(idx)), np.full(len(idx), 500.0),
+                     np.full(len(idx), 50.0))
+
+    def reader(path, issue_time, start, end, tz):
+        seen["cutoff"] = pd.Timestamp(issue_time)
+        runs = [day + pd.Timedelta(minutes=m, seconds=5) for m in (0, 15)]
+        if snapshot_start_offset_min:
+            runs = runs[1:]                     # der 00:00-Lauf fehlt
+        runs = [r for r in runs if r <= seen["cutoff"]]
+        if not runs:
+            return None, pd.DataFrame()
+        idx = pd.date_range(runs[-1].floor("15min"), end, freq="15min",
+                            inclusive="left")
+        return runs[-1], pd.DataFrame(
+            {"house_load_w": 500.0, "pv_w": 0.0, "price_ct_kwh": 20.0}, index=idx)
+
+    def solve(config, index, pv_w, house_w, price_ct, soc0_wh, pv10_w=None):
+        # Planwert = Slotnummer seit Tagesbeginn -> Verschiebung wird sichtbar.
+        return ((index - day) / pd.Timedelta(minutes=15)).to_numpy(float)
+
+    monkeypatch.setattr(planvalue, "load_range", load_range)
+    monkeypatch.setattr(planvalue, "_solve_battery_plan", solve)
+    monkeypatch.setattr(planvalue, "simulate_schedule",
+                        lambda config, data, plan, soc0: {
+                            "cost_eur": 0.0, "plan": list(plan)})
+    monkeypatch.setattr(local_history, "read_optimizer_forecast_asof", reader)
+    monkeypatch.setattr(local_history, "read_execution_plan_range",
+                        lambda *a, **k: None)
+    return planvalue.regret_analysis(cfg, "2026-01-15"), seen, day
+
+
+def test_fixierter_plan_nimmt_den_0000_lauf_und_liegt_slotgenau(monkeypatch):
+    out, seen, day = _regret_with_snapshot(monkeypatch, 0)
+    assert seen["cutoff"] == day + pd.Timedelta(minutes=5)
+    assert out["frozen"]["plan"] == [float(k) for k in range(96)]
+
+
+def test_fixierter_plan_entfaellt_wenn_die_reihe_nicht_bei_0000_beginnt(monkeypatch):
+    from ems import local_history
+    out, seen, day = _regret_with_snapshot(monkeypatch, 0)
+
+    def late(path, issue_time, start, end, tz):
+        idx = pd.date_range(day + pd.Timedelta(minutes=15), end, freq="15min",
+                            inclusive="left")
+        return day, pd.DataFrame(
+            {"house_load_w": 500.0, "pv_w": 0.0, "price_ct_kwh": 20.0}, index=idx)
+
+    monkeypatch.setattr(local_history, "read_optimizer_forecast_asof", late)
+    from ems import planvalue
+    out = planvalue.regret_analysis(make_config(), "2026-01-15")
+    assert out["frozen"] is None
+    assert out["oracle"] is not None

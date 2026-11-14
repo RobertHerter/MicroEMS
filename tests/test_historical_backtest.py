@@ -58,3 +58,21 @@ def test_historical_plan_rejects_stale_snapshot(monkeypatch):
     with pytest.raises(backtest.HistoricalForecastUnavailable, match="zu alt"):
         backtest._historical_day_plan(object(), config, day)
     assert seen["cutoff"] == day + pd.Timedelta(minutes=5)
+
+
+@pytest.mark.parametrize("day, slots", [
+    ("2026-10-24", 96 + 100),      # Folgetag hat 25 h
+    ("2026-10-25", 100 + 96),
+    ("2026-03-28", 96 + 92),       # Folgetag hat 23 h
+    ("2026-07-18", 192),
+])
+def test_plan_index_covers_two_calendar_days_across_dst(day, slots):
+    config = SimpleNamespace(general=SimpleNamespace(
+        timezone="Europe/Berlin", slot_minutes=15,
+        optimization_horizon_hours=48))
+    start = pd.Timestamp(day, tz="Europe/Berlin")
+    opt_end, idx = backtest._plan_index(config, start)
+    assert opt_end == pd.Timestamp(day) .tz_localize("Europe/Berlin") \
+        + pd.DateOffset(days=2)
+    assert opt_end == opt_end.normalize()
+    assert len(idx) == slots and idx[0] == start

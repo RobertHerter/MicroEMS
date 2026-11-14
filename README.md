@@ -275,9 +275,13 @@ Lebenszeichen ausbleibt). Die Timer:
 - **`ems-savings.timer`** (täglich 02:45): validiert die Vortags-Ersparnis gegen
   die echten E3DC-Zähler (`savings_check.py --persist`).
 - **`ems-backup.timer`** (wöchentlich): sichert die unversionierten Dateien
-  (`config.yaml` mit Zugangsdaten, Kalibrierprofile, Ersparnis-Status) via
+  (`config.yaml` mit Zugangsdaten, `config_overrides.yaml` mit kalibrierten
+  Werten und Dashboard-Einstellungen, Kalibrierprofile, Ersparnis-Status) via
   [backup.sh](backup.sh). **Für echte Sicherheit ein externes Ziel setzen**
   (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
+  Die Historie (`e3dc_history.sqlite`, rund 2 GB) wird nur mit
+  `Environment=EMS_BACKUP_DB=1` mitgesichert - konsistent per `sqlite3 .backup`,
+  aufbewahrt werden die letzten zwei (Ziel braucht etwa 6 GB frei).
 - **`ems-alarm@.service`** (kein Timer): scheitert einer der drei Läufe, startet
   ihn systemd per `OnFailure=`. Er meldet auf `ems/alert` (Homey-Push) und im
   Ereignisverlauf des Dashboards, welcher Schritt mit welchem Fehler abbrach.

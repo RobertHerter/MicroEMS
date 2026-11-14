@@ -159,17 +159,25 @@ def discharge_windows(actuals: pd.DataFrame, capacity_wh: float,
         j = i
         while j + 1 < n and discharging[j + 1] and not gap[j + 1]:
             j += 1
-        slots = j - i + 1
+        # Der SoC einer Zeile gilt am SLOTBEGINN. Das Ende des letzten Slots
+        # steht also in Zeile j+1 - aber nur, wenn die lueckenlos anschliesst.
+        # Beginnt dort ein Ausfall oder endet der Datensatz, ist der End-SoC
+        # des letzten Slots unbekannt: dann zaehlt dieser Slot nicht mit
+        # (sonst Energie ueber n Slots gegen SoC-Hub ueber n-1 Slots).
+        if j + 1 < n and not gap[j + 1]:
+            end, last = j + 1, j
+        else:
+            end, last = j, j - 1
+        slots = last - i + 1
         if slots >= MIN_WINDOW_SLOTS:
-            end = min(j + 1, n - 1)     # SoC am Ende der letzten Entladung
             drop = soc_energy_wh(soc[i], soc[end], capacity_wh)
             floor_wh = (MIN_WINDOW_DROP_WH if MIN_WINDOW_DROP_WH is not None
                         else min_soc_window_wh(capacity_wh))
             if drop > floor_wh:
-                ac = float(power[i:j + 1].sum()) * dt_hours + \
+                ac = float(power[i:last + 1].sum()) * dt_hours + \
                     standby_w * slots * dt_hours
                 out.append(Window(frame.index[i], slots, ac, float(drop),
-                                  float(power[i:j + 1].mean())))
+                                  float(power[i:last + 1].mean())))
         i = j + 1
     return out
 
@@ -252,15 +260,20 @@ def charge_windows(actuals: pd.DataFrame, dt_hours: float) -> List[ChargeWindow]
         j = i
         while j + 1 < n and charging[j + 1] and not gap[j + 1]:
             j += 1
-        slots = j - i + 1
+        # Wie bei der Entladeseite: der End-SoC des letzten Slots steht in
+        # Zeile j+1. Fehlt die (Luecke, Datenende), zaehlt der Slot nicht mit.
+        if j + 1 < n and not gap[j + 1]:
+            end, last = j + 1, j
+        else:
+            end, last = j, j - 1
+        slots = last - i + 1
         if slots >= CAPACITY_MIN_SLOTS:
-            end = min(j + 1, n - 1)     # SoC am Ende der letzten Ladung
             gain = float(soc[end] - soc[i])
             if (gain >= CAPACITY_MIN_SWING_PCT
                     and soc[end] <= hi + CAPACITY_BAND_TOLERANCE_PCT):
-                energy = float(power[i:j + 1].sum()) * dt_hours
+                energy = float(power[i:last + 1].sum()) * dt_hours
                 out.append(ChargeWindow(frame.index[i], slots, energy, gain,
-                                        float(power[i:j + 1].mean())))
+                                        float(power[i:last + 1].mean())))
         i = j + 1
     return out
 

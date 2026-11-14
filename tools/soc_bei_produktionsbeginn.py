@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 
 import numpy as np
@@ -31,12 +30,13 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ems.config import load_config                                # noqa: E402
-from ems.local_history import read_actual, read_load_temp         # noqa: E402
+from ems.local_history import (connect, read_actual,              # noqa: E402
+                               read_load_temp)
 
 
 def _pool_energie(db: str, von, bis) -> float:
     """Gemessene Pool-Energie (kWh) im Zeitraum, je Slot der Maximalwert."""
-    con = sqlite3.connect(db)
+    con = connect(db)
     try:
         row = con.execute(
             "SELECT sum(power_w) FROM (SELECT ts, max(power_w) power_w "
@@ -72,9 +72,11 @@ def main() -> int:
     print(f"{'Tag':11s}{'Beginn':>7s}{'SoC':>6s}{'Bezug':>8s}{'Pool kWh':>10s}"
           f"{'PoolTemp':>10s}{'Bedarf':>8s}{'PV Tag':>8s}{'ungenutzt':>11s}")
     for n in range(args.tage, 0, -1):
-        tag = jetzt.normalize() - pd.Timedelta(days=n)
+        # Kalendertage (DateOffset), nicht n*24 h: nach einer Zeitumstellung
+        # laege "tag" sonst auf 23:00 bzw. 01:00 statt auf Mitternacht.
+        tag = jetzt.normalize() - pd.DateOffset(days=n)
         nacht_von = tag - pd.Timedelta(hours=4)      # ab 20:00 des Vortags
-        ende = tag + pd.Timedelta(days=1)
+        ende = tag + pd.DateOffset(days=1)
         pv = read_actual(db, "pv_w", nacht_von, ende, tz)
         haus = read_actual(db, "house_w", nacht_von, ende, tz)
         soc = read_actual(db, "soc", nacht_von, ende, tz)

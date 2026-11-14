@@ -6,15 +6,63 @@ statt mit rohen Dictionaries.
 """
 from __future__ import annotations
 
+import dataclasses
+import difflib
 import logging
+import math
 import os
+import tempfile
+import threading
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import datetime, time
 from typing import Any, Dict, Optional
 
 import yaml
 
 log = logging.getLogger("ems.config")
+
+# Eine Sperre fuer ALLE Schreiber der Overlay-Datei in diesem Prozess:
+# save_override (Dashboard-Schalter, Kalibrierung) und der Config-Editor
+# (ems/config_editor.py) lesen-aendern-schreiben dieselbe Datei. Ohne gemeinsame
+# Sperre ueberschrieb der spaetere Schreiber die Aenderung des frueheren.
+# RLock, damit ein Schreiber, der die Sperre haelt, save_override rufen darf.
+OVERLAY_LOCK = threading.RLock()
+
+_BOOL_TRUE = ("true", "ja", "yes", "on", "1")
+_BOOL_FALSE = ("false", "nein", "no", "off", "0")
+
+
+def parse_bool(value: Any, pfad: str) -> bool:
+    """Wahrheitswert aus der Konfiguration STRIKT lesen.
+
+    ``bool("false")`` ist True - der Editor legt ueber "+ Eigenschaft" genau
+    solche Zeichenketten an, und aus ``control_enabled: "false"`` wurde so eine
+    eingeschaltete Steuerung. Erlaubt sind echte Booleans, 0/1 sowie die Worte
+    true/false, ja/nein, yes/no, on/off; alles andere ist ein Fehler mit Pfad.
+    Ein leerer Wert (``schluessel:`` ohne Angabe bzw. "") bleibt wie bisher
+    False."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        wort = value.strip().lower()
+        if wort == "":
+            return False
+        if wort in _BOOL_TRUE:
+            return True
+        if wort in _BOOL_FALSE:
+            return False
+    raise ValueError(
+        f"{pfad}: {value!r} ist kein Wahrheitswert "
+        "(erlaubt: true/false, ja/nein, on/off, 1/0).")
+
+
+def _cfg_bool(block: Any, key: str, default: bool, abschnitt: str) -> bool:
+    """``block[key]`` strikt als Wahrheitswert; fehlt der Schluessel: default."""
+    return parse_bool(block.get(key, default), f"{abschnitt}.{key}")
 
 
 # --------------------------------------------------------------------------- #
@@ -88,7 +136,7 @@ class SignalSpec:
         return cls(
             measurement=d["measurement"],
             field=d["field"],
-            optional=bool(d.get("optional", False)),
+            optional=_cfg_bool(d, "optional", False, "influxdb.signals[]"),
             tags=dict(d.get("tags", {})),
             aggregation=str(d.get("aggregation", "mean")),
             retention_policy=d.get("retention_policy"),
@@ -324,6 +372,12 @@ class ControllableLoad:
     # ganze Nacht und zog den Akku von 97 % auf 5 %. None = target_c (altes
     # Verhalten). Den am Geraet abgelesenen Abschaltwert eintragen.
     temp_signal: Optional[str] = None    # InfluxDB-Signal der Ist-Temperatur (für T[0])
+    # Hoechstalter (min) der per MQTT empfangenen Ist-Temperatur, bis zu dem sie
+    # eine Heiz-Freigabe GEGEN den Plan halten darf (thermostat: true). Ein
+    # verstummter Sensor hielt die Freigabe sonst mit seinem letzten Wert
+    # dauerhaft an. Aelter = wie "keine Temperatur" -> das Signal folgt dem
+    # Plan. 0 = keine Altersgrenze (Sensoren, die nur bei Aenderung senden).
+    temp_max_age_minutes: float = 45.0
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
     season_to: Optional[str] = None
@@ -1112,6 +1166,25 @@ def _load_slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "load"
 
 
+# Felder einer steuerbaren Last, die das Overlay (controllable_loads_overrides)
+# ueberschreiben darf. Auf Modulebene, weil der Config-Editor dieselbe Liste
+# braucht: er arbeitet genau diese Werte in die config.yaml ein und darf nur
+# sie aus dem Overlay entfernen.
+LOAD_OVERRIDE_KEYS = frozenset({
+    "enabled", "target_c", "min_c", "max_c", "power_w", "power_profile_w",
+    "runtime_minutes", "window_from_hour", "window_to_hour",
+    "surface_m2", "solar_absorption", "deadline_hours",
+    "min_on_minutes", "min_off_minutes",
+    # von der Thermomodell-Kalibrierung geschrieben
+    # (ems/pool_calibration.py --apply)
+    "loss_w_per_k",
+    # sonst faellt der Wert im Overlay still weg
+    "comfort_penalty_ct_per_k_slot",
+    # per Overlay umschaltbar, weil es die Regel ist, die ueber Nachtheizen
+    # entscheidet
+    "solar_surplus_only"})
+
+
 def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
     """controllable_loads aus der YAML-Liste in ControllableLoad-Objekte.
 
@@ -1143,7 +1216,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
         load = ControllableLoad(
             name=str(w["name"]),
             type=str(w.get("type", "deferrable")),
-            enabled=bool(w.get("enabled", True)),
+            enabled=_cfg_bool(w, "enabled", True, "controllable_loads[]"),
             switch_penalty_ct=float(w.get("switch_penalty_ct", 5.0)),
             comfort_max_c=(float(w["comfort_max_c"])
                            if w.get("comfort_max_c") is not None else None),
@@ -1173,14 +1246,17 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             loss_w_per_k=float(w.get("loss_w_per_k", 0.0)),
             surface_m2=float(w.get("surface_m2", 0.0)),
             solar_absorption=float(w.get("solar_absorption", 0.75)),
-            thermostat=bool(w.get("thermostat", False)),
+            thermostat=_cfg_bool(w, "thermostat", False, "controllable_loads[]"),
             # 0/leer = nicht gesetzt -> target_c. Ein echter Cutoff von 0 °C
             # ergibt fuer diese Lasten keinen Sinn, waere aber fatal: die
             # Heiz-Freigabe bliebe dann IMMER stehen (T >= 0 °C).
             solar_surplus_only=str(w.get("solar_surplus_only", "off")).lower(),
-            no_grid_import=bool(w.get("no_grid_import",
-                                      w.get("pv_surplus_only", False))),
+            no_grid_import=parse_bool(
+                w.get("no_grid_import", w.get("pv_surplus_only", False)),
+                "controllable_loads[].no_grid_import"),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
+            temp_max_age_minutes=max(0.0, float(
+                w.get("temp_max_age_minutes", 45.0))),
             stages=stages,
             season_from=(str(w.get("season_from") or seas.get("from"))
                          if (w.get("season_from") or seas.get("from")) else None),
@@ -1190,32 +1266,21 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
             min_on_minutes=max(0, int(w.get("min_on_minutes", 0))),
             min_off_minutes=max(0, int(w.get("min_off_minutes", 0))),
             binary_horizon_hours=float(w.get("binary_horizon_hours", 12.0)),
-            feedback_required=bool(w.get("feedback_required", False)),
+            feedback_required=_cfg_bool(w, "feedback_required", False, "controllable_loads[]"),
             feedback_max_age_minutes=float(
                 w.get("feedback_max_age_minutes", 20.0)),
-            feedback_hold_while_connected=bool(
-                w.get("feedback_hold_while_connected", False)),
+            feedback_hold_while_connected=_cfg_bool(w, "feedback_hold_while_connected", False, "controllable_loads[]"),
         )
         if load.type not in ("deferrable", "thermal"):
             raise ValueError(f"controllable_loads['{load.name}'].type muss "
                              f"'deferrable' oder 'thermal' sein.")
         ov = (overrides or {}).get(_load_slug(load.name))
         if isinstance(ov, dict):
-            _ALLOWED = {"enabled", "target_c", "min_c", "max_c", "power_w",
-                        "power_profile_w",
-                        "runtime_minutes", "window_from_hour", "window_to_hour",
-                        "surface_m2", "solar_absorption", "deadline_hours",
-                        "min_on_minutes", "min_off_minutes",
-                        # von der Thermomodell-Kalibrierung geschrieben
-                        # (ems/pool_calibration.py --apply)
-                        "loss_w_per_k",
-                        # sonst faellt der Wert im Overlay still weg
-                        "comfort_penalty_ct_per_k_slot",
-                        # per Overlay umschaltbar, weil es die Regel ist, die
-                        # ueber Nachtheizen entscheidet
-                        "solar_surplus_only"}
             for k, v in ov.items():
-                if k in _ALLOWED and hasattr(load, k):
+                if k in LOAD_OVERRIDE_KEYS and hasattr(load, k):
+                    if k == "enabled":
+                        v = parse_bool(
+                            v, f"controllable_loads_overrides.{load.name}.{k}")
                     setattr(load, k, v)
                 elif k != "stage_heat_w":
                     # Sonst verschwindet ein Eintrag wirkungslos: beim Setzen
@@ -1251,27 +1316,200 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return base
 
 
+def _read_overlay_for_update(p: str) -> dict:
+    """Overlay zum FORTSCHREIBEN lesen. Fehlt die Datei: leeres Dokument.
+
+    Ein unlesbares Overlay darf nicht stillschweigend durch ``{}`` plus den
+    neuen Schluessel ersetzt werden - darin stehen die woechentlich
+    kalibrierten Werte und alle Dashboard-Einstellungen. Deshalb:
+      * Lesefehler des Betriebssystems (Rechte, E/A) -> Fehler, nichts schreiben.
+      * kaputtes YAML / keine Zuordnung an der Wurzel -> die Datei wird als
+        ``<name>.defekt-<zeit>`` beiseitegelegt (bleibt zur Reparatur
+        erhalten), laut gemeldet und ein neues Overlay begonnen."""
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        return {}
+    except (yaml.YAMLError, UnicodeDecodeError) as exc:
+        grund = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    except OSError as exc:
+        raise OSError(
+            f"Overlay {p} ist nicht lesbar ({exc}) - es wird NICHT "
+            "ueberschrieben, die Aenderung wurde nicht gespeichert.") from exc
+    else:
+        if data is None:
+            return {}
+        if isinstance(data, dict):
+            return data
+        grund = f"Wurzel ist {type(data).__name__}, keine Zuordnung"
+    defekt = f"{p}.defekt-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+    os.replace(p, defekt)
+    log.error("Overlay %s ist kaputt (%s) - gesichert als %s, es wird ein "
+              "neues Overlay begonnen. Die bisherigen Overlay-Werte "
+              "(Kalibrierung, Dashboard-Einstellungen) gelten erst wieder, "
+              "wenn sie von dort uebernommen sind.", p, grund, defekt)
+    return {}
+
+
+def _write_overlay(p: str, data: dict) -> None:
+    """Overlay atomar schreiben: eindeutige Temp-Datei im selben Verzeichnis,
+    dann os.replace. Die frueher feste ``.tmp``-Datei teilten sich zwei
+    gleichzeitige Schreiber (Dienst und Kalibrierlauf) - der eine ersetzte
+    dann die halb geschriebene Datei des anderen."""
+    directory = os.path.dirname(os.path.abspath(p)) or "."
+    try:
+        mode = os.stat(p).st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(prefix=".config_overrides-", suffix=".tmp",
+                               dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_override(config_path: str, dotted_key: str, value) -> None:
     """Persistiert EINEN Wert (z.B. "optimization.charge_strategy") in die Overlay-
     Datei config_overrides.yaml. config.yaml (kommentiert) bleibt unberührt;
-    load_config merged die Overlays beim nächsten Laden über die Basis."""
+    load_config merged die Overlays beim nächsten Laden über die Basis.
+
+    Lesen-Aendern-Schreiben laeuft unter OVERLAY_LOCK (gemeinsam mit dem
+    Config-Editor). Ein unlesbares Overlay wird nicht ueberschrieben, siehe
+    _read_overlay_for_update."""
     p = _overrides_path(config_path)
-    try:
-        with open(p, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-    except (OSError, yaml.YAMLError):
-        data = {}
-    node = data
-    parts = dotted_key.split(".")
-    for part in parts[:-1]:
-        node = node.setdefault(part, {})
-        if not isinstance(node, dict):   # kollidierender Skalar -> überschreiben
-            node = {}
-    node[parts[-1]] = value
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
-    os.replace(tmp, p)
+    with OVERLAY_LOCK:
+        data = _read_overlay_for_update(p)
+        node = data
+        parts = dotted_key.split(".")
+        for part in parts[:-1]:
+            child = node.get(part)
+            if not isinstance(child, dict):   # fehlt / kollidierender Skalar
+                child = {}
+                node[part] = child
+            node = child
+        node[parts[-1]] = value
+        _write_overlay(p, data)
+
+
+# --------------------------------------------------------------------------- #
+# Pruefung auf unbekannte Schluessel (nur Warnung)
+# --------------------------------------------------------------------------- #
+_GEMELDET: set = set()
+
+
+def _warn_once(quelle: str, text: str) -> None:
+    """Warnung je Config-Datei nur EINMAL je Prozess ausgeben - load_config
+    laeuft im Dienst immer wieder (Overlay-Reload), dieselbe Zeile alle paar
+    Minuten wuerde das Log fluten."""
+    key = (os.path.abspath(quelle), text)
+    if key in _GEMELDET:
+        return
+    if len(_GEMELDET) > 500:      # Editor-Pruefungen nutzen wechselnde Pfade
+        _GEMELDET.clear()
+    _GEMELDET.add(key)
+    log.warning("%s", text)
+
+
+def _field_names(cls, *extra: str) -> set:
+    return {f.name for f in dataclasses.fields(cls)} | set(extra)
+
+
+def _warn_unknown_keys(raw: dict, quelle: str) -> None:
+    """Unbekannte Schluessel melden (Tippfehler wie ``allow_grid_dischrage``
+    oder ein Block ``dashbord:``). Sie wurden bisher kommentarlos ignoriert -
+    die Einstellung wirkte nicht, und nichts wies darauf hin.
+
+    Bewusst NUR eine Warnung: aeltere Configs anderer Anlagen enthalten
+    Schluessel, die es nicht mehr gibt, und muessen weiter starten. Die
+    bekannten Namen kommen aus den Dataclass-Feldern plus den ausdruecklich
+    weiter gelesenen Alt-Schluesseln. Frei benannte Unterbloecke
+    (influxdb.v1/v2/outputs, Signal-Tags, vehicle.departure_times) werden
+    nicht geprueft."""
+    def pruefe(block, bekannt: set, pfad: str) -> None:
+        if not isinstance(block, dict):
+            return
+        for key in block:
+            name = str(key)
+            if name in bekannt:
+                continue
+            nah = difflib.get_close_matches(name, sorted(bekannt), n=1,
+                                            cutoff=0.6)
+            voll = f"{pfad}.{name}" if pfad else name
+            _warn_once(quelle, (
+                f"Konfiguration: unbekannter Schluessel '{voll}' wird "
+                "ignoriert" + (f" - meintest du '{nah[0]}'?" if nah else ".")))
+
+    def liste(block, key):
+        value = block.get(key) if isinstance(block, dict) else None
+        return [x for x in value if isinstance(x, dict)] if isinstance(
+            value, list) else []
+
+    pruefe(raw, _field_names(Config, "controllable_loads_overrides"), "")
+    abschnitte = {
+        "general": _field_names(GeneralConfig),
+        "influxdb": _field_names(InfluxConfig),
+        "feed_in": _field_names(FeedInConfig),
+        "house_battery": _field_names(HouseBatteryConfig),
+        "inverter": _field_names(InverterConfig),
+        "vehicle": _field_names(VehicleConfig),
+        # battery_hold_penalty_ct: alter Name, wird weiter gelesen
+        "optimization": _field_names(OptimizationConfig,
+                                     "battery_hold_penalty_ct"),
+        # bis v1.4 lagen die Feiertage unter forecast, der Standort unter weather
+        "forecast": _field_names(ForecastConfig, "holiday_country",
+                                 "holiday_subdivision"),
+        "mqtt": _field_names(MqttConfig),
+        "dashboard": _field_names(DashboardConfig),
+        "calibration": _field_names(CalibrationConfig),
+        "savings": _field_names(SavingsConfig),
+        "monitoring": _field_names(MonitoringConfig),
+        "report": _field_names(ReportConfig),
+        "e3dc_rscp": _field_names(E3DCRscpConfig),
+        "weather": _field_names(WeatherConfig, "latitude", "longitude"),
+        "tariff": _field_names(TariffConfig),
+        "solcast": _field_names(SolcastConfig),
+        "pv_model": _field_names(PvModelConfig),
+        "pv_source_selection": _field_names(PvSourceSelectionConfig),
+        "sanity": _field_names(SanityConfig),
+        "recalc": _field_names(RecalcConfig),
+    }
+    for name, bekannt in abschnitte.items():
+        pruefe(raw.get(name), bekannt, name)
+    signals = (raw.get("influxdb") or {}).get("signals") if isinstance(
+        raw.get("influxdb"), dict) else None
+    if isinstance(signals, dict):
+        for name, spec in signals.items():
+            pruefe(spec, _field_names(SignalSpec), f"influxdb.signals.{name}")
+    for i, item in enumerate(liste(raw.get("solcast"), "sources")):
+        pruefe(item, _field_names(SolcastSource), f"solcast.sources[{i}]")
+    for i, item in enumerate(liste(raw.get("pv_model"), "arrays")):
+        pruefe(item, _field_names(PvArray), f"pv_model.arrays[{i}]")
+    for i, item in enumerate(liste(raw.get("tariff"), "grid_fee_windows")):
+        pruefe(item, _field_names(GridFeeWindow),
+               f"tariff.grid_fee_windows[{i}]")
+    # window/season: Kurzschreibweise {from, to}; mqtt_topic und
+    # pv_surplus_only sind Alt-Namen, die weiter gelesen werden.
+    last_felder = _field_names(ControllableLoad, "window", "season",
+                               "mqtt_topic", "pv_surplus_only")
+    for i, item in enumerate(liste(raw, "controllable_loads")):
+        pfad = f"controllable_loads[{item.get('name', i)}]"
+        pruefe(item, last_felder, pfad)
+        pruefe(item.get("window"), {"from", "to"}, f"{pfad}.window")
+        pruefe(item.get("season"), {"from", "to"}, f"{pfad}.season")
+        for stage in liste(item, "stages"):
+            pruefe(stage, _field_names(LoadStage, "mqtt_topic"),
+                   f"{pfad}.stages[{stage.get('name', '?')}]")
 
 
 def load_config(path: str) -> Config:
@@ -1297,6 +1535,7 @@ def load_config(path: str) -> Config:
         # rechnet mit veralteten Parametern weiter.
         log.warning("Overlay %s nicht lesbar (%s) - kalibrierte Werte werden "
                     "NICHT angewandt.", _overrides_path(path), exc)
+    _warn_unknown_keys(raw, path)
 
     g = raw.get("general", {})
     # Abwärtskompatibilität: bis v1.4 lagen Standort unter ``weather`` und
@@ -1316,8 +1555,7 @@ def load_config(path: str) -> Config:
             "holiday_subdivision",
             legacy_forecast.get("holiday_subdivision")),
         optimization_horizon_hours=int(g.get("optimization_horizon_hours", 48)),
-        optimization_horizon_round_to_midnight=bool(g.get(
-            "optimization_horizon_round_to_midnight", False)),
+        optimization_horizon_round_to_midnight=_cfg_bool(g, "optimization_horizon_round_to_midnight", False, "general"),
         forecast_horizon_hours=int(g.get("forecast_horizon_hours", 72)),
         forecast_archive_raw_days=int(
             g.get("forecast_archive_raw_days", 60)),
@@ -1325,8 +1563,12 @@ def load_config(path: str) -> Config:
         run_interval_minutes=int(g.get("run_interval_minutes", 15)),
         run_offset_seconds=int(g.get("run_offset_seconds", 10)),
     )
-    if 60 % general.slot_minutes != 0:
+    if general.slot_minutes <= 0 or 60 % general.slot_minutes != 0:
         raise ValueError("slot_minutes muss ein Teiler von 60 sein (z.B. 5,10,15,30,60).")
+    if general.run_interval_minutes <= 0:
+        raise ValueError(
+            f"general.run_interval_minutes ({general.run_interval_minutes}) "
+            "muss groesser als 0 sein.")
 
     inf = raw["influxdb"]
     signals = {name: SignalSpec.from_dict(spec) for name, spec in inf["signals"].items()}
@@ -1339,7 +1581,7 @@ def load_config(path: str) -> Config:
         v2=inf.get("v2", {}),
         signals=signals,
         outputs=outputs,
-        enabled=bool(inf.get("enabled", True)),
+        enabled=_cfg_bool(inf, "enabled", True, "influxdb"),
     )
     if influxdb.version not in (1, 2):
         raise ValueError("influxdb.version muss 1 oder 2 sein.")
@@ -1348,7 +1590,7 @@ def load_config(path: str) -> Config:
     feed_in = FeedInConfig(
         mode=fi.get("mode", "fixed"),
         fixed_ct_kwh=float(fi.get("fixed_ct_kwh", 8.0)),
-        zero_at_negative_price=bool(fi.get("zero_at_negative_price", False)),
+        zero_at_negative_price=_cfg_bool(fi, "zero_at_negative_price", False, "feed_in"),
     )
     if feed_in.mode not in ("fixed", "db"):
         raise ValueError("feed_in.mode muss 'fixed' oder 'db' sein.")
@@ -1370,6 +1612,28 @@ def load_config(path: str) -> Config:
         full_hold_soc_threshold_percent=float(
             hb.get("full_hold_soc_threshold_percent", 95.0)),
     )
+    # Wertebereiche: ein vertauschtes SoC-Band oder ein Wirkungsgrad von 96
+    # statt 0.96 liess den Dienst bisher starten und den Optimierer mit
+    # unloesbaren bzw. unsinnigen Modellen rechnen.
+    if not (math.isfinite(house_battery.capacity_wh)
+            and house_battery.capacity_wh > 0):
+        raise ValueError(
+            f"house_battery.capacity_wh ({house_battery.capacity_wh}) muss "
+            "groesser als 0 sein.")
+    if not (0.0 <= house_battery.min_soc_percent
+            < house_battery.max_soc_percent <= 100.0):
+        raise ValueError(
+            "house_battery: min_soc_percent "
+            f"({house_battery.min_soc_percent}) muss kleiner als "
+            f"max_soc_percent ({house_battery.max_soc_percent}) sein, beide "
+            "zwischen 0 und 100.")
+    for _name in ("charge_efficiency", "discharge_efficiency",
+                  "ac_charge_efficiency"):
+        _eta = getattr(house_battery, _name)
+        if _eta is not None and not 0.0 < _eta <= 1.0:
+            raise ValueError(
+                f"house_battery.{_name} ({_eta}) muss groesser als 0 und "
+                "hoechstens 1 sein (Anteil, z.B. 0.96 - nicht Prozent).")
 
     inv = raw["inverter"]
     inverter = InverterConfig(
@@ -1382,7 +1646,7 @@ def load_config(path: str) -> Config:
 
     v = raw.get("vehicle", {})
     vehicle = VehicleConfig(
-        enabled=bool(v.get("enabled", False)),
+        enabled=_cfg_bool(v, "enabled", False, "vehicle"),
         capacity_wh=float(v.get("capacity_wh", 0)),
         max_charge_w=float(v.get("max_charge_w", 0)),
         min_charge_w=float(v.get("min_charge_w", 0)),
@@ -1399,7 +1663,7 @@ def load_config(path: str) -> Config:
     optimization = OptimizationConfig(
         terminal_soc_value=o.get("terminal_soc_value", "auto"),
         cycle_penalty_ct_kwh=float(o.get("cycle_penalty_ct_kwh", 0.1)),
-        solver=str(o.get("solver", "highs")),
+        solver=str(o.get("solver", "highs")).strip().lower(),
         solver_time_limit_s=int(o.get("solver_time_limit_s", 60)),
         solver_threads=int(o.get("solver_threads", 0)),
         solver_mip_gap=float(o.get("solver_mip_gap", 0.002)),
@@ -1419,8 +1683,8 @@ def load_config(path: str) -> Config:
         mode_prefill_penalty_ct_kwh=float(o.get(
             "mode_prefill_penalty_ct_kwh", 20.0)),
         export_priority_ct_kwh=float(o.get("export_priority_ct_kwh", 0.0)),
-        allow_grid_discharge=bool(o.get("allow_grid_discharge", False)),
-        charge_strategy=str(o.get("charge_strategy", "auto")),
+        allow_grid_discharge=_cfg_bool(o, "allow_grid_discharge", False, "optimization"),
+        charge_strategy=str(o.get("charge_strategy", "auto")).strip().lower(),
         late_target_penalty_ct_kwh=float(o.get(
             "late_target_penalty_ct_kwh", 200.0)),
         late_charge_delay_ct_kwh=float(o.get(
@@ -1428,7 +1692,7 @@ def load_config(path: str) -> Config:
         negative_price_export_penalty_ct_kwh=float(o.get(
             "negative_price_export_penalty_ct_kwh", 10.0)),
         auto_peak_threshold_percent=float(o.get("auto_peak_threshold_percent", 85.0)),
-        seasonal_peak_tuning=bool(o.get("seasonal_peak_tuning", False)),
+        seasonal_peak_tuning=_cfg_bool(o, "seasonal_peak_tuning", False, "optimization"),
         auto_peak_threshold_winter_percent=float(o.get(
             "auto_peak_threshold_winter_percent", 95.0)),
         auto_peak_threshold_summer_percent=float(o.get(
@@ -1459,10 +1723,23 @@ def load_config(path: str) -> Config:
         evening_reserve_end=_parse_time(str(o.get("evening_reserve_end", "20:00"))),
         evening_reserve_penalty_ct_kwh=float(o.get(
             "evening_reserve_penalty_ct_kwh", 3.0)),
-        evening_reserve_auto=bool(o.get("evening_reserve_auto", False)),
+        evening_reserve_auto=_cfg_bool(o, "evening_reserve_auto", False, "optimization"),
         evening_reserve_hold_from_hour=int(o.get("evening_reserve_hold_from_hour", 11)),
         evening_reserve_price_factor=float(o.get("evening_reserve_price_factor", 1.15)),
     )
+    # Nur was der Code wirklich unterscheidet: make_solver nimmt fuer alles
+    # ausser "highs" stillschweigend CBC, der Optimierer fuer jede unbekannte
+    # Ladestrategie "asap" - ein Tippfehler lief also unbemerkt im falschen
+    # Modus.
+    if optimization.solver not in ("highs", "cbc"):
+        raise ValueError(
+            f"optimization.solver ('{optimization.solver}') muss 'highs' "
+            "oder 'cbc' sein.")
+    if optimization.charge_strategy not in ("auto", "asap", "peak", "late"):
+        raise ValueError(
+            "optimization.charge_strategy "
+            f"('{optimization.charge_strategy}') muss 'auto', 'asap', 'peak' "
+            "oder 'late' sein.")
     # Invariante bei aktiver Negativpreis-Nullung: der Einspeise-Malus muss den
     # Late-Zeitmalus übersteigen, sonst spart der Optimierer im Late-Modus den
     # (bis zu late_charge_delay großen) Frühlade-Malus, indem er EINSPEIST statt
@@ -1492,7 +1769,7 @@ def load_config(path: str) -> Config:
         weight_same_temp=float(f.get("weight_same_temp", 2.0)),
         temp_sigma=float(f.get("temp_sigma", 4.0)),
         half_life_days=float(f.get("half_life_days", 120.0)),
-        intraday_enabled=bool(f.get("intraday_enabled", True)),
+        intraday_enabled=_cfg_bool(f, "intraday_enabled", True, "forecast"),
         intraday_window_hours=float(f.get("intraday_window_hours", 3.0)),
         intraday_decay_hours=float(f.get("intraday_decay_hours", 6.0)),
         intraday_max_factor=float(f.get("intraday_max_factor", 1.5)),
@@ -1518,43 +1795,39 @@ def load_config(path: str) -> Config:
         intraday_pv_operational_slots=int(
             f.get("intraday_pv_operational_slots", 4)),
         price_damping=float(f.get("price_damping", 0.3)),
-        disaggregation_project_unmeasured=bool(
-            f.get("disaggregation_project_unmeasured", False)),
-        price_model_enabled=bool(f.get("price_model_enabled", True)),
+        disaggregation_project_unmeasured=_cfg_bool(f, "disaggregation_project_unmeasured", False, "forecast"),
+        price_model_enabled=_cfg_bool(f, "price_model_enabled", True, "forecast"),
         price_model_min_train_days=int(
             f.get("price_model_min_train_days", 60)),
         price_model_holdout_days=int(f.get("price_model_holdout_days", 14)),
         method=str(f.get("method", "similar_days")),
-        load_uncertainty_enabled=bool(
-            f.get("load_uncertainty_enabled", True)),
+        load_uncertainty_enabled=_cfg_bool(f, "load_uncertainty_enabled", True, "forecast"),
         load_uncertainty_low_quantile=float(
             f.get("load_uncertainty_low_quantile", 0.10)),
         load_uncertainty_high_quantile=float(
             f.get("load_uncertainty_high_quantile", 0.90)),
         load_uncertainty_min_samples=int(
             f.get("load_uncertainty_min_samples", 12)),
-        disaggregate_controllable_loads=bool(
-            f.get("disaggregate_controllable_loads", True)),
+        disaggregate_controllable_loads=_cfg_bool(f, "disaggregate_controllable_loads", True, "forecast"),
         disaggregation_lookback_days=int(
             f.get("disaggregation_lookback_days", 28)),
         disaggregation_min_samples=int(
             f.get("disaggregation_min_samples", 3)),
-        live_nowcast_enabled=bool(f.get("live_nowcast_enabled", True)),
+        live_nowcast_enabled=_cfg_bool(f, "live_nowcast_enabled", True, "forecast"),
         live_nowcast_retention_days=int(
             f.get("live_nowcast_retention_days", 14)),
         live_nowcast_min_coverage_seconds=float(
             f.get("live_nowcast_min_coverage_seconds", 180.0)),
         live_nowcast_max_gap_seconds=float(
             f.get("live_nowcast_max_gap_seconds", 30.0)),
-        temperature_residual_enabled=bool(
-            f.get("temperature_residual_enabled", True)),
+        temperature_residual_enabled=_cfg_bool(f, "temperature_residual_enabled", True, "forecast"),
         temperature_residual_min_folds=int(
             f.get("temperature_residual_min_folds", 6)),
         temperature_residual_min_samples=int(
             f.get("temperature_residual_min_samples", 96)),
         temperature_residual_max_adjustment_percent=float(
             f.get("temperature_residual_max_adjustment_percent", 0.35)),
-        load_ensemble_enabled=bool(f.get("load_ensemble_enabled", True)),
+        load_ensemble_enabled=_cfg_bool(f, "load_ensemble_enabled", True, "forecast"),
         load_ensemble_lookback_days=int(
             f.get("load_ensemble_lookback_days", 60)),
         load_ensemble_min_folds=int(
@@ -1589,16 +1862,16 @@ def load_config(path: str) -> Config:
 
     m = raw.get("mqtt", {})
     mqtt = MqttConfig(
-        enabled=bool(m.get("enabled", True)),
+        enabled=_cfg_bool(m, "enabled", True, "mqtt"),
         host=m.get("host", "localhost"),
         port=int(m.get("port", 1883)),
         username=m.get("username", ""),
         password=m.get("password", ""),
         base_topic=m.get("base_topic", "ems"),
-        publish_setpoints=bool(m.get("publish_setpoints", True)),
-        publish_schedule_json=bool(m.get("publish_schedule_json", True)),
+        publish_setpoints=_cfg_bool(m, "publish_setpoints", True, "mqtt"),
+        publish_schedule_json=_cfg_bool(m, "publish_schedule_json", True, "mqtt"),
         qos=int(m.get("qos", 1)),
-        retain=bool(m.get("retain", True)),
+        retain=_cfg_bool(m, "retain", True, "mqtt"),
         schedule_fields=(list(m["schedule_fields"])
                          if m.get("schedule_fields") is not None
                          else MqttConfig().schedule_fields),
@@ -1607,27 +1880,26 @@ def load_config(path: str) -> Config:
 
     d = raw.get("dashboard", {})
     dashboard = DashboardConfig(
-        enabled=bool(d.get("enabled", True)),
+        enabled=_cfg_bool(d, "enabled", True, "dashboard"),
         output_path=d.get("output_path", "./dashboard.html"),
-        serve=bool(d.get("serve", True)),
+        serve=_cfg_bool(d, "serve", True, "dashboard"),
         host=d.get("host", "127.0.0.1"),
         port=int(d.get("port", 8080)),
-        api_enabled=bool(d.get("api_enabled", True)),
+        api_enabled=_cfg_bool(d, "api_enabled", True, "dashboard"),
         live_refresh_seconds=float(d.get("live_refresh_seconds", 5.0)),
         username=str(d.get("username", "")),
         password=str(d.get("password", "")),
-        ingest_enabled=bool(d.get("ingest_enabled", False)),
-        controls_enabled=bool(d.get("controls_enabled", False)),
-        config_editor_enabled=bool(d.get("config_editor_enabled", False)),
+        ingest_enabled=_cfg_bool(d, "ingest_enabled", False, "dashboard"),
+        controls_enabled=_cfg_bool(d, "controls_enabled", False, "dashboard"),
+        config_editor_enabled=_cfg_bool(d, "config_editor_enabled", False, "dashboard"),
         control_rate_limit_per_min=int(d.get("control_rate_limit_per_min", 60)),
     )
 
     cal = raw.get("calibration", {})
     calibration = CalibrationConfig(
-        enabled=bool(cal.get("enabled", False)),
+        enabled=_cfg_bool(cal, "enabled", False, "calibration"),
         pv_profile=cal.get("pv_profile", "./kalibrierung_profil.yaml"),
-        champion_challenger_enabled=bool(
-            cal.get("champion_challenger_enabled", True)),
+        champion_challenger_enabled=_cfg_bool(cal, "champion_challenger_enabled", True, "calibration"),
         promotion_days=int(cal.get("promotion_days", 14)),
         promotion_min_samples=int(cal.get("promotion_min_samples", 96)),
         promotion_min_improvement_percent=float(
@@ -1653,13 +1925,13 @@ def load_config(path: str) -> Config:
 
     sav = raw.get("savings", {})
     savings = SavingsConfig(
-        enabled=bool(sav.get("enabled", True)),
+        enabled=_cfg_bool(sav, "enabled", True, "savings"),
         state_path=sav.get("state_path", "./savings_state.json"),
     )
 
     mon = raw.get("monitoring", {})
     monitoring = MonitoringConfig(
-        drift_enabled=bool(mon.get("drift_enabled", True)),
+        drift_enabled=_cfg_bool(mon, "drift_enabled", True, "monitoring"),
         drift_window_hours=float(mon.get("drift_window_hours", 12.0)),
         drift_alert_percent=float(mon.get("drift_alert_percent", 8.0)),
         efficiency_window_days=float(mon.get("efficiency_window_days", 7.0)),
@@ -1677,7 +1949,7 @@ def load_config(path: str) -> Config:
         solver_runtime_factor=float(mon.get("solver_runtime_factor", 3.0)),
         solver_runtime_baseline_runs=int(
             mon.get("solver_runtime_baseline_runs", 12)),
-        execution_audit_enabled=bool(mon.get("execution_audit_enabled", True)),
+        execution_audit_enabled=_cfg_bool(mon, "execution_audit_enabled", True, "monitoring"),
         execution_grid_tolerance_w=float(
             mon.get("execution_grid_tolerance_w", 1500.0)),
         execution_battery_tolerance_w=float(
@@ -1688,7 +1960,7 @@ def load_config(path: str) -> Config:
             mon.get("execution_alert_consecutive", 2)),
         execution_meter_delay_minutes=float(
             mon.get("execution_meter_delay_minutes", 75.0)),
-        execution_live_enabled=bool(mon.get("execution_live_enabled", True)),
+        execution_live_enabled=_cfg_bool(mon, "execution_live_enabled", True, "monitoring"),
         execution_live_sample_seconds=float(
             mon.get("execution_live_sample_seconds", 5.0)),
         execution_live_window_seconds=float(
@@ -1699,10 +1971,10 @@ def load_config(path: str) -> Config:
             mon.get("execution_live_settle_seconds", 30.0)),
         execution_live_consecutive=int(
             mon.get("execution_live_consecutive", 3)),
-        execution_audit_grid=bool(mon.get("execution_audit_grid", False)),
+        execution_audit_grid=_cfg_bool(mon, "execution_audit_grid", False, "monitoring"),
         execution_audit_startup_grace_minutes=float(
             mon.get("execution_audit_startup_grace_minutes", 5.0)),
-        shadow_compare_enabled=bool(mon.get("shadow_compare_enabled", True)),
+        shadow_compare_enabled=_cfg_bool(mon, "shadow_compare_enabled", True, "monitoring"),
         shadow_recommend_min_savings_eur=float(
             mon.get("shadow_recommend_min_savings_eur", 0.05)),
         cycle_staleness_alert_minutes=float(
@@ -1711,21 +1983,21 @@ def load_config(path: str) -> Config:
 
     rep = raw.get("report", {})
     report = ReportConfig(
-        enabled=bool(rep.get("enabled", False)),
+        enabled=_cfg_bool(rep, "enabled", False, "report"),
         mail_to=rep.get("mail_to", ""),
         snapshot_path=rep.get("snapshot_path", "./last_run_debug.json"),
     )
 
     w = legacy_weather
     weather = WeatherConfig(
-        enabled=bool(w.get("enabled", False)),
+        enabled=_cfg_bool(w, "enabled", False, "weather"),
         past_days=int(w.get("past_days", 92)),
         forecast_days=int(w.get("forecast_days", 4)),
     )
 
     t = raw.get("tariff", {})
     tariff = TariffConfig(
-        enabled=bool(t.get("enabled", False)),
+        enabled=_cfg_bool(t, "enabled", False, "tariff"),
         type=str(t.get("type", "dynamic")),
         fixed_ct_kwh=float(t.get("fixed_ct_kwh", 30.0)),
         bidding_zone=str(t.get("bidding_zone", "DE-LU")),
@@ -1746,7 +2018,7 @@ def load_config(path: str) -> Config:
 
     sc = raw.get("solcast", {})
     solcast = SolcastConfig(
-        enabled=bool(sc.get("enabled", False)),
+        enabled=_cfg_bool(sc, "enabled", False, "solcast"),
         combine=str(sc.get("combine", "sum")),
         calls_per_key_per_day=int(sc.get("calls_per_key_per_day", 10)),
         sources=[SolcastSource(api_key=str(s["api_key"]),
@@ -1763,8 +2035,8 @@ def load_config(path: str) -> Config:
 
     pm = raw.get("pv_model", {})
     pv_model = PvModelConfig(
-        enabled=bool(pm.get("enabled", False)),
-        shadow=bool(pm.get("shadow", False)),
+        enabled=_cfg_bool(pm, "enabled", False, "pv_model"),
+        shadow=_cfg_bool(pm, "shadow", False, "pv_model"),
         arrays=[PvArray(name=str(a.get("name", f"array{i}")),
                         kwp=float(a["kwp"]), tilt=float(a["tilt"]),
                         azimuth=float(a["azimuth"]),
@@ -1800,12 +2072,12 @@ def load_config(path: str) -> Config:
             "pv_model.ensemble_min_weight muss >= 0 und kleiner als 1/N sein.")
     ps = raw.get("pv_source_selection", {})
     pv_source_selection = PvSourceSelectionConfig(
-        enabled=bool(ps.get("enabled", False)),
+        enabled=_cfg_bool(ps, "enabled", False, "pv_source_selection"),
         lookback_days=int(ps.get("lookback_days", 30)),
         min_samples=int(ps.get("min_samples", 96)),
         min_improvement_percent=float(
             ps.get("min_improvement_percent", 2.0)),
-        decision_weighted=bool(ps.get("decision_weighted", True)),
+        decision_weighted=_cfg_bool(ps, "decision_weighted", True, "pv_source_selection"),
         decision_min_context_percent=float(
             ps.get("decision_min_context_percent", 50.0)),
     )
@@ -1815,7 +2087,7 @@ def load_config(path: str) -> Config:
             "zwischen 0 und 100 liegen.")
     sn = raw.get("sanity", {})
     sanity = SanityConfig(
-        enabled=bool(sn.get("enabled", True)),
+        enabled=_cfg_bool(sn, "enabled", True, "sanity"),
         price_min_ct=float(sn.get("price_min_ct", -100.0)),
         price_max_ct=float(sn.get("price_max_ct", 200.0)),
         price_spike_median_factor=float(sn.get("price_spike_median_factor", 10.0)),
@@ -1824,7 +2096,7 @@ def load_config(path: str) -> Config:
     )
     rc = raw.get("recalc", {})
     recalc = RecalcConfig(
-        enabled=bool(rc.get("enabled", False)),
+        enabled=_cfg_bool(rc, "enabled", False, "recalc"),
         deviation_w=float(rc.get("deviation_w", 3000.0)),
         check_seconds=float(rc.get("check_seconds", 90.0)),
     )
@@ -1842,28 +2114,27 @@ def load_config(path: str) -> Config:
 
     e = raw.get("e3dc_rscp", {})
     e3dc_rscp = E3DCRscpConfig(
-        enabled=bool(e.get("enabled", False)),
+        enabled=_cfg_bool(e, "enabled", False, "e3dc_rscp"),
         host=e.get("host", ""),
         username=e.get("username", ""),
         password=e.get("password", ""),
         key=e.get("key", ""),
-        read_live=bool(e.get("read_live", True)),
-        autoread_limits=bool(e.get("autoread_limits", False)),
-        control_enabled=bool(e.get("control_enabled", False)),
-        verify_control=bool(e.get("verify_control", True)),
+        read_live=_cfg_bool(e, "read_live", True, "e3dc_rscp"),
+        autoread_limits=_cfg_bool(e, "autoread_limits", False, "e3dc_rscp"),
+        control_enabled=_cfg_bool(e, "control_enabled", False, "e3dc_rscp"),
+        verify_control=_cfg_bool(e, "verify_control", True, "e3dc_rscp"),
         control_verify_tolerance_w=float(e.get(
             "control_verify_tolerance_w", 100.0)),
         control_alarm_repeat_minutes=float(e.get(
             "control_alarm_repeat_minutes", 60.0)),
-        curtailment_control_enabled=bool(e.get(
-            "curtailment_control_enabled", False)),
+        curtailment_control_enabled=_cfg_bool(e, "curtailment_control_enabled", False, "e3dc_rscp"),
         curtailment_normal_percent=float(e.get(
             "curtailment_normal_percent", 100.0)),
         curtailment_verify_tolerance_percent=float(e.get(
             "curtailment_verify_tolerance_percent", 1.0)),
         grid_sign=float(e.get("grid_sign", 1.0)),
         batt_sign=float(e.get("batt_sign", 1.0)),
-        history_source=bool(e.get("history_source", False)),
+        history_source=_cfg_bool(e, "history_source", False, "e3dc_rscp"),
         history_db_path=e.get("history_db_path", "./e3dc_history.sqlite"),
         history_backfill_days=int(e.get("history_backfill_days", 730)),
         history_settle_minutes=int(e.get("history_settle_minutes", 60)),
@@ -1875,10 +2146,22 @@ def load_config(path: str) -> Config:
     if e3dc_rscp.curtailment_verify_tolerance_percent < 0.0:
         raise ValueError(
             "e3dc_rscp.curtailment_verify_tolerance_percent muss >= 0 sein.")
+    if e3dc_rscp.batt_sign not in (-1.0, 1.0):
+        raise ValueError(
+            f"e3dc_rscp.batt_sign ({e3dc_rscp.batt_sign}) muss 1 oder -1 sein.")
     if (e3dc_rscp.curtailment_control_enabled
             and not e3dc_rscp.control_enabled):
-        raise ValueError(
-            "e3dc_rscp.curtailment_control_enabled benötigt control_enabled=true.")
+        # Kein Fehler mehr: der Dashboard-Schalter "E3/DC-Steuerung aus"
+        # schreibt control_enabled: false ins Overlay. Stand in der config.yaml
+        # curtailment_control_enabled: true, scheiterte danach jedes Laden -
+        # jeder Zyklus brach ab, und nach einem Neustart startete der Dienst
+        # nicht mehr. Die Abregelsteuerung setzt die Steuerung voraus und gilt
+        # deshalb als inaktiv, solange diese aus ist.
+        _warn_once(path, (
+            "e3dc_rscp.curtailment_control_enabled ist gesetzt, aber "
+            "control_enabled ist aus - die PV-Abregelsteuerung bleibt "
+            "inaktiv, bis die E3/DC-Steuerung wieder eingeschaltet ist."))
+        e3dc_rscp.curtailment_control_enabled = False
 
     config = Config(
         general=general,

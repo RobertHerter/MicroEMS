@@ -37,9 +37,9 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime as dt
 import json
 import os
-import sqlite3
 import sys
 import time
 import zlib
@@ -50,6 +50,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ems.config import load_config                            # noqa: E402
+from ems.local_history import connect                         # noqa: E402
 from ems.optimizer import (Optimizer, OptimizerInputs,        # noqa: E402
                            terminal_credit_ct)
 
@@ -151,40 +152,45 @@ def modus_modell(basis, con, args) -> int:
     print(f"{'':13s}" + "".join(f"{'Kosten':>8s}{'-TW':>8s}{'=netto':>9s}"
                                 for _ in args.werte))
     summe = {w: 0.0 for w in args.werte}
+    gewertet = gesamt = 0
     for sid, erzeugt in laeufe:
         daten, _ = _payload(con, sid)
         if daten is None or not daten.get("inputs"):
             continue
         inp = _eingaben(daten)
         ts = pd.Timestamp(erzeugt).tz_convert(basis.general.timezone)
-        zeile, marke = f"  {ts:%d.%m %H:%M}", ""
+        ergebnisse = {}
         for wert in args.werte:
             cfg = _variante(basis, args.parameter, wert, args.zeitlimit,
                             args.exakt)
             res, _ = _loese(cfg, inp)
             if res.infeasible:
-                zeile += f"{'unloesbar':>25s}"
+                ergebnisse[wert] = None
                 continue
-            if res.solver_hit_limit:
-                marke = "  LIMIT"
             soc_wh = float(res.table["house_soc_wh"].iloc[-1])
             tw = terminal_credit_ct(cfg, inp.price_ct_kwh, inp.feedin_ct_kwh,
                                     soc_wh)
             netto = res.total_cost_ct - tw
-            summe[wert] += netto
-            zeile += (f"{res.total_cost_ct / 100:8.3f}{tw / 100:8.3f}"
-                      f"{netto / 100:9.3f}")
-        print(zeile + marke, flush=True)
+            ergebnisse[wert] = (
+                f"{res.total_cost_ct / 100:8.3f}{tw / 100:8.3f}"
+                f"{netto / 100:9.3f}", netto, bool(res.solver_hit_limit))
+        text, zaehlt = _werte_lauf(args.werte, ergebnisse, summe)
+        gesamt += 1
+        gewertet += int(zaehlt)
+        print(f"  {ts:%d.%m %H:%M}" + text, flush=True)
     print(f"\n  {'Summe netto':11s}" + "".join(
         f"{'':16s}{summe[w] / 100:9.3f}" for w in args.werte))
-    _fazit(args, summe)
+    _fazit(args, summe, gewertet, gesamt)
     return 0
 
 
 def modus_ist(basis, con, args) -> int:
     from ems.planvalue import load_day, simulate_schedule
     heute = pd.Timestamp.now(tz=basis.general.timezone).normalize()
-    tage = [(heute - pd.Timedelta(days=n)).date()
+    # Kalenderarithmetik auf dem DATUM: Mitternacht minus n*24 h landet nach
+    # einer Zeitumstellung auf 23:00 bzw. 01:00 - ein Tag fehlte oder kam
+    # doppelt vor.
+    tage = [heute.date() - dt.timedelta(days=n)
             for n in range(args.tage, 0, -1)]
     print(f"{args.parameter}, 00:00-Plan abgerechnet auf den IST-DATEN")
     print("der Fahrplan wird physikalisch begrenzt - ein auf den Ist-Daten "
@@ -196,6 +202,7 @@ def modus_ist(basis, con, args) -> int:
     print(f"{'':12s}" + "".join(f"{'Kosten':>8s}{'EndSoC':>8s}{'netto':>9s}"
                                 for _ in args.werte))
     summe = {w: 0.0 for w in args.werte}
+    gewertet = gesamt = 0
     for tag in tage:
         sid = con.execute("SELECT id FROM debug_snapshot WHERE generated "
                           "LIKE ? ORDER BY id LIMIT 1",
@@ -211,16 +218,14 @@ def modus_ist(basis, con, args) -> int:
         inp = _eingaben(daten)
         kap = basis.house_battery.capacity_wh
         soc0 = float(ist["soc_percent"].iloc[0]) / 100.0 * kap
-        zeile, marke = f"  {tag}", ""
+        ergebnisse = {}
         for wert in args.werte:
             cfg = _variante(basis, args.parameter, wert, args.zeitlimit,
                             args.exakt)
             res, _ = _loese(cfg, inp)
             if res.infeasible:
-                zeile += f"{'unloesbar':>25s}"
+                ergebnisse[wert] = None
                 continue
-            if res.solver_hit_limit:
-                marke = "  LIMIT"
             t = res.table.reindex(ist["index"])      # nur die Slots des Tages
             fahrplan = (t["batt_dc_charge_w"].fillna(0.0)
                         + t["batt_ac_charge_w"].fillna(0.0)
@@ -229,22 +234,61 @@ def modus_ist(basis, con, args) -> int:
             tw = terminal_credit_ct(cfg, ist["price_ct_kwh"],
                                     ist["feedin_ct_kwh"], sim["end_soc_wh"])
             netto = sim["cost_eur"] * 100.0 - tw
-            summe[wert] += netto
-            zeile += (f"{sim['cost_eur']:8.3f}{sim['end_soc_percent']:7.1f}%"
-                      f"{netto / 100:9.3f}")
-        print(zeile + marke, flush=True)
+            ergebnisse[wert] = (
+                f"{sim['cost_eur']:8.3f}{sim['end_soc_percent']:7.1f}%"
+                f"{netto / 100:9.3f}", netto, bool(res.solver_hit_limit))
+        text, zaehlt = _werte_lauf(args.werte, ergebnisse, summe)
+        gesamt += 1
+        gewertet += int(zaehlt)
+        print(f"  {tag}" + text, flush=True)
     print(f"\n  {'Summe netto':10s}" + "".join(
         f"{'':16s}{summe[w] / 100:9.3f}" for w in args.werte))
-    _fazit(args, summe)
+    _fazit(args, summe, gewertet, gesamt)
     return 0
 
 
-def _fazit(args, summe) -> None:
-    gemessen = {w: v for w, v in summe.items() if v}
-    if len(gemessen) < 2:
+def _werte_lauf(werte, ergebnisse, summe):
+    """Einen Lauf nur dann in die Summen nehmen, wenn ALLE Varianten zaehlen.
+
+    ``ergebnisse``: je Wert ``None`` (unloesbar) oder ``(Spaltentext, netto_ct,
+    limit)``. Summen ueber verschiedene Lauf-Mengen sind nicht vergleichbar:
+    faellt ein Lauf nur bei einer Variante heraus, fehlen ihr dessen Kosten
+    und sie sieht guenstiger aus. Ein Lauf im Zeitlimit ist laut Kopfkommentar
+    ebenfalls nicht vergleichbar - also auch nicht addieren.
+
+    Rueckgabe ``(Zeilentext, gewertet)``; ``summe`` wird nur bei gewerteten
+    Laeufen fortgeschrieben.
+    """
+    text, limit, unloesbar = "", False, False
+    for wert in werte:
+        eintrag = ergebnisse.get(wert)
+        if eintrag is None:
+            text += f"{'unloesbar':>25s}"
+            unloesbar = True
+            continue
+        text += eintrag[0]
+        limit = limit or bool(eintrag[2])
+    if limit:
+        text += "  LIMIT"
+    gewertet = not (limit or unloesbar)
+    if gewertet:
+        for wert in werte:
+            summe[wert] += ergebnisse[wert][1]
+    else:
+        text += "  nicht gewertet"
+    return text, gewertet
+
+
+def _fazit(args, summe, gewertet, gesamt) -> None:
+    print(f"\n  gewertet: {gewertet} von {gesamt} Laeufen (nur Laeufe, in "
+          "denen jede Variante loesbar\n  und ohne Zeitlimit war, stehen in "
+          "der Summe)")
+    if gewertet < 1 or len(summe) < 2:
+        print("  kein Vergleich moeglich")
         return
+    gemessen = dict(summe)
     besser = min(gemessen, key=gemessen.get)
-    print(f"\n  guenstigster Wert: {args.parameter} = {besser}")
+    print(f"  guenstigster Wert: {args.parameter} = {besser}")
     for wert in args.werte:
         if wert in gemessen and wert != besser:
             print(f"    gegen {wert}: "
@@ -278,7 +322,7 @@ def main() -> int:
                   else w for w in args.werte]
 
     basis = load_config(args.config)
-    con = sqlite3.connect(basis.e3dc_rscp.history_db_path)
+    con = connect(basis.e3dc_rscp.history_db_path)
     try:
         if args.modus == "ist":
             return modus_ist(basis, con, args)

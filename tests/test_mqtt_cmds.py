@@ -512,3 +512,87 @@ def test_service_overrides_foreign_offline_but_not_its_own_shutdown(monkeypatch)
     # Das eigene "offline" kommt ueber das Abo zurueck - darf nicht geheilt werden.
     pub._on_message(client, None, Msg(topic, "offline"))
     assert _status_msgs(client, topic) == [("offline", True)]
+
+
+# --------------------------------------------------------------------------- #
+# Ist-Temperatur: nur endliche, plausible und frische Werte halten die Freigabe
+# --------------------------------------------------------------------------- #
+def _thermostat_pool(**extra):
+    cfg = make_config()
+    cfg.controllable_loads = [ControllableLoad(
+        name="Pool", type="thermal", enabled=True, volume_l=8000,
+        target_c=28.0, min_c=27.0, max_c=28.5,
+        thermostat=True, temp_signal="homie/pool/temp",
+        stages=[LoadStage("klein", 400, 3000)], **extra)]
+    pub = HomeyMqttPublisher(cfg)
+    return pub, pub._load_lanes()[0]
+
+
+def test_non_finite_temperature_never_holds_the_release():
+    """float("nan") und float("inf") gelingen - und ``nan < max_c`` ist False.
+    Ein Sensor, der "nan" meldet, hielt die Heiz-Freigabe in ungeplanten Slots
+    dauerhaft auf 1."""
+    import pytest
+    for payload in ("nan", "NaN", "inf", "-inf", "1e999", "500", "-80"):
+        pub, lane = _thermostat_pool()
+        pub._on_message(None, None, Msg("homie/pool/temp", payload))
+        assert "homie/pool/temp" not in pub.load_temps, payload
+        assert pub._lane_command(lane, planned_on=False) == 0, payload
+    # ein gueltiger Wert bleibt bei nachfolgendem Unsinn stehen ...
+    pub, lane = _thermostat_pool()
+    pub._on_message(None, None, Msg("homie/pool/temp", "28,9"))
+    pub._on_message(None, None, Msg("homie/pool/temp", "nan"))
+    assert pub.load_temps["homie/pool/temp"] == pytest.approx(28.9)
+    assert pub._lane_command(lane, planned_on=False) == 1
+    # ... und auch ein direkt gesetzter Unsinnswert haelt nichts
+    pub.load_temps["homie/pool/temp"] = float("nan")
+    assert pub.get_load_temp("homie/pool/temp") is None
+    assert pub._lane_command(lane, planned_on=False) == 0
+
+
+def test_silent_sensor_stops_holding_the_release(caplog):
+    """Verstummt der Sensor mit einem letzten Wert ueber max_c, blieb die
+    Freigabe unbegrenzt stehen - das Geraet heizte, sobald sein Thermostat es
+    wollte, obwohl der Plan 0 W vorsah. Nach temp_max_age_minutes (Vorgabe 45)
+    gilt der Wert wie "keine Temperatur": das Signal folgt dem Plan."""
+    import logging
+    pub, lane = _thermostat_pool()
+    assert lane["temp_max_age_minutes"] == 45.0
+    topic = "homie/pool/temp"
+    pub._on_message(None, None, Msg(topic, "29.0"))
+    assert pub._lane_command(lane, planned_on=False) == 1
+
+    pub.load_temps.empfangen[topic] -= 44 * 60          # 44 min alt: gilt noch
+    assert pub._lane_command(lane, planned_on=False) == 1
+    pub.load_temps.empfangen[topic] -= 2 * 60           # 46 min alt
+    with caplog.at_level(logging.WARNING, logger="ems.mqtt"):
+        assert pub._lane_command(lane, planned_on=False) == 0
+        assert pub._lane_command(lane, planned_on=False) == 0
+    meldungen = [r for r in caplog.records if "Ist-Temperatur" in r.getMessage()]
+    assert len(meldungen) == 1, "einmal melden, nicht in jedem Zyklus"
+    assert pub._lane_command(lane, planned_on=True) == 1   # Plan gilt weiter
+
+    # Andere Leser sehen dieselbe Struktur und den letzten bekannten Wert.
+    assert isinstance(pub.load_temps, dict)
+    assert pub.load_temps[topic] == 29.0
+    assert pub.get_load_temp(topic) == 29.0
+    assert pub.get_load_temp(topic, max_age_minutes=45) is None
+    assert pub.get_load_temp_age_seconds(topic) > 45 * 60
+
+    # Ein neuer Wert stellt die Freigabe wieder her.
+    pub._on_message(None, None, Msg(topic, "29.1"))
+    assert pub._lane_command(lane, planned_on=False) == 1
+
+
+def test_temperature_age_limit_is_configurable():
+    """0 = keine Altersgrenze (Sensoren, die nur bei Aenderung senden)."""
+    topic = "homie/pool/temp"
+    pub, lane = _thermostat_pool(temp_max_age_minutes=0.0)
+    pub._on_message(None, None, Msg(topic, "29.0"))
+    pub.load_temps.empfangen[topic] -= 24 * 3600
+    assert pub._lane_command(lane, planned_on=False) == 1
+
+    pub, lane = _thermostat_pool(temp_max_age_minutes=10.0)
+    pub._on_message(None, None, Msg(topic, "29.0"))
+    pub.load_temps.empfangen[topic] -= 11 * 60
+    assert pub._lane_command(lane, planned_on=False) == 0

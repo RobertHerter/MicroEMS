@@ -11,13 +11,20 @@ import logging
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from typing import Optional
 
 import pandas as pd
 
+from .local_history import connect
+
 log = logging.getLogger("ems.manual_schedule")
 
 _ACTIVE = ("planned", "running")
+_NO_SOC = "Kein aktueller E3/DC-SoC verfügbar"
+# Liefert der Speicher zum Start keinen SoC, in diesem Abstand erneut fragen
+# (read_live(force=True) ist ein echter RSCP-Abruf - nicht in jedem 1-s-Tick).
+_SOC_RETRY_SECONDS = 10.0
 
 
 def _utc(value, timezone: str) -> pd.Timestamp:
@@ -35,26 +42,26 @@ class ManualScheduleStore:
         self._init()
 
     def _con(self):
-        con = sqlite3.connect(self.path, timeout=10)
+        """Verbindung (WAL + busy_timeout, siehe local_history.connect).
+        Aufrufer schließen sie per ``closing`` - auch bei einer Ausnahme."""
+        con = connect(self.path)
         con.row_factory = sqlite3.Row
-        con.execute("PRAGMA busy_timeout=10000")
         return con
 
     def _init(self) -> None:
         with self._lock:
-            con = self._con()
-            con.execute(
-                "CREATE TABLE IF NOT EXISTS manual_battery_schedule ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " start_ts TEXT NOT NULL, end_ts TEXT NOT NULL,"
-                " action TEXT NOT NULL, watts REAL NOT NULL,"
-                " duration_minutes REAL NOT NULL, status TEXT NOT NULL,"
-                " created_ts TEXT NOT NULL, started_ts TEXT, finished_ts TEXT,"
-                " note TEXT DEFAULT '')")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_manual_schedule_start "
-                        "ON manual_battery_schedule(start_ts, status)")
-            con.commit()
-            con.close()
+            with closing(self._con()) as con:
+                con.execute(
+                    "CREATE TABLE IF NOT EXISTS manual_battery_schedule ("
+                    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    " start_ts TEXT NOT NULL, end_ts TEXT NOT NULL,"
+                    " action TEXT NOT NULL, watts REAL NOT NULL,"
+                    " duration_minutes REAL NOT NULL, status TEXT NOT NULL,"
+                    " created_ts TEXT NOT NULL, started_ts TEXT, finished_ts TEXT,"
+                    " note TEXT DEFAULT '')")
+                con.execute("CREATE INDEX IF NOT EXISTS idx_manual_schedule_start "
+                            "ON manual_battery_schedule(start_ts, status)")
+                con.commit()
 
     @staticmethod
     def _dict(row) -> Optional[dict]:
@@ -87,34 +94,31 @@ class ManualScheduleStore:
         s, e = start.isoformat(), end.isoformat()
         created = now.isoformat()
         with self._lock:
-            con = self._con()
-            overlap = con.execute(
-                "SELECT id FROM manual_battery_schedule WHERE status IN (?,?) "
-                "AND start_ts < ? AND end_ts > ? LIMIT 1",
-                (*_ACTIVE, e, s)).fetchone()
-            if overlap:
-                con.close()
-                raise ValueError(
-                    f"Zeitraum überschneidet sich mit Eintrag #{overlap['id']}")
-            cur = con.execute(
-                "INSERT INTO manual_battery_schedule "
-                "(start_ts,end_ts,action,watts,duration_minutes,status,created_ts) "
-                "VALUES(?,?,?,?,?,'planned',?)",
-                (s, e, action, watts, duration, created))
-            row = con.execute(
-                "SELECT * FROM manual_battery_schedule WHERE id=?",
-                (cur.lastrowid,)).fetchone()
-            con.commit()
-            con.close()
+            with closing(self._con()) as con:
+                overlap = con.execute(
+                    "SELECT id FROM manual_battery_schedule WHERE status IN (?,?) "
+                    "AND start_ts < ? AND end_ts > ? LIMIT 1",
+                    (*_ACTIVE, e, s)).fetchone()
+                if overlap:
+                    raise ValueError(
+                        f"Zeitraum überschneidet sich mit Eintrag #{overlap['id']}")
+                cur = con.execute(
+                    "INSERT INTO manual_battery_schedule "
+                    "(start_ts,end_ts,action,watts,duration_minutes,status,created_ts) "
+                    "VALUES(?,?,?,?,?,'planned',?)",
+                    (s, e, action, watts, duration, created))
+                row = con.execute(
+                    "SELECT * FROM manual_battery_schedule WHERE id=?",
+                    (cur.lastrowid,)).fetchone()
+                con.commit()
         return self._dict(row)
 
     def get(self, entry_id: int) -> Optional[dict]:
         with self._lock:
-            con = self._con()
-            row = con.execute(
-                "SELECT * FROM manual_battery_schedule WHERE id=?",
-                (int(entry_id),)).fetchone()
-            con.close()
+            with closing(self._con()) as con:
+                row = con.execute(
+                    "SELECT * FROM manual_battery_schedule WHERE id=?",
+                    (int(entry_id),)).fetchone()
         return self._dict(row)
 
     def list(self, now=None) -> list[dict]:
@@ -122,21 +126,19 @@ class ManualScheduleStore:
         since = (now - pd.Timedelta(days=1)).isoformat()
         until = (now + pd.Timedelta(days=30)).isoformat()
         with self._lock:
-            con = self._con()
-            rows = con.execute(
-                "SELECT * FROM manual_battery_schedule "
-                "WHERE end_ts >= ? AND start_ts <= ? ORDER BY start_ts, id",
-                (since, until)).fetchall()
-            con.close()
+            with closing(self._con()) as con:
+                rows = con.execute(
+                    "SELECT * FROM manual_battery_schedule "
+                    "WHERE end_ts >= ? AND start_ts <= ? ORDER BY start_ts, id",
+                    (since, until)).fetchall()
         return [dict(r) for r in rows]
 
     def active(self) -> list[dict]:
         with self._lock:
-            con = self._con()
-            rows = con.execute(
-                "SELECT * FROM manual_battery_schedule WHERE status IN (?,?) "
-                "ORDER BY start_ts, id", _ACTIVE).fetchall()
-            con.close()
+            with closing(self._con()) as con:
+                rows = con.execute(
+                    "SELECT * FROM manual_battery_schedule WHERE status IN (?,?) "
+                    "ORDER BY start_ts, id", _ACTIVE).fetchall()
         return [dict(r) for r in rows]
 
     def set_status(self, entry_id: int, status: str, note: str = "") -> None:
@@ -151,12 +153,11 @@ class ManualScheduleStore:
             args.append(now)
         args.append(int(entry_id))
         with self._lock:
-            con = self._con()
-            con.execute(
-                f"UPDATE manual_battery_schedule SET status=?, note=?{extra} "
-                "WHERE id=?", args)
-            con.commit()
-            con.close()
+            with closing(self._con()) as con:
+                con.execute(
+                    f"UPDATE manual_battery_schedule SET status=?, note=?{extra} "
+                    "WHERE id=?", args)
+                con.commit()
 
     def delete(self, entry_id: int) -> bool:
         """Entfernt ausschließlich einen bereits beendeten Planeintrag.
@@ -166,14 +167,13 @@ class ManualScheduleStore:
         Löschen einen aktiven realen E3/DC-Eingriff hinterlassen kann.
         """
         with self._lock:
-            con = self._con()
-            cur = con.execute(
-                "DELETE FROM manual_battery_schedule "
-                "WHERE id=? AND status NOT IN (?,?)",
-                (int(entry_id), *_ACTIVE))
-            con.commit()
-            deleted = cur.rowcount > 0
-            con.close()
+            with closing(self._con()) as con:
+                cur = con.execute(
+                    "DELETE FROM manual_battery_schedule "
+                    "WHERE id=? AND status NOT IN (?,?)",
+                    (int(entry_id), *_ACTIVE))
+                con.commit()
+                deleted = cur.rowcount > 0
         return deleted
 
 class ManualScheduleRunner:
@@ -190,6 +190,9 @@ class ManualScheduleRunner:
         self._lock = threading.Lock()
         self._active_id: Optional[int] = None
         self._last_soc_check = 0.0
+        # Eintrags-ID -> frühester Zeitpunkt (monotonic) des nächsten
+        # SoC-Versuchs, solange der Start mangels SoC noch aussteht.
+        self._soc_retry_at: dict = {}
 
     def start(self) -> None:
         if self._thread is None or not self._thread.is_alive():
@@ -246,7 +249,7 @@ class ManualScheduleRunner:
         live = self.e3dc.read_live(force=True)
         soc = None if not live else live.get("soc_percent")
         if soc is None:
-            return False, "Kein aktueller E3/DC-SoC verfügbar"
+            return False, _NO_SOC
         soc = float(soc)
         hb = self.config.house_battery
         if action in ("charge", "grid_charge", "pv_charge") and \
@@ -260,6 +263,7 @@ class ManualScheduleRunner:
         if self._active_id == int(row["id"]):
             self.e3dc.manual_power("auto")
             self._active_id = None
+        self._soc_retry_at.pop(int(row["id"]), None)
         self.store.set_status(row["id"], status, note)
         log.info("Manueller Akku-Plan #%s: %s (%s).", row["id"], status, note)
 
@@ -278,14 +282,42 @@ class ManualScheduleRunner:
                 start = pd.Timestamp(row["start_ts"])
                 end = pd.Timestamp(row["end_ts"])
                 if end <= now:
-                    self._finish(row)
+                    if row["status"] == "planned":
+                        # Nie angelaufen (Dienst stand über das ganze Fenster
+                        # oder es kam bis zuletzt kein SoC): das ist kein
+                        # erledigter Vorgang.
+                        note = ("Zeitfenster verstrichen - bis zuletzt kein "
+                                "E3/DC-SoC verfügbar"
+                                if int(row["id"]) in self._soc_retry_at else
+                                "Zeitfenster verstrichen, ohne dass der "
+                                "Vorgang lief (Dienst nicht aktiv)")
+                        self._finish(row, "skipped", note)
+                    else:
+                        self._finish(row)
                     continue
                 if start > now:
                     continue
                 # Nach Dienstneustart einen noch laufenden persistenten Plan
                 # mit der verbleibenden Dauer wieder aufnehmen.
                 if row["status"] == "planned" or self._active_id != int(row["id"]):
+                    rid = int(row["id"])
+                    retry_at = self._soc_retry_at.get(rid)
+                    if retry_at is not None and time.monotonic() < retry_at:
+                        continue
                     ok, reason = self._soc_allows(row["action"])
+                    if not ok and reason == _NO_SOC:
+                        # Ein einzelner fehlender Messwert ist kein Grund, den
+                        # Eintrag endgültig zu verwerfen: solange das Fenster
+                        # läuft, erneut versuchen. Aufgegeben wird erst am
+                        # Fensterende (oben, als "skipped").
+                        if retry_at is None:
+                            log.warning("Manueller Akku-Plan #%s: %s - neuer "
+                                        "Versuch alle %.0f s bis Fensterende.",
+                                        rid, reason, _SOC_RETRY_SECONDS)
+                        self._soc_retry_at[rid] = (
+                            time.monotonic() + _SOC_RETRY_SECONDS)
+                        continue
+                    self._soc_retry_at.pop(rid, None)
                     if not ok:
                         self.store.set_status(row["id"], "skipped", reason)
                         log.warning("Manueller Akku-Plan #%s übersprungen: %s",

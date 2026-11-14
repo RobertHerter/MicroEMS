@@ -22,11 +22,16 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from .config import Config, SignalSpec
+from .config import Config, SignalSpec, parse_bool
 
 log = logging.getLogger("ems.influx")
 
 _AGG_FUNCS = {"mean", "last", "first", "sum", "max", "min", "median"}
+
+# Vorgabe fuer influxdb.v1.timeout (Sekunden je HTTP-Anfrage). Der v1-Client
+# wartet ohne Angabe unbegrenzt: ein haengender InfluxDB blockierte den Zyklus,
+# bis der systemd-Watchdog nach 35 min den Dienst neu startete.
+V1_TIMEOUT_SECONDS = 15.0
 
 
 class InfluxBackend(ABC):
@@ -53,14 +58,22 @@ class InfluxV1Backend(InfluxBackend):
         from influxdb import InfluxDBClient
 
         self.database = cfg["database"]
+        timeout = cfg.get("timeout")
+        timeout = V1_TIMEOUT_SECONDS if timeout is None else float(timeout)
+        if not timeout > 0:
+            raise ValueError(
+                f"influxdb.v1.timeout ({timeout}) muss groesser als 0 sein "
+                "(Sekunden).")
         self.client = InfluxDBClient(
             host=cfg.get("host", "localhost"),
             port=int(cfg.get("port", 8086)),
             username=cfg.get("username") or None,
             password=cfg.get("password") or None,
             database=self.database,
-            ssl=bool(cfg.get("ssl", False)),
-            verify_ssl=bool(cfg.get("verify_ssl", False)),
+            ssl=parse_bool(cfg.get("ssl", False), "influxdb.v1.ssl"),
+            verify_ssl=parse_bool(cfg.get("verify_ssl", False),
+                                  "influxdb.v1.verify_ssl"),
+            timeout=timeout,
         )
 
     def _from_clause(self, spec: SignalSpec) -> str:

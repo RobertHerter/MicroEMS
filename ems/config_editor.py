@@ -9,14 +9,19 @@ import re
 import shutil
 import stat
 import tempfile
-import threading
 from datetime import datetime
 
 import yaml
 
+from .config import LOAD_OVERRIDE_KEYS, OVERLAY_LOCK
+
 log = logging.getLogger("ems.config_editor")
 
-_SAVE_LOCK = threading.Lock()
+# Dieselbe Sperre wie save_override (ems/config.py): Editor und Dashboard-
+# Schalter schreiben beide die Overlay-Datei. Mit einer eigenen Sperre konnte
+# ein Schalterklick zwischen Revisionspruefung und Schreiben des Editors
+# verloren gehen.
+_SAVE_LOCK = OVERLAY_LOCK
 MAX_CONFIG_BYTES = 2 * 1024 * 1024
 
 TOP_LABELS = {
@@ -387,8 +392,63 @@ def _load_slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", str(name)).strip("_") or "load"
 
 
-def _effective_document(config_path: str) -> tuple[dict, bool]:
-    """Basis und lokale Overrides zu einem speicherbaren Dokument vereinigen."""
+def _merge_load_overrides(loads, load_overrides) -> dict:
+    """Last-Overrides in die Lasten-Liste einarbeiten; gibt den REST zurueck.
+
+    Uebernommen wird jeder Schluessel der Erlaubnisliste (LOAD_OVERRIDE_KEYS),
+    auch wenn er in der config.yaml bisher fehlt. Frueher galt ``key in load``:
+    ein nur im Overlay gesetzter Wert (z.B. comfort_penalty_ct_per_k_slot: 1.0
+    aus dem Dashboard, loss_w_per_k aus der Kalibrierung) wurde nicht
+    eingearbeitet, das Overlay danach aber geleert - der Wert fiel beim
+    Speichern still auf die Vorgabe zurueck.
+
+    Der Rest ist alles, was sich NICHT einarbeiten laesst (Last/Stufe nicht
+    gefunden, Schluessel ausserhalb der Erlaubnisliste). Er bleibt im Overlay
+    stehen statt zu verschwinden."""
+    rest: dict = {}
+    if not isinstance(load_overrides, dict):
+        return rest
+    by_slug = {}
+    for load in loads or []:
+        if isinstance(load, dict):
+            by_slug.setdefault(_load_slug(load.get("name", "")), load)
+    for slug, override in load_overrides.items():
+        load = by_slug.get(slug)
+        if load is None or not isinstance(override, dict):
+            rest[slug] = copy.deepcopy(override)
+            continue
+        uebrig: dict = {}
+        for key, value in override.items():
+            if key == "stage_heat_w" and isinstance(value, dict):
+                stages = {_load_slug(stage.get("name", "")): stage
+                          for stage in load.get("stages") or []
+                          if isinstance(stage, dict)}
+                fehlt = {}
+                for stage_slug, stage_value in value.items():
+                    if stage_slug in stages and stage_value is not None:
+                        stages[stage_slug]["heat_w"] = stage_value
+                    elif stage_value is not None:
+                        fehlt[stage_slug] = stage_value
+                if fehlt:
+                    uebrig[key] = fehlt
+            elif key not in LOAD_OVERRIDE_KEYS:
+                uebrig[key] = copy.deepcopy(value)
+            elif (key in ("window_from_hour", "window_to_hour")
+                  and isinstance(load.get("window"), dict)):
+                # Die Kurzschreibweise window: {from, to} hat beim Laden
+                # Vorrang vor window_from_hour/_to_hour - dort eintragen,
+                # sonst bliebe der Override wirkungslos.
+                load["window"]["from" if key == "window_from_hour"
+                               else "to"] = value
+            else:
+                load[key] = value
+        if uebrig:
+            rest[slug] = uebrig
+    return rest
+
+
+def _effective_parts(config_path: str) -> tuple[dict, bool, dict]:
+    """(effektives Dokument, Overlay vorhanden?, nicht einarbeitbarer Rest)."""
     from .config import _deep_merge, _overrides_path
     base = _load_yaml(config_path)
     try:
@@ -397,20 +457,15 @@ def _effective_document(config_path: str) -> tuple[dict, bool]:
         overlay = {}
     effective = _deep_merge(copy.deepcopy(base), copy.deepcopy(overlay))
     load_overrides = effective.pop("controllable_loads_overrides", {}) or {}
-    if isinstance(load_overrides, dict):
-        for load in effective.get("controllable_loads") or []:
-            override = load_overrides.get(_load_slug(load.get("name", "")))
-            if not isinstance(override, dict):
-                continue
-            for key, value in override.items():
-                if key == "stage_heat_w" and isinstance(value, dict):
-                    for stage in load.get("stages") or []:
-                        stage_value = value.get(_load_slug(stage.get("name", "")))
-                        if stage_value is not None:
-                            stage["heat_w"] = stage_value
-                elif key in load:
-                    load[key] = value
-    return effective, bool(overlay)
+    rest = _merge_load_overrides(
+        effective.get("controllable_loads"), load_overrides)
+    return effective, bool(overlay), rest
+
+
+def _effective_document(config_path: str) -> tuple[dict, bool]:
+    """Basis und lokale Overrides zu einem speicherbaren Dokument vereinigen."""
+    effective, had_overlay, _rest = _effective_parts(config_path)
+    return effective, had_overlay
 
 
 def _clean_comment(value: str) -> str:
@@ -555,6 +610,11 @@ def _atomic_write(path: str, content: bytes, mode: int) -> None:
 def save_document(config_path: str, document, expected_revision: str) -> dict:
     """Validieren, sichern und atomar speichern; Overrides werden konsolidiert."""
     from .config import _overrides_path
+    # Vor der Pruefung entfernen: dieser Schluessel gehoert ins Overlay, nicht
+    # in die config.yaml (der Editor zeigt ihn nie an).
+    if isinstance(document, dict):
+        document = {k: v for k, v in document.items()
+                    if k != "controllable_loads_overrides"}
     validation = validate_document(document)
     with _SAVE_LOCK:
         current_revision = _revision(config_path)
@@ -562,6 +622,9 @@ def save_document(config_path: str, document, expected_revision: str) -> dict:
             raise RuntimeError(
                 "Die Konfiguration wurde zwischenzeitlich geändert. "
                 "Bitte Seite neu laden.")
+        # Rest gegen genau den Stand bestimmen, den die Seite geladen hat (die
+        # Revision oben belegt, dass er unveraendert ist).
+        _effective, _had_overlay, rest = _effective_parts(config_path)
         content = (
             "# EMS-Konfiguration – über den Dashboard-Editor gespeichert.\n"
             "# Feldbeschreibungen und Standardwerte sind weiterhin im Editor "
@@ -591,8 +654,20 @@ def save_document(config_path: str, document, expected_revision: str) -> dict:
         _atomic_write(config_path, content, mode)
         # Die Seite bearbeitet den zuvor zusammengeführten effektiven Stand.
         # Alte Overlays danach neutralisieren, sonst würden sie die neuen Werte
-        # beim Neustart erneut überstimmen.
-        _atomic_write(override_path, b"{}\n", mode)
+        # beim Neustart erneut überstimmen. Stehen bleibt nur, was sich NICHT
+        # in das Dokument einarbeiten liess - das zu leeren hiesse, Werte
+        # still zu verlieren.
+        if rest:
+            log.warning(
+                "Config-Editor: %d Last-Override(s) liessen sich nicht in die "
+                "config.yaml einarbeiten und bleiben im Overlay: %s",
+                len(rest), ", ".join(sorted(str(k) for k in rest)))
+            leftover = yaml.safe_dump(
+                {"controllable_loads_overrides": rest},
+                allow_unicode=True, sort_keys=False).encode("utf-8")
+        else:
+            leftover = b"{}\n"
+        _atomic_write(override_path, leftover, mode)
         return {
             "saved": True,
             "backup": os.path.relpath(backup_dir),
@@ -672,7 +747,7 @@ function renderLoads(list,container){
 function renderValue(value,path,container,setter){if(Array.isArray(value))renderList(value,path,container);else if(value&&typeof value==='object')renderObject(value,path,container);else container.append(scalar(path.split('.').pop(),value,path,setter))}
 function render(){const host=$('#editor');host.innerHTML='';Object.keys(state).forEach((key,idx)=>{const d=document.createElement('details');d.className='panel';d.open=allOpen||idx===0||key==='controllable_loads';const summary=document.createElement('summary');const count=state[key]&&typeof state[key]==='object'?(Array.isArray(state[key])?state[key].length:Object.keys(state[key]).length):1;summary.innerHTML=`<div><span class="panel-title">${esc(labels[key]||label(key))}</span><span class="panel-desc">${esc(descriptions[key]||'')}</span></div><span class="panel-count">${count} Einträge</span>`;d.append(summary);const body=document.createElement('div');body.className='panel-body';const value=state[key];if(Array.isArray(value))renderList(value,key,body);else if(value&&typeof value==='object')renderObject(value,key,body,true);else body.append(scalar(key,value,key,v=>state[key]=v));d.append(body);host.append(d)});filter()}
 function filter(){const q=$('#search').value.trim().toLowerCase();document.querySelectorAll('.field-row').forEach(r=>r.classList.toggle('hidden',q&&!r.dataset.search.includes(q)));document.querySelectorAll('details.panel').forEach(p=>{const visible=[...p.querySelectorAll('.field-row')].some(r=>!r.classList.contains('hidden'));p.classList.toggle('hidden',q&&!visible);if(q&&visible)p.open=true})}
-async function load(){try{const r=await fetch('/api/config.json',{cache:'no-store'});if(!r.ok)throw Error(await r.text());const d=await r.json();state=d.config;revision=d.revision;descriptions=d.descriptions||{};labels=d.labels||{};enums=d.enums||{};templates=d.load_templates||{};if(d.had_overrides){const n=$('#overlay-note');n.classList.remove('hidden');n.textContent='Lokale Dashboard-Overrides wurden in die angezeigte Konfiguration eingearbeitet. Beim Speichern werden sie konsolidiert und die Overlay-Datei geleert.'}render();setStatus('Bereit','Änderungen werden vor dem Speichern vollständig geprüft.','ok')}catch(e){setStatus('Konfiguration nicht verfügbar',e.message,'err')}}
+async function load(){try{const r=await fetch('/api/config.json',{cache:'no-store'});if(!r.ok)throw Error(await r.text());const d=await r.json();state=d.config;revision=d.revision;descriptions=d.descriptions||{};labels=d.labels||{};enums=d.enums||{};templates=d.load_templates||{};if(d.had_overrides){const n=$('#overlay-note');n.classList.remove('hidden');n.textContent='Lokale Dashboard-Overrides wurden in die angezeigte Konfiguration eingearbeitet. Beim Speichern werden sie konsolidiert; im Overlay bleibt nur, was sich nicht einarbeiten lässt.'}render();setStatus('Bereit','Änderungen werden vor dem Speichern vollständig geprüft.','ok')}catch(e){setStatus('Konfiguration nicht verfügbar',e.message,'err')}}
 async function submit(kind){const btn=kind==='save'?$('#save'):$('#validate');btn.disabled=true;try{if(kind==='save'&&!confirm('Konfiguration speichern und den EMS-Dienst geordnet neu starten?'))return;setStatus(kind==='save'?'Speichere Konfiguration …':'Prüfe Konfiguration …','Bitte warten','');const r=await fetch('/api/config/'+kind,{method:'POST',headers:{'Content-Type':'application/json','X-EMS-Config':'1'},body:JSON.stringify({config:state,revision})});const text=await r.text();let d;try{d=JSON.parse(text)}catch{throw Error(text.slice(0,300))}if(!r.ok)throw Error(d.error||text);if(kind==='validate'){const w=(d.result.warnings||[]).join(' ');setStatus('Konfiguration gültig',`${d.result.blocks} Bereiche · ${d.result.controllable_loads} steuerbare Lasten${w?' · '+w:''}`,'ok')}else{revision=d.result.revision;dirty=false;setStatus('Gespeichert – EMS startet neu',`Backup: ${d.result.backup}. Die Seite verbindet sich anschließend neu.`,'ok');waitRestart()}}catch(e){setStatus(kind==='save'?'Speichern fehlgeschlagen':'Prüfung fehlgeschlagen',e.message,'err')}finally{btn.disabled=false}}
 function waitRestart(){let down=false,tries=0;const timer=setInterval(async()=>{tries++;try{const r=await fetch('/api/status.json?_='+Date.now(),{cache:'no-store'});if(!r.ok)throw 0;if(down){clearInterval(timer);location.href='/'}}catch{down=true}if(tries>40){clearInterval(timer);setStatus('Gespeichert','Neustartstatus konnte nicht automatisch bestätigt werden. Dashboard manuell öffnen.','ok')}},2000)}
 $('#search').oninput=filter;$('#expand').onclick=()=>{allOpen=!allOpen;$('#expand').textContent=allOpen?'Alle Panels schließen':'Alle Panels öffnen';document.querySelectorAll('details.panel').forEach(d=>d.open=allOpen)};$('#validate').onclick=()=>submit('validate');$('#save').onclick=()=>submit('save');$('#theme').onclick=()=>{const dark=!document.documentElement.classList.contains('dark');document.documentElement.classList.toggle('dark',dark);localStorage.setItem('ems-theme',dark?'dark':'light')};addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});load();

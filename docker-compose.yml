@@ -29,6 +29,13 @@ services:
     volumes:
       - ./config:/app/config   # config.yaml (+ config_overrides.yaml daneben)
       - ./data:/app/data       # SQLite-Historie, Dashboard-HTML, Debug-Snapshot
+    # Ohne root laufen (empfohlen): das Image bringt den Benutzer ems
+    # (10001:10001) mit. Einmalig die Mounts uebergeben, dann einkommentieren:
+    #   sudo chown -R 10001:10001 config data
+    # Port 8080 braucht keine Sonderrechte. Der scheduler-Dienst unten bleibt
+    # root (cron); seine Jobs schreiben dann als root in dieselben Mounts -
+    # nach einem Kalibrierlauf ggf. erneut chown.
+    # user: "10001:10001"
     # command überschreibt bei Bedarf das Dockerfile-CMD, z.B. für --check:
     # command: ["--config", "/app/config/config.yaml", "--check"]
 

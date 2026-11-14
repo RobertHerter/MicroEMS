@@ -46,10 +46,16 @@ class HistoricalForecastUnavailable(RuntimeError):
 def _plan_index(config, day_start):
     tz = config.general.timezone
     freq = f"{config.general.slot_minutes}min"
-    opt_end = (day_start + timedelta(
+    # In Ortszeit rechnen: absolute 48 h ab 00:00 enden am 25-h-Tag um 23:00
+    # des Folgetags, normalize() schnitte den Horizont dann auf einen Tag ab.
+    day_start = pd.Timestamp(day_start)
+    wall_start = day_start.tz_localize(None)
+    wall_end = (wall_start + timedelta(
         hours=config.general.optimization_horizon_hours)).normalize()
-    if opt_end <= day_start:
-        opt_end += timedelta(days=1)
+    if wall_end <= wall_start:
+        wall_end += timedelta(days=1)
+    opt_end = wall_end.tz_localize(tz, ambiguous=True,
+                                   nonexistent="shift_forward")
     idx = pd.date_range(day_start, opt_end, freq=freq, tz=tz, inclusive="left")
     return opt_end, idx
 
@@ -143,7 +149,7 @@ def _historical_day_plan(repo, config, day_start):
 
 def _forecast_errors(repo, inp, day_start, config):
     """Fehler der am Origin bekannten Prognose für die ersten 24 Stunden."""
-    end = day_start + timedelta(days=1)
+    end = (pd.Timestamp(day_start) + pd.DateOffset(days=1)).normalize()
     idx = inp.index[(inp.index >= day_start) & (inp.index < end)]
     out = {}
     for signal, predicted in (("house_consumption", inp.house_load_w),
@@ -186,13 +192,14 @@ def main() -> int:
     # Nur Tage, deren KOMPLETTER Horizont in der Vergangenheit liegt - sonst
     # streckt ffill nicht existierende Zukunftsdaten zu konstanten Werten
     # (perfekte Voraussicht setzt echte Ist-Daten über den ganzen Horizont voraus).
-    latest = today - timedelta(days=config.general.optimization_horizon_hours // 24 + 1)
+    latest = today - pd.DateOffset(
+        days=config.general.optimization_horizon_hours // 24 + 1)
     if args.start:
         start = pd.Timestamp(args.start, tz=tz)
         end = pd.Timestamp(args.end, tz=tz) if args.end else latest
     else:
         end = latest
-        start = end - timedelta(days=args.days)
+        start = end - pd.DateOffset(days=args.days)
     if end > latest:
         print(f"Hinweis: Enddatum auf {latest.date()} begrenzt "
               f"(Horizont braucht vollständige Ist-Daten).\n")

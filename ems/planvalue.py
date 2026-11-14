@@ -70,7 +70,14 @@ def _day_bounds(config, day) -> tuple[pd.Timestamp, pd.Timestamp]:
     start = pd.Timestamp(day).tz_localize(tz) if pd.Timestamp(day).tzinfo is None \
         else pd.Timestamp(day).tz_convert(tz)
     start = start.normalize()
-    return start, start + pd.Timedelta(days=1)
+    return start, _next_day(start)
+
+
+def _next_day(ts: pd.Timestamp) -> pd.Timestamp:
+    """Lokaler Beginn des folgenden KALENDERTAGS. ``+ Timedelta(days=1)`` sind
+    absolute 24 h - an der Zeitumstellung (23- bzw. 25-h-Tag) liegt das eine
+    Stunde neben der Tagesgrenze."""
+    return (ts + pd.DateOffset(days=1)).normalize()
 
 
 def load_day(config, day) -> Optional[dict]:
@@ -388,11 +395,12 @@ def regret_analysis(config, day) -> Optional[dict]:
     # Der Folgetag muss abgeschlossen sein: an einem laufenden Tag wuerde
     # load_range die fehlenden Stunden per ffill fortschreiben und der Optimierer
     # bekaeme erfundene Werte als "Ist-Daten".
-    if end + pd.Timedelta(days=1) > pd.Timestamp.now(tz=tz):
+    long_end = _next_day(end)
+    if long_end > pd.Timestamp.now(tz=tz):
         return {"day": str(start.date()),
                 "reason": "Folgetag noch nicht abgeschlossen"}
     day_data = load_range(config, start, end)
-    long_data = load_range(config, start, end + pd.Timedelta(days=1))
+    long_data = load_range(config, start, long_end)
     if day_data is None:
         return {"day": str(start.date()),
                 "reason": "keine ausreichenden Ist-Daten für diesen Tag"}
@@ -422,11 +430,24 @@ def regret_analysis(config, day) -> Optional[dict]:
     # 2) Fixierter Plan aus der 00:00-Prognose
     frozen = frozen_true_price = None
     try:
+        # Stichzeit wie im Backtest (backtest._historical_day_plan): der
+        # Dauerbetrieb startet Sekunden nach dem Slotwechsel, bis +5 min ist es
+        # also der echte 00:00-Lauf. Mit +20 min wuerde der 00:15-Lauf gewaehlt,
+        # dessen Reihe erst bei 00:15 beginnt - sim() legt den Plan aber ab
+        # 00:00 an, er waere um einen Slot verschoben.
         issue, frame = read_optimizer_forecast_asof(
-            config.e3dc_rscp.history_db_path, start + pd.Timedelta(minutes=20),
-            start, end + pd.Timedelta(days=1), tz)
+            config.e3dc_rscp.history_db_path, start + pd.Timedelta(minutes=5),
+            start, long_end, tz)
         if frame is not None and not frame.empty:
             frame = frame.sort_index()
+        if frame is not None and not frame.empty and not frame.index[
+                :n_day].equals(day_data["index"]):
+            # Reihe beginnt nicht am Tagesanfang oder hat Luecken: der Plan
+            # liesse sich nicht slotgenau anlegen -> "fix" entfaellt.
+            log.debug("00:00-Prognose %s nicht auf dem Tagesraster (ab %s) - "
+                      "fixierter Plan entfaellt.", issue, frame.index[0])
+            frame = None
+        if frame is not None and not frame.empty:
             need = ("house_load_w", "pv_w", "price_ct_kwh")
             if all(c in frame.columns for c in need) and len(frame) >= n_day:
                 pv10 = frame["pv10_w"] if "pv10_w" in frame else None
@@ -533,7 +554,10 @@ def _completed_days(config, count: int) -> list:
     """Die letzten `count` abgeschlossenen Tage (der Vortag ist der jüngste:
     der Regret braucht den Folgetag als Solver-Horizont)."""
     today = pd.Timestamp.now(tz=config.general.timezone).normalize()
-    return [str((today - pd.Timedelta(days=k)).date())
+    # Kalendertage: ``today - Timedelta(days=k)`` sind absolute 24-h-Schritte
+    # und landen nach der Fruehjahrsumstellung auf 23:00 des Vor-Vortags (ein
+    # Tag fehlt, einer steht doppelt).
+    return [str((today - pd.DateOffset(days=k)).date())
             for k in range(count, 0, -1)]
 
 

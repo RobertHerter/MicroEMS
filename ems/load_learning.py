@@ -176,12 +176,12 @@ def _feedback_series(config, load, start, end) -> pd.Series:
     Lasten mit Stufen-Nennleistung zugeschnitten; hier zaehlt die ROHE gemessene
     Leistung, denn genau ihr Verlauf soll gelernt werden.
     """
-    import sqlite3
+    from .local_history import connect
 
     tz = config.general.timezone
     freq = f"{int(config.general.slot_minutes)}min"
     begin, finish = pd.Timestamp(start), pd.Timestamp(end)
-    con = sqlite3.connect(config.e3dc_rscp.history_db_path)
+    con = connect(config.e3dc_rscp.history_db_path)
     try:
         rows = con.execute(
             "SELECT ts, power_w FROM load_feedback WHERE name=? AND ts>=? "

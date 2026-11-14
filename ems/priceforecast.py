@@ -28,6 +28,9 @@ log = logging.getLogger("ems.priceforecast")
 
 _FEATURES = ("wind_index", "solar_index", "temp_index", "hour_sin", "hour_cos",
              "weekday", "holiday", "anchor_mean", "anchor_spread")
+# Ab so vielen 15-min-Slots gilt ein Tag als vollständig veröffentlicht
+# (92 am kurzen Umstellungstag). Training und Betrieb benutzen dieselbe Marke.
+_MIN_DAY_SLOTS = 90
 
 
 
@@ -116,7 +119,8 @@ class PriceModel:
         for day in sorted(by_day):
             today = by_day[day]
             prev = by_day.get(day - pd.Timedelta(days=1).to_pytimedelta())
-            if prev is None or len(prev) < 90 or len(today) < 90:
+            if (prev is None or len(prev) < _MIN_DAY_SLOTS
+                    or len(today) < _MIN_DAY_SLOTS):
                 continue
             x = build_features(today.index, weather, float(prev.mean()),
                                float(prev.max() - prev.min()), self._holidays)
@@ -207,16 +211,20 @@ class PriceModel:
         """Börsenpreis für ``index`` schätzen. None = Modell nicht anwendbar.
 
         ``anchor`` ist die bekannte Preisreihe (veröffentlichte Slots); daraus
-        werden Niveau und Spanne des letzten vollständigen Tages gebildet.
+        werden Niveau und Spanne des jüngsten VOLLSTÄNDIGEN Tages vor dem
+        ersten Prognosetag gebildet - dasselbe Merkmal wie im Training
+        (``_day_rows``: voller Vortag). Ein angebrochener Tag zählt nicht:
+        sein Mittel enthält nur Nacht und Vormittag und liegt systematisch
+        neben dem Tagesniveau, das das Modell gelernt hat.
         """
         if self.model is None or len(index) == 0:
             return None
         known = anchor.dropna()
         if known.empty:
             return None
-        last_day = known[known.index.date == max(known.index.date)]
-        if len(last_day) < 40:                  # halber Tag reicht nicht
-            last_day = known
+        last_day = self._anchor_day(known, index)
+        if last_day is None:
+            return None
         x = build_features(index, weather, float(last_day.mean()),
                            float(last_day.max() - last_day.min()),
                            self._holidays)
@@ -228,6 +236,25 @@ class PriceModel:
             log.debug("Preismodell-Vorhersage fehlgeschlagen (%s).", exc)
             return None
         return pd.Series(values, index=index, dtype="float64")
+
+    @staticmethod
+    def _anchor_day(known: pd.Series, index: pd.DatetimeIndex):
+        """Preise des Ankertags: jüngster vollständiger Kalendertag vor dem
+        ersten Prognosetag. Fehlt ein solcher (Lücke in der Historie), die
+        letzten 24 h vor Prognosebeginn, sofern sie vollständig sind - sie
+        decken ebenfalls einen ganzen Tagesgang ab. Sonst None: mit einem
+        Teiltag als Anker darf nicht geraten werden."""
+        if index.tz is not None and known.index.tz is not None:
+            known = known.tz_convert(index.tz)
+        first_day = index[0].date()
+        days = known.index.date
+        full = [day for day, frame in known.groupby(days)
+                if day < first_day and len(frame) >= _MIN_DAY_SLOTS]
+        if full:
+            return known[days == max(full)]
+        window = known[(known.index < index[0])
+                       & (known.index >= index[0] - pd.Timedelta(hours=24))]
+        return window if len(window) >= _MIN_DAY_SLOTS else None
 
     def status(self) -> dict:
         return {"active": self.model is not None, "reason": self.reason,

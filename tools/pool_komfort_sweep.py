@@ -19,8 +19,8 @@ import argparse
 import copy
 import json
 import os
-import sqlite3
 import sys
+from contextlib import closing
 import time
 import zlib
 
@@ -30,6 +30,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ems.config import load_config          # noqa: E402
+from ems.local_history import connect       # noqa: E402
 from ems.optimizer import (Optimizer, OptimizerInputs,   # noqa: E402
                            terminal_credit_ct)
 
@@ -38,14 +39,13 @@ FELDER = ("house_load_w", "pv_w", "price_ct_kwh", "feedin_ct_kwh", "pv10_w",
 
 
 def lade_eingaben(db: str, snapshot_id=None):
-    con = sqlite3.connect(db)
-    if snapshot_id:
-        row = con.execute("SELECT payload, generated FROM debug_snapshot "
-                          "WHERE id=?", (snapshot_id,)).fetchone()
-    else:
-        row = con.execute("SELECT payload, generated FROM debug_snapshot "
-                          "ORDER BY id DESC LIMIT 1").fetchone()
-    con.close()
+    with closing(connect(db)) as con:
+        if snapshot_id:
+            row = con.execute("SELECT payload, generated FROM debug_snapshot "
+                              "WHERE id=?", (snapshot_id,)).fetchone()
+        else:
+            row = con.execute("SELECT payload, generated FROM debug_snapshot "
+                              "ORDER BY id DESC LIMIT 1").fetchone()
     if not row:
         raise SystemExit("kein Schnappschuss vorhanden")
     try:

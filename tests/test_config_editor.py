@@ -177,3 +177,90 @@ def test_editor_html_is_responsive_and_supports_load_management():
     assert "/api/config/" in html and "submit('save')" in html
     assert "@media(max-width:700px)" in html
     assert "html.dark" in html
+
+
+def test_save_keeps_overlay_values_missing_in_config_yaml(tmp_path):
+    """Regression: Overlay-Werte, deren Schluessel in der config.yaml fehlen,
+    gingen beim Speichern im Editor verloren.
+
+    ``_effective_document`` uebernahm einen Last-Override nur bei
+    ``key in load``; danach wurde das Overlay mit ``{}`` ueberschrieben. Ein nur
+    im Overlay gesetzter Wert (comfort_penalty_ct_per_k_slot: 1.0 aus dem
+    Dashboard, loss_w_per_k aus der Kalibrierung, enabled) fiel so still auf die
+    Vorgabe zurueck. Was sich nicht einarbeiten laesst, muss im Overlay BLEIBEN.
+    """
+    path = _config_copy(tmp_path)
+    document = yaml.safe_load(path.read_text())
+    document["controllable_loads"] = [
+        {"name": "Pool", "type": "thermal", "target_c": 28, "min_c": 27,
+         "max_c": 28.5, "volume_l": 7000,
+         "stages": [{"name": "WP klein", "power_w": 400, "heat_w": 3000}]},
+        {"name": "Waschmaschine", "type": "deferrable", "power_w": 2000,
+         "runtime_minutes": 120, "window": {"from": 8, "to": 22}},
+    ]
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    overlay = tmp_path / "config_overrides.yaml"
+    overlay.write_text(yaml.safe_dump({
+        "controllable_loads_overrides": {
+            "Pool": {
+                "comfort_penalty_ct_per_k_slot": 1.0,   # fehlt in config.yaml
+                "enabled": False,                        # fehlt in config.yaml
+                "loss_w_per_k": 99.0,                    # fehlt in config.yaml
+                "binary_horizon_hours": 24.0,            # nicht ueberschreibbar
+                "stage_heat_w": {"WP_klein": 3300, "Gibt_es_nicht": 1.0},
+            },
+            "Waschmaschine": {"window_from_hour": 10},
+            "Entfernte_Last": {"enabled": False},
+        }}))
+    before = load_config(str(path))
+    pool, wama = before.controllable_loads
+    assert pool.comfort_penalty_ct_per_k_slot == 1.0 and pool.enabled is False
+
+    payload = editor_payload(str(path))
+    shown_pool, shown_wama = payload["config"]["controllable_loads"]
+    assert shown_pool["comfort_penalty_ct_per_k_slot"] == 1.0
+    assert shown_pool["enabled"] is False
+    assert shown_pool["loss_w_per_k"] == 99.0
+    assert shown_wama["window"] == {"from": 10, "to": 22}
+    assert "window_from_hour" not in shown_wama
+
+    save_document(str(path), payload["config"], payload["revision"])
+
+    after = load_config(str(path))
+    pool, wama = after.controllable_loads
+    assert pool.comfort_penalty_ct_per_k_slot == 1.0     # vorher: None -> 50
+    assert pool.enabled is False                         # vorher: True
+    assert pool.loss_w_per_k == 99.0                     # vorher: 0.0
+    assert pool.stages[0].heat_w == 3300
+    assert wama.window_from_hour == 10                   # vorher: 8
+    # Nicht Einarbeitbares bleibt im Overlay stehen statt zu verschwinden.
+    assert yaml.safe_load(overlay.read_text()) == {
+        "controllable_loads_overrides": {
+            "Pool": {"binary_horizon_hours": 24.0,
+                     "stage_heat_w": {"Gibt_es_nicht": 1.0}},
+            "Entfernte_Last": {"enabled": False},
+        }}
+    assert "controllable_loads_overrides" not in yaml.safe_load(path.read_text())
+
+
+def test_editor_and_save_override_share_one_lock():
+    """Editor und Dashboard-Schalter schreiben dieselbe Overlay-Datei - mit
+    getrennten Sperren ueberschrieb der eine die Aenderung des anderen."""
+    import ems.config as config_module
+    import ems.config_editor as editor_module
+    assert editor_module._SAVE_LOCK is config_module.OVERLAY_LOCK
+
+
+def test_validate_reads_string_booleans_strictly(tmp_path):
+    """Ueber "+ Eigenschaft" entstehen im Editor Zeichenketten. bool("false")
+    war True - aus control_enabled: "false" wurde eine EINGESCHALTETE
+    Steuerung."""
+    path = _config_copy(tmp_path)
+    document = yaml.safe_load(path.read_text())
+    document["e3dc_rscp"]["control_enabled"] = "false"
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    assert load_config(str(path)).e3dc_rscp.control_enabled is False
+    assert validate_document(document)["valid"] is True
+    document["e3dc_rscp"]["control_enabled"] = "vielleicht"
+    with pytest.raises(ValueError, match="e3dc_rscp.control_enabled"):
+        validate_document(document)

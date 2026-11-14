@@ -31,10 +31,13 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements.lock
       - name: Abhängigkeiten installieren
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          # Versionen aus dem Lock (Constraint): die CI testet, was auch
+          # installiert wird - nicht, was PyPI heute als neuestes anbietet.
+          pip install -r requirements.txt -r requirements-dev.txt -c requirements.lock
       - name: Tests
         # Nutzt die pytest.ini-Optionen (-n auto, loadscope). Tests, die die
         # gitignorierte Deployment-Config /opt/ems/config.yaml brauchen, werden

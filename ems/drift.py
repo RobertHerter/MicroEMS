@@ -39,6 +39,13 @@ from .quality import (BIAS_CONVENTION, bias_direction, enough,
 
 log = logging.getLogger("ems.drift")
 
+# Entprellung der Lastprognose-Warnung: zuletzt gemeldete Stufe (Vielfaches der
+# Schwelle) je History-Datenbank, None = kein Alarm. Bewusst auf MODULEBENE:
+# main legt den DriftMonitor in jedem Zyklus neu an - ein Instanzattribut waere
+# bei jeder Pruefung wieder leer, die Warnung kaeme jedes Mal erneut und die
+# Entwarnung nie.
+_LOAD_BIAS_LEVELS: dict = {}
+
 
 class DriftMonitor:
     def __init__(self, config: Config):
@@ -59,9 +66,8 @@ class DriftMonitor:
             config.monitoring, "load_bias_alert_w", 100.0))
         self.load_op_days = float(getattr(
             config.monitoring, "load_bias_operative_days", 2.0))
-        # Entprellung der Lastprognose-Warnung: zuletzt gemeldete Stufe
-        # (Vielfaches der Schwelle), None = kein Alarm.
-        self._load_bias_level = None
+        # Die Entprellung der Lastprognose-Warnung liegt in _LOAD_BIAS_LEVELS
+        # (Modulebene), nicht hier - die Instanz lebt nur einen Zyklus.
 
     def _planned_soc(self, repo, start, end) -> Optional[pd.Series]:
         """Geplanter SoC-Verlauf je Slot - bevorzugt aus der lokalen SQLite.
@@ -357,17 +363,20 @@ class DriftMonitor:
         db = self.cfg.e3dc_rscp.history_db_path
         tz = self.cfg.general.timezone
         deltas, stamps = [], []
-        day = (pd.Timestamp(now).tz_convert(tz).normalize()
-               - pd.Timedelta(days=self.load_days))
+        # KALENDERtage, nicht 24-h-Schritte: an der Zeitumstellung hat ein Tag
+        # 23 bzw. 25 h. Mit festen 24 h verrutschten danach alle Tagesfenster
+        # um eine Stunde - der Stand "00:00" waere dann der von 23:00 bzw. 01:00.
+        ein_tag = pd.DateOffset(days=1)
         end = pd.Timestamp(now).tz_convert(tz)
+        day = end.normalize() - pd.DateOffset(days=int(self.load_days))
         while day < end:
-            nxt = min(day + pd.Timedelta(days=1), end)
+            nxt = min(day + ein_tag, end)
             try:
                 _issue, frame = read_optimizer_forecast_asof(db, day, day,
                                                              nxt, tz)
                 if frame is None or frame.empty \
                         or "house_load_w" not in frame:
-                    day = day + pd.Timedelta(days=1)
+                    day = day + ein_tag
                     continue
                 actual = _ist(day, nxt)
                 fc = pd.to_numeric(frame["house_load_w"], errors="coerce")
@@ -383,7 +392,7 @@ class DriftMonitor:
                         stamps.append(ts)
             except Exception as exc:  # pragma: no cover
                 log.debug("Lastprognose-Bias %s nicht lesbar (%s).", day, exc)
-            day = day + pd.Timedelta(days=1)
+            day = day + ein_tag
         if not enough("drift_window", len(deltas)):
             log.debug("Lastprognose-Bias: %s", shortfall_note(
                 "drift_window", len(deltas)))
@@ -526,15 +535,17 @@ class DriftMonitor:
                    detail=("Nachtfenster geprueft" if night_w is not None
                            else "Nachtfenster zu duenn - kein Ausloeser")),
                "alert": bool(day_trigger or night_trigger)}
-        # Entprellen: der Check laeuft in JEDEM Zyklus, also alle 15 min. Ohne
-        # Gedaechtnis wiederholte er dieselbe Warnung endlos, bis sie niemand
-        # mehr las. Gemeldet wird nur der Wechsel - und die Entwarnung ebenso,
-        # damit ein stilles Verschwinden nicht mit "noch offen" verwechselt wird.
+        # Entprellen: der Check laeuft hoechstens stuendlich (main drosselt die
+        # Bilanzpruefungen), aber auf einer in jedem Zyklus NEU angelegten
+        # Instanz. Ohne Gedaechtnis ausserhalb der Instanz wiederholte er
+        # dieselbe Warnung endlos, bis sie niemand mehr las. Gemeldet wird nur
+        # der Wechsel - und die Entwarnung ebenso, damit ein stilles
+        # Verschwinden nicht mit "noch offen" verwechselt wird.
         stufe = None if not out["alert"] else int(
             abs(loes_night if loes_night is not None else (loes_median or 0.0))
             // max(1.0, self.load_alert_w))
-        neu_melden = stufe != self._load_bias_level
-        self._load_bias_level = stufe
+        neu_melden = stufe != _LOAD_BIAS_LEVELS.get(db)
+        _LOAD_BIAS_LEVELS[db] = stufe
         if not out["alert"]:
             if neu_melden:
                 log.info("Lastprognose-Versatz wieder im Rahmen (operativ "

@@ -298,7 +298,8 @@ def _lesen(db, von, bis, lead=0.0):
 
 
 def test_archive_read_interpolates_without_looking_ahead(tmp_path):
-    """Zwischen den Stundenmarken wird interpoliert. Die rechte Stuetzstelle
+    """Zwischen den Intervallmitten wird interpoliert (Stundenmittel 10-11 Uhr
+    steht fuer 10:30, der Slot 10:30 fuer 10:37,5). Die rechte Stuetzstelle
     stammt aus einer Prognose, die VOR dem Slot erstellt war - nicht aus der
     juengsten fuer ihre eigene Marke (die kam hier erst um 10:40)."""
     db = str(tmp_path / "hist.sqlite")
@@ -308,10 +309,16 @@ def test_archive_read_interpolates_without_looking_ahead(tmp_path):
     _ausgabe(db, "pvmodel:X", "2026-06-10 10:40",
              {"2026-06-10 11:00": 900.0, "2026-06-10 12:00": 950.0})
     s = _lesen(db, "2026-06-10 10:00", "2026-06-10 12:00")
-    assert s[_utc("2026-06-10 10:00")] == 100.0        # auf der Marke wie bisher
-    assert s[_utc("2026-06-10 10:15")] == 125.0        # 3/4 * 100 + 1/4 * 200
-    assert s[_utc("2026-06-10 11:00")] == 900.0
-    assert s[_utc("2026-06-10 11:15")] == 912.5        # 3/4 * 900 + 1/4 * 950
+    # vor der ersten Intervallmitte: Mittel des eigenen Intervalls
+    assert s[_utc("2026-06-10 10:00")] == 100.0
+    assert s[_utc("2026-06-10 10:15")] == 100.0
+    # Slot vor 11:00: rechts gilt die Prognose von 09:00 (200), nicht 900
+    assert s[_utc("2026-06-10 10:30")] == 0.875 * 100.0 + 0.125 * 200.0
+    assert s[_utc("2026-06-10 10:45")] == 0.625 * 100.0 + 0.375 * 200.0
+    # Slot ab 11:00 liegt im Intervall 11-12: dessen juengste Prognose (10:40)
+    # war vor dem Slot bekannt
+    assert s[_utc("2026-06-10 11:00")] == 0.375 * 100.0 + 0.625 * 900.0
+    assert s[_utc("2026-06-10 11:30")] == 0.875 * 900.0 + 0.125 * 950.0
 
 
 def test_archive_read_falls_back_without_a_strict_right_point(tmp_path):
@@ -323,16 +330,18 @@ def test_archive_read_falls_back_without_a_strict_right_point(tmp_path):
     _ausgabe(db, "pvmodel:X", "2026-06-10 10:40",
              {"2026-06-10 11:00": 900.0, "2026-06-10 12:00": 950.0})
     s = _lesen(db, "2026-06-10 10:00", "2026-06-10 11:00")
-    assert s[_utc("2026-06-10 10:15")] == 0.75 * 100.0 + 0.25 * 900.0
+    assert s[_utc("2026-06-10 10:30")] == 0.875 * 100.0 + 0.125 * 900.0
 
 
 def test_archive_read_holds_the_interval_mean_at_the_end(tmp_path):
-    """Nach der letzten Marke liegt der Slot noch in deren Stunde."""
+    """Nach der letzten Intervallmitte liegt der Slot noch in deren Stunde;
+    extrapoliert wird nicht."""
     db = str(tmp_path / "hist.sqlite")
     _ausgabe(db, "pvmodel:X", "2026-06-10 08:00",
              {"2026-06-10 10:00": 100.0, "2026-06-10 11:00": 200.0})
     s = _lesen(db, "2026-06-10 10:00", "2026-06-10 12:00")
-    assert list(s[_utc("2026-06-10 11:00"):]) == [200.0] * 4
+    assert list(s[_utc("2026-06-10 11:00"):]) == [162.5, 187.5, 200.0, 200.0]
+    assert list(s[:_utc("2026-06-10 10:15")]) == [100.0, 100.0]
 
 
 def test_archive_read_of_quarter_hour_sources_is_unchanged(tmp_path):

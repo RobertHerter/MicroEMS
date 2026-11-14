@@ -56,8 +56,10 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import threading
+import time as _time
 from datetime import datetime, time as dtime
 from typing import Dict, Optional
 
@@ -75,6 +77,57 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s).strip("_") or "load"
 
 _RESET_WORDS = ("", "-", "auto", "default", "reset")
+
+# Ist-Temperaturen thermischer Lasten: nur was physikalisch sein kann. "nan"
+# und "inf" liest float() klaglos - und ``nan < max_c`` ist False, womit eine
+# Heiz-Freigabe gegen den Plan dauerhaft stehenblieb.
+TEMP_MIN_C = -40.0
+TEMP_MAX_C = 120.0
+# Vorgabe fuer controllable_loads[].temp_max_age_minutes: aelter darf eine
+# Temperatur keine Freigabe gegen den Plan mehr halten.
+TEMP_MAX_AGE_MINUTES = 45.0
+
+
+def _plausible_temp(value) -> Optional[float]:
+    """Temperatur als float, wenn endlich und in TEMP_MIN_C..TEMP_MAX_C."""
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(t) or not TEMP_MIN_C <= t <= TEMP_MAX_C:
+        return None
+    return t
+
+
+class _TempCache(dict):
+    """{Topic: Temperatur} wie bisher - merkt sich zusaetzlich je Topic, WANN
+    der Wert gesetzt wurde (``empfangen``, time.monotonic()).
+
+    Bewusst ein dict mit unveraenderten Werten: andere Leser (Dashboard,
+    Tests) sehen dieselbe Struktur. Monotone Uhr, weil der Pi ohne RTC beim
+    Hochfahren die Wanduhr nachstellt."""
+
+    def __init__(self):
+        super().__init__()
+        self.empfangen: Dict[str, float] = {}
+
+    def __setitem__(self, topic, value):
+        super().__setitem__(topic, value)
+        self.empfangen[topic] = _time.monotonic()
+
+    def __delitem__(self, topic):
+        super().__delitem__(topic)
+        self.empfangen.pop(topic, None)
+
+    def clear(self):
+        super().clear()
+        self.empfangen.clear()
+
+    def age_seconds(self, topic) -> Optional[float]:
+        """Alter des Werts in Sekunden; None, wenn es keinen gibt."""
+        if topic not in self or topic not in self.empfangen:
+            return None
+        return max(0.0, _time.monotonic() - self.empfangen[topic])
 _OFF_WORDS = ("off", "aus", "keine", "none", "urlaub", "holiday")
 
 
@@ -132,7 +185,8 @@ class HomeyMqttPublisher:
         # Steuerbare Lasten: MQTT-Ist-Temperaturen (thermische Lasten) cachen.
         self.loads = getattr(config, "controllable_loads", [])
         self._tz = config.general.timezone
-        self.load_temps: Dict[str, float] = {}
+        self.load_temps: Dict[str, float] = _TempCache()
+        self._temp_stale_logged: set = set()
         # temp_signal (MQTT-Topic der Ist-Temperatur) unabhängig von enabled
         # abonnieren, damit ein per MQTT nachträglich aktivierter Pool sofort
         # einen Startwert hat.
@@ -207,9 +261,31 @@ class HomeyMqttPublisher:
                      self._status_topic())
         return client
 
-    def get_load_temp(self, topic: str) -> Optional[float]:
-        """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None)."""
-        return self.load_temps.get(topic)
+    def get_load_temp(self, topic: str,
+                      max_age_minutes: Optional[float] = None) -> Optional[float]:
+        """Zuletzt per MQTT empfangene Ist-Temperatur zu einem Topic (oder None).
+
+        Unendliche/unplausible Werte gelten als "keine Temperatur". Mit
+        ``max_age_minutes`` > 0 zusaetzlich jeder Wert, der aelter ist (bzw.
+        dessen Alter unbekannt ist). Ohne Angabe wird das Alter NICHT geprueft:
+        Startwert des Optimierers und Verlaufsanzeige kommen mit dem letzten
+        bekannten Wert eines traegen Speichers besser zurecht als ohne."""
+        value = self.load_temps.get(topic)
+        if value is None:
+            return None
+        t = _plausible_temp(value)
+        if t is None:
+            return None
+        if max_age_minutes is not None and float(max_age_minutes) > 0:
+            age = self.get_load_temp_age_seconds(topic)
+            if age is None or age > float(max_age_minutes) * 60.0:
+                return None
+        return value
+
+    def get_load_temp_age_seconds(self, topic: str) -> Optional[float]:
+        """Alter der letzten Ist-Temperatur in Sekunden (None = unbekannt)."""
+        age = getattr(self.load_temps, "age_seconds", None)
+        return age(topic) if callable(age) else None
 
     def get_load_feedback(self, label: str, max_age_minutes: float = 20.0,
                           hold_while_connected: bool = False) -> Optional[dict]:
@@ -283,6 +359,9 @@ class HomeyMqttPublisher:
                                   "enabled": ld.enabled, "topic": st.control_topic,
                                   "thermostat": bool(ld.thermostat),
                                   "temp_signal": ld.temp_signal,
+                                  "temp_max_age_minutes": float(getattr(
+                                      ld, "temp_max_age_minutes",
+                                      TEMP_MAX_AGE_MINUTES)),
                                   # max_c ist die Heizgrenze: bei einem Geraet
                                   # mit eigenem Thermostat sein Abschaltpunkt.
                                   # target_c steht hier NICHT mehr - es hat die
@@ -308,7 +387,24 @@ class HomeyMqttPublisher:
             return 1
         if not (lane.get("thermostat") and lane.get("temp_signal")):
             return 0
-        t_ist = self.get_load_temp(lane["temp_signal"])
+        # Nur eine FRISCHE, plausible Temperatur darf die Freigabe gegen den
+        # Plan halten. Ein verstummter Sensor (letzter Wert ueber max_c) oder
+        # ein "nan" hielt sie sonst dauerhaft an - das Geraet heizte dann,
+        # sobald sein eigener Thermostat es wollte, in ungeplanten Slots.
+        # Ohne brauchbare Temperatur gilt der Plan: aus.
+        topic = lane["temp_signal"]
+        max_age = lane.get("temp_max_age_minutes", TEMP_MAX_AGE_MINUTES)
+        t_ist = self.get_load_temp(topic, max_age_minutes=max_age)
+        if t_ist is None:
+            if topic in self.load_temps and topic not in self._temp_stale_logged:
+                self._temp_stale_logged.add(topic)
+                log.warning(
+                    "Ist-Temperatur %s ist aelter als %.0f min oder unplausibel "
+                    "(%r) - Heiz-Freigabe von %s folgt bis zum naechsten "
+                    "gueltigen Wert allein dem Plan.", topic, float(max_age),
+                    self.load_temps.get(topic), lane.get("label"))
+        else:
+            self._temp_stale_logged.discard(topic)
         # Massgeblich ist max_c - bei einem Geraet mit eigenem Thermostat SEIN
         # Abschaltpunkt. Darunter wuerde es weiterheizen, dort darf die Freigabe
         # also NICHT gehalten werden (genau das lief eine Nacht durch und zog
@@ -362,10 +458,15 @@ class HomeyMqttPublisher:
                 ziel.publish(msg.topic, "online", qos=1, retain=True)
             return
         if msg.topic in self._temp_topics:   # Ist-Temperatur einer thermischen Last
-            try:
-                self.load_temps[msg.topic] = float(payload.replace(",", "."))
-            except ValueError:
-                log.debug("MQTT: Temperatur auf %s nicht als Zahl lesbar (%r).", msg.topic, payload)
+            # Nur endliche, plausible Werte uebernehmen. Ein verworfener Wert
+            # laesst den alten stehen - der altert dann aus (temp_max_age).
+            t = _plausible_temp(payload.replace(",", "."))
+            if t is None:
+                log.debug("MQTT: Temperatur auf %s verworfen (%r) - keine "
+                          "endliche Zahl in %.0f..%.0f °C.", msg.topic, payload,
+                          TEMP_MIN_C, TEMP_MAX_C)
+            else:
+                self.load_temps[msg.topic] = t
             return
         if msg.topic in self._feedback_topics:
             try:

@@ -196,11 +196,18 @@ def test_read_pv_forecast_interpolates_hourly_without_gaps(tmp_path):
     # zwischen den Stundenwerten (bis zum letzten echten Punkt) KEIN NaN-Loch
     interior = s[s.index <= last_real]
     assert interior.notna().all(), "NaN-Löcher zwischen Stundenwerten"
-    # nach dem letzten echten Punkt bleibt NaN (löst Schätzung/Frische aus)
-    assert s[s.index > last_real].isna().all()
-    # linear interpoliert: 08:15/08:30 liegen zwischen 08:00 und 09:00
-    v0 = float(s.iloc[0]); v4 = float(s.iloc[4])          # 08:00 und 09:00
-    assert v0 < float(s.iloc[1]) < float(s.iloc[2]) < v4, "nicht monoton interpoliert"
+    # das letzte Stundenmittel gilt bis zum Ende SEINER Stunde, danach bleibt
+    # NaN (löst Schätzung/Frische aus)
+    ende_real = last_real + pd.Timedelta(hours=1)
+    mitte = last_real + pd.Timedelta(minutes=30)
+    assert s[(s.index >= mitte) & (s.index < ende_real)].eq(7000.0 * 1.8).all()
+    assert s[s.index >= ende_real].isna().all()
+    # Mitte zu Mitte: das Mittel 08-09 Uhr steht für 08:30. Davor gilt es
+    # unverändert, danach wird zur nächsten Intervallmitte interpoliert.
+    assert float(s.iloc[0]) == float(s.iloc[1]) == 1800.0
+    assert float(s.iloc[1]) < float(s.iloc[2]) < float(s.iloc[3]) < float(s.iloc[4])
+    # Slot 09:00 (Mitte 09:07,5) = 3/8 * Mittel(08-09) + 5/8 * Mittel(09-10)
+    assert float(s.iloc[4]) == pytest.approx(0.375 * 1800.0 + 0.625 * 3600.0)
 
 
 def test_read_pv_forecast_filters_sources_no_cross_pollution(tmp_path):

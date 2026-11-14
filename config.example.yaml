@@ -42,6 +42,9 @@ influxdb:
     database: "homey"
     ssl: false
     verify_ssl: false
+    # Zeitlimit je Anfrage in Sekunden. Ohne Limit blockiert ein haengender
+    # InfluxDB den ganzen Zyklus, bis der systemd-Watchdog eingreift.
+    timeout: 15
 
   # ---- Version 2.x (Flux) -----------------------------------------------------
   v2:
@@ -302,6 +305,10 @@ controllable_loads: []
   #   # (Alter Name pv_surplus_only wird weiter als Alias gelesen.)
   #   no_grid_import: true
   #   temp_signal: "pool/temperature"   # MQTT-Topic der Ist-Temperatur (°C)
+  #   # Aelter als so viele Minuten haelt die Temperatur keine Freigabe mehr
+  #   # gegen den Plan (verstummter Sensor). Default 45. Sendet der Sensor nur
+  #   # bei Aenderung, hoeher setzen; 0 = keine Altersgrenze.
+  #   temp_max_age_minutes: 45
   #   feedback_required: true       # Alarm, wenn echte WP-Rückmeldung fehlt
   #   feedback_max_age_minutes: 20
   #   # Für retained/change-only-Sensoren (z.B. Shelly), die bei konstantem Wert
@@ -791,6 +798,8 @@ e3dc_rscp:
   # Reale PV-Abregelung über EMS_REQ_SET_DERATE_PERCENT. Erst aktivieren,
   # nachdem der E3DC-Benutzer den Schreibzugriff erlaubt; jeder Befehl wird
   # zurückgelesen und beim Beenden auf den Normalwert zurückgesetzt.
+  # Wirkt nur zusammen mit control_enabled: ist die Steuerung aus (auch über
+  # den Dashboard-Schalter), bleibt die Abregelung mit Warnung inaktiv.
   curtailment_control_enabled: false
   curtailment_normal_percent: 100
   curtailment_verify_tolerance_percent: 1

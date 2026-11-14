@@ -78,7 +78,11 @@ def test_combine_sum_vs_mean(tmp_path):
 
 def test_pv_interpolation_uses_right_edge_anchor(tmp_path):
     """Der 15-min-Slot vor dem Abfrageende darf nicht fehlen, wenn der zur
-    Interpolation nötige 30-min-Stützpunkt exakt auf dem Abfrageende liegt."""
+    Interpolation nötige 30-min-Stützpunkt exakt auf dem Abfrageende liegt.
+
+    Solcast liefert 30-min-MITTEL (hier auf dem Intervall-Anfang): 06:30 steht
+    für 06:45, 07:00 für 07:15. Der Slot 06:45 (Mitte 06:52,5) liegt ein
+    Viertel des Wegs dazwischen - nicht in der Mitte zwischen den Stempeln."""
     db = str(tmp_path / "pv.sqlite")
     base = pd.Timestamp("2026-07-21 06:00", tz="UTC")
     values = {
@@ -93,8 +97,8 @@ def test_pv_interpolation_uses_right_edge_anchor(tmp_path):
     p10 = read_pv_forecast(db, start, end, "Europe/Berlin", 15, "sum", "p10")
     assert len(pv) == 4 and pv.notna().all()
     assert len(p10) == 4 and p10.notna().all()
-    assert pv.iloc[-1] == pytest.approx(2500.0)
-    assert p10.iloc[-1] == pytest.approx(1750.0)
+    assert pv.tolist() == pytest.approx([1000.0, 1250.0, 1750.0, 2250.0])
+    assert p10.iloc[-1] == pytest.approx(1575.0)
 
 
 def test_pv_archive_selects_snapshot_known_at_origin(tmp_path):

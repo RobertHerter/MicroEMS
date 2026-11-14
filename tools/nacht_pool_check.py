@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
@@ -20,6 +19,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 import pandas as pd
 
 from ems.config import load_config
+from ems.local_history import connect
+
+
+def _lies(con, von, bis):
+    """Die drei Zeitreihen der Nacht lesen (Verbindung schliesst der Aufrufer)."""
+    live = pd.read_sql(
+        "SELECT ts, pv_w, house_w, grid_w, battery_w FROM live_samples "
+        "WHERE ts >= ? AND ts < ? ORDER BY ts", con,
+        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
+    temp = pd.read_sql(
+        "SELECT ts, temp_c FROM load_temp WHERE name='Pool' AND ts >= ? AND ts < ? "
+        "ORDER BY ts", con,
+        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
+    stufen = pd.read_sql(
+        "SELECT ts, stage, commanded_on FROM load_stage_cmd WHERE name='Pool' "
+        "AND ts >= ? AND ts < ? ORDER BY ts", con,
+        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
+    return live, temp, stufen
 
 
 def main() -> int:
@@ -34,20 +51,13 @@ def main() -> int:
         pd.Timestamp.now(tz=tz).normalize()
     von, bis = tag - pd.Timedelta(hours=4), tag + pd.Timedelta(hours=9)
 
-    con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
-    live = pd.read_sql(
-        "SELECT ts, pv_w, house_w, grid_w, battery_w FROM live_samples "
-        "WHERE ts >= ? AND ts < ? ORDER BY ts", con,
-        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
-    temp = pd.read_sql(
-        "SELECT ts, temp_c FROM load_temp WHERE name='Pool' AND ts >= ? AND ts < ? "
-        "ORDER BY ts", con,
-        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
-    stufen = pd.read_sql(
-        "SELECT ts, stage, commanded_on FROM load_stage_cmd WHERE name='Pool' "
-        "AND ts >= ? AND ts < ? ORDER BY ts", con,
-        params=[von.tz_convert("UTC").isoformat(), bis.tz_convert("UTC").isoformat()])
-    con.close()
+    # connect(): WAL + Wartezeit; try/finally, damit auch bei einem Lesefehler
+    # keine offene Verbindung den Dienst am Schreiben hindert.
+    con = connect(cfg.e3dc_rscp.history_db_path)
+    try:
+        live, temp, stufen = _lies(con, von, bis)
+    finally:
+        con.close()
 
     for frame in (live, temp, stufen):
         if not frame.empty:

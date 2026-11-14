@@ -134,3 +134,143 @@ def test_combines_model_spread_and_empirical_residuals():
 def test_member_source_keeps_aggregate_ids_compatible():
     assert pv_ensemble.member_source(
         "dwd_icon", "pvmodel:Ost") == "pvmodel-member:dwd_icon:Ost"
+
+
+# --------------------------------------------------------------------------- #
+# Stundenprognose gegen das Ist-MITTEL derselben Stunde
+# --------------------------------------------------------------------------- #
+def _seed_hourly(db, now, days=12, slots=(0, 15, 30, 45), rampe=True):
+    """Je Tag eine Ausgabe mit zwei Stundenmarken (11 und 12 Uhr, Mittel
+    1000 W) und 15-min-Ist: innerhalb der Stunde steigend 700/900/1100/1300 W
+    (Mittel 1000 W)."""
+    stufen = {0: 700.0, 15: 900.0, 30: 1100.0, 45: 1300.0}
+    for day in range(1, days + 1):
+        basis = now - pd.Timedelta(days=day)
+        ziele = [basis + pd.Timedelta(hours=11), basis + pd.Timedelta(hours=12)]
+        issue = ziele[0] - pd.Timedelta(hours=3)
+        local_history.write_pv_forecast_archive(
+            db, "pvmodel:A", issue,
+            {z.isoformat(): (1000.0, 700.0, 1300.0) for z in ziele})
+        local_history.write_pv_forecast_archive(
+            db, "member-good", issue,
+            {z.isoformat(): (1000.0, 700.0, 1300.0) for z in ziele})
+        local_history.write_pv_forecast_archive(
+            db, "member-bad", issue,
+            {z.isoformat(): (700.0, 500.0, 900.0) for z in ziele})
+        for ziel in ziele:
+            for minute in slots:
+                _seed_actual(db, ziel + pd.Timedelta(minutes=minute),
+                             stufen[minute] if rampe else 1000.0)
+
+
+def test_hourly_forecast_is_paired_with_the_hourly_actual_mean(tmp_path):
+    """Die Prognose ist ein Stundenmittel. Gepaart mit dem EINEN Ist-Slot auf
+    der Marke (700 W, die erste Viertelstunde) schiene sie 43 % zu hoch -
+    tatsaechlich trifft sie das Stundenmittel (1000 W) genau."""
+    db = str(tmp_path / "history.sqlite")
+    now = pd.Timestamp("2026-07-20 00:00", tz="UTC")
+    _seed_hourly(db, now)
+    bands = pv_ensemble.residual_quantiles(
+        db, ["pvmodel:A"], now, lookback_days=30, min_samples=8,
+        horizon_hours=[6, 24], fallback_low=0.65, fallback_high=1.15,
+        cache_s=0)
+    band = bands["0-6h"]
+    assert band["learned"] and band["n"] == 24
+    assert band["q10_ratio"] == 1.0 and band["q90_ratio"] == 1.0
+
+    learned = pv_ensemble.learn_weights(
+        db, {"good": ["member-good"], "bad": ["member-bad"]}, now,
+        lookback_days=30, min_samples=8, horizon_hours=[6, 24], cache_s=0)
+    # gegen den Slot auf der Marke (700 W) haette "bad" (700 W) gewonnen
+    assert learned["0-6h"]["mae_w"]["good"] == 0.0
+    assert learned["0-6h"]["mae_w"]["bad"] == 300.0
+    assert learned["0-6h"]["weights"]["good"] > learned["0-6h"]["weights"]["bad"]
+
+
+def test_hours_with_too_few_actual_slots_are_skipped(tmp_path):
+    """Nur 2 von 4 Ist-Slots der Stunde: kein belastbares Stundenmittel."""
+    db = str(tmp_path / "history.sqlite")
+    now = pd.Timestamp("2026-07-20 00:00", tz="UTC")
+    _seed_hourly(db, now, slots=(0, 15))
+    bands = pv_ensemble.residual_quantiles(
+        db, ["pvmodel:A"], now, lookback_days=30, min_samples=8,
+        horizon_hours=[6, 24], fallback_low=0.65, fallback_high=1.15,
+        cache_s=0)
+    assert bands["0-6h"]["n"] == 0 and not bands["0-6h"]["learned"]
+
+
+# --------------------------------------------------------------------------- #
+# Lernergebnis je Prozess merken
+# --------------------------------------------------------------------------- #
+def test_learning_is_cached_per_database_and_parameters(tmp_path, monkeypatch):
+    """Der Betrieb fragt alle 15 min; das Archiv wird hoechstens stuendlich
+    neu geladen."""
+    db = str(tmp_path / "history.sqlite")
+    now = pd.Timestamp("2026-07-20 00:00", tz="UTC")
+    _seed_hourly(db, now)
+    pv_ensemble.clear_learning_cache()
+    laeufe = {"n": 0}
+    echt = pv_ensemble._archive_groups
+
+    def gezaehlt(*a, **k):
+        laeufe["n"] += 1
+        return echt(*a, **k)
+
+    monkeypatch.setattr(pv_ensemble, "_archive_groups", gezaehlt)
+    modelle = {"good": ["member-good"], "bad": ["member-bad"]}
+    args = dict(lookback_days=30, min_samples=8, horizon_hours=[6, 24])
+    erst = pv_ensemble.learn_weights(db, modelle, now, **args)
+    zweit = pv_ensemble.learn_weights(
+        db, modelle, now + pd.Timedelta(minutes=15), **args)
+    assert laeufe["n"] == 1 and zweit == erst
+    # der Aufrufer bekommt eine Kopie - Aendern trifft den Cache nicht
+    zweit["0-6h"]["weights"]["good"] = -1.0
+    assert pv_ensemble.learn_weights(db, modelle, now, **args) == erst
+    # andere Parameter, andere Funktion, andere Datenbank: eigene Eintraege
+    pv_ensemble.learn_weights(db, modelle, now, lookback_days=20,
+                              min_samples=8, horizon_hours=[6, 24])
+    assert laeufe["n"] == 2
+    kw = dict(lookback_days=30, min_samples=8, horizon_hours=[6, 24],
+              fallback_low=0.65, fallback_high=1.15)
+    pv_ensemble.residual_quantiles(db, ["pvmodel:A"], now, **kw)
+    pv_ensemble.residual_quantiles(db, ["pvmodel:A"], now, **kw)
+    assert laeufe["n"] == 3
+    # abgelaufen -> neu rechnen
+    uhr = {"t": pv_ensemble.time.monotonic()}
+    monkeypatch.setattr(pv_ensemble.time, "monotonic", lambda: uhr["t"])
+    uhr["t"] += pv_ensemble.LERN_CACHE_S + 1.0
+    pv_ensemble.learn_weights(db, modelle, now, **args)
+    assert laeufe["n"] == 4
+    pv_ensemble.clear_learning_cache()
+
+
+def test_cache_is_thread_safe(tmp_path, monkeypatch):
+    import threading
+
+    db = str(tmp_path / "history.sqlite")
+    now = pd.Timestamp("2026-07-20 00:00", tz="UTC")
+    _seed_hourly(db, now, days=9)
+    pv_ensemble.clear_learning_cache()
+    laeufe = {"n": 0}
+    echt = pv_ensemble._archive_groups
+
+    def gezaehlt(*a, **k):
+        laeufe["n"] += 1
+        return echt(*a, **k)
+
+    monkeypatch.setattr(pv_ensemble, "_archive_groups", gezaehlt)
+    ergebnisse = []
+
+    def lauf():
+        ergebnisse.append(pv_ensemble.learn_weights(
+            db, {"good": ["member-good"], "bad": ["member-bad"]}, now,
+            lookback_days=30, min_samples=8, horizon_hours=[6, 24]))
+
+    threads = [threading.Thread(target=lauf) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert laeufe["n"] == 1
+    assert len(ergebnisse) == 6 and all(e == ergebnisse[0] for e in ergebnisse)
+    pv_ensemble.clear_learning_cache()

@@ -12,6 +12,13 @@ Aufruf:
     python savings_check.py --config config.yaml --persist        # + je Tag ablegen
     python savings_check.py --config config.yaml --summary         # kumuliert (nur DB)
 
+Tabelle neu aufbauen: ``--persist --days N`` rechnet JEDEN vollen Kalendertag
+des Fensters neu und ersetzt dessen Zeile (INSERT OR REPLACE je Tag). Um
+savings_validated nach einer Korrektur zu bereinigen, genügt also ein Lauf mit
+ausreichend großem N (z. B. ``--persist --days 60``; ~96 RSCP-Abrufe je Tag,
+also Geduld). Der angebrochene erste Tag des Fensters und der laufende Tag
+werden nicht geschrieben; Zeilen außerhalb des Fensters bleiben unberührt.
+
 Ein RSCP-Aufruf je 15-min-Fenster (~96/Tag). Außer der optionalen Persistenz in
 die lokale SQLite (savings_validated) wird nichts geschrieben; nur lesende RSCP-
 Aufrufe. Der nächtliche Timer (ems-savings.timer) ruft --persist auf.
@@ -121,24 +128,49 @@ def _print_report(r):
               f"(Momentan-Snapshot vs. Energiezähler; kleine Abweichung normal).")
 
 
+def _next_day(day: pd.Timestamp) -> pd.Timestamp:
+    """Lokaler Beginn des folgenden KALENDERTAGS. ``+ Timedelta(days=1)`` wären
+    absolute 24 h und landen an der Zeitumstellung auf 23:00 desselben bzw.
+    01:00 des übernächsten Tages."""
+    return (day + pd.DateOffset(days=1)).normalize()
+
+
+def _is_full_day(meter: pd.DataFrame, day: pd.Timestamp, end: pd.Timestamp,
+                 n_slots: int, slot_minutes: int) -> bool:
+    """Deckt die Zählerreihe den Kalendertag [day, end) wirklich ab?
+
+    Der erste Slot muss auf dem lokalen Tagesbeginn liegen - ein Fenster, das
+    erst um 01:45 beginnt (89 von 96 Slots), ist KEIN voller Tag, auch wenn es
+    eine reine Mengenschwelle nimmt. Die Sollzahl folgt der echten Taglänge
+    (92/96/100 Slots bei 15 min); einzelne Lücken im Tagesverlauf bleiben mit
+    10 % toleriert."""
+    sl = meter.index[(meter.index >= day) & (meter.index < end)]
+    if len(sl) == 0 or sl.min() != day:
+        return False
+    expected = (end - day) / pd.Timedelta(minutes=slot_minutes)
+    return n_slots >= 0.9 * expected
+
+
 def _persist_days(config, data, now):
     """Jeden VOLLSTÄNDIGEN Kalendertag im Fenster gegen die Zähler validieren
     und ablegen (idempotent). Rückgabe: Anzahl geschriebener Tage."""
     tz = config.general.timezone
     db = config.e3dc_rscp.history_db_path
-    first = data["meter"].index.min().normalize()
+    first = data["meter"].index.min().tz_convert(tz).normalize()
     today = pd.Timestamp(now).tz_convert(tz).normalize()
-    min_slots = 0.9 * (24 * 60 / config.general.slot_minutes)   # nur volle Tage
     written = 0
     day = first
     while day < today:                    # nur abgeschlossene Tage
+        nxt = _next_day(day)
         # Durchgehende Ohne-EMS-Baseline: vom gespeicherten End-SoC des Vortags
         # seeden (sonst vom realen Ist-SoC zum Tagesbeginn). So summieren die
         # Tageswerte sauber zum Zeitraum-Total statt an Tagesgrenzen zu springen.
-        prev = (day - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        prev = (day - pd.DateOffset(days=1)).strftime("%Y-%m-%d")
         soc0 = read_savings_baseline_soc(db, prev)
-        r = _reconcile_slice(config, data, day, day + pd.Timedelta(days=1), soc0=soc0)
-        if r is not None and r["n_slots"] < min_slots:
+        r = _reconcile_slice(config, data, day, nxt, soc0=soc0)
+        if r is not None and not _is_full_day(
+                data["meter"], day, nxt, r["n_slots"],
+                config.general.slot_minutes):
             r = None                       # partieller Rand-Tag -> nicht ablegen
         if r is not None:
             r["computed_ts"] = pd.Timestamp(now).tz_convert("UTC")
@@ -146,7 +178,7 @@ def _persist_days(config, data, now):
             written += 1
             print(f"  {day.strftime('%Y-%m-%d')}: {r['saved_eur']:+.2f} € "
                   f"(Bilanz {'ok' if r['balance']['ok'] else 'PRÜFEN'})", flush=True)
-        day += pd.Timedelta(days=1)
+        day = nxt
     return written
 
 

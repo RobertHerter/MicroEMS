@@ -47,9 +47,11 @@ def sammle(cfg, tage: float) -> pd.DataFrame:
     schritt = pd.Timedelta(minutes=cfg.general.slot_minutes)
     jetzt = pd.Timestamp.now(tz=tz)
     zeilen = []
-    tag = jetzt.normalize() - pd.Timedelta(days=float(tage))
+    # Kalendertage (DateOffset), nicht 24-h-Schritte: an der Zeitumstellung
+    # verrutschten sonst alle Tagesfenster um eine Stunde.
+    tag = jetzt.normalize() - pd.DateOffset(days=int(round(float(tage))))
     while tag < jetzt.normalize():
-        nxt = tag + pd.Timedelta(days=1)
+        nxt = tag + pd.DateOffset(days=1)
         # GRUNDLAST: die Prognose sagt sie voraus, die steuerbaren Lasten
         # kommen separat obendrauf. Gegen die rohe Hauslast zaehlt jeder
         # Poolbetrieb als Prognosefehler (Nacht zum 01.09.2026: -708 statt

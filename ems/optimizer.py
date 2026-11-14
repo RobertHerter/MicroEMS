@@ -137,6 +137,7 @@ ZIEL_TOLERANZ_CT = 0.01
 # Das ist wichtig fuer systemctl stop/restart: ohne cancelSolve blieb der Dienst
 # bis zum Solver-Zeitlimit im nativen C++-Aufruf haengen.
 _solver_cancel = threading.Event()
+_solver_shutdown = threading.Event()
 _solver_active = threading.Event()
 
 
@@ -144,7 +145,13 @@ class SolverCancelled(RuntimeError):
     """Geordneter Abbruch eines laufenden Optimierungslaufs."""
 
 
-def request_solver_cancel() -> None:
+def request_solver_cancel(final: bool = False) -> None:
+    """Laufenden Solver abbrechen. ``final=True`` (Dienstende) gilt auch fuer
+    alle FOLGENDEN Laeufe: ohne das loeschte ein Lauf, der gerade auf den
+    Solver-Lock wartete, das Abbruch-Flag beim Start und rechnete den ganzen
+    Zyklus zu Ende, waehrend systemd schon auf das Prozessende wartete."""
+    if final:
+        _solver_shutdown.set()
     _solver_cancel.set()
 
 
@@ -509,6 +516,23 @@ def terminal_credit_ct(cfg, price_ct_kwh, feedin_ct_kwh, soc_end_wh) -> float:
     return gutschrift
 
 
+# Politur: höchstens so lange rechnen (s) und ab dieser Verschlechterung des
+# Zielwerts (ct) verwerfen. Die Toleranz deckt Rundungsreste ab, die beim
+# Fixieren fast-ganzzahliger Binärer (0,999999 -> 1) legitim entstehen.
+POLISH_TIME_LIMIT_S = 30.0
+POLISH_WORSE_TOL_CT = 0.01
+
+
+def _objective_value(prob) -> Optional[float]:
+    """Zielwert der aktuell in den Variablen stehenden Lösung (None, wenn
+    nicht alle Variablen belegt sind)."""
+    try:
+        wert = pulp.value(prob.objective)
+        return None if wert is None else float(wert)
+    except Exception:
+        return None
+
+
 def _polish_continuous(prob, cfg, free_names=None) -> bool:
     """Politur: Binärentscheidungen der Lösung fixieren und den Rest exakt
     (gap-frei) nachoptimieren.
@@ -527,7 +551,8 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
       Binärvariablen über `free_names` FREI - es bleibt ein Mini-MIP mit
       einer Handvoll freier Binärer, ebenfalls Sekunden.
 
-    Schlägt die Politur fehl (numerische Randfälle), wird die ursprüngliche
+    Schlägt die Politur fehl (numerische Randfälle) oder liefert sie einen
+    SCHLECHTEREN Zielwert als der Ausgangsstand, wird die ursprüngliche
     Lösung wiederhergestellt. Rückgabe: True, wenn poliert wurde."""
     free_names = free_names or set()
     ints = [v for v in prob.variables() if v.cat == pulp.LpInteger]
@@ -535,6 +560,12 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
         return False
     snapshot = {v: v.varValue for v in prob.variables()}
     bounds = [(v, v.lowBound, v.upBound) for v in ints]
+    before = _objective_value(prob)
+    # Eigenes, kurzes Zeitlimit: die Politur ist ein LP bzw. Mini-MIP
+    # (Sekunden). Läuft sie in das Limit, ist ihr Ergebnis ohnehin nur ein
+    # Zwischenstand - dafür nicht noch einmal das volle Budget des Hauptlaufs.
+    limit_s = min(float(cfg.optimization.solver_time_limit_s),
+                  POLISH_TIME_LIMIT_S)
     try:
         for v in ints:
             if v.name in free_names:
@@ -543,11 +574,23 @@ def _polish_continuous(prob, cfg, free_names=None) -> bool:
             v.lowBound = v.upBound = x
         # Keine relative oder absolute MIP-Lücke in der Politur: genau sie
         # soll die Artefakte der schnellen Hauptoptimierung entfernen.
-        status = lp_solve(prob, make_solver(cfg, exact=True))
+        status = lp_solve(prob, make_solver(cfg, exact=True,
+                                            time_limit_s=limit_s))
         if status == OPTIMAL:
-            return True
-        log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung bleibt.",
-                  status)
+            # "Optimal" heißt hier nur "Lösung vorhanden" (lp_solve übersetzt
+            # auch den Zeitlimit-Zwischenstand so). Der Ausgangsstand ist im
+            # fixierten Problem zulässig - ein schlechterer Zielwert ist also
+            # nie ein Politurergebnis, sondern ein abgebrochener Lauf.
+            after = _objective_value(prob)
+            if (before is None or after is None
+                    or after <= before + POLISH_WORSE_TOL_CT):
+                return True
+            log.warning("Politur verworfen: Zielwert %.2f ct schlechter als "
+                        "vorher (Zeitlimit-Zwischenstand?) - ursprüngliche "
+                        "Lösung bleibt.", after - before)
+        else:
+            log.debug("Politur nicht optimal (%s) - ursprüngliche Lösung "
+                      "bleibt.", status)
     except SolverCancelled:
         raise
     except Exception as exc:   # pragma: no cover - reine Absicherung
@@ -589,15 +632,17 @@ def natural_battery_step(soc_wh: float, pv_w: float, load_w: float, hb, dt_hours
 
 
 def make_solver(cfg: Config, warm_values: Optional[dict] = None,
-                exact: bool = False):
+                exact: bool = False, time_limit_s: Optional[float] = None):
     """CBC-Solver: bevorzugt das System-CBC (COIN_CMD, coinor-cbc), da
     PULP_CBC_CMD ab PuLP 4.0 entfällt; sonst Fallback auf den PuLP-CBC.
     Optional: HiGHS-Solver falls in der Konfiguration gewählt; warm_values
     ({Variablenname: Wert}, z.B. verschobene Lösung des letzten Laufs) werden
-    dort als MIP-Startlösung gesetzt (CBC: ignoriert)."""
+    dort als MIP-Startlösung gesetzt (CBC: ignoriert). time_limit_s ersetzt
+    das konfigurierte Zeitlimit (Politur: kürzer als der Hauptlauf)."""
     threads = cfg.optimization.solver_threads or max(1, (os.cpu_count() or 2) - 1)
-    kwargs = dict(timeLimit=cfg.optimization.solver_time_limit_s, msg=0,
-                  threads=threads)
+    if time_limit_s is None:
+        time_limit_s = cfg.optimization.solver_time_limit_s
+    kwargs = dict(timeLimit=time_limit_s, msg=0, threads=threads)
     # Relative Optimalitätslücke: kappt den teuren "Optimalität beweisen"-Endlauf
     # (v. a. an peak-Tagen mit Pool-Binärvariablen). gapRel wird von HiGHS und
     # COIN_CMD unterstützt; 0 = exakt.
@@ -817,6 +862,8 @@ class Optimizer:
             return self._solve(inp)
 
     def _solve(self, inp: OptimizerInputs) -> OptimizerResult:
+        if _solver_shutdown.is_set():
+            raise SolverCancelled("Optimierung wegen Dienstende nicht gestartet")
         clear_solver_cancel()
         cfg = self.cfg
         hb = cfg.house_battery
@@ -1561,8 +1608,15 @@ class Optimizer:
                 available_wh = soc[start] - hb.min_soc_wh
                 # sufficient=0 ist nur erlaubt, wenn der Bedarf die verfuegbare
                 # Energie wirklich uebersteigt (1 Wh numerischer Abstand).
+                # Der Abstand gehoert auch auf die rechte Seite: sonst ist bei
+                # vollem Akku (available = usable) und einem Phasenbedarf unter
+                # 1 Wh - ein einzelner Slot mit 2-4 W Restlast zwischen
+                # Ueberschuss-Slots - auch sufficient=1 unzulaessig und der
+                # ganze Plan unloesbar. Mit usable + 1 ist sufficient=1 immer
+                # zulaessig (available <= usable, need >= 0); die Bedingung
+                # fuer sufficient=0 bleibt unveraendert.
                 prob += (available_wh - need_wh + 1.0
-                         <= usable_wh * sufficient)
+                         <= (usable_wh + 1.0) * sufficient)
                 for k in range(start, end):
                     local_import = g_imp[k] - ac[k]
                     unavoidable_base = _unavoidable_import_w(k)

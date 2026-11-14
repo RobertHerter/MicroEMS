@@ -80,8 +80,8 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import datetime as _dt
 import os
-import sqlite3
 import sys
 import time
 import zlib
@@ -94,7 +94,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ems.config import load_config                            # noqa: E402
 from ems.forecast import (intraday_factor_series,             # noqa: E402
                           stabilize_intraday_ratio)
-from ems.local_history import read_optimizer_forecast_asof    # noqa: E402
+from ems.local_history import (connect,                       # noqa: E402
+                               read_optimizer_forecast_asof)
 from ems.optimizer import (Optimizer, OptimizerInputs,        # noqa: E402
                            terminal_credit_ct)
 from ems.planvalue import load_day                            # noqa: E402
@@ -130,8 +131,11 @@ def _variante(text, fc):
 
 
 def _payload(con, sid):
-    roh, = con.execute("SELECT payload FROM debug_snapshot WHERE id=?",
-                       (sid,)).fetchone()
+    zeile = con.execute("SELECT payload FROM debug_snapshot WHERE id=?",
+                        (sid,)).fetchone()
+    if zeile is None:       # Snapshot inzwischen ausgeduennt/geloescht
+        return None
+    roh, = zeile
     try:
         return json.loads(zlib.decompress(roh))
     except Exception:
@@ -246,6 +250,10 @@ def rechne_tag(cfg, con, tag, varianten, zeitlimit):
     basis_je_lauf, fremd = {}, 0
     for ts, sid in laeufe.items():
         daten = _payload(con, sid)
+        if daten is None:
+            # Zwischen Auflisten und Lesen ausgeduennt: der Lauf fehlt dann
+            # wie jeder andere Slot ohne Snapshot (der Rahmen laeuft weiter).
+            continue
         inp = _eingaben(daten)
         ii = pd.DatetimeIndex(inp.index).tz_convert(tz)
         stand, archiv = read_optimizer_forecast_asof(
@@ -378,7 +386,9 @@ def main():
                                   pd.Timestamp(args.bis or args.von).date(), freq="D").date)
     else:
         h = pd.Timestamp.now(tz=tz).normalize()
-        tage = [(h - pd.Timedelta(days=n)).date() for n in range(args.tage, 0, -1)]
+        # Kalenderarithmetik auf dem Datum: Mitternacht minus n*24 h landet
+        # nach einer Zeitumstellung auf 23:00 - ein Tag fehlte, einer doppelt.
+        tage = [h.date() - _dt.timedelta(days=n) for n in range(args.tage, 0, -1)]
 
     print("PV-Nowcast rollierend auf Ist-Daten (Rahmenausfuehrung)")
     for n, p in varianten:
@@ -393,56 +403,60 @@ def main():
         alt_df = pd.read_csv(args.protokoll)
         schon = set(alt_df["tag"].astype(str))
     heute = pd.Timestamp.now(tz=tz).date()
-    con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
-    summe = {n: 0.0 for n, _ in varianten}
-    ok, t_start = 0, time.time()
-    for tag in tage:
-        if str(tag) in schon:
-            print(f"{tag!s:>11}  schon protokolliert", flush=True)
-            continue
-        erg, grund = rechne_tag(cfg, con, tag, varianten, args.zeitlimit)
-        if erg is None:
-            print(f"{tag!s:>11}  uebersprungen: {grund}", flush=True)
-            continue
-        if args.protokoll and tag != heute:       # Teiltage nie festschreiben
-            zeilen = []
-            for n, p in varianten:
+    # connect(): WAL + Wartezeit. try/finally, weil der Lauf Stunden dauern
+    # kann und ein Abbruch sonst eine offene Verbindung hinterliesse.
+    con = connect(cfg.e3dc_rscp.history_db_path)
+    try:
+        summe = {n: 0.0 for n, _ in varianten}
+        ok, t_start = 0, time.time()
+        for tag in tage:
+            if str(tag) in schon:
+                print(f"{tag!s:>11}  schon protokolliert", flush=True)
+                continue
+            erg, grund = rechne_tag(cfg, con, tag, varianten, args.zeitlimit)
+            if erg is None:
+                print(f"{tag!s:>11}  uebersprungen: {grund}", flush=True)
+                continue
+            if args.protokoll and tag != heute:       # Teiltage nie festschreiben
+                zeilen = []
+                for n, p in varianten:
+                    v = erg["v"][n]
+                    zeilen.append({
+                        "tag": str(tag), "variante": n,
+                        "max_factor": p["max_factor"], "max_step": p["max_step"],
+                        "slots": p["slots"], "decay": p["decay"],
+                        "netto_ct": round(v["netto"], 2),
+                        "diff_zu_ist_ct": round(v["netto"] - erg["v"]["ist"]["netto"], 2),
+                        "netzladen_kwh": round(v["netzladen"], 3),
+                        "bezug_kwh": round(v["bezug"], 3),
+                        "loesungen": v["loesungen"],
+                        "nachbau_abw_w": round(erg["pruef"], 1),
+                        "gerechnet": pd.Timestamp.now(tz=tz).isoformat(timespec="seconds")})
+                neu_df = pd.DataFrame(zeilen)
+                neu_df.to_csv(args.protokoll, mode="a", index=False,
+                              header=not os.path.exists(args.protokoll))
+            ok += 1
+            basis = erg["v"]["ist"]["netto"]
+            # "gemessen" ist die echte Stromrechnung, "ist roh" dieselbe Groesse aus
+            # der Nachrechnung - so sieht man, ob die Rahmenausfuehrung die
+            # Wirklichkeit trifft. Die Spalte "ist" ist netto (mit Terminalwert).
+            zeile = (f"{tag!s:>11} "
+                     f"{erg['real'] if erg['real'] is not None else float('nan'):9.1f} "
+                     f"{erg['v']['ist']['kosten']:8.1f}")
+            for n, _ in varianten:
+                summe[n] += erg["v"][n]["netto"]
+                zeile += (f"{basis:11.1f}" if n == "ist"
+                          else f"{erg['v'][n]['netto'] - basis:+11.1f}")
+            wo = f" ({erg['pruef_wo']:%H:%M})" if erg.get("pruef_wo") is not None else ""
+            print(zeile + f"   Nachbau-Abw. {erg['pruef']:.0f} W{wo}, ohne eigenen "
+                  f"Archivstand {erg['fremd']}", flush=True)
+            for n, _ in varianten:
                 v = erg["v"][n]
-                zeilen.append({
-                    "tag": str(tag), "variante": n,
-                    "max_factor": p["max_factor"], "max_step": p["max_step"],
-                    "slots": p["slots"], "decay": p["decay"],
-                    "netto_ct": round(v["netto"], 2),
-                    "diff_zu_ist_ct": round(v["netto"] - erg["v"]["ist"]["netto"], 2),
-                    "netzladen_kwh": round(v["netzladen"], 3),
-                    "bezug_kwh": round(v["bezug"], 3),
-                    "loesungen": v["loesungen"],
-                    "nachbau_abw_w": round(erg["pruef"], 1),
-                    "gerechnet": pd.Timestamp.now(tz=tz).isoformat(timespec="seconds")})
-            neu_df = pd.DataFrame(zeilen)
-            neu_df.to_csv(args.protokoll, mode="a", index=False,
-                          header=not os.path.exists(args.protokoll))
-        ok += 1
-        basis = erg["v"]["ist"]["netto"]
-        # "gemessen" ist die echte Stromrechnung, "ist roh" dieselbe Groesse aus
-        # der Nachrechnung - so sieht man, ob die Rahmenausfuehrung die
-        # Wirklichkeit trifft. Die Spalte "ist" ist netto (mit Terminalwert).
-        zeile = (f"{tag!s:>11} "
-                 f"{erg['real'] if erg['real'] is not None else float('nan'):9.1f} "
-                 f"{erg['v']['ist']['kosten']:8.1f}")
-        for n, _ in varianten:
-            summe[n] += erg["v"][n]["netto"]
-            zeile += (f"{basis:11.1f}" if n == "ist"
-                      else f"{erg['v'][n]['netto'] - basis:+11.1f}")
-        wo = f" ({erg['pruef_wo']:%H:%M})" if erg.get("pruef_wo") is not None else ""
-        print(zeile + f"   Nachbau-Abw. {erg['pruef']:.0f} W{wo}, ohne eigenen "
-              f"Archivstand {erg['fremd']}", flush=True)
-        for n, _ in varianten:
-            v = erg["v"][n]
-            print(f"{'':>22}{n:>9}: Netzladen {v['netzladen']:5.2f} kWh, Bezug {v['bezug']:5.2f}, "
-                  f"Einsp. {v['einsp']:5.2f}, Ende {v['end_soc']:5.1f} %, "
-                  f"{v['loesungen']} Loesungen", flush=True)
-    con.close()
+                print(f"{'':>22}{n:>9}: Netzladen {v['netzladen']:5.2f} kWh, Bezug {v['bezug']:5.2f}, "
+                      f"Einsp. {v['einsp']:5.2f}, Ende {v['end_soc']:5.1f} %, "
+                      f"{v['loesungen']} Loesungen", flush=True)
+    finally:
+        con.close()
     if ok:
         print(f"\n{'Summe':>11} {'':>9} {'':>8}" + "".join(
             (f"{summe[n]:11.1f}" if n == "ist" else f"{summe[n]-summe['ist']:+11.1f}")

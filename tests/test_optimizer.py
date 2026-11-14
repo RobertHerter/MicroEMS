@@ -1134,3 +1134,94 @@ def test_adaptive_evening_reserve_skips_flat_price_days():
     # Ohne erkannten Peak keine Reserve -> Akku deckt die frühesten Laststunden
     # (keine künstliche Zurückhaltung bis zum Abend).
     assert _soc_at(res.table, idx, 6) < 95.0
+
+
+def test_sufficiency_block_stays_feasible_with_full_battery_and_tiny_need():
+    """Voller Akku + Restlastphase mit Bedarf < 1 Wh war unloesbar.
+
+    ``available - need + 1 <= usable * sufficient`` laesst bei available =
+    usable und need < 1 Wh auch sufficient=1 nicht zu - der gesamte Horizont
+    fiel auf den neutralen Plan zurueck. Ausloeser: ein einzelner Slot mit
+    2-4 W Defizit zwischen Ueberschuss-Slots.
+    """
+    import numpy as np
+    import pandas as pd
+    cfg = make_config()
+    cfg.optimization.standby_discharge_w = 0.0
+    cfg.optimization.battery_hold_penalty_ct_kwh = 5.0
+    cfg.optimization.allow_grid_discharge = False
+    cfg.controllable_loads = []
+    idx = pd.date_range(pd.Timestamp("2026-07-26 10:00", tz="Europe/Berlin"),
+                        periods=16, freq="15min")
+    n = len(idx)
+    house = np.full(n, 500.0)
+    pv = np.full(n, 2500.0)
+    pv[0] = 500.0 - 3.0                    # 3 W Defizit -> ~0,8 Wh Bedarf
+    price = np.full(n, 25.0)
+    inp = OptimizerInputs(
+        index=idx, house_load_w=house, pv_w=pv, price_ct_kwh=price,
+        feedin_ct_kwh=np.full(n, 8.0),
+        initial_house_soc_wh=cfg.house_battery.max_soc_wh,
+        spot_price_ct_kwh=price)
+    res = Optimizer(cfg, store_warm=False, stabilize_plan=False).solve(inp)
+    assert res.status == "Optimal", res.status
+    assert not res.infeasible
+
+
+def _polish_problem():
+    import pulp
+    from ems.lp_compat import lp_var
+    prob = pulp.LpProblem("p", pulp.LpMinimize)
+    x = lp_var(prob, "x", 0, 10)
+    b = lp_var(prob, "b", 0, 1, cat="Binary")
+    prob += x + 5 * b
+    prob += x + 10 * b >= 4
+    x.varValue, b.varValue = 4.0, 0.0     # Ausgangsstand: Zielwert 4
+    return prob, x, b
+
+
+def test_polish_keeps_previous_solution_when_objective_gets_worse(monkeypatch):
+    """Ein Zeitlimit-Zwischenstand meldet ebenfalls "Optimal" - die Politur
+    darf ihn nicht uebernehmen, wenn er schlechter ist als der Ausgangsstand."""
+    from ems import optimizer as opt
+    prob, x, b = _polish_problem()
+    seen = {}
+
+    def fake_make_solver(cfg, warm_values=None, exact=False, time_limit_s=None):
+        seen["limit"], seen["exact"] = time_limit_s, exact
+        return object()
+
+    def fake_solve(prob_, solver):
+        x.varValue = 9.0                   # zulaessig, aber schlechter (9 > 4)
+        return opt.OPTIMAL
+
+    cfg = make_config()
+    cfg.optimization.solver_time_limit_s = 120
+    monkeypatch.setattr(opt, "make_solver", fake_make_solver)
+    monkeypatch.setattr(opt, "lp_solve", fake_solve)
+    assert opt._polish_continuous(prob, cfg) is False
+    assert (x.varValue, b.varValue) == (4.0, 0.0)
+    assert (b.lowBound, b.upBound) == (0, 1)
+    # eigenes kurzes Zeitlimit statt des vollen Hauptlauf-Budgets
+    assert seen == {"limit": 30.0, "exact": True}
+    cfg.optimization.solver_time_limit_s = 10
+    opt._polish_continuous(prob, cfg)
+    assert seen["limit"] == 10.0
+
+
+def test_polish_accepts_equal_or_better_objective(monkeypatch):
+    from ems import optimizer as opt
+    prob, x, b = _polish_problem()
+    x.varValue = 6.0                       # Ausgangsstand mit Rest: Zielwert 6
+    cfg = make_config()
+    assert opt._polish_continuous(prob, cfg) is True
+    assert x.varValue == pytest.approx(4.0)
+
+
+def test_make_solver_time_limit_override():
+    from ems.optimizer import make_solver
+    cfg = make_config()
+    cfg.optimization.solver_time_limit_s = 60
+    assert getattr(make_solver(cfg, exact=True, time_limit_s=30.0),
+                   "timeLimit", None) == 30.0
+    assert getattr(make_solver(cfg), "timeLimit", None) == 60

@@ -517,11 +517,15 @@ def _seed_array_quality(tmp_path, *, ist_faktor=1.0, form_fehler=0.0):
     tz = cfg.general.timezone
     ende = pd.Timestamp("2026-08-05 00:00", tz=tz)
     start = ende - pd.Timedelta(days=3)
-    index = pd.date_range(start, ende, freq="1h", inclusive="left")
+    # Im Slotraster, damit Prognose und Messung denselben Zeitbezug haben:
+    # Stundenmittel stehen fuer die Stundenmitte und werden vom Leser
+    # (read_group_asof) Mitte zu Mitte aufs Raster gebracht - eine
+    # Momentanmessung auf der Stundenmarke waere dagegen verschoben.
+    index = pd.date_range(start, ende, freq="15min", inclusive="left")
 
     soll, ist = {}, {}
     for stamp in index:
-        stunde = stamp.hour
+        stunde = stamp.hour + stamp.minute / 60.0
         basis = max(0.0, 5000.0 * np.sin(np.pi * (stunde - 6) / 12)) \
             if 6 <= stunde <= 18 else 0.0
         if basis <= 0:

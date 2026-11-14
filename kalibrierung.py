@@ -310,9 +310,16 @@ def _issue_time_archive_reader(cfg):
     tz = cfg.general.timezone
     slot_minutes = cfg.general.slot_minutes
     freq = f"{slot_minutes}min"
-    from ems import pvforecast
+    from ems import solcast
     use_weather = bool(cfg.weather.enabled)
-    use_pv = bool(cfg.solcast.enabled) or pvforecast.enabled(cfg)
+    # Dieselbe Quellenwahl wie der Betrieb (solcast.read_pv_signal): das Archiv
+    # enthaelt Solcast, pvmodel:* UND die Ensemble-Mitglieder nebeneinander.
+    # Ohne Filter summierte der Leser alle zehn Quellen (28.487 W statt
+    # 6.823 W) - das Modell bekam im Backtest eine PV-Prognose, die es im
+    # Betrieb nie sieht.
+    lokal = solcast._local_pv(cfg)
+    use_pv = lokal is not None
+    pv_combine, pv_ids = lokal if lokal is not None else ("sum", [])
 
     def read(origin, end):
         expected = max(1, int(round(
@@ -327,7 +334,7 @@ def _issue_time_archive_reader(cfg):
         if use_pv:
             futures["pv"] = read_pv_forecast_asof(
                 db, origin, origin, end, tz, slot_minutes,
-                cfg.solcast.combine, "pv")
+                pv_combine, "pv", sources=pv_ids)
             checks.append(futures["pv"].notna().sum() >= 0.9 * expected)
         futures["complete"] = bool(checks and all(checks))
         return futures
@@ -559,6 +566,19 @@ def _print_validation(res):
           f"{res.get('correction_profile_source', 'unbekannt')}")
 
 
+def _test_horizon_slots(test_start, now, slot_minutes: int) -> int:
+    """Slots von ``test_start`` (aufs Raster abgerundet) bis ``now``.
+
+    Aus der ZEITSPANNE, nicht aus der Zahl vorhandener Ist-Slots: mit
+    ``len(actual_test)`` endete die Prognose bei jeder Luecke in der Historie
+    entsprechend frueher - und es fehlte genau das Ende des Testzeitraums, also
+    das Befoerderungsfenster der Champion-/Challenger-Pruefung."""
+    schritt = pd.Timedelta(minutes=int(slot_minutes))
+    anfang = pd.Timestamp(test_start).tz_convert("UTC").floor(schritt)
+    ende = pd.Timestamp(now).tz_convert("UTC")
+    return max(1, int(np.ceil((ende - anfang) / schritt)))
+
+
 def calibrate_load(repo, cfg, now, lookback_days, test_days,
                    promotion_days=14):
     use_local = cfg.e3dc_rscp.history_source
@@ -586,7 +606,7 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days,
     cfg.forecast.correction_factor = 1.0
     fc = LoadForecaster(cfg)
     fc.load_hourly = None
-    horizon = len(actual_test)
+    horizon = _test_horizon_slots(test_start, now, cfg.general.slot_minutes)
     pred = fc.forecast(train, test_start, horizon, hist_temp=temp, fut_temp=temp, hist_pv=pv, fut_pv=pv)
     idx = actual_test.index.intersection(pred.index)
     a, p = actual_test.reindex(idx), pred.reindex(idx)
@@ -635,17 +655,17 @@ def _intraday_load_pull(cfg, days: float = 7.0) -> Optional[dict]:
     lag ihr Rohverhaeltnis im Mittel bei 0,838 (Ueberschaetzung um 19 %),
     waehrend der Wochenlauf 1,2493 empfahl.
     """
-    import sqlite3
+    from contextlib import closing
+    from ems.local_history import connect
     try:
-        con = sqlite3.connect(cfg.e3dc_rscp.history_db_path)
-        row = con.execute(
-            "SELECT count(*), avg(raw_ratio), "
-            "sum(abs(raw_ratio - clipped_ratio) > 0.001) "
-            "FROM intraday_correction WHERE signal='load' "
-            "AND raw_ratio IS NOT NULL AND issue_ts >= ?",
-            ((pd.Timestamp.now(tz="UTC")
-              - pd.Timedelta(days=days)).isoformat(),)).fetchone()
-        con.close()
+        with closing(connect(cfg.e3dc_rscp.history_db_path)) as con:
+            row = con.execute(
+                "SELECT count(*), avg(raw_ratio), "
+                "sum(abs(raw_ratio - clipped_ratio) > 0.001) "
+                "FROM intraday_correction WHERE signal='load' "
+                "AND raw_ratio IS NOT NULL AND issue_ts >= ?",
+                ((pd.Timestamp.now(tz="UTC")
+                  - pd.Timedelta(days=days)).isoformat(),)).fetchone()
     except Exception:
         return None
     if not row or not row[0] or row[1] is None:

@@ -59,6 +59,10 @@ LOAD_W = [1212.203464760702,1212.2333051509145,1242.4555588697854,1072.927684664
 INIT_BATTERY_SOC_PCT = 38.0
 INIT_CAR_SOC_PCT = 100.0
 
+# Ausgabedateien im AKTUELLEN Verzeichnis (siehe Docstring).
+CSV_DATEI = "steuertabelle_heute.csv"
+DASHBOARD_DATEI = "dashboard_heute.html"
+
 
 def main() -> None:
     cfg = load_config("config.yaml")
@@ -92,9 +96,13 @@ def main() -> None:
     # CSV
     t_out = t.copy()
     t_out.index.name = "zeit"
-    t_out.to_csv("steuertabelle_heute.csv")
+    t_out.to_csv(CSV_DATEI)
 
-    # Dashboard (nur die Optimierungstabelle, da keine Ist-Historie vorliegt)
+    # Dashboard (nur die Optimierungstabelle, da keine Ist-Historie vorliegt).
+    # Der Ausgabepfad wird ausdruecklich gesetzt: build_dashboard schreibt nach
+    # config.dashboard.output_path - mit der produktiven config.yaml waere das
+    # das LIVE-Dashboard, ueberschrieben mit diesen Beispieldaten.
+    cfg.dashboard.output_path = DASHBOARD_DATEI
     build_dashboard(cfg, t, res.total_cost_ct)
 
     # --- Zusammenfassung ---

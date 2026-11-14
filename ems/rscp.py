@@ -46,6 +46,12 @@ from .config import Config
 log = logging.getLogger("ems.rscp")
 
 WATCHDOG_RESEND_S = 5.0   # < 10 s E3DC-Watchdog
+# Gueltigkeit eines Optimierer-Befehls in Vielfachen des Zyklusintervalls
+# (+ Karenz). Kommt so lange kein neuer Befehl (Zyklen scheitern, Plan
+# unzulaessig), faellt die Steuerung von selbst auf Automatik zurueck, statt
+# z. B. ein Netzladen unbegrenzt weiterzusenden.
+BEFEHL_GUELTIG_ZYKLEN = 2.0
+BEFEHL_KARENZ_S = 120.0
 # Nach einem Moduswechsel braucht der E3DC, bis der Akku folgt. Am 09.11.2026
 # stand er nach dem Netzladebefehl (165 W bzw. 155 W, SoC 0 %) noch rund 60 s
 # bei -12 W und schwankte danach bis etwa 170 s zwischen -324 und +228 W, bevor
@@ -106,6 +112,9 @@ class E3DCLink:
         self._wd_stop = threading.Event()
         self._wd_mode = 0
         self._wd_value = 0
+        # Verfallszeit (monotone Zeit) des letzten Optimierer-Befehls; None =
+        # kein befristeter Befehl aktiv (auto ohne Limits oder Handbetrieb).
+        self._befehl_bis: Optional[float] = None
         # (monotone Zeit, Akku-W) der letzten Live-Lesungen - für die
         # gemittelte Wirkungsprüfung des Watchdogs.
         self._akkufluss: deque = deque(maxlen=64)
@@ -182,8 +191,9 @@ class E3DCLink:
         # PV-Derating ist persistent. Auch bei Fehlern in der restlichen
         # Steuerung beim sauberen Beenden immer auf den gemerkten Normalwert.
         try:
-            if (self._e3dc is not None and self._curtailment_active
-                    and self.rc.curtailment_control_enabled):
+            # Nur an _curtailment_active gekoppelt (wie die Limits): wurde der
+            # Schalter zur Laufzeit abgestellt, bliebe die Grenze sonst stehen.
+            if self._e3dc is not None and self._curtailment_active:
                 self._set_derate_percent(self._normal_derate_percent())
                 self._curtailment_active = False
                 log.info("RSCP: PV-Abregelung beim Beenden aufgehoben.")
@@ -592,6 +602,11 @@ class E3DCLink:
                     break
                 rc = self._set_limits(False)
             released = wd_released or (rc != -1)
+            self._befehl_bis = None
+            if self._curtailment_active:
+                # Sonst bliebe die Grenze bis zum Dienstende stehen: nach dem
+                # Abschalten ruft niemand mehr apply_pv_curtailment auf.
+                self._abregelung_loesen("Abschalten der Steuerung")
             verification = self._verify_limits(
                 False, self.cfg.house_battery.max_dc_charge_w,
                 self.cfg.house_battery.max_discharge_w, "disabled", force=True)
@@ -903,11 +918,96 @@ class E3DCLink:
         """Sendet aktiven Modus alle ~5 s neu (E3DC-Watchdog 10 s). Bei auto still."""
         gesehen, seit = None, time.monotonic()
         while not self._wd_stop.wait(WATCHDOG_RESEND_S):
+            try:
+                self._pruefe_ablauf()
+            except Exception as exc:  # pragma: no cover - Schleife muss leben
+                log.warning("RSCP: Ablaufprüfung fehlgeschlagen (%s).", exc)
             mode, value = self._wd_mode, self._wd_value
             if mode != gesehen:                 # Moduswechsel: Anlauf beginnt
                 gesehen, seit = mode, time.monotonic()
             if mode in (1, 2, 3, 4):
                 self._watchdog_senden(mode, value, time.monotonic() - seit)
+
+    def _abregelung_loesen(self, anlass: str) -> None:
+        """Eine aktive PV-Abregelung auf den Normalwert zuruecksetzen."""
+        try:
+            # Direkt wie in close(): unabhaengig davon, ob die Abregel-
+            # steuerung inzwischen per Config/Overlay abgeschaltet wurde.
+            self._set_derate_percent(self._normal_derate_percent())
+            self._curtailment_active = False
+            log.info("RSCP: PV-Abregelung bei %s aufgehoben.", anlass)
+        except Exception as exc:
+            log.warning("RSCP: PV-Abregelung bei %s nicht gelöst (%s).",
+                        anlass, rscp_ursache(exc))
+
+    def _befehl_gueltigkeit_s(self) -> float:
+        intervall = float(getattr(self.cfg.general, "run_interval_minutes", 15)
+                          or 15) * 60.0
+        return BEFEHL_GUELTIG_ZYKLEN * intervall + BEFEHL_KARENZ_S
+
+    def _befristen(self, jetzt: Optional[float] = None) -> None:
+        """Den soeben gesetzten Optimierer-Befehl befristen."""
+        jetzt = time.monotonic() if jetzt is None else jetzt
+        self._befehl_bis = jetzt + self._befehl_gueltigkeit_s()
+
+    def _pruefe_ablauf(self, jetzt: Optional[float] = None,
+                       jetzt_wall: Optional[float] = None) -> Optional[str]:
+        """Verfallene Eingriffe zuruecknehmen. Rueckgabe: was verfiel.
+
+        1. Handbetrieb, dessen Ruecksetz-Timer nicht (mehr) existiert - etwa
+           weil der erste Sendeversuch scheiterte - endet an ``_manual_until``.
+        2. Ein Optimierer-Befehl ohne Nachfolger (Zyklen scheitern oder der
+           Plan ist unzulaessig) endet nach ``_befehl_gueltigkeit_s``: Modus
+           auf auto, persistente Limits frei. Ohne das lud der Akku nach einem
+           Netzlade-Slot weiter, bis wieder ein Zyklus gelang."""
+        jetzt = time.monotonic() if jetzt is None else jetzt
+        jetzt_wall = time.time() if jetzt_wall is None else jetzt_wall
+        with self._manual_lock:
+            if self._manual_active:
+                bis = self._manual_until
+                if bis is not None and jetzt_wall > bis + 2 * WATCHDOG_RESEND_S:
+                    log.warning("RSCP: Handbetrieb ueberfaellig (Ruecksetz-Timer "
+                                "fehlt) - wird jetzt beendet.")
+                    if self._manual_timer is not None:
+                        self._manual_timer.cancel()
+                    self._manual_revert()
+                    return "manual"
+                return None
+            bis = self._befehl_bis
+            if bis is None or jetzt <= bis:
+                return None
+            self._befehl_bis = None
+            mode = self._wd_mode
+            limits = bool(getattr(self, "_limits_active", False))
+            abregelung = bool(getattr(self, "_curtailment_active", False))
+            if mode == 0 and not limits and not abregelung:
+                return None
+            self._wd_mode, self._wd_value = 0, 0
+            try:
+                if mode != 0:
+                    self._set_power(0, 0)
+            except Exception as exc:
+                # Ohne Watchdog-Sendung faellt das E3DC nach 10 s selbst auf auto.
+                log.warning("RSCP: auto nach Befehlsablauf nicht gesendet (%s).",
+                            rscp_ursache(exc))
+            try:
+                if limits:
+                    self._set_limits(False)
+            except Exception as exc:
+                log.warning("RSCP: Limits nach Befehlsablauf nicht freigegeben "
+                            "(%s).", rscp_ursache(exc))
+            if abregelung:
+                self._abregelung_loesen("Befehlsablauf")
+            text = ("E3DC-Steuerbefehl abgelaufen: seit %.0f min kein neuer "
+                    "Sollwert vom Optimierer - Speicher zurück auf Automatik."
+                    % (self._befehl_gueltigkeit_s() / 60.0))
+            log.warning("RSCP: %s", text)
+        if self._alarm_callback:
+            try:
+                self._alarm_callback("warning", text)
+            except Exception as exc:  # pragma: no cover
+                log.debug("Alarm zum Befehlsablauf nicht gesendet (%s).", exc)
+        return "command"
 
     def _watchdog_senden(self, mode: int, value: int,
                          seit_wechsel_s: float) -> None:
@@ -989,18 +1089,26 @@ class E3DCLink:
                 log.info("RSCP: manueller Eingriff beendet -> auto.")
                 return {"mode": 0, "watts": 0, "seconds": 0,
                         "active": False}
+            secs = float(seconds)
+            if not np.isfinite(secs) or secs < 0.0:
+                # Frueher wurde daraus stillschweigend "unbefristet".
+                raise ValueError(
+                    f"Ungültige Dauer: {seconds!r} s (erwartet >= 0, endlich)")
             self._set_limits(False)                   # etwaige Limits raus
-            secs = max(0.0, float(seconds))
             self._manual_active = True
             self._manual_action = action
             self._manual_until = time.time() + secs if secs > 0 else None
+            self._befehl_bis = None                   # Handbetrieb befristet selbst
             self._wd_mode, self._wd_value = mode, val
             self._ensure_watchdog()
-            self._set_power(mode, val)
+            # Ruecksetz-Timer VOR dem Senden: scheitert der erste Sendeversuch
+            # ("Max retries" in der Hochlaufphase), traegt der Watchdog den
+            # Modus trotzdem weiter - dann muss das Ende schon feststehen.
             if secs > 0:
                 self._manual_timer = threading.Timer(secs, self._manual_revert)
                 self._manual_timer.daemon = True
                 self._manual_timer.start()
+            self._set_power(mode, val)
             log.info("RSCP: manuelles %s %d W für %.0f min (Mode %d).",
                      action, val, secs / 60.0, mode)
             return {"mode": mode, "watts": val, "seconds": secs,
@@ -1057,6 +1165,7 @@ class E3DCLink:
                     if self._set_limits(False) == -1:  # Limits aus, Mode regelt
                         raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 4, total
+                    self._befristen()
                     self._ensure_watchdog()
                     bewaffnet = (4, total)
                     schritt = "Mode 4 senden"
@@ -1074,6 +1183,7 @@ class E3DCLink:
                     if self._set_limits(False) == -1:
                         raise RuntimeError("Freigabe der SmartPower-Limits abgelehnt")
                     self._wd_mode, self._wd_value = 2, val
+                    self._befristen()
                     self._ensure_watchdog()
                     bewaffnet = (2, val)
                     schritt = "Mode 2 senden"
@@ -1112,6 +1222,14 @@ class E3DCLink:
                     schritt = "Limits setzen"
                     if self._set_limits(limited, cl, dl) == -1:
                         raise RuntimeError("Setzen der SmartPower-Limits abgelehnt")
+                    if limited or self._curtailment_active:
+                        # Auch persistente Limits und eine gesetzte PV-
+                        # Abregelung verfallen: der Watchdog-Thread prueft
+                        # die Frist (sendet bei auto nichts).
+                        self._befristen()
+                        self._ensure_watchdog()
+                    else:
+                        self._befehl_bis = None
                     log.debug("RSCP: auto, Limit aktiv=%s "
                               "(Laden≤%.0f, Entladen≤%.0f).", limited, cl, dl)
                     schritt = "Rücklesen"

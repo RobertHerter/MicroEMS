@@ -7,11 +7,55 @@ mit empirischen Ist/Prognose-Residualen der bisherigen Ensemble-Ausgabe.
 """
 from __future__ import annotations
 
-import sqlite3
-from typing import Dict, Iterable
+import copy
+import os
+import threading
+import time
+from contextlib import closing
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 import pandas as pd
+
+from .local_history import connect
+
+# Gelernte Gewichte und Quantilbaender je Prozess merken. Der Betrieb fragt in
+# JEDEM 15-min-Zyklus danach, und jede Antwort las das ganze 45-Tage-Archiv
+# (rund 2 Mio. Zeilen, 34 s auf dem Pi). Eine Stunde neuer Daten aendert an
+# einem 45-Tage-Fenster praktisch nichts.
+LERN_CACHE_S = 3600.0
+_LERN_CACHE: dict = {}
+_LERN_LOCK = threading.RLock()
+# Anteil der Ist-Slots eines Prognoseintervalls, der fuer ein Paar vorliegen
+# muss (bei Stundenprognose und 15-min-Ist: 3 von 4).
+MIN_IST_ANTEIL = 0.75
+
+
+def clear_learning_cache() -> None:
+    """Gemerkte Lernergebnisse verwerfen (Tests, erzwungenes Neulernen)."""
+    with _LERN_LOCK:
+        _LERN_CACHE.clear()
+
+
+def _cached(key: tuple, cache_s: float, compute):
+    """``compute()`` hoechstens alle ``cache_s`` Sekunden je Schluessel
+    ausfuehren. Threadsicher; gerechnet wird unter der Sperre, damit zwei
+    Threads das Archiv nicht gleichzeitig laden. Zurueck kommt eine Kopie -
+    der Aufrufer darf sie veraendern."""
+    if not cache_s or cache_s <= 0:
+        return compute()
+    with _LERN_LOCK:
+        hit = _LERN_CACHE.get(key)
+        jetzt = time.monotonic()
+        if hit is not None and jetzt < hit[0]:
+            return copy.deepcopy(hit[1])
+        value = compute()
+        _LERN_CACHE[key] = (time.monotonic() + float(cache_s), value)
+        return copy.deepcopy(value)
+
+
+def _db_key(db: str) -> str:
+    return os.path.abspath(str(db))
 
 
 def member_source(model: str, aggregate_source: str) -> str:
@@ -51,15 +95,12 @@ def bucket_name(lead_hours: float, hours: Iterable[float]) -> str:
 
 
 def _actuals(db: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
-    con = sqlite3.connect(db, timeout=10)
-    try:
+    with closing(connect(db)) as con:
         rows = con.execute(
             "SELECT ts, pv_w FROM actuals WHERE ts>=? AND ts<? "
             "AND pv_w IS NOT NULL ORDER BY ts",
             (start.tz_convert("UTC").isoformat(),
              end.tz_convert("UTC").isoformat())).fetchall()
-    finally:
-        con.close()
     if not rows:
         return pd.Series(dtype="float64")
     idx = pd.to_datetime([row[0] for row in rows], utc=True, format="ISO8601")
@@ -76,39 +117,88 @@ def _archive_groups(db: str, groups: Dict[str, list[str]], start: pd.Timestamp,
     if not source_group:
         return pd.DataFrame(columns=["group", "issue", "target", "pred"])
     marks = ",".join("?" for _ in source_group)
-    con = sqlite3.connect(db, timeout=10)
-    try:
+    with closing(connect(db)) as con:
         rows = con.execute(
             "SELECT source, issue_ts, target_ts, pv_w "
             f"FROM pv_forecast_archive WHERE source IN ({marks}) "
             "AND target_ts>=? AND target_ts<? AND pv_w IS NOT NULL",
             (*source_group, start.tz_convert("UTC").isoformat(),
              end.tz_convert("UTC").isoformat())).fetchall()
-    finally:
-        con.close()
     if not rows:
         return pd.DataFrame(columns=["group", "issue", "target", "pred"])
     frame = pd.DataFrame(rows, columns=["source", "issue", "target", "pred"])
+    del rows
     frame["group"] = frame["source"].map(source_group)
-    frame["issue"] = pd.to_datetime(frame["issue"], utc=True, format="ISO8601")
-    frame["target"] = pd.to_datetime(frame["target"], utc=True, format="ISO8601")
+    # Zeitstempel wiederholen sich millionenfach (wenige tausend Ausgabe- und
+    # Zielzeiten): jeden nur einmal parsen.
+    for spalte in ("issue", "target"):
+        einmal = frame[spalte].unique()
+        frame[spalte] = frame[spalte].map(pd.Series(
+            pd.to_datetime(einmal, utc=True, format="ISO8601"), index=einmal))
     expected = {group: len(sources) for group, sources in groups.items()}
     summed = frame.groupby(
         ["group", "issue", "target"], as_index=False).agg(
             pred=("pred", "sum"), n_sources=("source", "nunique"))
+    # Spaltenweise statt zeilenweisem apply (das allein kostete auf dem Pi den
+    # Grossteil der Laufzeit).
     summed = summed[
-        summed.apply(
-            lambda row: row["n_sources"] >= expected.get(row["group"], 1),
-            axis=1)
+        summed["n_sources"] >= summed["group"].map(expected).fillna(1)
     ].copy()
     summed["lead_h"] = (
         summed["target"] - summed["issue"]).dt.total_seconds() / 3600.0
     return summed[summed["lead_h"] >= 0.0]
 
 
+def _forecast_step(frame: pd.DataFrame) -> Optional[pd.Timedelta]:
+    """Intervalllaenge der Prognose: Abstand der Zielmarken INNERHALB einer
+    Ausgabe (Median). None, wenn keine Ausgabe zwei Marken enthaelt."""
+    if frame.empty:
+        return None
+    part = frame.sort_values(["group", "issue", "target"])
+    gleich = ((part["group"] == part["group"].shift())
+              & (part["issue"] == part["issue"].shift()))
+    diffs = part["target"].diff()[gleich]
+    diffs = diffs[diffs > pd.Timedelta(0)]
+    if diffs.empty:
+        return None
+    return pd.Timedelta(diffs.median())
+
+
+def _interval_actual(actual: pd.Series, targets: pd.DatetimeIndex,
+                     step: Optional[pd.Timedelta]) -> pd.Series:
+    """Ist-Mittel je Prognoseintervall [Marke, Marke + step).
+
+    Die Prognose ist ein Mittel ueber ihr ganzes Intervall (pvlib: eine Stunde,
+    auf den Intervall-Anfang gestempelt). Bis 14.11.2026 wurde sie mit dem
+    EINEN 15-min-Ist-Slot auf der Marke gepaart - also mit der ersten
+    Viertelstunde: vormittags systematisch zu wenig Ist, nachmittags zu viel.
+    Gewertet wird ein Intervall nur, wenn mindestens MIN_IST_ANTEIL seiner
+    Ist-Slots vorliegen. Ist die Prognose nicht groeber als das Ist (oder ihre
+    Intervalllaenge unbekannt), bleibt es beim Wert auf der Marke."""
+    if actual.empty or len(targets) == 0:
+        return pd.Series(np.nan, index=targets, dtype="float64")
+    actual = actual.sort_index()
+    ist_schritt = pd.Series(actual.index).diff().median()
+    if (step is None or pd.isna(ist_schritt)
+            or ist_schritt <= pd.Timedelta(0) or step <= ist_schritt):
+        return actual.reindex(targets)
+    zeiten = actual.index.as_unit("ns").asi8
+    marken = pd.DatetimeIndex(targets).as_unit("ns").asi8
+    summe = np.concatenate(([0.0], np.cumsum(actual.to_numpy(dtype=float))))
+    lo = np.searchsorted(zeiten, marken, side="left")
+    hi = np.searchsorted(zeiten, marken + int(step.value), side="left")
+    n = hi - lo
+    noetig = max(1, int(np.ceil(MIN_IST_ANTEIL * (step / ist_schritt) - 1e-9)))
+    mittel = np.where(n >= noetig, (summe[hi] - summe[lo]) / np.maximum(n, 1),
+                      np.nan)
+    return pd.Series(mittel, index=targets, dtype="float64")
+
+
 def _paired_bucket(frame: pd.DataFrame, actual: pd.Series, low: float,
-                   high: float) -> pd.DataFrame:
-    """Pro Target/Gruppe genau die jüngste Prognose innerhalb des Lead-Buckets."""
+                   high: float,
+                   step: Optional[pd.Timedelta] = None) -> pd.DataFrame:
+    """Pro Target/Gruppe genau die jüngste Prognose innerhalb des Lead-Buckets,
+    gepaart mit dem Ist-MITTEL desselben Prognoseintervalls (``step``)."""
     if frame.empty or actual.empty:
         return pd.DataFrame()
     part = frame[(frame["lead_h"] >= low) & (frame["lead_h"] < high)]
@@ -117,20 +207,39 @@ def _paired_bucket(frame: pd.DataFrame, actual: pd.Series, low: float,
     part = (part.sort_values("issue")
             .drop_duplicates(["group", "target"], keep="last"))
     wide = part.pivot(index="target", columns="group", values="pred")
-    wide["actual"] = actual.reindex(wide.index)
+    wide["actual"] = _interval_actual(actual, wide.index, step)
     return wide.dropna()
 
 
 def learn_weights(db: str, model_sources: Dict[str, list[str]], now,
                   lookback_days: int, min_samples: int,
                   horizon_hours: Iterable[float],
-                  min_weight: float = 0.05) -> dict:
+                  min_weight: float = 0.05,
+                  cache_s: float = LERN_CACHE_S) -> dict:
     """Inverse-MAE-Gewichte je Prognosehorizont aus echten Archivfehlern.
 
     Die Schätzung wird mit Gleichgewicht geschrumpft, bis viermal die
     Mindeststichprobe erreicht ist. So kann ein kurzer Wetterabschnitt kein
     Modell sofort dominieren.
+
+    Das Ergebnis wird je Prozess ``cache_s`` Sekunden gemerkt (Schluessel:
+    Datenbank + alle Parameter ausser ``now``); ``cache_s=0`` rechnet immer neu.
     """
+    horizon_hours = [float(v) for v in horizon_hours]
+    key = ("weights", _db_key(db),
+           tuple((model, tuple(sources))
+                 for model, sources in model_sources.items()),
+           int(lookback_days), int(min_samples), tuple(horizon_hours),
+           float(min_weight))
+    return _cached(key, cache_s, lambda: _learn_weights(
+        db, model_sources, now, lookback_days, min_samples, horizon_hours,
+        min_weight))
+
+
+def _learn_weights(db: str, model_sources: Dict[str, list[str]], now,
+                   lookback_days: int, min_samples: int,
+                   horizon_hours: Iterable[float],
+                   min_weight: float = 0.05) -> dict:
     issue = pd.Timestamp(now)
     if issue.tzinfo is None:
         issue = issue.tz_localize("UTC")
@@ -138,11 +247,12 @@ def learn_weights(db: str, model_sources: Dict[str, list[str]], now,
     start = issue - pd.Timedelta(days=max(1, int(lookback_days)))
     archived = _archive_groups(db, model_sources, start, issue)
     actual = _actuals(db, start, issue)
+    step = _forecast_step(archived)
     models = list(model_sources)
     equal = {model: 1.0 / len(models) for model in models} if models else {}
     result = {}
     for name, low, high in bucket_ranges(horizon_hours):
-        pairs = _paired_bucket(archived, actual, low, high)
+        pairs = _paired_bucket(archived, actual, low, high, step)
         if not pairs.empty:
             pairs = pairs.dropna(subset=models)
             pairs = pairs[
@@ -187,14 +297,32 @@ def residual_quantiles(db: str, aggregate_sources: list[str], now,
                        lookback_days: int, min_samples: int,
                        horizon_hours: Iterable[float],
                        fallback_low: float, fallback_high: float,
-                       timezone: str = "UTC") -> dict:
+                       timezone: str = "UTC",
+                       cache_s: float = LERN_CACHE_S) -> dict:
     """Multiplikative Ist/Ensemble-Quantile je Vorlaufzeit und Wetterlage.
 
     Innerhalb jedes Vorlauf-Buckets wird das Band zusätzlich nach
     meteorologischer Saison und prognostiziertem Leistungsniveau gelernt.
     Schwach besetzte Zellen fallen hierarchisch auf Leistungsniveau, Saison
     und zuletzt das robuste Vorlaufband zurück.
+
+    Wie ``learn_weights`` je Prozess ``cache_s`` Sekunden gemerkt.
     """
+    horizon_hours = [float(v) for v in horizon_hours]
+    aggregate_sources = list(aggregate_sources)
+    key = ("residuals", _db_key(db), tuple(aggregate_sources),
+           int(lookback_days), int(min_samples), tuple(horizon_hours),
+           float(fallback_low), float(fallback_high), str(timezone))
+    return _cached(key, cache_s, lambda: _residual_quantiles(
+        db, aggregate_sources, now, lookback_days, min_samples,
+        horizon_hours, fallback_low, fallback_high, timezone))
+
+
+def _residual_quantiles(db: str, aggregate_sources: list[str], now,
+                        lookback_days: int, min_samples: int,
+                        horizon_hours: Iterable[float],
+                        fallback_low: float, fallback_high: float,
+                        timezone: str = "UTC") -> dict:
     issue = pd.Timestamp(now)
     if issue.tzinfo is None:
         issue = issue.tz_localize("UTC")
@@ -203,9 +331,10 @@ def residual_quantiles(db: str, aggregate_sources: list[str], now,
     archived = _archive_groups(
         db, {"ensemble": aggregate_sources}, start, issue)
     actual = _actuals(db, start, issue)
+    step = _forecast_step(archived)
     out = {}
     for name, low, high in bucket_ranges(horizon_hours):
-        pairs = _paired_bucket(archived, actual, low, high)
+        pairs = _paired_bucket(archived, actual, low, high, step)
         if not pairs.empty:
             pairs = pairs[(pairs["ensemble"] >= 100.0)
                           & (pairs["actual"] >= 0.0)]
