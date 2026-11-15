@@ -9,9 +9,11 @@ Die Funktionen bleiben bewusst außerhalb des MILP:
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import threading
 import time
+from contextlib import closing
 
 import numpy as np
 import pandas as pd
@@ -19,7 +21,7 @@ import pandas as pd
 from .time_utils import floor_time
 
 from .loads import _season_mask
-from .local_history import (ems_schaltet_last,
+from .local_history import (connect, ems_schaltet_last,
                             read_controllable_load_power,
                             read_optimizer_forecast_snapshots)
 
@@ -282,13 +284,98 @@ def _bucket_name(hours: float, boundaries: list[float]) -> str:
     return f">{boundaries[-1]:g}h"
 
 
-def _collect_archive_rows(config, now, actual: pd.Series):
+def _load_profile_history(path: str, start) -> list:
+    """Archivierte Stundenprofile der Last ab ``start``, aufsteigend.
+
+    Rueckgabe ``[(Zeitstempel, {Stunde: Faktor} | None), ...]`` aus
+    ``calibration_history``; dazu der letzte Stand VOR ``start``, denn der galt
+    am Fensteranfang. ``None`` heisst: dieser Stand hatte kein Stundenprofil.
+    Ohne Tabelle oder bei Lesefehlern leer - dann wird nichts umgerechnet.
+    """
+    begin = pd.Timestamp(start).tz_convert("UTC").isoformat()
+    try:
+        with closing(connect(path)) as con:
+            rows = con.execute(
+                "SELECT ts, profile_json FROM calibration_history "
+                "WHERE ts < ? ORDER BY ts DESC LIMIT 1", (begin,)).fetchall()
+            rows += con.execute(
+                "SELECT ts, profile_json FROM calibration_history "
+                "WHERE ts >= ? ORDER BY ts", (begin,)).fetchall()
+    except Exception:
+        return []
+    out = []
+    for stamp, text in rows:
+        try:
+            hourly = (json.loads(text) or {}).get("load_hourly")
+            factors = ({int(hour): float(value)
+                        for hour, value in hourly.items()}
+                       if isinstance(hourly, dict) and hourly else None)
+            out.append((pd.Timestamp(stamp).tz_convert("UTC"), factors))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def _profile_at(history: list, issue) -> dict | None:
+    """Stundenprofil, das zum Ausgabezeitpunkt ``issue`` galt (None =
+    unbekannt oder keines).
+
+    Der Archivstand traegt die STARTZEIT des Kalibrierlaufs, wirksam wird das
+    Profil erst mit dessen Ende. Ein Snapshot aus dieser Spanne wird dem neuen
+    Profil zugerechnet, obwohl er noch das alte enthielt - bei einem Snapshot
+    je Sechs-Stunden-Block trifft das hoechstens einen von rund 240.
+    """
+    stamp = pd.Timestamp(issue).tz_convert("UTC")
+    current = None
+    for since, factors in history:
+        if since > stamp:
+            break
+        current = factors
+    return current
+
+
+def _profile_ratio(current: dict, then: dict, hour: int) -> float:
+    """Faktor, der einen mit ``then`` gerechneten Wert auf ``current`` umrechnet.
+
+    Fehlende Stunden zaehlen wie in ``LoadForecaster.forecast`` als 1.0; ein
+    unbrauchbarer Altfaktor laesst den Wert unveraendert.
+    """
+    new = float(current.get(int(hour), 1.0))
+    old = float(then.get(int(hour), 1.0))
+    if not (np.isfinite(new) and np.isfinite(old)) or old <= 0.0 or new <= 0.0:
+        return 1.0
+    return new / old
+
+
+def _collect_archive_rows(config, now, actual: pd.Series,
+                          load_hourly: dict | None = None):
+    """Archivierte Prognosen gegen das spaeter gemessene Ist stellen.
+
+    ``load_hourly`` ist das JETZT produktive Stundenprofil der Last. Die
+    archivierte Basis (``house_load_base_w``) enthaelt das Profil ihres
+    Ausgabezeitpunkts. Nach einer Befoerderung stammen die Lernzeilen des
+    Temperatur-Residuals deshalb wochenlang noch vom alten Profil - ihr
+    Fehler ist der des ALTEN Profils und wurde trotzdem von der Basis mit dem
+    NEUEN abgezogen. Die Basis wird darum je Zeile auf das aktuelle Profil
+    umgerechnet (das Profil ist ein reiner Stundenfaktor auf beide Kandidaten,
+    die Umrechnung also exakt).
+
+    Gemessen im Replay 09.09.-15.11.2026 (69 Tage, acht Befoerderungen, jeder
+    Lauf, Vorlauf bis 24 h): nachts MAE 125 -> 118 W (-7,0; 95 %-Intervall
+    -12,3 .. -2,3), tags unveraendert (-0,4; -3,6 .. +3,0). Nach dem Wechsel
+    vom 12.11. (Nachtfaktoren 1,02 -> 0,91) zog das Residual aus den Zeilen des
+    alten Profils weiter -90 W von einer nachts fast treffenden Basis ab:
+    Nacht 14./15.11. Bias -126 -> -67 W bei 4-8 h Vorlauf.
+    """
     fc = config.forecast
+    start = pd.Timestamp(now) - pd.Timedelta(days=fc.load_ensemble_lookback_days)
     snapshots = read_optimizer_forecast_snapshots(
-        config.e3dc_rscp.history_db_path,
-        pd.Timestamp(now) - pd.Timedelta(days=fc.load_ensemble_lookback_days),
+        config.e3dc_rscp.history_db_path, start,
         now, config.general.timezone,
         fc.load_ensemble_archive_stride_hours)
+    profile_history = (
+        _load_profile_history(config.e3dc_rscp.history_db_path, start)
+        if load_hourly else [])
     rows = []
     latest_actual = pd.Series(actual).dropna()
     if latest_actual.empty:
@@ -306,6 +393,8 @@ def _collect_archive_rows(config, now, actual: pd.Series):
         temp = frame.get("ambient_temp_c")
         temp_24h = (temp.rolling("24h", min_periods=4).mean()
                     if temp is not None else None)
+        profile_then = (_profile_at(profile_history, issue)
+                        if base_col and profile_history else None)
         for target in frame.index:
             lead_h = (target - issue).total_seconds() / 3600.0
             if lead_h < 0.0 or lead_h > max(
@@ -327,6 +416,9 @@ def _collect_archive_rows(config, now, actual: pd.Series):
             if base_col:
                 value = frame.at[target, base_col]
                 row["base"] = float(value) if pd.notna(value) else np.nan
+                if profile_then:
+                    row["base"] *= _profile_ratio(
+                        load_hourly, profile_then, target.hour)
             if temp is not None:
                 row["temp"] = temp.get(target)
                 row["temp_24h"] = temp_24h.get(target)
@@ -437,14 +529,22 @@ def _learn_temperature(config, rows: pd.DataFrame) -> tuple[dict | None, dict]:
     return model, diag
 
 
-def analyze(config, now, evaluation_actual: pd.Series):
-    """Archivbasierte Gewichte und Temperaturmodell höchstens stündlich lernen."""
+def analyze(config, now, evaluation_actual: pd.Series,
+            load_hourly: dict | None = None):
+    """Archivbasierte Gewichte und Temperaturmodell höchstens stündlich lernen.
+
+    ``load_hourly``: das produktive Stundenprofil der Last (siehe
+    ``_collect_archive_rows``). Es gehoert in den Cache-Schluessel - ein
+    befoerdertes Profil muss sofort gelten, nicht erst zur naechsten Stunde.
+    """
     key = (floor_time(now, "1h"),
-           int(pd.Series(evaluation_actual).notna().sum()))
+           int(pd.Series(evaluation_actual).notna().sum()),
+           tuple(sorted((load_hourly or {}).items())))
     if (_ANALYSIS_CACHE["key"] == key and _ANALYSIS_CACHE["value"] is not None
             and time.monotonic() - _ANALYSIS_CACHE["at"] < 3600.0):
         return _ANALYSIS_CACHE["value"]
-    rows, snapshots = _collect_archive_rows(config, now, evaluation_actual)
+    rows, snapshots = _collect_archive_rows(
+        config, now, evaluation_actual, load_hourly)
     weights, buckets = _learn_ensemble(config, rows)
     temp_model, temp_diag = _learn_temperature(config, rows)
     recommendation = None

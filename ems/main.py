@@ -1414,8 +1414,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             load_candidates = load_models.candidate_forecasts(
                 forecaster, history, now, config.general.n_forecast_slots,
                 hist_temp=temp, fut_temp=temp, hist_pv=hist_pv, fut_pv=fut_pv)
+            # Mit dem produktiven Stundenprofil: die Lernzeilen des Residuals
+            # stammen nach einer Befoerderung noch vom alten Profil und
+            # werden darauf umgerechnet (siehe _collect_archive_rows).
             load_weights, temp_residual_model, _load_analysis = (
-                load_models.analyze(config, now, load_evaluation_actual))
+                load_models.analyze(config, now, load_evaluation_actual,
+                                    load_hourly=forecaster.load_hourly))
             load_base_fc = load_models.combine(
                 load_candidates, load_weights, now)
             load_fc, temp_residual_delta = (

@@ -326,3 +326,128 @@ def test_temperatur_residual_meldet_sammeln_und_verwerfen_getrennt():
     finally:
         zustand.clear()
         zustand.update(vorher)
+
+
+def _residual_archive(tmp_path, wechsel_vor_tagen: int, alt: dict, neu: dict,
+                      roh_w: float = 800.0, tage: int = 12):
+    """Zwoelf Tagessnapshots (Basis = Rohprognose x damaliges Profil) bei 2 °C;
+    das Profil wechselt ``wechsel_vor_tagen`` vor ``now``. Ist = Rohprognose."""
+    from ems.local_history import (write_calibration_snapshot,
+                                   write_optimizer_forecast_archive)
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    cfg.forecast.temperature_residual_min_folds = 6
+    cfg.forecast.temperature_residual_min_samples = 24
+    now = pd.Timestamp("2026-11-15 00:00", tz=TZ)
+    wechsel = now - pd.Timedelta(days=wechsel_vor_tagen)
+    start = now - pd.Timedelta(days=tage)
+    path = cfg.e3dc_rscp.history_db_path
+    write_calibration_snapshot(
+        path, start - pd.Timedelta(days=7), {}, {"load_hourly": alt})
+    write_calibration_snapshot(path, wechsel, {}, {"load_hourly": neu})
+    for tag in range(tage):
+        issue = start + pd.Timedelta(days=tag, minutes=5)
+        index = pd.date_range(
+            issue.floor("15min"), periods=96, freq="15min", tz=TZ)
+        profil = neu if issue >= wechsel else alt
+        faktor = np.array([profil.get(int(h), 1.0) for h in index.hour])
+        write_optimizer_forecast_archive(path, issue, {
+            "house_load_w": pd.Series(roh_w * faktor, index=index),
+            "house_load_base_w": pd.Series(roh_w * faktor, index=index),
+            "ambient_temp_c": pd.Series(2.0, index=index),
+        })
+    actual = pd.Series(
+        roh_w, index=pd.date_range(start, now, freq="15min", inclusive="left"))
+    return cfg, now, actual
+
+
+def _residual_delta(cfg, rows, basis_w: float = 800.0):
+    model, _ = load_models._learn_temperature(cfg, rows)
+    point = pd.Series(basis_w, index=pd.date_range(
+        "2026-11-15 00:00", periods=8, freq="15min", tz=TZ))
+    temp = pd.Series(2.0, index=pd.date_range(
+        "2026-11-14 00:00", periods=200, freq="15min", tz=TZ))
+    _, delta = load_models.apply_temperature_residual(point, temp, model, 0.35)
+    return delta
+
+
+def test_residual_traegt_den_fehler_des_alten_profils_nicht_weiter(tmp_path):
+    """Profilwechsel mitten im Lernfenster: das alte Profil lag 25 % zu hoch,
+    das neue trifft. Neun von zwoelf Lerntagen stammen noch vom alten - ihr
+    Fehler (-200 W) gehoert dem alten Profil und darf nicht von der Basis mit
+    dem neuen abgezogen werden (Nacht 14./15.11.2026: -90 W von einer
+    treffenden Basis)."""
+    alt = {h: 1.25 for h in range(24)}
+    neu = {h: 1.0 for h in range(24)}
+    cfg, now, actual = _residual_archive(tmp_path, 3, alt, neu)
+
+    # Bisheriges Verhalten (ohne Kenntnis des Profils): der Altfehler landet
+    # im Kaeltekoeffizienten und zieht die neue, treffende Basis herunter.
+    rows_alt, _ = load_models._collect_archive_rows(cfg, now, actual)
+    assert _residual_delta(cfg, rows_alt).mean() < -100.0
+
+    rows, _ = load_models._collect_archive_rows(cfg, now, actual, neu)
+    assert rows["base"].to_numpy() == pytest.approx(800.0)
+    assert _residual_delta(cfg, rows).abs().max() < 1.0
+
+
+def test_residual_rechnet_nur_die_geaenderten_stunden_um(tmp_path):
+    alt = {h: 1.0 for h in range(24)}
+    neu = dict(alt)
+    neu[3] = 0.8                               # nur 03 Uhr wurde gesenkt
+    cfg, now, actual = _residual_archive(tmp_path, 3, alt, neu, tage=8)
+    rows, _ = load_models._collect_archive_rows(cfg, now, actual, neu)
+    stunde = pd.DatetimeIndex(rows["target"]).hour
+    assert rows.loc[stunde == 3, "base"].to_numpy() == pytest.approx(640.0)
+    assert rows.loc[stunde != 3, "base"].to_numpy() == pytest.approx(800.0)
+
+
+def test_residual_ohne_bekanntes_altprofil_bleibt_unveraendert(tmp_path):
+    """Kein Archivstand vor dem Snapshot oder einer ohne Stundenprofil: der
+    damalige Faktor ist unbekannt - nichts erfinden, Zeile unveraendert."""
+    from ems.local_history import connect
+    alt = {h: 1.25 for h in range(24)}
+    neu = {h: 1.0 for h in range(24)}
+    cfg, now, actual = _residual_archive(tmp_path, 3, alt, neu)
+    unveraendert, _ = load_models._collect_archive_rows(cfg, now, actual)
+
+    con = connect(cfg.e3dc_rscp.history_db_path)
+    con.execute("UPDATE calibration_history SET profile_json='{}'")
+    con.commit()
+    con.close()
+    rows, _ = load_models._collect_archive_rows(cfg, now, actual, neu)
+    assert rows["base"].to_numpy() == pytest.approx(
+        unveraendert["base"].to_numpy())
+
+    con = connect(cfg.e3dc_rscp.history_db_path)
+    con.execute("DELETE FROM calibration_history")
+    con.commit()
+    con.close()
+    rows, _ = load_models._collect_archive_rows(cfg, now, actual, neu)
+    assert rows["base"].to_numpy() == pytest.approx(
+        unveraendert["base"].to_numpy())
+
+
+def test_analyse_lernt_nach_einem_profilwechsel_sofort_neu(monkeypatch):
+    """Das Profil gehoert in den Cache-Schluessel der Analyse."""
+    cfg = make_config()
+    now = pd.Timestamp("2026-11-15 00:00", tz=TZ)
+    gesehen = []
+
+    def sammeln(config, jetzt, actual, load_hourly=None):
+        gesehen.append(load_hourly)
+        return pd.DataFrame(), 0
+
+    monkeypatch.setattr(load_models, "_collect_archive_rows", sammeln)
+    monkeypatch.setitem(load_models._ANALYSIS_CACHE, "key", None)
+    monkeypatch.setitem(load_models._ANALYSIS_CACHE, "value", None)
+    status = dict(load_models._STATUS)
+    try:
+        actual = pd.Series([1.0, 2.0])
+        load_models.analyze(cfg, now, actual, load_hourly={0: 1.0})
+        load_models.analyze(cfg, now, actual, load_hourly={0: 1.0})
+        load_models.analyze(cfg, now, actual, load_hourly={0: 0.9})
+    finally:
+        load_models._STATUS.clear()
+        load_models._STATUS.update(status)
+    assert gesehen == [{0: 1.0}, {0: 0.9}]
