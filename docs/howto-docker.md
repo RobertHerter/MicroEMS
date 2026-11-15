@@ -229,10 +229,66 @@ braucht keine Sonderrechte.
 * **Healthcheck:** der EMS-Container prüft `GET /version`. Der Scheduler hat ihn
   bewusst abgeschaltet – er bedient keinen HTTP-Port.
 * **Backup:** es genügt, `config/` und `data/` zu sichern. Darin steckt alles:
-  Konfiguration, Overlay, SQLite-Historie, Prognose-Archiv.
+  Konfiguration, Overlay, SQLite-Historie, Prognose-Archiv. Die kleinen
+  Dateien sichert der Scheduler wöchentlich selbst – siehe
+  [Sicherung](#sicherung).
 * **Logs:** `docker compose logs` zeigt die Ausgabe beider Container; der
   Scheduler schreibt seine Jobs nach `/proc/1/fd/1`, erscheint also im
   Container-Log statt in einer Datei.
+
+## Sicherung
+
+Der Scheduler sichert **montags 03:30** die kleinen, nicht wiederherstellbaren
+Dateien (Pendant zu `ems-backup.timer` im systemd-Betrieb):
+
+| Datei | Quelle im Container |
+| --- | --- |
+| `config.yaml` (mit Zugangsdaten), `config_overrides.yaml` | `/app/config` |
+| `kalibrierung.yaml`, `kalibrierung_profil.yaml`, `savings_state.json` | `/app/data` |
+
+Ergebnis ist `data/backup/ems-config-<Datum>-<Zeit>.tar.gz`; die letzten 8
+bleiben, ältere werden gelöscht. Das Archiv enthält die Zugangsdaten aus
+`config.yaml` und ist deshalb nur für den Dienst-Benutzer lesbar (Modus 600) –
+auf dem Host also mit `sudo` oder als dieser Benutzer öffnen. Zurückspielen:
+Archiv entpacken, die beiden Config-Dateien nach `config/`, den Rest nach
+`data/`. Ein Lauf außer der Reihe:
+
+```bash
+docker compose exec scheduler /app/docker/scheduler-run.sh backup
+```
+
+`savings_state.json` ist nur dabei, wenn `savings.state_path` auf
+`/app/data/savings_state.json` zeigt (wie im Kopf von `docker-compose.yml`
+empfohlen).
+
+**Die Historie ist nicht enthalten.** `e3dc_history.sqlite` ist rund 2 GB groß
+und liegt ohnehin in `data/`. Wer sie mitsichern will, setzt am Dienst
+`scheduler` `EMS_BACKUP_DB: "1"`: dann entsteht zusätzlich eine konsistente
+Kopie `ems-history-<Datum>-<Zeit>.sqlite` (`VACUUM INTO`, ohne den Dienst
+anzuhalten), von der die letzten 2 bleiben – das Ziel braucht dafür etwa 6 GB
+frei. Erwartet wird die Historie unter `/app/data/e3dc_history.sqlite`
+(Schritt 2).
+
+**Ein Ziel außerhalb des Hosts ist sinnvoll.** `data/backup` liegt auf
+derselben Platte wie das Original und schützt nur vor versehentlichem Löschen
+oder Verkonfigurieren, nicht vor einem Platten- oder SD-Karten-Ausfall. Für ein
+NAS oder einen USB-Stick das Ziel einhängen und benennen:
+
+```yaml
+  scheduler:
+    environment:
+      TZ: Europe/Berlin
+      EMS_BACKUP_DIR: /backup
+      # EMS_BACKUP_DB: "1"      # zusätzlich die Historie
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - /mnt/nas/ems-backup:/backup
+```
+
+Das Ziel muss für den Dienst-Benutzer schreibbar sein (siehe
+[Ohne root](#ohne-root); Vorgabe 10001:10001) – ein eigenes Mount übergibt der
+Scheduler nicht von selbst.
 
 ## Nachmessen
 

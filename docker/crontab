@@ -11,3 +11,9 @@ PATH=/usr/local/bin:/usr/bin:/bin
 
 # Verbrauchs-/PV-/Pool-Kalibrierung – sonntags 03:00
 0 3 * * 0 root /app/docker/scheduler-run.sh kalibrierung >>/proc/1/fd/1 2>&1
+
+# Sicherung der kleinen, unversionierten Dateien (Config, Overlay,
+# Kalibrierprofile, Ersparnis-Status; OHNE Historie) nach /app/data/backup –
+# montags 03:30, die letzten 8 bleiben. Anderes Ziel: EMS_BACKUP_DIR am
+# scheduler-Dienst; Historie zusätzlich: EMS_BACKUP_DB=1 (docs/howto-docker.md).
+30 3 * * 1 root /app/docker/scheduler-run.sh backup >>/proc/1/fd/1 2>&1

@@ -172,12 +172,12 @@ def _verhaeltnisse(con, t0, t1, tz):
                 (t0.tz_convert("UTC").isoformat(), t1.tz_convert("UTC").isoformat()))}
 
 
-def _korrigiert(basis, angewandt, jetzt, p):
+def _korrigiert(basis, angewandt, jetzt, p, slot_minutes):
     if angewandt is None or not np.isfinite(angewandt):
         return basis
     f = intraday_factor_series(float(angewandt), basis.index, jetzt,
                                decay_hours=p["decay"], max_slots=p["slots"],
-                               slot_minutes=15)
+                               slot_minutes=slot_minutes)
     return basis * f.to_numpy(dtype=float)
 
 
@@ -210,17 +210,18 @@ def _ausfuehren(zeile, pv, haus, soc, hb, dt):
 def rechne_tag(cfg, con, tag, varianten, zeitlimit):
     tz = cfg.general.timezone
     heute = pd.Timestamp.now(tz=tz).normalize()
+    slot_min = int(cfg.general.slot_minutes)
     if pd.Timestamp(tag, tz=tz) == heute:
         from ems.planvalue import load_range
         # Heute bis zum letzten VOLLEN Slot - der interessante Teil liegt meist
         # schon hinter uns, und auf den ganzen Tag zu warten verschenkt Tage.
-        ist = load_range(cfg, heute, pd.Timestamp.now(tz=tz).floor("15min"))
+        ist = load_range(cfg, heute, pd.Timestamp.now(tz=tz).floor(f"{slot_min}min"))
     else:
         ist = load_day(cfg, tag)
     if ist is None:
         return None, "keine Ist-Daten"
     index = pd.DatetimeIndex(ist["index"])
-    t0, t1 = index[0], index[-1] + pd.Timedelta(minutes=15)
+    t0, t1 = index[0], index[-1] + pd.Timedelta(minutes=slot_min)
     laeufe = _laeufe(con, t0, t1, tz)
     if len(laeufe) < 0.8 * len(index):
         return None, f"nur {len(laeufe)} Laeufe fuer {len(index)} Slots"
@@ -258,9 +259,9 @@ def rechne_tag(cfg, con, tag, varianten, zeitlimit):
         ii = pd.DatetimeIndex(inp.index).tz_convert(tz)
         stand, archiv = read_optimizer_forecast_asof(
             db, ts + pd.Timedelta(minutes=10), ii[0],
-            ii[-1] + pd.Timedelta(minutes=15), tz)
+            ii[-1] + pd.Timedelta(minutes=slot_min), tz)
         if stand is None or not (ts <= pd.Timestamp(stand).tz_convert(tz)
-                                 < ts + pd.Timedelta(minutes=15)):
+                                 < ts + pd.Timedelta(minutes=slot_min)):
             fremd += 1
             archiv = None            # kein eigener Stand -> unkorrigiert lassen
         basis_je_lauf[ts] = (daten, archiv)
@@ -303,8 +304,8 @@ def rechne_tag(cfg, con, tag, varianten, zeitlimit):
                         continue
                     original = pd.Series(getattr(inp, feld), index=ii)
                     basis = pd.to_numeric(archiv[bfeld], errors="coerce").reindex(ii).fillna(original)
-                    variante = _korrigiert(basis, angewandt, jetzt, p)
-                    produktiv = _korrigiert(basis, angewandt_prod, jetzt, p_prod)
+                    variante = _korrigiert(basis, angewandt, jetzt, p, slot_min)
+                    produktiv = _korrigiert(basis, angewandt_prod, jetzt, p_prod, slot_min)
                     # Den laufenden Slot mischt der Betrieb teils mit dem
                     # Live-Messwert (am 24.09. um 12:00: 1107 W statt 2760).
                     # Die Variante wird deshalb ANTEILIG auf den archivierten

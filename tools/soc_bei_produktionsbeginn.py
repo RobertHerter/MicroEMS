@@ -34,8 +34,9 @@ from ems.local_history import (connect, read_actual,              # noqa: E402
                                read_load_temp)
 
 
-def _pool_energie(db: str, von, bis) -> float:
-    """Gemessene Pool-Energie (kWh) im Zeitraum, je Slot der Maximalwert."""
+def _pool_energie(db: str, von, bis, dt_hours: float) -> float:
+    """Gemessene Pool-Energie (kWh) im Zeitraum, je Slot der Maximalwert.
+    ``dt_hours`` ist die Slotlaenge der Anlage (general.dt_hours)."""
     con = connect(db)
     try:
         row = con.execute(
@@ -46,7 +47,7 @@ def _pool_energie(db: str, von, bis) -> float:
              pd.Timestamp(bis).tz_convert("UTC").isoformat())).fetchone()
     finally:
         con.close()
-    return (float(row[0]) * 0.25 / 1000.0) if row and row[0] else 0.0
+    return (float(row[0]) * dt_hours / 1000.0) if row and row[0] else 0.0
 
 
 def main() -> int:
@@ -59,6 +60,7 @@ def main() -> int:
 
     cfg = load_config(args.config)
     tz = cfg.general.timezone
+    dt = cfg.general.dt_hours         # Slotlaenge in h (W-Summe -> Wh)
     db = cfg.e3dc_rscp.history_db_path
     hb = cfg.house_battery
     min_pct = 100.0 * hb.min_soc_wh / max(1.0, hb.capacity_wh)
@@ -93,7 +95,7 @@ def main() -> int:
         nacht = (soc.index >= nacht_von) & (soc.index < beginn)
         g = (np.asarray(netz.reindex(soc.index[nacht]), dtype=float)
              if netz is not None else np.zeros(1))
-        bezug = float(np.nansum(np.maximum(0.0, g))) * 0.25 / 1000.0
+        bezug = float(np.nansum(np.maximum(0.0, g))) * dt / 1000.0
         temp = read_load_temp(db, "Pool", beginn - pd.Timedelta(minutes=30),
                               beginn + pd.Timedelta(minutes=30), tz)
         pt = (float(temp.dropna().iloc[0])
@@ -103,8 +105,8 @@ def main() -> int:
         bedarf = ("ja" if np.isfinite(pt) and pt < soll_c - 0.05
                   else "nein" if np.isfinite(pt) else "?")
         print(f"  {tag:%d.%m}   {beginn:%H:%M}{s_beg:5.0f}%{bezug:7.2f}k"
-              f"{_pool_energie(db, nacht_von, beginn):9.2f}k{pt:9.2f}C"
-              f"{bedarf:>8s}{float(np.nansum(tags)) * 0.25 / 1000:7.1f}k"
+              f"{_pool_energie(db, nacht_von, beginn, dt):9.2f}k{pt:9.2f}C"
+              f"{bedarf:>8s}{float(np.nansum(tags)) * dt / 1000:7.1f}k"
               f"{ungenutzt:10.2f}k")
     print("\n  ungenutzt = Energie über dem Mindest-SoC, die in den Tag "
           "mitgenommen wurde")

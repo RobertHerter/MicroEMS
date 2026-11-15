@@ -76,6 +76,7 @@ def main() -> int:
     basis = load_config(args.config)
     inp, gen, state = lade_eingaben(basis.e3dc_rscp.history_db_path, args.snapshot)
     tz = basis.general.timezone
+    dt = basis.general.dt_hours       # Slotlaenge in h (W-Summe -> Wh)
     lokal = inp.index.tz_convert(tz)
     verg = float(np.mean(inp.feedin_ct_kwh))
     print(f"Grundlage: Lauf {pd.Timestamp(gen).tz_convert(tz):%d.%m %H:%M}, "
@@ -116,11 +117,11 @@ def main() -> int:
             float(t["house_soc_wh"].iloc[-1]))
         print(f"  {pen:5.1f} {res.total_cost_ct / 100:8.3f} "
               f"{netto / 100:8.3f} "
-              f"{float(pool.sum()) * 0.25 / 1000:7.2f} kWh "
-              f"{float(pool[ist_nacht].sum()) * 0.25 / 1000:6.2f} kWh "
-              f"{float(pool[~ist_nacht].sum()) * 0.25 / 1000:6.2f} kWh "
+              f"{float(pool.sum()) * dt / 1000:7.2f} kWh "
+              f"{float(pool[ist_nacht].sum()) * dt / 1000:6.2f} kWh "
+              f"{float(pool[~ist_nacht].sum()) * dt / 1000:6.2f} kWh "
               f"{tmin:8.2f} C "
-              f"{float(t['grid_import_w'].sum()) * 0.25 / 1000:6.2f} kWh "
+              f"{float(t['grid_import_w'].sum()) * dt / 1000:6.2f} kWh "
               f"{dauer:6.0f} s{'  LIMIT' if res.solver_hit_limit else ''}",
               flush=True)
     return 0

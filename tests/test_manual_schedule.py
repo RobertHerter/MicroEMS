@@ -215,3 +215,66 @@ def test_store_uses_shared_wal_connection(tmp_path):
         assert con.execute("PRAGMA busy_timeout").fetchone()[0] >= 10000
     finally:
         con.close()
+
+
+def _running_plan(tmp_path, monkeypatch, action="discharge"):
+    """Läuft bereits; die SoC-Prüfung ist in jedem Tick fällig."""
+    from ems import manual_schedule
+    monkeypatch.setattr(manual_schedule, "_SOC_CHECK_SECONDS", 0.0)
+    cfg = make_config()
+    cfg.e3dc_rscp.history_db_path = str(tmp_path / "history.sqlite")
+    link = FakeLink(soc=50.0)
+    runner = ManualScheduleRunner(cfg, link)
+    row = runner.add({"action": action,
+                      "start": pd.Timestamp.now(tz=cfg.general.timezone).isoformat(),
+                      "watts": 2000, "duration_minutes": 30})
+    runner._tick()
+    assert runner.store.get(row["id"])["status"] == "running"
+    return runner, link, row
+
+
+def test_running_plan_survives_single_missing_soc(tmp_path, monkeypatch):
+    """Ein einzelner Lesefehler beendet einen laufenden Eingriff nicht."""
+    runner, link, row = _running_plan(tmp_path, monkeypatch)
+    answers = [None, {}, {"soc_percent": 50.0}, None, None]
+    link.read_live = lambda force=False: answers.pop(0)
+
+    for _ in range(5):          # 2 Fehler, 1 Treffer (Zähler zurück), 2 Fehler
+        runner._tick()
+
+    assert runner.store.get(row["id"])["status"] == "running"
+    assert [c[0] for c in link.calls] == ["discharge"]      # nie "auto"
+
+
+def test_running_plan_gives_up_after_repeated_missing_soc(tmp_path, monkeypatch):
+    """Ohne SoC ist die Entladegrenze nicht prüfbar: nach _SOC_MAX_MISSES
+    Fehlversuchen in Folge zurück auf Auto - als Fehler, nicht als erledigt."""
+    from ems import manual_schedule
+    runner, link, row = _running_plan(tmp_path, monkeypatch)
+    link.read_live = lambda force=False: None
+
+    for _ in range(manual_schedule._SOC_MAX_MISSES - 1):
+        runner._tick()
+    assert runner.store.get(row["id"])["status"] == "running"
+    runner._tick()
+
+    saved = runner.store.get(row["id"])
+    assert saved["status"] == "failed"
+    assert "SoC wiederholt nicht lesbar" in saved["note"]
+    assert link.calls[-1][0] == "auto"
+    assert runner._active_id is None
+
+
+def test_running_plan_still_stops_at_soc_limit(tmp_path, monkeypatch):
+    """Die eigentliche Grenzprüfung bleibt: Mindest-SoC erreicht -> beendet."""
+    runner, link, row = _running_plan(tmp_path, monkeypatch)
+    link.read_live = lambda force=False: None
+    runner._tick()                                   # ein Fehlversuch davor
+    link.read_live = lambda force=False: {
+        "soc_percent": runner.config.house_battery.min_soc_percent}
+    runner._tick()
+
+    saved = runner.store.get(row["id"])
+    assert saved["status"] == "completed"
+    assert "Mindest-SoC" in saved["note"]
+    assert link.calls[-1][0] == "auto"

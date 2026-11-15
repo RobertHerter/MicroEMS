@@ -114,3 +114,96 @@ def test_db_backup_handles_quote_in_target_path(tmp_path):
     res = _lauf(src, dest, EMS_BACKUP_DB="1")
     assert res.returncode == 0, res.stderr
     assert len(list(dest.glob("ems-history-*.sqlite"))) == 1
+
+
+def _inhalt(archiv: pathlib.Path) -> dict:
+    import tarfile
+    with tarfile.open(archiv) as tar:
+        return {m.name: tar.extractfile(m).read().decode() for m in tar.getmembers()}
+
+
+def test_backup_collects_files_from_two_directories(tmp_path):
+    """Docker: Config und Overlay liegen unter /app/config, Profile und
+    Ersparnis-Status unter /app/data. Je Dateiname zaehlt der erste Fundort,
+    das Archiv bleibt flach und nur fuer den Eigentuemer lesbar."""
+    config, data = tmp_path / "config", tmp_path / "data"
+    config.mkdir()
+    data.mkdir()
+    (config / "config.yaml").write_text("geheim: config\n")
+    (config / "config_overrides.yaml").write_text("overlay: 1\n")
+    (data / "kalibrierung.yaml").write_text("k: 1\n")
+    (data / "kalibrierung_profil.yaml").write_text("profil: 1\n")
+    (data / "savings_state.json").write_text("{}\n")
+    (data / "config.yaml").write_text("geheim: falscher-ort\n")   # verliert
+    dest = data / "backup"
+
+    res = _lauf(config, dest, EMS_SRC_EXTRA=str(data))
+
+    assert res.returncode == 0, res.stderr
+    archive = list(dest.glob("ems-config-*.tar.gz"))
+    assert len(archive) == 1
+    assert (archive[0].stat().st_mode & 0o777) == 0o600
+    inhalt = _inhalt(archive[0])
+    assert sorted(inhalt) == ["config.yaml", "config_overrides.yaml",
+                              "kalibrierung.yaml", "kalibrierung_profil.yaml",
+                              "savings_state.json"]
+    assert inhalt["config.yaml"] == "geheim: config\n"
+    assert not list(dest.glob("ems-history-*"))
+
+
+def test_backup_with_relative_source_directories(tmp_path):
+    """tar wertet ein relatives -C relativ zum vorigen -C aus - die Quellen
+    muessen deshalb absolut uebergeben werden."""
+    (tmp_path / "config").mkdir()
+    (tmp_path / "data").mkdir()
+    (tmp_path / "config" / "config.yaml").write_text("a: 1\n")
+    (tmp_path / "data" / "savings_state.json").write_text("{}\n")
+    res = subprocess.run(
+        ["bash", str(_SKRIPT), "ziel"], capture_output=True, text=True,
+        timeout=60, cwd=tmp_path,
+        env={**os.environ, "EMS_SRC": "config", "EMS_SRC_EXTRA": "data"})
+    assert res.returncode == 0, res.stderr
+    archiv = next((tmp_path / "ziel").glob("ems-config-*.tar.gz"))
+    assert sorted(_inhalt(archiv)) == ["config.yaml", "savings_state.json"]
+
+
+def test_single_source_directory_still_works_and_keeps_eight(tmp_path):
+    src = tmp_path / "ems"
+    src.mkdir()
+    (src / "config.yaml").write_text("a: 1\n")
+    dest = tmp_path / "ziel"
+    dest.mkdir()
+    for i in range(10):
+        alt = dest / f"ems-config-2026010{i}-000000.tar.gz"
+        alt.write_text("alt")
+        os.utime(alt, (1_700_000_000 + i, 1_700_000_000 + i))
+    res = _lauf(src, dest)
+    assert res.returncode == 0, res.stderr
+    assert len(list(dest.glob("ems-config-*.tar.gz"))) == 8
+    assert not (dest / "ems-config-20260100-000000.tar.gz").exists()
+
+
+def test_db_backup_falls_back_to_python_without_sqlite3_cli(tmp_path):
+    """Das Docker-Image bringt die sqlite3-CLI nicht mit, python3 aber immer."""
+    src = _quelle(tmp_path)
+    dest = tmp_path / "ziel"
+    werkzeuge = tmp_path / "bin"
+    werkzeuge.mkdir()
+    for name in ("bash", "python3", "tar", "gzip", "date", "ls", "tail",
+                 "xargs", "rm", "chmod", "mv", "mkdir", "sort", "head", "awk"):
+        pfad = shutil.which(name)
+        assert pfad, name
+        (werkzeuge / name).symlink_to(pfad)
+    res = subprocess.run(
+        [str(werkzeuge / "bash"), str(_SKRIPT), str(dest)],
+        capture_output=True, text=True, timeout=120,
+        env={"PATH": str(werkzeuge), "EMS_SRC": str(src), "EMS_BACKUP_DB": "1"})
+    assert res.returncode == 0, res.stderr
+    sicherungen = list(dest.glob("ems-history-*.sqlite"))
+    assert len(sicherungen) == 1
+    assert not list(dest.glob("*.teil"))
+    assert (sicherungen[0].stat().st_mode & 0o777) == 0o600
+    con = sqlite3.connect(sicherungen[0])
+    assert con.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert con.execute("SELECT COUNT(*) FROM live_samples").fetchone()[0] == 8000
+    con.close()
