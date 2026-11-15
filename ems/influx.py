@@ -81,10 +81,15 @@ class InfluxV1Backend(InfluxBackend):
             return f'"{self.database}"."{spec.retention_policy}"."{spec.measurement}"'
         return f'"{spec.measurement}"'
 
-    def _where(self, spec: SignalSpec, start: datetime, end: datetime) -> str:
+    def _where(self, spec: SignalSpec, start: datetime, end: datetime,
+               end_inclusive: bool = False) -> str:
+        """Zeitfenster + Tag-Filter. Vorgabe halboffen [start, end) wie Flux'
+        range() und der gesamte uebrige Code; ``end_inclusive`` nur fuer
+        "letzter Wert bis jetzt" (read_latest)."""
         start_ns = int(pd.Timestamp(start).tz_convert("UTC").value)
         end_ns = int(pd.Timestamp(end).tz_convert("UTC").value)
-        clauses = [f"time >= {start_ns} AND time <= {end_ns}"]
+        op = "<=" if end_inclusive else "<"
+        clauses = [f"time >= {start_ns} AND time {op} {end_ns}"]
         for k, v in spec.tags.items():
             clauses.append(f"\"{k}\"::tag = '{v}'")
         return " AND ".join(clauses)
@@ -93,6 +98,9 @@ class InfluxV1Backend(InfluxBackend):
         agg = spec.aggregation.lower()
         if agg not in _AGG_FUNCS:
             agg = "mean"
+        # Halboffen [start, end): mit "time <= end" lieferte ein Punkt genau
+        # auf der Slotgrenze `end` einen Zusatz-Bucket, den der v2-Pfad nicht
+        # kennt (read_slots_output gab ihn roh an die Drift-Pruefung weiter).
         q = (
             f'SELECT {agg}("{spec.field}") AS value FROM {self._from_clause(spec)} '
             f"WHERE {self._where(spec, start, end)} "
@@ -109,7 +117,8 @@ class InfluxV1Backend(InfluxBackend):
     def read_latest(self, spec, start, end):
         q = (
             f'SELECT last("{spec.field}") AS value FROM {self._from_clause(spec)} '
-            f"WHERE {self._where(spec, start, end)}"
+            # Skalar "letzter Wert bis jetzt": das Ende bleibt eingeschlossen.
+            f"WHERE {self._where(spec, start, end, end_inclusive=True)}"
         )
         pts = list(self.client.query(q, epoch="ns").get_points())
         return float(pts[-1]["value"]) if pts else None

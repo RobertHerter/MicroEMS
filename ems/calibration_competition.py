@@ -31,14 +31,140 @@ def _point_metrics(actual: pd.Series, predicted: pd.Series) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Niveaubereinigung (nur PV-Korrektur)
+# --------------------------------------------------------------------------- #
+# Ein PV-Korrekturprofil liefert Stundenfaktoren (Form ueber den Tag) plus ein
+# Niveau. Im 14-Tage-Pruefrahmen entscheidet in einer Truebphase sonst das
+# Niveau: Ist/Prognose liegt dann in ALLEN Stunden bei 0,6-0,7, und es gewinnt
+# das Profil, das zufaellig tiefer liegt - nicht das mit der richtigen
+# Zeitlage. Vor dem WAPE-Vergleich werden deshalb beide Reihen je Tag auf die
+# Ist-Energie gebracht; uebrig bleibt die Form.
+#
+# Kappung des Niveaufaktors: weiter als Faktor 4 daneben ist kein
+# Niveauunterschied mehr, sondern eine kaputte Reihe - die soll schlecht
+# abschneiden duerfen statt geradegezogen zu werden.
+LEVEL_FACTOR_BOUNDS = (0.25, 4.0)
+# Ein Tag bekommt nur dann seinen EIGENEN Faktor, wenn Ist und beide Prognosen
+# an ihm mindestens diesen Anteil der mittleren Tagesenergie des Rahmens
+# tragen (und genug Slots) - sonst ist Summe Ist / Summe Prognose eine
+# Division durch fast null. Solche Tage laufen mit dem Rahmenfaktor. Relativ
+# zum Rahmen statt in Watt, damit die Schwelle auf jeder Anlage und in jeder
+# Jahreszeit dasselbe bedeutet.
+LEVEL_DAY_MIN_SHARE = 0.2
+LEVEL_DAY_MIN_SLOTS = 4
+
+
+def _clip_level(value: float) -> float:
+    if not np.isfinite(value):
+        return 1.0
+    return float(min(LEVEL_FACTOR_BOUNDS[1],
+                     max(LEVEL_FACTOR_BOUNDS[0], value)))
+
+
+def level_adjust(actual: pd.Series, forecasts: dict, timezone: str,
+                 method: str = "per_day") -> tuple[dict, dict]:
+    """Prognosereihen auf das Ist-Niveau bringen (Form uebrig lassen).
+
+    ``forecasts`` ist {Name: Reihe} auf demselben Index wie ``actual`` (ohne
+    Luecken). Alle Reihen werden mit DERSELBEN Methode und - bei ``per_day`` -
+    auf DENSELBEN Tagen tageweise behandelt: ein Tag zaehlt nur dann als
+    eigenstaendig, wenn er das fuer jede Reihe ist.
+
+    ``method``: ``per_day`` (Faktor je lokalem Kalendertag, energiearme Tage
+    mit dem Rahmenfaktor) oder ``frame`` (ein Faktor ueber den ganzen Rahmen).
+    Rueckgabe: ({Name: skalierte Reihe}, Info).
+    """
+    if method not in ("per_day", "frame"):
+        raise ValueError(f"unbekannte Niveaumethode: {method}")
+    a = actual.astype(float)
+    a_total = float(a.sum())
+    days = pd.Index(a.index.tz_convert(timezone).date)
+    a_day = a.groupby(days).sum()
+    n_day = a.groupby(days).size()
+    n_days = int(len(a_day))
+    own = pd.Series(method == "per_day", index=a_day.index)
+    if method == "per_day" and n_days:
+        own &= n_day >= LEVEL_DAY_MIN_SLOTS
+        own &= a_day >= LEVEL_DAY_MIN_SHARE * a_total / n_days
+        for series in forecasts.values():
+            p_day = series.astype(float).groupby(days).sum()
+            own &= p_day >= LEVEL_DAY_MIN_SHARE * float(p_day.sum()) / n_days
+    scaled, info = {}, {
+        "method": method, "days": n_days, "days_own_factor": int(own.sum()),
+        "days_frame_factor": int(n_days - own.sum()),
+        "factor_bounds": list(LEVEL_FACTOR_BOUNDS),
+        "day_min_share": LEVEL_DAY_MIN_SHARE, "series": {}}
+    for name, series in forecasts.items():
+        p = series.astype(float)
+        p_total = float(p.sum())
+        frame_factor = _clip_level(
+            a_total / p_total if p_total > 1e-9 else float("nan"))
+        p_day = p.groupby(days).sum()
+        day_factor = pd.Series(frame_factor, index=a_day.index)
+        for day in a_day.index[own.to_numpy()]:
+            day_factor[day] = _clip_level(float(a_day[day] / p_day[day]))
+        scaled[name] = p * day_factor.reindex(days).to_numpy()
+        eigen = day_factor[own.to_numpy()]
+        info["series"][name] = {
+            "frame_factor": round(frame_factor, 4),
+            "day_factor_min": (
+                round(float(eigen.min()), 4) if len(eigen) else None),
+            "day_factor_max": (
+                round(float(eigen.max()), 4) if len(eigen) else None),
+        }
+    return scaled, info
+
+
+def _segment_table(frame: pd.DataFrame, timezone: str,
+                   min_samples: int) -> tuple[list, dict]:
+    """WAPE je Tagesabschnitt fuer ``champion``/``challenger`` in ``frame``."""
+    local = frame.index.tz_convert(timezone)
+    degradations = []
+    segments = {}
+    for low, high, name in _DAYPARTS:
+        mask = (local.hour >= low) & (local.hour < high)
+        if int(mask.sum()) < max(8, min_samples // 8):
+            continue
+        cm = _point_metrics(
+            frame.loc[mask, "actual"], frame.loc[mask, "champion"])
+        xm = _point_metrics(
+            frame.loc[mask, "actual"], frame.loc[mask, "challenger"])
+        degradation = (
+            float(xm["wape_pct"]) - float(cm["wape_pct"])
+            if cm["wape_pct"] is not None and xm["wape_pct"] is not None
+            else 0.0)
+        degradations.append(degradation)
+        segments[name] = {
+            "champion_wape_pct": cm["wape_pct"],
+            "challenger_wape_pct": xm["wape_pct"],
+            "degradation_pct": degradation,
+        }
+    return degradations, segments
+
+
 def compare_point_forecasts(
         actual: pd.Series, champion: pd.Series, challenger: pd.Series,
         timezone: str, min_samples: int = 96,
         min_improvement_percent: float = 1.0,
         max_segment_degradation_pct: float = 5.0,
         max_bias_increase_w: float = 75.0,
-        champion_available: bool = True) -> dict:
-    """Zwei korrigierte Punktprognosen auf demselben Holdout vergleichen."""
+        champion_available: bool = True,
+        level_adjusted: bool = False,
+        level_method: str = "per_day",
+        max_raw_wape_increase_pct: float | None = None) -> dict:
+    """Zwei korrigierte Punktprognosen auf demselben Holdout vergleichen.
+
+    ``level_adjusted`` (nur PV-Korrektur): Mindestvorsprung und Segmentschranke
+    werden auf den niveaubereinigten Reihen gemessen (siehe ``level_adjust``).
+    Auf den UNSKALIERTEN Reihen bleiben: Mindeststichprobe, Bias-Schranke und
+    zusaetzlich ``max_raw_wape_increase_pct`` - so viele Prozentpunkte darf der
+    unskalierte Gesamt-WAPE des Kandidaten hoechstens schlechter sein.
+    ``champion``/``challenger`` bleiben die unskalierten Kennzahlen, die
+    bereinigten stehen unter ``level_adjusted``. ``improvement_percent``,
+    ``segments`` und ``worst_segment_degradation_pct`` sind die entscheidenden
+    (bereinigten) Werte, die unskalierten heissen ``raw_*``.
+    """
     frame = pd.DataFrame({
         "actual": actual, "champion": champion, "challenger": challenger,
     }).dropna()
@@ -64,35 +190,21 @@ def compare_point_forecasts(
         return result
     improvement = 100.0 * (
         champion_wape - challenger_wape) / max(champion_wape, 1e-9)
-    local = frame.index.tz_convert(timezone)
-    degradations = []
-    segments = {}
-    for low, high, name in _DAYPARTS:
-        mask = (local.hour >= low) & (local.hour < high)
-        if int(mask.sum()) < max(8, min_samples // 8):
-            continue
-        cm = _point_metrics(
-            frame.loc[mask, "actual"], frame.loc[mask, "champion"])
-        xm = _point_metrics(
-            frame.loc[mask, "actual"], frame.loc[mask, "challenger"])
-        degradation = (
-            float(xm["wape_pct"]) - float(cm["wape_pct"])
-            if cm["wape_pct"] is not None and xm["wape_pct"] is not None
-            else 0.0)
-        degradations.append(degradation)
-        segments[name] = {
-            "champion_wape_pct": cm["wape_pct"],
-            "challenger_wape_pct": xm["wape_pct"],
-            "degradation_pct": degradation,
-        }
+    degradations, segments = _segment_table(frame, timezone, min_samples)
+    bias_increase = (
+        abs(float(challenger_metrics["bias_w"]))
+        - abs(float(champion_metrics["bias_w"])))
+    if level_adjusted:
+        return _decide_level_adjusted(
+            result, frame, timezone, min_samples, min_improvement_percent,
+            max_segment_degradation_pct, max_bias_increase_w, level_method,
+            max_raw_wape_increase_pct, improvement, degradations, segments,
+            bias_increase)
     # Qualifiziert sich kein Tagesabschnitt (zu wenige Punkte), greift die
     # Segmentschranke faktisch nicht. Das darf nicht still passieren - sonst
     # liest sich eine Befoerderung wie geprueft, obwohl sie es nicht ist.
     worst = max(degradations, default=0.0)
     segments_checked = len(degradations)
-    bias_increase = (
-        abs(float(challenger_metrics["bias_w"]))
-        - abs(float(champion_metrics["bias_w"])))
     promote = (
         improvement >= float(min_improvement_percent)
         and worst <= float(max_segment_degradation_pct)
@@ -123,6 +235,103 @@ def compare_point_forecasts(
         improvement_percent=round(improvement, 2),
         worst_segment_degradation_pct=round(worst, 2),
         segments=segments,
+    )
+    return result
+
+
+def _decide_level_adjusted(
+        result, frame, timezone, min_samples, min_improvement_percent,
+        max_segment_degradation_pct, max_bias_increase_w, level_method,
+        max_raw_wape_increase_pct, raw_improvement, degradations,
+        segments, bias_increase) -> dict:
+    """Entscheidung der PV-Korrektur: Form niveaubereinigt, Niveau roh.
+
+    Mindestvorsprung und Segmentschranke vergleichen WAPE-Werte und laufen
+    deshalb auf den bereinigten Reihen - unskaliert truege die Segmentschranke
+    genau den Niveaueffekt wieder ein, der herausgerechnet werden soll (in
+    einer Truebphase verliert der hoeher liegende Kandidat jeden Abschnitt).
+    Das NIVEAU des Kandidaten bleibt auf den Reihen geprueft, wie sie im
+    Betrieb ankaemen: Bias-Schranke und Obergrenze fuer den unskalierten WAPE.
+    """
+    champion_wape = float(result["champion"]["wape_pct"])
+    challenger_wape = float(result["challenger"]["wape_pct"])
+    scaled, info = level_adjust(
+        frame["actual"],
+        {"champion": frame["champion"], "challenger": frame["challenger"]},
+        timezone, method=level_method)
+    adjusted = pd.DataFrame({
+        "actual": frame["actual"], "champion": scaled["champion"],
+        "challenger": scaled["challenger"]})
+    cm = _point_metrics(adjusted["actual"], adjusted["champion"])
+    xm = _point_metrics(adjusted["actual"], adjusted["challenger"])
+    improvement = 100.0 * (
+        float(cm["wape_pct"]) - float(xm["wape_pct"])
+    ) / max(float(cm["wape_pct"]), 1e-9)
+    adjusted_degradations, adjusted_segments = _segment_table(
+        adjusted, timezone, min_samples)
+    worst = max(adjusted_degradations, default=0.0)
+    segments_checked = len(adjusted_degradations)
+    raw_worst = max(degradations, default=0.0)
+    raw_increase = challenger_wape - champion_wape
+    raw_limit = (None if max_raw_wape_increase_pct is None
+                 else float(max_raw_wape_increase_pct))
+    paar = (f"niveaubereinigt {xm['wape_pct']:.2f} statt "
+            f"{cm['wape_pct']:.2f}, unskaliert {challenger_wape:.2f} statt "
+            f"{champion_wape:.2f}")
+    promote = (
+        improvement >= float(min_improvement_percent)
+        and worst <= float(max_segment_degradation_pct)
+        and bias_increase <= float(max_bias_increase_w)
+        and (raw_limit is None or raw_increase <= raw_limit)
+    )
+    if improvement < float(min_improvement_percent):
+        reason = (
+            f"Verbesserung {improvement:+.1f} % unter Mindestvorsprung "
+            f"{float(min_improvement_percent):.1f} % ({paar})")
+    elif worst > float(max_segment_degradation_pct):
+        reason = (
+            f"Teilzeitraum verschlechtert sich niveaubereinigt um "
+            f"{worst:.1f} Prozentpunkte ({paar})")
+    elif bias_increase > float(max_bias_increase_w):
+        reason = (f"absoluter Bias steigt unskaliert um "
+                  f"{bias_increase:.0f} W ({paar})")
+    elif raw_limit is not None and raw_increase > raw_limit:
+        reason = (
+            f"unskalierter WAPE steigt um {raw_increase:.1f} Prozentpunkte "
+            f"(Grenze {raw_limit:.1f}; {paar})")
+    else:
+        reason = f"WAPE verbessert sich um {improvement:.1f} % ({paar})"
+        if not segments_checked:
+            reason += " (kein Tagesabschnitt prüfbar - Segmentschranke inaktiv)"
+    info["champion"] = {**info["series"].pop("champion"), **cm}
+    info["challenger"] = {**info["series"].pop("challenger"), **xm}
+    info.pop("series")
+    info.update(
+        improvement_percent=round(improvement, 2),
+        worst_segment_degradation_pct=round(worst, 2),
+        segments=adjusted_segments)
+    result.update(
+        promote=bool(promote),
+        comparison="level_adjusted",
+        segments_checked=segments_checked,
+        segment_guard=guard_report(
+            "segment_degradation", segments_checked,
+            skipped=len(_DAYPARTS) - segments_checked,
+            detail=f"max. Verschlechterung {worst:.1f} pp (niveaubereinigt)"),
+        status="promoted" if promote else "held",
+        reason=reason,
+        # Die ENTSCHEIDENDEN Werte (niveaubereinigt); die unskalierten
+        # Gegenstuecke stehen daneben, damit beide Zahlenpaare nachlesbar sind.
+        improvement_percent=round(improvement, 2),
+        worst_segment_degradation_pct=round(worst, 2),
+        segments=adjusted_segments,
+        raw_improvement_percent=round(raw_improvement, 2),
+        raw_wape_increase_pct=round(raw_increase, 2),
+        max_raw_wape_increase_pct=raw_limit,
+        raw_worst_segment_degradation_pct=round(raw_worst, 2),
+        raw_segments=segments,
+        bias_increase_w=round(float(bias_increase), 1),
+        level_adjusted=info,
     )
     return result
 

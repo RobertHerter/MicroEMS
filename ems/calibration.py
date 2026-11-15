@@ -57,6 +57,30 @@ def pv_profile_for_source(profile: Optional[dict], source: Optional[str],
     return profile
 
 
+def pv_profile_log_text(profile: Optional[dict], applied: Optional[dict],
+                        selected: str, fallback_owner: str,
+                        path: str) -> Optional[str]:
+    """Logzeile zum PV-Korrekturprofil dieses Zyklus (None = kein Profil).
+
+    Genannt wird die Quelle, deren Profil tatsaechlich angewandt wurde - die
+    GEWAEHLTE (``selected``), nicht die konfigurierte Standardquelle. Vorher
+    stand dort "solcast", auch wenn pvlib gewaehlt war und dessen Profil
+    gerechnet wurde. ``fallback_owner`` ist nur noch der Besitzer eines alten,
+    flachen Profils ohne ``pv_sources``.
+    """
+    if applied:
+        return f"PV-Kalibrierprofil für {selected} angewandt ({path})."
+    if not profile:
+        return None
+    je_quelle = profile.get("pv_sources")
+    if isinstance(je_quelle, dict) and je_quelle:
+        vorhanden = ", ".join(str(name) for name in je_quelle)
+        return (f"PV-Kalibrierprofil hat keinen Eintrag für {selected} "
+                f"(vorhanden: {vorhanden}) und wird nicht angewandt.")
+    return (f"PV-Kalibrierprofil gehört zu {fallback_owner} und wird auf "
+            f"{selected} nicht angewandt.")
+
+
 def _get(d: dict, key):
     """Holt Wert aus dict, egal ob Schlüssel int oder str ist."""
     if d is None:

@@ -409,7 +409,10 @@ Der Container `ems` führt den regulären 15-Minuten-Loop aus. `scheduler`
 ersetzt die systemd-Timer und startet über [docker/crontab](docker/crontab):
 
 - täglich um 02:45 Uhr die Ersparnis-Validierung,
-- sonntags um 03:00 Uhr die Verbrauchs-, PV- und Pool-Kalibrierung.
+- sonntags um 03:00 Uhr die Verbrauchs-, PV- und Pool-Kalibrierung,
+- montags um 03:30 Uhr die Sicherung der Config-Dateien nach `data/backup`
+  (ohne Historie; Einzelheiten und externes Ziel:
+  [docs/howto-docker.md](docs/howto-docker.md#sicherung)).
 
 #### 4. Von systemd auf Docker umsteigen
 
