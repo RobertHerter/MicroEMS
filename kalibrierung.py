@@ -138,8 +138,48 @@ def _pv_source_summary(res: dict, rolle: str, entscheid: dict) -> dict:
         "hourly": res.get("hourly"),
         "monthly": res.get("monthly"),
         "promotion": {k: entscheid.get(k)
-                      for k in ("promote", "status", "reason", "n")},
+                      for k in ("promote", "status", "reason", "n",
+                                "improvement_percent",
+                                "raw_improvement_percent")},
     }
+
+
+def _pv_level_options(cc) -> dict:
+    """Optionen des niveaubereinigten Vergleichs der PV-Korrektur.
+
+    Je Tag bereinigt (reine Form). Der unskalierte Gesamt-WAPE des Kandidaten
+    darf dabei hoechstens so viele Prozentpunkte schlechter sein, wie die
+    Segmentschranke einem einzelnen Tagesabschnitt zugesteht - dieselbe
+    konfigurierte Grenze, keine zweite Stellschraube.
+    """
+    return {"level_adjusted": True, "level_method": "per_day",
+            "max_raw_wape_increase_pct": float(
+                cc.promotion_max_segment_degradation_pct)}
+
+
+def _level_text(decision: dict) -> Optional[str]:
+    """Beide Zahlenpaare einer niveaubereinigten Entscheidung als Logzeile.
+
+    None, wenn die Entscheidung nicht niveaubereinigt fiel (Last, PV-Band,
+    zu wenig Daten, erster Stand).
+    """
+    info = (decision or {}).get("level_adjusted")
+    if not isinstance(info, dict):
+        return None
+    roh_c = (decision.get("champion") or {}).get("wape_pct")
+    roh_k = (decision.get("challenger") or {}).get("wape_pct")
+    ber_c = (info.get("champion") or {}).get("wape_pct")
+    ber_k = (info.get("challenger") or {}).get("wape_pct")
+    if None in (roh_c, roh_k, ber_c, ber_k):
+        return None
+    return (
+        f"WAPE Champion/Kandidat unskaliert {roh_c:.2f}/{roh_k:.2f} "
+        f"({decision.get('raw_improvement_percent', float('nan')):+.1f} %), "
+        f"niveaubereinigt {ber_c:.2f}/{ber_k:.2f} "
+        f"({info.get('improvement_percent', float('nan')):+.1f} %; "
+        f"{info.get('days_own_factor', 0)}/{info.get('days', 0)} Tage mit "
+        f"eigenem Faktor); Bias "
+        f"{decision.get('bias_increase_w', float('nan')):+.0f} W")
 
 
 def pv_source_groups(cfg) -> dict:
@@ -342,10 +382,178 @@ def _issue_time_archive_reader(cfg):
     return read
 
 
+def _correction_profile(cfg, combined: dict, archive_combined: dict,
+                        bootstrap_method, archive_method,
+                        archive_weight: float) -> dict:
+    """Korrekturprofil der Last (global + je Stunde) aus Backtest-Paaren.
+
+    ``combined``/``archive_combined``: {Methode: Rahmen mit a/p} der
+    Bootstrap- bzw. Archiv-Folds. Das Startprofil wird konservativ zur globalen
+    Korrektur geschrumpft; echte Archivdaten ersetzen es linear mit
+    ``archive_weight``.
+    """
+    bootstrap_best = combined[bootstrap_method]
+    bootstrap_global = float(
+        bootstrap_best["a"].sum() / bootstrap_best["p"].sum())
+    bootstrap_hourly = _factor_table(
+        bootstrap_best["a"], bootstrap_best["p"],
+        lambda i: i.tz_convert(cfg.general.timezone).hour)
+    archive_global = bootstrap_global
+    archive_hourly = {}
+    if archive_method is not None:
+        archive_best = archive_combined[archive_method]
+        archive_global = float(
+            archive_best["a"].sum() / archive_best["p"].sum())
+        archive_hourly = _factor_table(
+            archive_best["a"], archive_best["p"],
+            lambda i: i.tz_convert(cfg.general.timezone).hour)
+
+    # Startprofil konservativ zur globalen Korrektur schrumpfen. Echte
+    # Archivdaten ersetzen es linear bis zum sechsten vollständigen Wochenfold.
+    productive_hourly = {}
+    for hour in range(24):
+        boot_raw = float(bootstrap_hourly.get(hour, bootstrap_global))
+        boot = bootstrap_global + 0.5 * (boot_raw - bootstrap_global)
+        real = float(archive_hourly.get(hour, archive_global))
+        factor = (1.0 - archive_weight) * boot + archive_weight * real
+        low, high = BOUNDS["hourly_correction"]
+        productive_hourly[hour] = round(min(high, max(low, factor)), 3)
+    productive_global = ((1.0 - archive_weight) * bootstrap_global
+                         + archive_weight * archive_global)
+    return {
+        "bootstrap_global_correction": round(bootstrap_global, 4),
+        "archive_global_correction": (
+            round(archive_global, 4) if archive_method is not None else None),
+        "global_correction": round(productive_global, 4),
+        "bootstrap_hourly_correction": bootstrap_hourly,
+        "archive_hourly_correction": archive_hourly,
+        "hourly_correction": productive_hourly,
+    }
+
+
+def _best_method(frames_by_method: dict):
+    """Methode mit dem kleinsten WAPE ueber ihre Paare (None ohne Paare)."""
+    if not frames_by_method:
+        return None
+    return min(frames_by_method,
+               key=lambda m: _wape(frames_by_method[m]["a"].values,
+                                   frames_by_method[m]["p"].values))
+
+
+def _candidate_profile_before(cfg, collected: dict, archived: dict,
+                              n_origins: int, min_actual_slots: int,
+                              cutoff) -> dict:
+    """Lastprofil des KANDIDATEN: nur aus Paaren mit Zielzeit vor ``cutoff``.
+
+    ``cutoff`` ist der Beginn des Befoerderungsrahmens. Die juengsten Folds der
+    Validierung reichen in die Prueftage hinein - ein daraus gelerntes Profil
+    waere auf genau den Tagen angepasst, auf denen es gegen den Champion
+    antritt (optimistisch zugunsten des Kandidaten). Hier wird deshalb
+    dieselbe Rechnung wie fuer das Gesamtprofil wiederholt, aber mit Paaren
+    ausschliesslich vor dem Rahmen; auch die Methodenwahl sieht nur diese.
+
+    Ein Archiv-Fold zaehlt fuer das Archivgewicht nur, wenn nach dem Schnitt
+    noch 90 % seines Horizonts uebrig sind (dieselbe Schwelle wie beim
+    Auswerten eines Folds); seine restlichen Paare werden trotzdem genutzt.
+    Rueckgabe immer ein Dict; ohne ``hourly_correction`` gibt es keinen
+    Kandidaten (``reason`` nennt den Grund).
+    """
+    cutoff = pd.Timestamp(cutoff)
+
+    def davor(frames):
+        return [f[f.index < cutoff] for f in frames]
+
+    def verbinden(by_method):
+        out = {}
+        for method, frames in by_method.items():
+            frames = [f for f in davor(frames) if len(f)]
+            if frames and float(pd.concat(frames)["p"].sum()) > 1e-6:
+                out[method] = pd.concat(frames)
+        return out
+
+    def paare(by_method):
+        return max((sum(len(f) for f in frames)
+                    for frames in by_method.values()), default=0)
+
+    combined = verbinden(collected)
+    archive_combined = verbinden(archived)
+    archive_folds = max(
+        (sum(1 for f in davor(frames) if len(f) >= min_actual_slots)
+         for frames in archived.values()), default=0)
+    gesamt = paare(collected) + paare(archived)
+    info = {
+        "trained_before": cutoff.isoformat(),
+        "pairs_total": int(gesamt),
+        "archive_folds": int(archive_folds),
+        "archive_folds_total": int(max(
+            (len(frames) for frames in archived.values()), default=0)),
+    }
+    if not combined:
+        info.update(pairs=0, pairs_excluded=int(gesamt),
+                    reason="keine Lernpaare vor dem Prüfrahmen")
+        return info
+    min_archive_folds = min(6, max(1, int(n_origins)))
+    if not archive_combined:
+        archive_folds = 0
+    archive_weight = min(1.0, archive_folds / float(min_archive_folds))
+    bootstrap_method = _best_method(combined)
+    archive_method = _best_method(archive_combined)
+    genutzt = (len(combined[bootstrap_method])
+               + (len(archive_combined[archive_method])
+                  if archive_method is not None else 0))
+    alle = (sum(len(f) for f in collected[bootstrap_method])
+            + (sum(len(f) for f in archived[archive_method])
+               if archive_method is not None else 0))
+    info.update(
+        pairs=int(genutzt), pairs_excluded=int(alle - genutzt),
+        archive_folds=int(archive_folds),
+        archive_min_folds=int(min_archive_folds),
+        archive_weight=round(archive_weight, 3),
+        bootstrap_method=bootstrap_method, archive_method=archive_method,
+        correction_profile_source=(
+            "issue_time_archive" if archive_folds >= min_archive_folds else
+            "hybrid" if archive_folds else "historical_bootstrap"))
+    info.update(_correction_profile(
+        cfg, combined, archive_combined, bootstrap_method, archive_method,
+        archive_weight))
+    return info
+
+
+def _candidate_log_text(kandidat: dict) -> str:
+    """Logzeile: womit der Lastkandidat gelernt wurde - oder warum es keinen
+    gibt (dann bleibt der Champion)."""
+    vor = pd.Timestamp(kandidat["trained_before"])
+    if not kandidat.get("hourly_correction"):
+        return (f"  [Hinweis] Lastkorrektur: {kandidat.get('reason')} "
+                f"({vor:%d.%m.%Y %H:%M}) - kein Kandidat, Champion bleibt.")
+    return (f"  Lastkorrektur-Kandidat: gelernt nur mit Zielzeiten vor "
+            f"{vor:%d.%m.%Y %H:%M} ({kandidat.get('pairs', 0)} Paare, "
+            f"{kandidat.get('pairs_excluded', 0)} aus dem Pruefrahmen "
+            f"entfernt; Archiv-Folds {kandidat.get('archive_folds', 0)}/"
+            f"{kandidat.get('archive_folds_total', 0)}, Mindestzahl "
+            f"{kandidat.get('archive_min_folds', 0)}, Profil "
+            f"{kandidat.get('correction_profile_source', '?')}).")
+
+
+def _load_candidate_source(validation) -> dict:
+    """Woraus das Lastprofil des Kandidaten gelesen wird.
+
+    Mit ``promotion_candidate`` (Lern- und Prueftage getrennt) nur daraus -
+    auch dann, wenn es leer ausfiel: lieber kein Kandidat als einer, der die
+    Prueftage gesehen hat. Ohne das Feld (Aufruf ohne ``profile_before``) wie
+    bisher das Gesamtprofil der Validierung.
+    """
+    if not validation:
+        return {}
+    if "promotion_candidate" in validation:
+        return validation.get("promotion_candidate") or {}
+    return validation
+
+
 def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
                              folds: int = 12, horizon_hours: int = 48,
                              min_train_days: int = 60,
-                             archive_reader=None):
+                             archive_reader=None, profile_before=None):
     """Rolling-Origin-Backtest der Verbrauchsprognose, wie der Live-Betrieb
     sie nutzt zwei leakage-freie Ebenen: `folds` Startpunkte gleichmäßig über
     die Historie verteilt als konservativen Bootstrap ohne Zukunfts-Wetter/PV
@@ -358,7 +566,13 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
     "empfehlung": Methode mit kleinerem Gesamt-WAPE} oder None (zu wenig
     Daten). Der einfache Hold-out in calibrate_load bleibt daneben bestehen
     (er liefert die Korrekturfaktoren); diese Validierung beantwortet die
-    Modellwahl-Frage."""
+    Modellwahl-Frage.
+
+    ``profile_before``: Beginn des Befoerderungsrahmens. Ist er gesetzt,
+    entsteht zusaetzlich ``promotion_candidate`` - dasselbe Korrekturprofil,
+    aber nur aus Paaren mit Zielzeit VOR diesem Zeitpunkt gelernt (siehe
+    ``_candidate_profile_before``). Alle uebrigen Felder bleiben unveraendert.
+    """
     tz = cfg.general.timezone
     horizon_slots = int(round(
         horizon_hours * 60.0 / cfg.general.slot_minutes))
@@ -495,44 +709,16 @@ def validate_forecast_series(cfg, hist: pd.Series, temp, pv, now,
     res["archive_empfehlung"] = archive_method
     res["empfehlung"] = archive_method if compatible else bootstrap_method
 
-    bootstrap_best = combined[bootstrap_method]
-    bootstrap_global = float(
-        bootstrap_best["a"].sum() / bootstrap_best["p"].sum())
-    bootstrap_hourly = _factor_table(
-        bootstrap_best["a"], bootstrap_best["p"],
-        lambda i: i.tz_convert(cfg.general.timezone).hour)
-    archive_global = bootstrap_global
-    archive_hourly = {}
-    if archive_method is not None:
-        archive_best = archive_combined[archive_method]
-        archive_global = float(
-            archive_best["a"].sum() / archive_best["p"].sum())
-        archive_hourly = _factor_table(
-            archive_best["a"], archive_best["p"],
-            lambda i: i.tz_convert(cfg.general.timezone).hour)
-
-    # Startprofil konservativ zur globalen Korrektur schrumpfen. Echte
-    # Archivdaten ersetzen es linear bis zum sechsten vollständigen Wochenfold.
-    productive_hourly = {}
-    for hour in range(24):
-        boot_raw = float(bootstrap_hourly.get(hour, bootstrap_global))
-        boot = bootstrap_global + 0.5 * (boot_raw - bootstrap_global)
-        real = float(archive_hourly.get(hour, archive_global))
-        factor = (1.0 - archive_weight) * boot + archive_weight * real
-        low, high = BOUNDS["hourly_correction"]
-        productive_hourly[hour] = round(min(high, max(low, factor)), 3)
-    productive_global = ((1.0 - archive_weight) * bootstrap_global
-                         + archive_weight * archive_global)
-    res["bootstrap_global_correction"] = round(bootstrap_global, 4)
-    res["archive_global_correction"] = (
-        round(archive_global, 4) if archive_method is not None else None)
-    res["global_correction"] = round(productive_global, 4)
-    res["bootstrap_hourly_correction"] = bootstrap_hourly
-    res["archive_hourly_correction"] = archive_hourly
-    res["hourly_correction"] = productive_hourly
+    res.update(_correction_profile(
+        cfg, combined, archive_combined, bootstrap_method, archive_method,
+        archive_weight))
     res["correction_profile_source"] = (
         "issue_time_archive" if compatible else
         "hybrid" if archived_folds else "historical_bootstrap")
+    if profile_before is not None:
+        res["promotion_candidate"] = _candidate_profile_before(
+            cfg, collected, archived, len(origins), min_actual_slots,
+            profile_before)
     return res
 
 
@@ -929,7 +1115,10 @@ def main():
             validation = validate_forecast_series(
                 cfg, v_hist, v_temp, v_pv, now,
                 folds=args.val_folds, horizon_hours=args.val_horizon_h,
-                archive_reader=archiv_leser)
+                archive_reader=archiv_leser,
+                profile_before=_promotion_origins(
+                    now, cfg.general.timezone,
+                    cfg.calibration.promotion_days)[0])
     finally:
         repo.close()
 
@@ -942,23 +1131,29 @@ def main():
     candidate_profile = {"generated": now.isoformat()}
     if pv:
         candidate_profile.update(_pv_factors(pv))
-    rolling_hourly = (validation or {}).get("hourly_correction")
+    # Der Kandidat lernt nur aus Paaren VOR dem Befoerderungsrahmen; genau
+    # dieses gepruefte Profil wird bei Erfolg auch geschrieben.
+    lastkandidat = _load_candidate_source(validation)
+    rolling_hourly = lastkandidat.get("hourly_correction")
     if rolling_hourly:
         candidate_profile["load_hourly"] = {
             int(h): round(float(min(1.8, max(0.6, factor))), 3)
             for h, factor in rolling_hourly.items()}
         candidate_profile["load_global"] = float(
-            validation.get("global_correction", 1.0))
-        candidate_profile["load_profile_source"] = validation.get(
+            lastkandidat.get("global_correction", 1.0))
+        candidate_profile["load_profile_source"] = lastkandidat.get(
             "correction_profile_source", "historical_bootstrap")
-        candidate_profile["load_archive_folds"] = int(validation.get(
+        candidate_profile["load_archive_folds"] = int(lastkandidat.get(
             "archive_folds", 0))
-        candidate_profile["load_archive_min_folds"] = int(validation.get(
+        candidate_profile["load_archive_min_folds"] = int(lastkandidat.get(
             "archive_min_folds", 6))
-        candidate_profile["load_archive_weight"] = float(validation.get(
+        candidate_profile["load_archive_weight"] = float(lastkandidat.get(
             "archive_weight", 0.0))
+    if lastkandidat.get("trained_before"):
+        print(_candidate_log_text(lastkandidat))
 
-    def _point_decision(frame, champion, challenger, available):
+    def _point_decision(frame, champion, challenger, available,
+                        niveaubereinigt=False):
         if frame is None or frame.empty:
             return {
                 "n": 0, "promote": False, "status": "insufficient",
@@ -970,7 +1165,8 @@ def main():
             max_segment_degradation_pct=(
                 cc.promotion_max_segment_degradation_pct),
             max_bias_increase_w=cc.promotion_max_bias_increase_w,
-            champion_available=available)
+            champion_available=available,
+            **(_pv_level_options(cc) if niveaubereinigt else {}))
         if not cc.champion_challenger_enabled:
             decision.update(
                 promote=True, status="disabled",
@@ -993,7 +1189,7 @@ def main():
                 pv_frame["raw"], previous_profile, cfg.general.timezone),
             apply_pv_correction(
                 pv_frame["raw"], candidate_profile, cfg.general.timezone),
-            pv_available)
+            pv_available, niveaubereinigt=True)
     elif pv:
         pv_competition["reason"] = (
             f"Challenger-Training "
@@ -1004,7 +1200,7 @@ def main():
     load_available = bool(previous_profile.get("load_hourly"))
     load_competition = {
         "n": 0, "promote": False, "status": "insufficient",
-        "reason": "kein Last-Challenger"}
+        "reason": lastkandidat.get("reason") or "kein Last-Challenger"}
     if (load_frame is not None and not load_frame.empty
             and candidate_profile.get("load_hourly")):
         load_competition = _point_decision(
@@ -1014,6 +1210,9 @@ def main():
             apply_load_profile(
                 load_frame["raw"], candidate_profile, cfg.general.timezone),
             load_available)
+        if lastkandidat.get("trained_before"):
+            load_competition["candidate_trained_before"] = lastkandidat[
+                "trained_before"]
 
     # --- Korrekturprofil je Quellgruppe -----------------------------------
     # Jede Quelle bekommt ihr eigenes Profil und ihre eigene Champion-/
@@ -1047,7 +1246,7 @@ def main():
                                     cfg.general.timezone),
                 apply_pv_correction(_rahmen["raw"], _kandidat,
                                     cfg.general.timezone),
-                bool(_champion))
+                bool(_champion), niveaubereinigt=True)
         quellen_wettbewerb[_name] = _entscheid
         if _entscheid.get("promote") or not _champion:
             quellen_profile[_name] = _kandidat
@@ -1221,6 +1420,8 @@ def main():
         print(f"  {labels.get(name, name):<16} {verdict:<20} "
               f"n={int(decision.get('n', 0)):>4} · "
               f"{decision.get('reason', '–')}")
+        if name == "pv_correction" and _level_text(decision):
+            print(f"  {'':<16} {_level_text(decision)}")
     if quellen_wettbewerb:
         print("  PV-Korrektur je Quelle (Grundlage des Quellenvergleichs):")
         for name, decision in quellen_wettbewerb.items():
@@ -1232,6 +1433,9 @@ def main():
             faktor = (quellen_profile.get(name) or {}).get("pv_global", "–")
             print(f"    {name + rolle:<14} {verdict:<20} "
                   f"n={int(decision.get('n', 0)):>4} · global={faktor}")
+            if name != pv_aktiv and _level_text(decision):
+                print(f"    {'':<14} {decision.get('reason', '–')}")
+                print(f"    {'':<14} {_level_text(decision)}")
 
     out = {
         "generated": now.isoformat(),

@@ -82,6 +82,45 @@ Bericht unter `load_forecast`: `promotion_method` (`rolling_origin` oder
 `holdout_fallback`), `promotion_origins_valid`, `promotion_origins_archive`
 und `promotion_origins_skipped`. Kosten: 14 zusätzliche Trainings je Lauf.
 
+**Lern- und Prüftage der Lastkorrektur sind getrennt.** Das Kandidatenprofil
+stammt aus der Rolling-Origin-Validierung (nächster Absatz). Deren jüngste
+Folds reichen in die 14 Prüftage hinein – ein daraus gelerntes Profil wäre
+teilweise auf genau den Tagen angepasst, auf denen es gegen den Champion
+antritt, und hätte damit einen eingebauten Vorteil. Der Kandidat wird deshalb
+ein zweites Mal gerechnet, mit derselben Formel, aber nur aus Paaren, deren
+**Zielzeit vor dem Beginn des Beförderungsrahmens** liegt (00:00 Ortszeit des
+ersten Prüftags; geschnitten wird am Paar, nicht am Fold – ein Fold, der in den
+Rahmen ragt, liefert seine frühen Stunden weiter). Auch die Wahl der Methode
+sieht nur diese Paare.
+
+- Dem Kandidaten fehlen damit die jüngsten rund zwei Wochen: von 12 Wochenfolds
+  bleiben 9–10 vollständig (ein Fold zählt für das Archivgewicht nur, wenn nach
+  dem Schnitt noch 90 % seines Horizonts übrig sind), dazu die Bootstrap-Folds
+  ohne den jüngsten. Die Mindestzahl von 6 Archivfolds bleibt erreicht. Auf
+  einer jungen Anlage mit weniger Archiv sinkt das Archivgewicht des Kandidaten
+  entsprechend, das Profil lehnt sich stärker an den geschrumpften Bootstrap.
+- Bleibt vor dem Rahmen gar nichts übrig, gibt es **keinen Kandidaten**: Im Log
+  steht `[Hinweis] Lastkorrektur: keine Lernpaare vor dem Prüfrahmen … kein
+  Kandidat, Champion bleibt`. Auf das Gesamtprofil wird nicht zurückgefallen.
+- **Geschrieben wird genau das geprüfte Profil.** Nach bestandener Prüfung wird
+  *nicht* mit allen Daten neu gelernt: Das wäre ein Profil, das nie gegen den
+  Champion angetreten ist – eine ungeprüfte Änderung im Betrieb. Der Preis ist,
+  dass das produktive Profil die letzten zwei Wochen nicht kennt; sie fließen
+  eine bzw. zwei Wochen später ein.
+- Im Log: `Lastkorrektur-Kandidat: gelernt nur mit Zielzeiten vor 01.11.2026
+  00:00 (4009 Paare, 599 aus dem Pruefrahmen entfernt; Archiv-Folds 9/12 …)`.
+  Im Bericht unter `forecast_validation.promotion_candidate` (Schnitt,
+  Paarzahlen, Faktoren) und unter
+  `calibration_competition.signals.load_correction.candidate_trained_before`.
+  Die Felder `forecast_validation.hourly_correction` und `global_correction`
+  bleiben das Profil aus **allen** Folds – nur zur Ansicht und für die
+  Handempfehlung `forecast.correction_factor`; befördert wird daraus nichts.
+
+Gemessen am 15.11.2026: Entscheidung unverändert „Champion halten“
+(Verbesserung −5,7 % mit, −5,4 % ohne Prüftage, n = 1343). Ein optimistischer
+Vorteil des alten Kandidaten war in diesem Rahmen nicht zu sehen; die Trennung
+ist trotzdem die saubere Prüfung.
+
 **Rolling-Origin-Validierung**, 12 Folds à 48 h, roh ohne Korrekturen, `ml`
 gegen `similar_days`. Aufgeschlüsselt nach Tageszeit, Wochentag und Jahreszeit,
 mit einer Empfehlung für `forecast.method`.
@@ -102,6 +141,75 @@ PV-Korrektur     CHAMPION HALTEN      n= 841 · Verbesserung -11.1 % unter Minde
 Lastkorrektur    ÜBERNEHMEN           n=1336 · WAPE verbessert sich um 2.0 %
 PV-Band          NOCH NICHT BEWERTBAR n= 175 · zu wenig getrennte Residuen
 ```
+
+**Die PV-Korrektur wird niveaubereinigt verglichen.** Ein PV-Profil liefert
+Stundenfaktoren (die Form über den Tag) und ein Niveau. Im 14-Tage-Rahmen
+entscheidet in einer Trübphase sonst das Niveau: Vom 01. bis 15.11.2026 lag
+Ist/Prognose in allen Kernstunden bei 0,6–0,7, ohne Tagesgang – es gewann das
+Profil, das zufällig tiefer lag, nicht das mit der richtigen Zeitlage. Seitdem
+werden Champion- und Challenger-Reihe vor dem WAPE-Vergleich **je Tag auf die
+Ist-Energie gebracht** (Faktor = Summe Ist / Summe Prognose des Tages); übrig
+bleibt die Form. Das gilt für die PV-Korrektur jeder Quelle, **nicht** für die
+Lastkorrektur (dort ist das Niveau der Zweck des Profils) und nicht für das
+PV-Band.
+
+- *Je Tag* statt eines Faktors über den ganzen Rahmen, weil das Profil am
+  Tagesniveau nichts ändern kann – Bewölkung von Tag zu Tag ist in beiden
+  Reihen dasselbe Rauschen und verdeckt den Formunterschied (am 15.11. für
+  pvlib: je Tag +7,5 %, ein Rahmenfaktor +2,4 %).
+- Ein Tag bekommt nur dann einen eigenen Faktor, wenn Ist **und beide**
+  Prognosen an ihm mindestens 20 % der mittleren Tagesenergie des Rahmens
+  tragen und er mindestens 4 Slots hat. Sonst wäre der Faktor eine Division
+  durch fast null (Schneetag, Ausfall). Solche Tage laufen mit dem
+  Rahmenfaktor. Die Schwelle ist relativ zum Rahmen, nicht in Watt – sie
+  bedeutet auf jeder Anlage und in jeder Jahreszeit dasselbe. Zwischen 0 und
+  35 % ändert sie die Entscheidung vom 15.11. nicht.
+- Faktoren sind auf 0,25–4 gekappt, beide Reihen werden auf denselben Tagen
+  gleich behandelt.
+
+Was auf welchen Reihen geprüft wird:
+
+| Prüfung | Reihen | Grenze |
+|---------|--------|--------|
+| Mindeststichprobe | unskaliert | `promotion_min_samples` (96) |
+| Mindestvorsprung im WAPE | **niveaubereinigt** | `promotion_min_improvement_percent` (1,0 %) |
+| Segment-Guard (Morgen/Mittag …) | **niveaubereinigt** | `promotion_max_segment_degradation_pct` (5 Punkte) |
+| Bias-Schranke | unskaliert | `promotion_max_bias_increase_w` (75 W) |
+| Gesamt-WAPE darf nicht drastisch steigen | unskaliert | dieselben 5 Punkte wie der Segment-Guard |
+
+Bias-Schranke und WAPE-Obergrenze halten ein echtes Niveauproblem des
+Kandidaten auf: gleiche Form, aber 60 % zu hoch, wird nicht befördert. Der
+Segment-Guard läuft bewusst auf den bereinigten Reihen – unskaliert trüge er
+genau den Niveaueffekt wieder ein (am 15.11. verlor der pvlib-Kandidat den
+Morgen unskaliert um 6,7 Punkte, bereinigt gewann er ihn um 1,3). Die
+WAPE-Obergrenze nutzt die Segmentgrenze mit: insgesamt darf der Kandidat
+unskaliert nicht mehr verlieren, als einem einzelnen Tagesabschnitt zugestanden
+wird – keine zweite Stellschraube.
+
+Wichtig beim Lesen: Die Bias-Schranke gilt in **Watt** und ist in einer
+Trübphase derselbe Niveaueffekt in anderer Einheit. Am 15.11. hielt sie den
+pvlib-Kandidaten trotz besserer Form (+7,5 %) zurück, weil sein Bias um 87 W
+stieg – 12 W über der Schranke. In der Rückschau (11 Wochen ab 30.08., gegen
+das Profil vom 12.11.) hielt allein sie 3 Kandidaten auf, von denen in der
+Folgewoche 2 besser und 1 schlechter gewesen wären.
+
+Log und Bericht weisen beide Zahlenpaare aus:
+
+```
+PV-Korrektur je Quelle (Grundlage des Quellenvergleichs):
+  pvlib          CHAMPION HALTEN      n= 576 · global=0.9854
+                 absoluter Bias steigt unskaliert um 87 W (niveaubereinigt 26.54 statt 28.69, unskaliert 54.63 statt 51.80)
+                 WAPE Champion/Kandidat unskaliert 51.80/54.63 (-5.5 %), niveaubereinigt 28.69/26.54 (+7.5 %; 14/14 Tage mit eigenem Faktor); Bias +87 W
+```
+
+In `kalibrierung.yaml` (und im Profil unter `calibration_competition`) bleiben
+`champion`/`challenger` die **unskalierten** Kennzahlen. Neu daneben:
+`comparison: level_adjusted`, `level_adjusted` (Methode, Tage mit eigenem
+Faktor, Rahmen- und Tagesfaktoren, bereinigter WAPE je Reihe, bereinigte
+Segmente), `raw_improvement_percent`, `raw_wape_increase_pct`, `raw_segments`,
+`raw_worst_segment_degradation_pct` und `bias_increase_w`.
+`improvement_percent`, `segments` und `worst_segment_degradation_pct` sind bei
+der PV-Korrektur die *entscheidenden*, also bereinigten Werte.
 
 **Mindestbelegung je Zelle.** Ein Faktor entsteht erst ab
 `MIN_SAMPLES["profile_cell"]` (12 Slots = drei Tage derselben Stunde). Vorher
