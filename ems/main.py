@@ -1999,6 +1999,30 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return floor_time(pd.Timestamp.now(tz=config.general.timezone), freq)
 
 
+def _anchor_controlled_w(config, load_feedback_status, stage_power) -> float:
+    """Leistung (W), die der Slot-0-Anker aus der gemessenen Hauslast nimmt.
+
+    Nur Lasten, deren Schaltkanal das EMS besitzt (``ems_schaltet_last``) -
+    dasselbe Kriterium wie in Training und Bewertung der Grundlast. Alles
+    andere (z. B. Waschmaschinen ohne control_topic) GEHOERT zur Grundlast.
+    Ohne den Filter zog der Anker die seit 13.11.2026 eingefrorene Rueckmeldung
+    von "Waschmaschine 1" (294 W, dauerhaft "an") ab: der laufende Slot
+    rechnete mit rund 290 W zu wenig Hauslast."""
+    from .local_history import ems_schaltet_last
+    geschaltet = {ld.name for ld in getattr(config, "controllable_loads", [])
+                  if ems_schaltet_last(ld)}
+    total = 0.0
+    for item in load_feedback_status or []:
+        if item.get("name") not in geschaltet:
+            continue
+        if not item.get("fresh") or not item.get("on"):
+            continue
+        measured = item.get("power_w")
+        total += (max(0.0, float(measured)) if measured is not None
+                  else stage_power.get(item.get("label"), 0.0))
+    return total
+
+
 SLOT_SOC_MIN_ELAPSED_S = 120.0
 
 
@@ -2443,14 +2467,8 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
                         for ld in config.controllable_loads
                         if ld.enabled and ld.type == "deferrable"
                     })
-                    for item in load_feedback_status:
-                        if not item.get("fresh") or not item.get("on"):
-                            continue
-                        measured = item.get("power_w")
-                        controlled_w += (
-                            max(0.0, float(measured))
-                            if measured is not None else
-                            stage_power.get(item.get("label"), 0.0))
+                    controlled_w = _anchor_controlled_w(
+                        config, load_feedback_status, stage_power)
                     live_house_w -= controlled_w
                 house_load[0] = max(0.0, live_house_w)
             else:
