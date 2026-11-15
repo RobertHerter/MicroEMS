@@ -74,7 +74,10 @@ Zielsystem erhält nur die fertigen Sollwerte per MQTT.
 | Datei | Aufgabe |
 |-------|---------|
 | `ems/config.py` | YAML-Konfiguration laden/validieren (typisierte Dataclasses) + Overlay |
-| `ems/main.py` | Orchestrierung + CLI (`--loop`), HTTP-Server, systemd-Watchdog |
+| `ems/main.py` | Orchestrierung + CLI (`--loop`), Zyklus (`run_once`), systemd-Watchdog |
+| `ems/dashboard_server.py` | HTTP-Server des Dashboards: Routen, Anmeldung, CSRF-Prüfung |
+| `ems/execution_audit.py` | Soll/Ist-Prüfung der Ausführung, Live-Überwachung zwischen den Zyklen |
+| `ems/display_frame.py` | Aufbereitung der Anzeige-Tabelle für Dashboard und API |
 | `ems/optimizer.py` | MILP-Optimierer (PuLP, CBC/HiGHS): Steuertabelle 48 h |
 | `ems/forecast.py` | Verbrauchsprognose: Ähnliche-Tage-Mittelung oder ML (HistGradientBoosting) |
 | `ems/loads.py` | Steuerbare/verschiebbare Lasten im MILP (deferrable + thermischer Speicher) |
@@ -280,7 +283,8 @@ Lebenszeichen ausbleibt). Die Timer:
   [backup.sh](backup.sh). **Für echte Sicherheit ein externes Ziel setzen**
   (`Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup` in `ems-backup.service`).
   Die Historie (`e3dc_history.sqlite`, rund 2 GB) wird nur mit
-  `Environment=EMS_BACKUP_DB=1` mitgesichert - konsistent per `sqlite3 .backup`,
+  `Environment=EMS_BACKUP_DB=1` mitgesichert - konsistent per `VACUUM INTO`
+  (blockiert den laufenden Dienst nicht; braucht `sqlite3` >= 3.27),
   aufbewahrt werden die letzten zwei (Ziel braucht etwa 6 GB frei).
 - **`ems-alarm@.service`** (kein Timer): scheitert einer der drei Läufe, startet
   ihn systemd per `OnFailure=`. Er meldet auf `ems/alert` (Homey-Push) und im
@@ -457,9 +461,17 @@ cp config.example.yaml config/config.yaml
 docker compose up -d --build
 ```
 
-Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.13-slim`, enthält
+Das Image ([Dockerfile](Dockerfile)) basiert auf `python:3.14-slim`, enthält
 HiGHS sowie CBC als Solver-Fallback und startet
 `python -m ems.main --config /app/config/config.yaml --loop`.
+
+Der EMS-Prozess und die geplanten Jobs laufen im Container **nicht als root**:
+der Entrypoint übergibt `config/` und `data/` beim Start einmalig an den
+Benutzer `ems` (10001) bzw. an den bisherigen Nicht-root-Eigentümer von
+`config/` und gibt dann die Rechte ab. Bestehende Installationen müssen nichts
+umstellen; `EMS_RUN_AS_ROOT: "1"` unter `environment:` beider Dienste stellt das
+alte Verhalten wieder her. Einzelheiten:
+[docs/howto-docker.md](docs/howto-docker.md#ohne-root).
 
 ## Konfiguration
 
