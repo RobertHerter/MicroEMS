@@ -29,19 +29,22 @@ services:
     volumes:
       - ./config:/app/config   # config.yaml (+ config_overrides.yaml daneben)
       - ./data:/app/data       # SQLite-Historie, Dashboard-HTML, Debug-Snapshot
-    # Ohne root laufen (empfohlen): das Image bringt den Benutzer ems
-    # (10001:10001) mit. Einmalig die Mounts uebergeben, dann einkommentieren:
-    #   sudo chown -R 10001:10001 config data
-    # Port 8080 braucht keine Sonderrechte. Der scheduler-Dienst unten bleibt
-    # root (cron); seine Jobs schreiben dann als root in dieselben Mounts -
-    # nach einem Kalibrierlauf ggf. erneut chown.
-    # user: "10001:10001"
+    # Der EMS-Prozess laeuft NICHT als root: der Entrypoint startet als root,
+    # uebergibt ./config und ./data einmalig an den Benutzer ems (10001:10001)
+    # und gibt dann die Rechte ab. Gehoert ./config bereits einem normalen
+    # Host-Benutzer, laeuft der Dienst unter dessen Kennung (config.yaml bleibt
+    # ohne sudo bearbeitbar); erzwingen laesst sich eine Kennung unter
+    # environment mit EMS_UID / EMS_GID (bei scheduler ebenso). Zurueck zum
+    # alten Verhalten (alles als root): EMS_RUN_AS_ROOT: "1" bei beiden
+    # Diensten. Einzelheiten: docs/howto-docker.md, Abschnitt "Ohne root".
     # command überschreibt bei Bedarf das Dockerfile-CMD, z.B. für --check:
     # command: ["--config", "/app/config/config.yaml", "--check"]
 
   # Pendant zu den systemd-Timern: cron im Vordergrund, gleiches Image + gleiche
   # Volumes. Zeitplan siehe docker/crontab (Ersparnis täglich 02:45,
   # Kalibrierung So 03:00). Job-Ausgabe in `docker compose logs scheduler`.
+  # cron selbst braucht root (deshalb der eigene entrypoint, am Entrypoint des
+  # Images vorbei); die Jobs geben die Rechte ab und laufen als ems.
   scheduler:
     build: .
     image: microems:latest

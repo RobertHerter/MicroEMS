@@ -2,7 +2,20 @@
 # Wrapper für die geplanten MicroEMS-Jobs im Container (Pendant zu den
 # systemd-Timern). Kapselt Arbeitsverzeichnis + PYTHONPATH, damit die
 # Profil-Dateien im gemounteten Daten-Volume landen.
+#
+# cron ruft dieses Skript als root auf (nur root darf die Ausgabe nach
+# /proc/1/fd/1, also ins Container-Log, umleiten). Die eigentliche Arbeit
+# laeuft als Benutzer ems: das Skript uebergibt noetigenfalls die Mounts und
+# startet sich dann selbst ohne root-Rechte neu. Altes Verhalten:
+# EMS_RUN_AS_ROOT=1 am scheduler-Dienst (siehe docker/privs.sh).
 set -eu
+
+. /app/docker/privs.sh
+ems_prepare
+if [ "$EMS_DROP" = "1" ]; then
+    ems_exec_dropped "$0" "$@"
+fi
+
 export PYTHONPATH=/app
 CFG="${EMS_CONFIG:-/app/config/config.yaml}"
 

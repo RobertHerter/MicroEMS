@@ -306,9 +306,10 @@ controllable_loads: []
   #   no_grid_import: true
   #   temp_signal: "pool/temperature"   # MQTT-Topic der Ist-Temperatur (°C)
   #   # Aelter als so viele Minuten haelt die Temperatur keine Freigabe mehr
-  #   # gegen den Plan (verstummter Sensor). Default 45. Sendet der Sensor nur
-  #   # bei Aenderung, hoeher setzen; 0 = keine Altersgrenze.
-  #   temp_max_age_minutes: 45
+  #   # gegen den Plan und ist kein Startwert fuer den Plan mehr (verstummter
+  #   # Sensor). Default 240 - Sensoren, die nur bei Aenderung senden,
+  #   # schweigen bei konstanter Temperatur stundenlang. 0 = keine Altersgrenze.
+  #   temp_max_age_minutes: 240
   #   feedback_required: true       # Alarm, wenn echte WP-Rückmeldung fehlt
   #   feedback_max_age_minutes: 20
   #   # Für retained/change-only-Sensoren (z.B. Shelly), die bei konstantem Wert

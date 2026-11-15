@@ -162,7 +162,13 @@ class InfluxV2Backend(InfluxBackend):
             f'from(bucket: "{self.bucket}")\n'
             f"  |> range(start: {start_iso}, stop: {end_iso})\n"
             f"{self._filters(spec)}"
-            f"  |> aggregateWindow(every: {slot_seconds}s, fn: {fn}, createEmpty: false)\n"
+            # timeSrc: "_start" ist Pflicht. Ohne Angabe stempelt Flux jeden
+            # Wert auf das Fenster-ENDE (Vorgabe timeSrc="_stop"); InfluxQL
+            # (GROUP BY time) und der gesamte uebrige Code rechnen mit dem
+            # Slot-ANFANG. Auf v2-Anlagen lagen dadurch alle Reihen einen
+            # Slot zu spaet.
+            f"  |> aggregateWindow(every: {slot_seconds}s, fn: {fn}, "
+            f'createEmpty: false, timeSrc: "_start")\n'
             f'  |> keep(columns: ["_time", "_value"])'
         )
         log.debug("Flux: %s", flux)
@@ -171,7 +177,11 @@ class InfluxV2Backend(InfluxBackend):
             df = pd.concat(df, ignore_index=True) if df else pd.DataFrame()
         if df is None or df.empty or "_value" not in df:
             return pd.Series(dtype="float64")
-        idx = pd.to_datetime(df["_time"], utc=True)
+        # Flux beschneidet das erste Fenster auf den range()-Beginn: liegt
+        # `start` nicht auf dem Raster, traegt es `start` selbst statt des
+        # Slotanfangs. InfluxQL stempelt auch dieses angeschnittene Fenster
+        # auf das Raster - deshalb hier abrunden (auf dem Raster ein No-op).
+        idx = pd.to_datetime(df["_time"], utc=True).dt.floor(f"{slot_seconds}s")
         return pd.Series(df["_value"].astype("float64").values, index=idx).sort_index()
 
     def read_latest(self, spec, start, end):

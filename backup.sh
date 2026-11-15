@@ -11,10 +11,11 @@
 #   Environment=EMS_BACKUP_DIR=/mnt/nas/ems-backup
 #
 # Historie (optional): EMS_BACKUP_DB=1 sichert zusaetzlich die SQLite-Historie
-# konsistent per `sqlite3 .backup` (im WAL-Modus ohne den Dienst zu blockieren)
-# und behaelt die letzten 2. Standard AUS - die Datei ist rund 2 GB gross, das
-# Ziel braucht also etwa 6 GB frei (2 alte + die neue). Datei: $EMS_DB, sonst
-# <Quelle>/e3dc_history.sqlite (e3dc_rscp.history_db_path).
+# konsistent per `VACUUM INTO` (im WAL-Modus ohne den Dienst zu blockieren;
+# braucht sqlite3 >= 3.27) und behaelt die letzten 2. Standard AUS - die Datei
+# ist rund 2 GB gross, das Ziel braucht also etwa 6 GB frei (2 alte + die
+# neue). Datei: $EMS_DB, sonst <Quelle>/e3dc_history.sqlite
+# (e3dc_rscp.history_db_path).
 set -euo pipefail
 
 SRC="${EMS_SRC:-/opt/ems}"
@@ -52,14 +53,30 @@ if [ "${EMS_BACKUP_DB:-0}" = "1" ]; then
         echo "EMS_BACKUP_DB=1, aber sqlite3 fehlt (apt install sqlite3)." >&2
         exit 1
     fi
+    # VACUUM INTO gibt es erst ab SQLite 3.27 (2019). Vorab pruefen: die
+    # Fehlermeldung eines aelteren sqlite3 ("near INTO: syntax error") hilft
+    # niemandem weiter.
+    SQLITE_VER=$(sqlite3 --version | awk '{print $1}')
+    if [ "$(printf '%s\n' 3.27.0 "$SQLITE_VER" | sort -V | head -n 1)" != "3.27.0" ]; then
+        echo "EMS_BACKUP_DB=1 braucht sqlite3 >= 3.27 (gefunden: $SQLITE_VER)." >&2
+        exit 1
+    fi
     DBOUT="$DEST/ems-history-$STAMP.sqlite"
     TMP="$DBOUT.teil"
+    # VACUUM INTO bricht ab, wenn die Zieldatei schon existiert - ein Rest
+    # eines abgebrochenen Laufs muss vorher weg.
     rm -f -- "$TMP"
-    # .backup liefert einen konsistenten Stand, auch waehrend der Dienst
-    # schreibt; ein blosses cp koennte eine halbe Transaktion erwischen.
+    # VACUUM INTO liest in EINER Lesetransaktion einen konsistenten Stand und
+    # blockiert im WAL-Modus keinen Schreiber; ein blosses cp koennte eine
+    # halbe Transaktion erwischen. NICHT `.backup`: die Online-Sicherung
+    # beginnt bei jeder Aenderung der Quelle durch eine andere Verbindung von
+    # vorn - der Dienst schreibt alle 5 s (live_samples), ein Versuch lief
+    # ueber 10 min ohne Ende. VACUUM INTO brauchte fuer 2,1 GB 28 s.
     # Erst unter .teil schreiben: eine abgebrochene Sicherung darf nicht wie
     # eine fertige aussehen (und keine gute aus der Aufbewahrung draengen).
-    if ! sqlite3 -cmd ".timeout 60000" "$DB" ".backup '$TMP'"; then
+    # Der Pfad steht in einem SQL-Literal - ein ' darin verdoppeln.
+    Q="'"
+    if ! sqlite3 -cmd ".timeout 60000" "$DB" "VACUUM INTO '${TMP//$Q/$Q$Q}'"; then
         rm -f -- "$TMP"
         echo "Sicherung der Historie fehlgeschlagen ($DB)." >&2
         exit 1

@@ -553,18 +553,18 @@ def test_non_finite_temperature_never_holds_the_release():
 def test_silent_sensor_stops_holding_the_release(caplog):
     """Verstummt der Sensor mit einem letzten Wert ueber max_c, blieb die
     Freigabe unbegrenzt stehen - das Geraet heizte, sobald sein Thermostat es
-    wollte, obwohl der Plan 0 W vorsah. Nach temp_max_age_minutes (Vorgabe 45)
+    wollte, obwohl der Plan 0 W vorsah. Nach temp_max_age_minutes (Vorgabe 240)
     gilt der Wert wie "keine Temperatur": das Signal folgt dem Plan."""
     import logging
     pub, lane = _thermostat_pool()
-    assert lane["temp_max_age_minutes"] == 45.0
+    assert lane["temp_max_age_minutes"] == 240.0
     topic = "homie/pool/temp"
     pub._on_message(None, None, Msg(topic, "29.0"))
     assert pub._lane_command(lane, planned_on=False) == 1
 
-    pub.load_temps.empfangen[topic] -= 44 * 60          # 44 min alt: gilt noch
+    pub.load_temps.empfangen[topic] -= 239 * 60         # 239 min alt: gilt noch
     assert pub._lane_command(lane, planned_on=False) == 1
-    pub.load_temps.empfangen[topic] -= 2 * 60           # 46 min alt
+    pub.load_temps.empfangen[topic] -= 2 * 60           # 241 min alt
     with caplog.at_level(logging.WARNING, logger="ems.mqtt"):
         assert pub._lane_command(lane, planned_on=False) == 0
         assert pub._lane_command(lane, planned_on=False) == 0

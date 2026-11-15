@@ -84,8 +84,12 @@ _RESET_WORDS = ("", "-", "auto", "default", "reset")
 TEMP_MIN_C = -40.0
 TEMP_MAX_C = 120.0
 # Vorgabe fuer controllable_loads[].temp_max_age_minutes: aelter darf eine
-# Temperatur keine Freigabe gegen den Plan mehr halten.
-TEMP_MAX_AGE_MINUTES = 45.0
+# Temperatur keine Freigabe gegen den Plan mehr halten. 240 min statt der
+# ersten Setzung 45: Homey-/Homie-Sensoren senden nur bei AENDERUNG; ein
+# Pool stand im August 2026 bis zu 195 min auf demselben 0,1-K-Wert (17 % der
+# Zeit laenger als 45 min). Ein traeger Speicher aendert sich in 4 h kaum,
+# ein verstummter Sensor faellt trotzdem auf.
+TEMP_MAX_AGE_MINUTES = 240.0
 
 
 def _plausible_temp(value) -> Optional[float]:

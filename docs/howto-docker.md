@@ -65,8 +65,9 @@ docker run --rm -v ./config:/app/config -v ./data:/app/data \
   ghcr.io/robertherter/microems:3.14.4 --config /app/config/config.yaml --check
 ```
 
-Der `ENTRYPOINT` ist `python -m ems.main`, deshalb werden nur die Argumente
-angehängt.
+Der `ENTRYPOINT` startet `python -m ems.main`, deshalb werden nur die Argumente
+angehängt. Der Prozess läuft dabei nicht als root – siehe
+[Ohne root](#ohne-root).
 
 ## 3. Historie einmalig holen
 
@@ -75,7 +76,7 @@ Dieselben Skripte wie im systemd-Betrieb, nur im Container. Reihenfolge beachten
 ```bash
 cd ~/microems
 DOCK="docker run --rm -v ./config:/app/config -v ./data:/app/data \
-      --entrypoint python ghcr.io/robertherter/microems:3.14.4"
+      ghcr.io/robertherter/microems:3.14.4 python"
 
 # Hauslast aus dem E3DC (ein RSCP-Aufruf je 15-min-Fenster, läuft Stunden)
 $DOCK rscp_import.py --config /app/config/config.yaml --days 730
@@ -113,8 +114,8 @@ Der Compose-Stack startet **zwei** Container:
 
 | Container | Aufgabe |
 | --- | --- |
-| `microems` | der EMS-Dienst (`--loop`), bedient das Dashboard auf 8080 |
-| `microems-scheduler` | `cron -f` für die periodischen Jobs |
+| `microems` | der EMS-Dienst (`--loop`), bedient das Dashboard auf 8080; läuft als Benutzer `ems` |
+| `microems-scheduler` | `cron -f` für die periodischen Jobs; cron selbst ist root, die Jobs laufen als `ems` |
 
 Der Scheduler ersetzt die systemd-Timer und fährt aus `docker/crontab`:
 
@@ -169,6 +170,57 @@ Ein Rollback ist das Zurücksetzen des Tags plus `up -d`. Die Daten liegen im
 Volume und überleben den Wechsel; das Schema wird beim Start automatisch
 migriert.
 
+## Ohne root
+
+Der Container startet als root, der EMS-Prozess und die geplanten Jobs laufen
+aber als unprivilegierter Benutzer. Beim Start passiert Folgendes
+(`docker/entrypoint.sh`, für die Jobs `docker/scheduler-run.sh`):
+
+1. Gehören Dateien in `config/` oder `data/` noch einem anderen Benutzer – bei
+   Installationen vor dieser Version typischerweise root –, werden genau diese
+   Einträge einmalig übergeben. Stimmt schon alles, wird nichts geschrieben.
+   Im Log steht dann einmal `[ems-rechte] Uebergebe /app/data an 10001:10001`.
+2. Der Prozess gibt die root-Rechte ab (`setpriv`) und startet erst danach.
+
+**Bestehende Installationen müssen nichts umstellen.** Unter welchem Benutzer
+der Dienst läuft:
+
+| Lage | Benutzer im Container |
+| --- | --- |
+| `config/` gehört root (mit `sudo` oder als root angelegt) | `ems` (10001:10001); `config/` und `data/` gehören danach 10001 |
+| `config/` gehört einem normalen Benutzer (z. B. 1000) | genau dieser Benutzer – `config.yaml` bleibt auf dem Host ohne `sudo` bearbeitbar |
+| `EMS_UID` / `EMS_GID` gesetzt | die angegebene Kennung |
+| `EMS_RUN_AS_ROOT: "1"` | root, wie früher – es wird nichts übergeben |
+| `user:` im Compose-File | der dort genannte Benutzer; der Entrypoint ändert dann nichts |
+
+Die Variablen gehören unter `environment:` **beider** Dienste (`ems` und
+`scheduler`):
+
+```yaml
+    environment:
+      TZ: Europe/Berlin
+      EMS_RUN_AS_ROOT: "1"     # altes Verhalten
+```
+
+Lässt sich der Wechsel nicht durchführen (`cap_drop: ALL`, ein Mount, das kein
+`chown` erlaubt), läuft der Dienst mit einer `WARNUNG` im Log als root weiter,
+statt am Update zu scheitern.
+
+`docker compose exec` läuft weiterhin als root und würde root-eigene Dateien in
+den Mounts hinterlassen. Für Kommandos, die schreiben, deshalb `ems-run`
+voranstellen – es wechselt auf denselben Benutzer wie der Dienst:
+
+```bash
+docker compose exec ems ems-run python -m ems.battery_calibration \
+  --config /app/config/config.yaml --days 30
+```
+
+Ist es doch passiert, repariert der nächste Start des Dienstes (und jeder
+Scheduler-Job) die Eigentümer wieder.
+
+Das Dashboard lauscht im Container auf 8080 – kein privilegierter Port, er
+braucht keine Sonderrechte.
+
 ## Betriebsdetails
 
 * **Zeitzone:** über `TZ` im Compose-File (Standard `Europe/Berlin`). Sie muss zu
@@ -187,7 +239,7 @@ migriert.
 Der eine Wert, den ich nach ein bis zwei Wochen zu prüfen empfehle:
 
 ```bash
-docker compose exec ems python -m ems.battery_calibration \
+docker compose exec ems ems-run python -m ems.battery_calibration \
   --config /app/config/config.yaml --days 30
 ```
 
@@ -198,7 +250,7 @@ Nacht sind das zweistellige Prozentpunkte Fehler im geplanten SoC-Verlauf.
 Ebenso lohnend, sobald zwei abgeschlossene Tage vorliegen:
 
 ```bash
-docker compose exec ems python plan_value.py \
+docker compose exec ems ems-run python plan_value.py \
   --config /app/config/config.yaml --days 7
 ```
 

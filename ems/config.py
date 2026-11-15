@@ -414,8 +414,10 @@ class ControllableLoad:
     # eine Heiz-Freigabe GEGEN den Plan halten darf (thermostat: true). Ein
     # verstummter Sensor hielt die Freigabe sonst mit seinem letzten Wert
     # dauerhaft an. Aelter = wie "keine Temperatur" -> das Signal folgt dem
-    # Plan. 0 = keine Altersgrenze (Sensoren, die nur bei Aenderung senden).
-    temp_max_age_minutes: float = 45.0
+    # Plan; auch der Startwert im Optimierer faellt dann auf target_c zurueck.
+    # 240 min, weil viele Sensoren nur bei Aenderung senden (gemessene Pausen
+    # bis 195 min). 0 = keine Altersgrenze.
+    temp_max_age_minutes: float = 240.0
     stages: list = field(default_factory=list)   # [LoadStage]
     season_from: Optional[str] = None    # "MM-DD" (nur in Saison aktiv)
     season_to: Optional[str] = None
@@ -1294,7 +1296,7 @@ def parse_controllable_loads(raw, overrides: Optional[dict] = None) -> list:
                 "controllable_loads[].no_grid_import"),
             temp_signal=(str(w["temp_signal"]) if w.get("temp_signal") else None),
             temp_max_age_minutes=max(0.0, float(
-                w.get("temp_max_age_minutes", 45.0))),
+                w.get("temp_max_age_minutes", 240.0))),
             stages=stages,
             season_from=(str(w.get("season_from") or seas.get("from"))
                          if (w.get("season_from") or seas.get("from")) else None),
