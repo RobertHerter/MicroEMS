@@ -54,6 +54,27 @@ def test_schema_only_created_once_per_file(tmp_path, monkeypatch):
     con.close()
 
 
+def test_schema_cache_survives_inode_reuse(tmp_path, monkeypatch):
+    """Neue Datei mit DERSELBEN Inode-Nummer (auf manchen Dateisystemen der
+    Normalfall nach Loeschen und Neuanlegen): der Cache darf sie nicht fuer
+    eingerichtet halten. Im CI schlug genau das fehl."""
+    db = str(tmp_path / "h.sqlite")
+    lh._con(db).close()
+    import os
+    for name in (db, db + "-wal", db + "-shm"):
+        if os.path.exists(name):
+            os.remove(name)
+    # Cache-Treffer erzwingen, unabhaengig davon, was das Dateisystem vergibt.
+    monkeypatch.setattr(lh, "_schema_key", lambda path: ("fest", 1))
+    lh._SCHEMA_DONE.add(("fest", 1))
+    try:
+        con = lh._con(db)
+        assert con.execute("SELECT COUNT(*) FROM house_load").fetchone()[0] == 0
+        con.close()
+    finally:
+        lh._SCHEMA_DONE.discard(("fest", 1))
+
+
 def test_failed_setup_closes_connection(tmp_path, monkeypatch):
     db = str(tmp_path / "h.sqlite")
     opened = []

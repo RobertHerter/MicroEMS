@@ -43,6 +43,18 @@ def _schema_key(path: str):
         return None
 
 
+def _schema_present(con: sqlite3.Connection) -> bool:
+    """Steht das Schema wirklich in DIESER Datei? Pfad und Inode reichen als
+    Merkmal nicht: wird die Datei im laufenden Prozess geloescht und neu
+    angelegt (Wiederherstellung, Tests), vergibt das Dateisystem dieselbe
+    Inode-Nummer oft erneut - der Cache hielt die leere Datei dann fuer
+    eingerichtet. Geprueft wird die zuletzt angelegte Tabelle; der Blick in
+    sqlite_master kostet keinen Tabellenzugriff."""
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='calibration_history'").fetchone() is not None
+
+
 def connect(path: str, *, timeout: float = BUSY_TIMEOUT_S) -> sqlite3.Connection:
     """Verbindung zur Historie OHNE Schema-Anlage, im WAL-Modus.
 
@@ -79,7 +91,8 @@ def _con(path: str) -> sqlite3.Connection:
         con = connect(path)
         try:
             key = _schema_key(path)
-            if key is None or key not in _SCHEMA_DONE:
+            if (key is None or key not in _SCHEMA_DONE
+                    or not _schema_present(con)):
                 with _SCHEMA_LOCK:
                     _schema(con)
                     key = _schema_key(path)
