@@ -299,7 +299,7 @@ betreiben. Das fertige Multi-Arch-Image unterstützt `linux/amd64` und
 `linux/arm64` (Raspberry Pi):
 
 ```bash
-ghcr.io/robertherter/microems:3.14.4
+ghcr.io/robertherter/microems:3.15.0
 ```
 
 Voraussetzung sind Docker Engine mit Compose-Plugin sowie Netzwerkzugriff des
@@ -313,7 +313,7 @@ Host-IP oder ein gemeinsames Docker-Netz verwenden.
 mkdir -p ~/microems/config ~/microems/data
 cd ~/microems
 curl -fsSL \
-  https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.14.4/config.example.yaml \
+  https://raw.githubusercontent.com/RobertHerter/MicroEMS/v3.15.0/config.example.yaml \
   -o config/config.yaml
 chmod 600 config/config.yaml
 ```
@@ -356,7 +356,7 @@ Als `compose.yaml` speichern:
 name: microems
 
 x-microems: &microems
-  image: ghcr.io/robertherter/microems:${MICROEMS_TAG:-3.14.4}
+  image: ghcr.io/robertherter/microems:${MICROEMS_TAG:-3.15.0}
   restart: unless-stopped
   environment:
     TZ: Europe/Berlin
