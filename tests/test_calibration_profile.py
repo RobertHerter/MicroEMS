@@ -74,3 +74,32 @@ def test_thin_profile_cells_are_dropped_instead_of_applied():
     # gleiche Regel fuer die reinen Stunden- und Monatstabellen
     monate = K._factor_table(akt, pred, lambda i: i.tz_convert(tz).month)
     assert 7 in monate and 8 not in monate
+
+
+def test_profile_log_names_the_source_actually_applied():
+    """Die Logzeile nannte die konfigurierte Standardquelle ("solcast"), auch
+    wenn pvlib gewaehlt war und dessen Profil angewandt wurde."""
+    profil = {"pv_sources": {"solcast": {"pv_global": 1.2},
+                             "pvlib": {"pv_global": 0.8}}}
+    gewaehlt = "pvlib"
+    aktiv = calibration.pv_profile_for_source(profil, gewaehlt, "solcast")
+    text = calibration.pv_profile_log_text(
+        profil, aktiv, gewaehlt, "solcast", "/x/profil.yaml")
+    assert text == "PV-Kalibrierprofil für pvlib angewandt (/x/profil.yaml)."
+    assert "solcast" not in text
+
+
+def test_profile_log_when_nothing_is_applied():
+    # Profil je Quelle, aber ohne Eintrag fuer die gewaehlte
+    nur_solcast = {"pv_sources": {"solcast": {"pv_global": 1.2}}}
+    text = calibration.pv_profile_log_text(
+        nur_solcast, None, "pvlib", "solcast", "p.yaml")
+    assert "keinen Eintrag für pvlib" in text and "solcast" in text
+    # altes flaches Profil gehoert der Standardquelle
+    alt = {"pv_global": 1.3}
+    text = calibration.pv_profile_log_text(alt, None, "pvlib", "solcast", "p")
+    assert text == ("PV-Kalibrierprofil gehört zu solcast und wird auf pvlib "
+                    "nicht angewandt.")
+    # gar kein Profil: keine Zeile
+    assert calibration.pv_profile_log_text(None, None, "pvlib", "solcast",
+                                           "p") is None

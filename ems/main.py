@@ -1534,13 +1534,12 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             return s
 
         pv = _pv_series("pv_forecast")
-        if cal_profile_active:
-            log.info("PV-Kalibrierprofil für %s angewandt (%s).",
-                     calibration_source, config.calibration.pv_profile)
-        elif cal_profile:
-            log.info("PV-Kalibrierprofil gehört zu %s und wird auf %s nicht "
-                     "angewandt.", calibration_source,
-                     solcast.selected_source(config))
+        from .calibration import pv_profile_log_text
+        cal_log = pv_profile_log_text(
+            cal_profile, cal_profile_active, solcast.selected_source(config),
+            calibration_source, config.calibration.pv_profile)
+        if cal_log:
+            log.info("%s", cal_log)
         if pv_ratio is not None:
             log.info("Intraday-Korrektur PV: x%.2f (roh x%.2f; nur nächste "
                      "%d Slots, danach unveränderte %s-Prognose).",

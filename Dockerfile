@@ -36,6 +36,10 @@ RUN pip install --no-cache-dir -r requirements.txt -c requirements.lock
 # (Config/Daten kommen als Mounts.)
 COPY ems ./ems
 COPY kalibrierung.py savings_check.py backup.sh ./
+# Einmal-Skripte, die docs/howto-docker.md im Container aufruft (Historie
+# importieren, Wetter/Preise nachladen, Planwert auswerten). Sie fehlten im
+# Image - die Anleitung lief ins Leere.
+COPY rscp_import.py weather_backfill.py energycharts_backfill.py plan_value.py ./
 COPY docker ./docker
 RUN chmod +x /app/docker/scheduler-run.sh /app/docker/entrypoint.sh /app/backup.sh \
     && install -m 0644 /app/docker/crontab /etc/cron.d/ems \
