@@ -42,7 +42,8 @@ services:
 
   # Pendant zu den systemd-Timern: cron im Vordergrund, gleiches Image + gleiche
   # Volumes. Zeitplan siehe docker/crontab (Ersparnis täglich 02:45,
-  # Kalibrierung So 03:00). Job-Ausgabe in `docker compose logs scheduler`.
+  # Kalibrierung So 03:00, Sicherung der Config-Dateien Mo 03:30 nach
+  # ./data/backup). Job-Ausgabe in `docker compose logs scheduler`.
   # cron selbst braucht root (deshalb der eigene entrypoint, am Entrypoint des
   # Images vorbei); die Jobs geben die Rechte ab und laufen als ems.
   scheduler:
@@ -53,6 +54,9 @@ services:
     depends_on: [ems]
     environment:
       TZ: Europe/Berlin
+      # Sicherung auf ein Ziel ausserhalb dieses Hosts legen (unter volumes
+      # einhaengen), z.B. EMS_BACKUP_DIR: /backup; die Historie zusaetzlich
+      # sichern: EMS_BACKUP_DB: "1" - siehe docs/howto-docker.md.
     entrypoint: ["cron", "-f"]
     healthcheck:
       disable: true            # dieser Container bedient keinen HTTP-Port

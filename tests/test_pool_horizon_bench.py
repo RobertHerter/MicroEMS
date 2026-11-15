@@ -94,3 +94,19 @@ def test_snapshot_from_disk_parses(tmp_path):
     pfad.write_text(json.dumps(_snapshot()), encoding="utf-8")
     with open(pfad, encoding="utf-8") as fh:
         assert _inputs_from_snapshot(json.load(fh)) is not None
+
+
+def test_heat_energy_uses_the_configured_slot_length():
+    """2000 W über vier Slots: 2 kWh bei 15 min, 4 kWh bei 30 min. Fest
+    verdrahtete 0,25 h hätten auf dem 30-min-Raster die halbe Energie gezeigt."""
+    from pool_horizon_bench import _heat_kwh
+    tabelle = pd.DataFrame({
+        "load_Pool_w": [2000.0, 2000.0, np.nan, 2000.0, 2000.0],
+        "load_Pool_grid_w": [500.0] * 5,          # Teilmenge, zählt nicht mit
+        "house_load_w": [800.0] * 5,
+    })
+    cfg = make_config()
+    assert cfg.general.slot_minutes == 15
+    assert _heat_kwh(tabelle, cfg.general.dt_hours) == 2.0
+    cfg.general.slot_minutes = 30
+    assert _heat_kwh(tabelle, cfg.general.dt_hours) == 4.0

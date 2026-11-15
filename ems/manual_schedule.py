@@ -25,6 +25,15 @@ _NO_SOC = "Kein aktueller E3/DC-SoC verfügbar"
 # Liefert der Speicher zum Start keinen SoC, in diesem Abstand erneut fragen
 # (read_live(force=True) ist ein echter RSCP-Abruf - nicht in jedem 1-s-Tick).
 _SOC_RETRY_SECONDS = 10.0
+# Laufender Eingriff: Abstand der SoC-Grenzprüfung und Zahl aufeinander-
+# folgender Abrufe ohne SoC, nach der er beendet wird. Ein einzelner
+# Lesefehler beendet ihn nicht (der Watchdog in E3DCLink hält ihn mit eigenem
+# Zeitlimit); ohne SoC ist aber unbekannt, ob die Lade-/Entladegrenze schon
+# erreicht ist. Mehr als 3 x 30 s = 90 s Blindflug sind dafür nicht vertretbar:
+# danach zurück auf Auto - das ist die sichere Seite.
+_SOC_CHECK_SECONDS = 30.0
+_SOC_MAX_MISSES = 3
+_SOC_LOST = "SoC wiederholt nicht lesbar - Eingriff vorsorglich beendet"
 
 
 def _utc(value, timezone: str) -> pd.Timestamp:
@@ -190,6 +199,8 @@ class ManualScheduleRunner:
         self._lock = threading.Lock()
         self._active_id: Optional[int] = None
         self._last_soc_check = 0.0
+        # Aufeinanderfolgende SoC-Abrufe ohne Wert beim laufenden Eingriff.
+        self._soc_misses = 0
         # Eintrags-ID -> frühester Zeitpunkt (monotonic) des nächsten
         # SoC-Versuchs, solange der Start mangels SoC noch aussteht.
         self._soc_retry_at: dict = {}
@@ -263,6 +274,7 @@ class ManualScheduleRunner:
         if self._active_id == int(row["id"]):
             self.e3dc.manual_power("auto")
             self._active_id = None
+            self._soc_misses = 0
         self._soc_retry_at.pop(int(row["id"]), None)
         self.store.set_status(row["id"], status, note)
         log.info("Manueller Akku-Plan #%s: %s (%s).", row["id"], status, note)
@@ -328,12 +340,33 @@ class ManualScheduleRunner:
                     self.store.set_status(row["id"], "running")
                     self._active_id = int(row["id"])
                     self._last_soc_check = time.monotonic()
+                    self._soc_misses = 0
                     log.info("Manueller Akku-Plan #%s gestartet: %s %.0f W.",
                              row["id"], row["action"], row["watts"])
-                elif time.monotonic() - self._last_soc_check >= 30.0:
+                elif (time.monotonic() - self._last_soc_check
+                      >= _SOC_CHECK_SECONDS):
                     self._last_soc_check = time.monotonic()
                     ok, reason = self._soc_allows(row["action"])
-                    if not ok:
+                    if ok:
+                        self._soc_misses = 0
+                    elif reason == _NO_SOC:
+                        # Wie beim Start: ein einzelner fehlender Messwert
+                        # beendet nichts. Anders als dort läuft der Eingriff
+                        # hier aber schon - deshalb ist die Geduld begrenzt
+                        # (siehe _SOC_MAX_MISSES) und das Ende kein stilles
+                        # "completed", sondern ein sichtbarer Fehler.
+                        self._soc_misses += 1
+                        if self._soc_misses >= _SOC_MAX_MISSES:
+                            log.warning("Manueller Akku-Plan #%s: %s.",
+                                        row["id"], _SOC_LOST)
+                            self._finish(row, "failed", _SOC_LOST)
+                        else:
+                            log.warning(
+                                "Manueller Akku-Plan #%s: %s (%d/%d) - läuft "
+                                "weiter, nächste Prüfung in %.0f s.",
+                                row["id"], reason, self._soc_misses,
+                                _SOC_MAX_MISSES, _SOC_CHECK_SECONDS)
+                    else:
                         self._finish(row, "completed", reason)
 
     def _loop(self) -> None:

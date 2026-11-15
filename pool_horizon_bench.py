@@ -68,6 +68,17 @@ def _thermal_loads(config):
             if getattr(ld, "type", None) == "thermal" and ld.enabled]
 
 
+def _heat_kwh(tabelle, dt_hours: float) -> float:
+    """Heizenergie (kWh) aller steuerbaren Lasten: W-Summe je Slot mal
+    Slotlänge. Die Slotlänge kommt aus der Config (general.slot_minutes) -
+    fest 0,25 h wäre auf einem 30-min-Raster nur die halbe Energie."""
+    heiz_spalten = [c for c in tabelle.columns
+                    if c.startswith("load_") and c.endswith("_w")
+                    and "_grid_" not in c]
+    return (float(sum(tabelle[c].fillna(0).sum() for c in heiz_spalten))
+            * float(dt_hours) / 1000.0)
+
+
 def _measure(config, inputs, hours: float, repeat: int) -> dict:
     """Einen Horizont setzen und lösen. Rückgabe: Kennzahlen des besten Laufs.
 
@@ -83,11 +94,7 @@ def _measure(config, inputs, hours: float, repeat: int) -> dict:
         ergebnis = Optimizer(config, store_warm=False,
                              stabilize_plan=False).solve(inputs)
         zeiten.append(time.monotonic() - start)
-    tabelle = ergebnis.table
-    heiz_spalten = [c for c in tabelle.columns
-                    if c.startswith("load_") and c.endswith("_w")
-                    and "_grid_" not in c]
-    heiz_kwh = float(sum(tabelle[c].fillna(0).sum() for c in heiz_spalten)) * 0.25 / 1000.0
+    heiz_kwh = _heat_kwh(ergebnis.table, config.general.dt_hours)
     return {
         "hours": hours,
         "seconds_min": min(zeiten),

@@ -53,3 +53,36 @@ def test_cron_jobs_keep_root_in_the_user_field():
         assert felder[5] == "root"
         assert felder[6] == "/app/docker/scheduler-run.sh"
         assert ">>/proc/1/fd/1" in felder
+
+
+def test_crontab_has_the_weekly_backup_job():
+    """Montag 03:30 wie ems-backup.timer, Benutzerfeld und Umleitung wie bei
+    den anderen Jobs (die Rechte gibt scheduler-run.sh ab)."""
+    jobs = [z.split() for z in (_ROOT / "docker/crontab").read_text().splitlines()
+            if z.strip() and not z.startswith("#") and "=" not in z.split()[0]]
+    backup = [f for f in jobs if f[7:8] == ["backup"]]
+    assert len(backup) == 1
+    felder = backup[0]
+    assert felder[:5] == ["30", "3", "*", "*", "1"]
+    assert felder[5] == "root"
+    assert felder[6] == "/app/docker/scheduler-run.sh"
+    assert felder[8:] == [">>/proc/1/fd/1", "2>&1"]
+    timer = (_ROOT / "ems-backup.timer").read_text()
+    assert "OnCalendar=Mon *-*-* 03:30:00" in timer
+
+
+def test_backup_job_collects_both_mounts_and_runs_after_the_drop():
+    lauf = (_ROOT / "docker/scheduler-run.sh").read_text()
+    zweig = lauf[lauf.index("  backup)"):]
+    zweig = zweig[:zweig.index(";;")]
+    assert lauf.index("ems_exec_dropped") < lauf.index("  backup)")
+    assert "umask 077" in zweig                    # Archiv enthaelt Zugangsdaten
+    assert 'EMS_SRC="$(dirname "$CFG")"' in zweig  # config.yaml + Overlay
+    assert "EMS_SRC_EXTRA=/app/data" in zweig      # Profile, savings_state
+    assert "/app/backup.sh" in zweig and "/app/data/backup" in zweig
+    # cron reicht die Umgebung nicht weiter: vor der Rechteabgabe holen.
+    assert lauf.index("ems_pid1_env EMS_BACKUP_DIR") < lauf.index("ems_prepare\n")
+    # Die Historie nur auf ausdruecklichen Wunsch - nie fest eingeschaltet.
+    assert "EMS_BACKUP_DB=1" not in lauf.replace("EMS_BACKUP_DB=1 am", "")
+    assert "COPY kalibrierung.py savings_check.py backup.sh ./" in (
+        _ROOT / "Dockerfile").read_text()
