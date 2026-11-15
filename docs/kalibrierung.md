@@ -51,6 +51,37 @@ Live-Systems: der Faktor 1,298 über 25 °C (Klimaanlage) beschreibt, was das
 Grundmodell allein nicht sieht – im Betrieb fängt das Temperatur-Residual den
 Großteil davon ab (siehe unten).
 
+Diese Grundlinie speist **nur noch die Tabellen** (Stunden-, Werktag/Wochenende-
+und Temperaturfaktoren). Über die Beförderung eines Last-Stundenprofils
+entscheidet sie nicht mehr: Bei `--test-days 365` hat das Ende des Durchgangs
+351–365 Tage Vorlauf, bekommt die Ist-Temperatur als „Zukunft“ und kein
+7-Tage-Lag – der Betrieb trainiert dagegen täglich frisch und schaut 48 h weit.
+
+**Beförderungsrahmen der Lastkorrektur (rollierender Ursprung).** Für jeden der
+letzten `promotion_days` (14) *vollständigen lokalen Kalendertage* wird ein
+Ursprung um 00:00 Ortszeit gesetzt (zeitumstellungssicher; der 25.10. zählt mit
+100, der Tag der Frühjahrsumstellung mit 92 Slots). Je Ursprung:
+
+- Training ausschließlich mit Verbrauchsdaten **vor** dem Ursprung,
+- Prognose über den Betriebshorizont (`--val-horizon-h`, 48 h), roh ohne
+  `correction_factor` und ohne Stundenprofil,
+- Temperatur/PV der Zukunft nur aus dem Issue-Time-Archiv (was am Ursprung
+  wirklich bekannt war); ist es für den Ursprung nicht zu 90 % vollständig,
+  läuft er ohne Wetter/PV – nie mit rückblickend bekannten Ist-Werten,
+- gewertet wird der **erste Tag**, damit jeder Ist-Slot genau einmal zählt.
+
+Die 14 Tagesstücke ergeben eine Reihe; Champion- und Challenger-Profil werden
+beide auf **dieselbe** Reihe angewandt und wie bisher verglichen (gleiche
+Metrik, gleiche Schwellen, siehe unten). Ein Ursprung wird übersprungen, wenn
+weniger als 60 Tage Training davor liegen, der Ist-Tag unter 90 % Abdeckung hat
+oder die Prognose scheitert. Bleiben weniger als 7 gültige Ursprünge, fällt die
+Prüfung mit einer Logzeile auf den bisherigen Rahmen zurück (die letzten
+14 × 24 h der Grundlinie) – der Sonntagslauf bricht daran nie ab. Im Log steht
+`Befoerderungsrahmen Last: rollierender Ursprung, 14/14 Tage gueltig …`, im
+Bericht unter `load_forecast`: `promotion_method` (`rolling_origin` oder
+`holdout_fallback`), `promotion_origins_valid`, `promotion_origins_archive`
+und `promotion_origins_skipped`. Kosten: 14 zusätzliche Trainings je Lauf.
+
 **Rolling-Origin-Validierung**, 12 Folds à 48 h, roh ohne Korrekturen, `ml`
 gegen `similar_days`. Aufgeschlüsselt nach Tageszeit, Wochentag und Jahreszeit,
 mit einer Empfehlung für `forecast.method`.

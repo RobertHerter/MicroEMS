@@ -36,7 +36,9 @@ def test_holdout_horizon_spans_the_test_window_despite_gaps(monkeypatch):
             self.load_hourly = None
 
         def forecast(self, train, start, horizon, **_kw):
-            gesehen["horizon"] = horizon
+            # nur der Hold-out (erster Aufruf); danach folgen die rollierenden
+            # Urspruenge des Befoerderungsrahmens mit Betriebshorizont
+            gesehen.setdefault("horizon", horizon)
             idx = pd.date_range(pd.Timestamp(start).tz_convert("UTC"),
                                 periods=horizon, freq="15min")
             return pd.Series(480.0, index=idx.tz_convert(tz))
@@ -54,6 +56,8 @@ def test_holdout_horizon_spans_the_test_window_despite_gaps(monkeypatch):
     # das Befoerderungsfenster reicht bis zum letzten Ist-Slot vor ``now``
     assert rahmen.index.max() == hist.index.max()
     assert res["promotion_samples"] == 14 * 96
+    # 60 Tage Historie reichen den rollierenden Urspruengen nicht (Training)
+    assert res["promotion_method"] == "holdout_fallback"
 
 
 def test_horizon_helper_rounds_to_the_slot_grid():

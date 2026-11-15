@@ -305,7 +305,8 @@ def test_save_override_uses_a_unique_temp_file(tmp_path):
     save_override(str(cfg), "optimization.charge_strategy", "peak")
     assert fremd.read_text() == "halb geschrieben von einem anderen Prozess"
     assert sorted(p.name for p in tmp_path.iterdir()) == [
-        "config.yaml", "config_overrides.yaml", "config_overrides.yaml.tmp"]
+        "config.yaml", "config_overrides.yaml", "config_overrides.yaml.lock",
+        "config_overrides.yaml.tmp"]
 
 
 def test_save_override_keeps_a_broken_overlay_for_repair(tmp_path, caplog):

@@ -579,8 +579,103 @@ def _test_horizon_slots(test_start, now, slot_minutes: int) -> int:
     return max(1, int(np.ceil((ende - anfang) / schritt)))
 
 
+def _promotion_origins(now, tz: str, promotion_days: int) -> list:
+    """Urspruenge des Befoerderungsrahmens: die letzten ``promotion_days``
+    VOLLSTAENDIGEN lokalen Kalendertage vor ``now``, je 00:00 Ortszeit.
+
+    Mit ``pd.DateOffset`` statt 24-h-Schritten - sonst rutschen die Urspruenge
+    ueber eine Zeitumstellung hinweg auf 23:00 bzw. 01:00."""
+    heute = pd.Timestamp(now).tz_convert(tz).normalize()
+    tage = max(1, int(promotion_days))
+    return [heute - pd.DateOffset(days=k) for k in range(tage, 0, -1)]
+
+
+def _rolling_promotion_frame(cfg, hist: pd.Series, temp, pv, now,
+                             promotion_days: int = 14,
+                             horizon_hours: int = 48,
+                             min_train_days: int = 60,
+                             archive_reader=None):
+    """Befoerderungsrahmen der Lastkorrektur mit rollierendem Ursprung.
+
+    Je Ursprung (00:00 lokal) wird nur mit Daten VOR dem Ursprung trainiert und
+    ueber den betriebsueblichen Horizont prognostiziert - gewertet wird der
+    erste Kalendertag, damit jeder Ist-Slot genau einmal zaehlt. Zukunftsreihen
+    (Temperatur/PV) kommen wie in ``validate_forecast_series`` nur aus echten
+    Issue-Time-Snapshots; fehlen sie, laeuft der Ursprung ohne Wetter/PV statt
+    mit rueckblickend bekannten Ist-Werten.
+
+    Urspruenge mit zu wenig Training, lueckenhaftem Ist-Tag oder
+    fehlgeschlagener Prognose werden uebersprungen. Rueckgabe: (Rahmen mit
+    ``actual``/``raw``, Info-Dict mit der Zahl gueltiger Urspruenge)."""
+    tz = cfg.general.timezone
+    slot_minutes = int(cfg.general.slot_minutes)
+    freq = pd.Timedelta(minutes=slot_minutes)
+    horizon = pd.Timedelta(hours=horizon_hours)
+    horizon_slots = int(round(horizon_hours * 60.0 / slot_minutes))
+    min_train_slots = int(np.ceil(
+        min_train_days * 24 * cfg.general.slots_per_hour * 0.9))
+    origins = _promotion_origins(now, tz, promotion_days)
+    info = {"origins": len(origins), "valid": 0, "archive": 0,
+            "horizon_hours": int(horizon_hours), "skipped": []}
+    frames = []
+    orig_corr = cfg.forecast.correction_factor
+    try:
+        # Wie im Hold-out: rohes Modell ohne Korrektur und ohne Stundenprofil,
+        # sonst floesse der Champion in die eigene Pruefreihe ein.
+        cfg.forecast.correction_factor = 1.0
+        for origin in origins:
+            tag_ende = origin + pd.DateOffset(days=1)
+            train = hist[hist.index < origin]
+            actual = hist[(hist.index >= origin) & (hist.index < tag_ende)]
+            soll = int(round((tag_ende - origin) / freq))   # 92/96/100 Slots
+            if (len(train) < min_train_slots
+                    or len(actual) < int(np.ceil(soll * 0.9))):
+                info["skipped"].append(origin.strftime("%Y-%m-%d"))
+                continue
+            hist_temp = hist_pv = fut_temp = fut_pv = None
+            futures = None
+            if archive_reader is not None:
+                try:
+                    futures = archive_reader(origin, origin + horizon)
+                except Exception as exc:
+                    print(f"  [Hinweis] Befoerderungsrahmen {origin:%d.%m.}: "
+                          f"Prognose-Archiv nicht lesbar ({exc}) - ohne "
+                          "Wetter/PV.")
+            if futures and futures.get("complete"):
+                hist_temp = temp[temp.index < origin] if temp is not None else None
+                hist_pv = pv[pv.index < origin] if pv is not None else None
+                fut_temp, fut_pv = futures.get("temp"), futures.get("pv")
+            try:
+                fc = LoadForecaster(cfg)
+                fc.load_hourly = None
+                pred = fc.forecast(
+                    train, origin, horizon_slots,
+                    hist_temp=hist_temp, fut_temp=fut_temp,
+                    hist_pv=hist_pv, fut_pv=fut_pv)
+            except Exception as exc:
+                print(f"  [Hinweis] Befoerderungsrahmen {origin:%d.%m.}: "
+                      f"Prognose fehlgeschlagen ({exc}) - uebersprungen.")
+                info["skipped"].append(origin.strftime("%Y-%m-%d"))
+                continue
+            idx = actual.index.intersection(pred.index)
+            frame = pd.DataFrame({"actual": actual.reindex(idx),
+                                  "raw": pred.reindex(idx)}).dropna()
+            if len(frame) < int(np.ceil(soll * 0.9)):
+                info["skipped"].append(origin.strftime("%Y-%m-%d"))
+                continue
+            frames.append(frame)
+            info["valid"] += 1
+            info["archive"] += int(fut_temp is not None or fut_pv is not None)
+    finally:
+        cfg.forecast.correction_factor = orig_corr
+    if not frames:
+        return pd.DataFrame({"actual": [], "raw": []}), info
+    return pd.concat(frames).sort_index(), info
+
+
 def calibrate_load(repo, cfg, now, lookback_days, test_days,
-                   promotion_days=14):
+                   promotion_days=14, promotion_horizon_hours=48,
+                   archive_reader=None):
     use_local = cfg.e3dc_rscp.history_source
     if not use_local and not repo.signal_available("house_consumption"):
         return None
@@ -633,6 +728,39 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days,
     promotion_frame = pd.DataFrame({
         "actual": a[a.index >= promotion_start],
         "raw": p[p.index >= promotion_start]}).dropna()
+
+    # Befoerderungsrahmen mit rollierendem Ursprung. Der Hold-out oben
+    # prognostiziert test_days am Stueck - sein Ende hat 351-365 Tage Vorlauf,
+    # Ist-Temperatur als "Zukunft" und kein 7-Tage-Lag. Fuer die Tabellen
+    # (Stunde/Temperatur) ist das die gewollte Grundlinie, fuer die Frage
+    # "hilft das Profil im Betrieb?" aber das falsche Mass. Der alte Rahmen
+    # bleibt nur als Rueckfall, damit der Sonntagslauf nie daran scheitert.
+    tage = max(1, int(promotion_days))
+    min_gueltig = min(7, (tage + 1) // 2)
+    rollierend = {"origins": tage, "valid": 0, "archive": 0,
+                  "horizon_hours": int(promotion_horizon_hours), "skipped": []}
+    promotion_method = "holdout_fallback"
+    try:
+        roll_frame, rollierend = _rolling_promotion_frame(
+            cfg, hist, temp, pv, now, promotion_days=tage,
+            horizon_hours=promotion_horizon_hours,
+            archive_reader=archive_reader)
+    except Exception as exc:
+        roll_frame = None
+        print(f"  [Hinweis] Befoerderungsrahmen (rollierend) fehlgeschlagen: "
+              f"{exc}")
+    if roll_frame is not None and rollierend["valid"] >= min_gueltig:
+        promotion_frame = roll_frame
+        promotion_method = "rolling_origin"
+        print(f"  Befoerderungsrahmen Last: rollierender Ursprung, "
+              f"{rollierend['valid']}/{rollierend['origins']} Tage gueltig "
+              f"({rollierend['archive']} mit Prognose-Archiv), "
+              f"{rollierend['horizon_hours']} h Horizont, 1. Tag gewertet.")
+    else:
+        print(f"  [Hinweis] Befoerderungsrahmen Last: nur "
+              f"{rollierend['valid']}/{rollierend['origins']} gueltige "
+              f"Urspruenge (mindestens {min_gueltig}) - Rueckfall auf den "
+              f"Hold-out-Rahmen ({len(promotion_frame)} Slots).")
     return {"metrics": m, "hourly": hourly, "daytype": daytype_tab,
             "temp_used": temp is not None, "by_temperature": temp_bins,
             "load_source": ("lokal (RSCP house_load)" if use_local
@@ -642,6 +770,12 @@ def calibrate_load(repo, cfg, now, lookback_days, test_days,
             "suggested_correction_factor": round(
                 m.get("scale_actual_over_pred", 1.0), 4),
             "promotion_samples": int(len(promotion_frame)),
+            "promotion_method": promotion_method,
+            "promotion_origins": int(rollierend["origins"]),
+            "promotion_origins_valid": int(rollierend["valid"]),
+            "promotion_origins_archive": int(rollierend["archive"]),
+            "promotion_origins_skipped": list(rollierend["skipped"]),
+            "promotion_horizon_hours": int(rollierend["horizon_hours"]),
             "_promotion_frame": promotion_frame}
 
 
@@ -779,9 +913,12 @@ def main():
                 cfg.calibration.promotion_days, source=_name)
             if _res:
                 pv_schatten[_name] = _res
+        archiv_leser = _issue_time_archive_reader(cfg)
         load = calibrate_load(
             repo, cfg, now, args.lookback_days, args.test_days,
-            cfg.calibration.promotion_days)
+            cfg.calibration.promotion_days,
+            promotion_horizon_hours=args.val_horizon_h,
+            archive_reader=archiv_leser)
         if args.val_folds > 0:
             print(f"Prognose-Validierung ({args.val_folds} Folds x "
                   f"{args.val_horizon_h} h, ml vs. similar_days) ...")
@@ -792,7 +929,7 @@ def main():
             validation = validate_forecast_series(
                 cfg, v_hist, v_temp, v_pv, now,
                 folds=args.val_folds, horizon_hours=args.val_horizon_h,
-                archive_reader=_issue_time_archive_reader(cfg))
+                archive_reader=archiv_leser)
     finally:
         repo.close()
 

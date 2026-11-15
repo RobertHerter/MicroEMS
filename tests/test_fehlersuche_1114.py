@@ -280,3 +280,71 @@ def test_final_cancel_blocks_following_solves():
     finally:
         opt._solver_shutdown.clear()
         opt.clear_solver_cancel()
+
+
+# ---- Anfangs-SoC bei Zyklen mitten im Slot ----------------------------- #
+def test_soc_is_projected_back_to_slot_start():
+    f = _m._soc_at_slot_start
+    # 9 kW Laden, 13 min im Slot: 1950 Wh sind schon im Mess-SoC enthalten.
+    assert f(10000.0, 9000.0, 13 * 60, 20000.0, 900.0) == pytest.approx(8050.0)
+    # Entladen: der SoC war am Slotbeginn hoeher.
+    assert f(10000.0, -3000.0, 600, 20000.0, 900.0) == pytest.approx(10500.0)
+    # Regulaerer Lauf kurz nach der Marke: unveraendert.
+    assert f(10000.0, 9000.0, 20, 20000.0, 900.0) == 10000.0
+    # Grenzen und ungueltige Werte.
+    assert f(500.0, 9000.0, 800, 20000.0, 900.0) == 0.0
+    assert f(19900.0, -9000.0, 800, 20000.0, 900.0) == 20000.0
+    assert f(10000.0, None, 600, 20000.0, 900.0) == 10000.0
+    assert f(10000.0, float("nan"), 600, 20000.0, 900.0) == 10000.0
+    # Nie mehr als ein ganzer Slot.
+    assert f(10000.0, 4000.0, 5000, 20000.0, 900.0) == pytest.approx(9000.0)
+
+
+# ---- Overlay: Dateisperre ueber Prozessgrenzen -------------------------- #
+def test_overlay_lock_blocks_other_processes_and_is_reentrant(tmp_path):
+    import fcntl
+    from ems import config as cfgmod
+    overlay = str(tmp_path / "config_overrides.yaml")
+    with cfgmod.overlay_locked(overlay):
+        with cfgmod.overlay_locked(overlay):        # Wiedereintritt haengt nicht
+            pass
+        other = open(overlay + ".lock", "a+")       # wie ein zweiter Prozess
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            other.close()
+    other = open(overlay + ".lock", "a+")           # danach wieder frei
+    try:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        other.close()
+
+
+def test_save_override_roundtrip_with_file_lock(tmp_path):
+    from ems import config as cfgmod
+    cfg_path = str(tmp_path / "config.yaml")
+    open(cfg_path, "w").write("general: {}\n")
+    cfgmod.save_override(cfg_path, "optimization.charge_strategy", "late")
+    cfgmod.save_override(cfg_path, "pv_model.p10_uncertainty", 0.3)
+    import yaml
+    data = yaml.safe_load(open(cfgmod._overrides_path(cfg_path)))
+    assert data["optimization"]["charge_strategy"] == "late"
+    assert data["pv_model"]["p10_uncertainty"] == 0.3
+
+
+# ---- Temperatur-Alter im Plan ------------------------------------------- #
+def test_plan_start_temperature_respects_age_limit():
+    from types import SimpleNamespace
+
+    class Pub:
+        def get_load_temp(self, topic, max_age_minutes=None):
+            return None if max_age_minutes else 27.5   # Wert ist veraltet
+
+    load = SimpleNamespace(enabled=True, type="thermal", name="Pool",
+                           temp_signal="pool/temp", temp_max_age_minutes=45.0)
+    cfg = SimpleNamespace(controllable_loads=[load])
+    fn = _m._read_load_state
+    assert fn(cfg, Pub()) is None
+    load.temp_max_age_minutes = 0.0                    # Grenze aus -> alter Wert
+    assert fn(cfg, Pub()) == {"Pool": 27.5}

@@ -267,9 +267,9 @@ class HomeyMqttPublisher:
 
         Unendliche/unplausible Werte gelten als "keine Temperatur". Mit
         ``max_age_minutes`` > 0 zusaetzlich jeder Wert, der aelter ist (bzw.
-        dessen Alter unbekannt ist). Ohne Angabe wird das Alter NICHT geprueft:
-        Startwert des Optimierers und Verlaufsanzeige kommen mit dem letzten
-        bekannten Wert eines traegen Speichers besser zurecht als ohne."""
+        dessen Alter unbekannt ist). Ohne Angabe wird das Alter NICHT geprueft
+        (Verlaufsanzeige); Heiz-Freigabe und Startwert des Optimierers
+        uebergeben die Altersgrenze der Last."""
         value = self.load_temps.get(topic)
         if value is None:
             return None

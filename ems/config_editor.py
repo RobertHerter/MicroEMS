@@ -13,7 +13,7 @@ from datetime import datetime
 
 import yaml
 
-from .config import LOAD_OVERRIDE_KEYS, OVERLAY_LOCK
+from .config import LOAD_OVERRIDE_KEYS, OVERLAY_LOCK, overlay_locked
 
 log = logging.getLogger("ems.config_editor")
 
@@ -616,7 +616,7 @@ def save_document(config_path: str, document, expected_revision: str) -> dict:
         document = {k: v for k, v in document.items()
                     if k != "controllable_loads_overrides"}
     validation = validate_document(document)
-    with _SAVE_LOCK:
+    with overlay_locked(_overrides_path(config_path)):
         current_revision = _revision(config_path)
         if expected_revision != current_revision:
             raise RuntimeError(

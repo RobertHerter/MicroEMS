@@ -1999,6 +1999,31 @@ def _now_slot(config: Config) -> pd.Timestamp:
     return floor_time(pd.Timestamp.now(tz=config.general.timezone), freq)
 
 
+SLOT_SOC_MIN_ELAPSED_S = 120.0
+
+
+def _soc_at_slot_start(soc_wh: float, battery_w, elapsed_s: float,
+                       capacity_wh: float, slot_s: float) -> float:
+    """Mess-SoC (Wh) auf den Beginn des laufenden Slots zurueckrechnen.
+
+    battery_w > 0 = Laden. Naeherung mit der aktuellen Akkuleistung ueber die
+    verstrichene Slotzeit; unter ``SLOT_SOC_MIN_ELAPSED_S`` (regulaerer Lauf
+    kurz nach der Marke) und ohne gueltige Leistung bleibt der Wert
+    unveraendert. Ergebnis auf 0..Kapazitaet begrenzt."""
+    try:
+        power = float(battery_w)
+        elapsed = float(elapsed_s)
+    except (TypeError, ValueError):
+        return soc_wh
+    if not (np.isfinite(power) and np.isfinite(elapsed)):
+        return soc_wh
+    if elapsed < SLOT_SOC_MIN_ELAPSED_S:
+        return soc_wh
+    elapsed = min(elapsed, float(slot_s))
+    start = soc_wh - power * elapsed / 3600.0
+    return float(min(max(start, 0.0), float(capacity_wh)))
+
+
 def _control_slot(config: Config, plan_start) -> pd.Timestamp:
     """Der Slot, der beim ANWENDEN des Befehls gilt - Wanduhr, nicht Zyklusbeginn.
 
@@ -2465,6 +2490,24 @@ def run_once(config: Config, publisher: HomeyMqttPublisher | None = None,
             log.warning("Kein Haus-SoC gefunden – nehme min_soc an.")
             soc_pct = config.house_battery.min_soc_percent
         init_house_soc = soc_pct / 100.0 * config.house_battery.capacity_wh
+        # Der Plan rechnet Slot 0 als GANZEN Slot ab Slotbeginn; der SoC ist
+        # aber "jetzt" gemessen. Laeuft der Zyklus mitten im Slot (manueller
+        # Recalc, Dashboard-Aktion, langsamer Zyklus), wird der Mess-SoC auf
+        # den Slotbeginn zurueckgerechnet - sonst zaehlt die schon geflossene
+        # Akkuenergie doppelt (bei 9 kW Netzladen um :13 rund 2 kWh).
+        if live and live.get("soc_percent") is not None:
+            elapsed_s = (pd.Timestamp.now(tz=config.general.timezone)
+                         - now).total_seconds()
+            corrected = _soc_at_slot_start(
+                init_house_soc, live.get("battery_w"), elapsed_s,
+                config.house_battery.capacity_wh,
+                config.general.slot_minutes * 60.0)
+            if abs(corrected - init_house_soc) >= 50.0:
+                log.info("Anfangs-SoC auf den Slotbeginn zurückgerechnet: "
+                         "%.0f -> %.0f Wh (%.0f s im Slot, Akku %.0f W).",
+                         init_house_soc, corrected, elapsed_s,
+                         float(live.get("battery_w") or 0.0))
+            init_house_soc = corrected
 
         # Anfangs-SoC Auto (optional). Anwesenheit: bevorzugt über den Wallbox-
         # Status (Signal vehicle_connected, 0/1) - ein Tage alter SoC-Wert in
@@ -3691,9 +3734,19 @@ def _read_load_state(config, publisher):
     st = {}
     for ld in getattr(config, "controllable_loads", []):
         if ld.enabled and ld.type == "thermal" and ld.temp_signal:
-            t = publisher.get_load_temp(ld.temp_signal)
+            # Mit Altersgrenze (wie die Heiz-Freigabe): ein verstummter Sensor
+            # darf den Plan nicht dauerhaft auf seinem letzten Wert starten
+            # lassen. Ohne frischen Wert startet der Optimierer von target_c.
+            t = publisher.get_load_temp(
+                ld.temp_signal,
+                max_age_minutes=getattr(ld, "temp_max_age_minutes", None))
             if t is not None and np.isfinite(float(t)):
                 st[ld.name] = float(t)
+            elif publisher.get_load_temp(ld.temp_signal) is not None:
+                log.warning(
+                    "Temperatur von %s ist aelter als %s min - der Plan "
+                    "startet von der Solltemperatur.", ld.name,
+                    getattr(ld, "temp_max_age_minutes", "?"))
     return st or None
 
 

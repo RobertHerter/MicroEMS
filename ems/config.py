@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import tempfile
+import contextlib
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, time
@@ -27,6 +28,43 @@ log = logging.getLogger("ems.config")
 # Sperre ueberschrieb der spaetere Schreiber die Aenderung des frueheren.
 # RLock, damit ein Schreiber, der die Sperre haelt, save_override rufen darf.
 OVERLAY_LOCK = threading.RLock()
+_OVERLAY_FLOCK = {"depth": 0, "fh": None}
+
+
+@contextlib.contextmanager
+def overlay_locked(overlay_path: str):
+    """Lesen-Aendern-Schreiben des Overlays absichern - auch UEBER PROZESSE.
+
+    OVERLAY_LOCK schuetzt nur innerhalb eines Prozesses. Dienst (Dashboard-
+    Schalter) und Kalibrier-Timer sind getrennte Prozesse: lasen beide das
+    Overlay, aenderten je einen Wert und schrieben zurueck, ging eine der
+    beiden Aenderungen verloren. Deshalb zusaetzlich eine Dateisperre (flock)
+    auf ``<overlay>.lock``. Wiedereintritt im selben Thread ist erlaubt; die
+    Dateisperre wird dabei nur einmal genommen. Ist flock nicht verfuegbar
+    (fremdes Dateisystem, Windows), bleibt es bei der Prozesssperre."""
+    with OVERLAY_LOCK:
+        outer = _OVERLAY_FLOCK["depth"] == 0
+        if outer:
+            fh = None
+            try:
+                import fcntl
+                fh = open(f"{overlay_path}.lock", "a+")
+                fcntl.flock(fh, fcntl.LOCK_EX)
+            except (ImportError, OSError) as exc:
+                if fh is not None:
+                    fh.close()
+                    fh = None
+                log.debug("Overlay-Dateisperre nicht verfuegbar (%s).", exc)
+            _OVERLAY_FLOCK["fh"] = fh
+        _OVERLAY_FLOCK["depth"] += 1
+        try:
+            yield
+        finally:
+            _OVERLAY_FLOCK["depth"] -= 1
+            if outer:
+                fh, _OVERLAY_FLOCK["fh"] = _OVERLAY_FLOCK["fh"], None
+                if fh is not None:
+                    fh.close()      # gibt die Dateisperre frei
 
 _BOOL_TRUE = ("true", "ja", "yes", "on", "1")
 _BOOL_FALSE = ("false", "nein", "no", "off", "0")
@@ -1388,7 +1426,7 @@ def save_override(config_path: str, dotted_key: str, value) -> None:
     Config-Editor). Ein unlesbares Overlay wird nicht ueberschrieben, siehe
     _read_overlay_for_update."""
     p = _overrides_path(config_path)
-    with OVERLAY_LOCK:
+    with overlay_locked(p):
         data = _read_overlay_for_update(p)
         node = data
         parts = dotted_key.split(".")
