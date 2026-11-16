@@ -1,0 +1,9 @@
+[Unit]
+Description=Export MicroEMS E3DC history to EOS
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ems/.venv/bin/python /opt/eos/scripts/e3dc_to_eos.py --hours 720 --optimize --optimization-timeout 600 --archive-system eos_import
+TimeoutStartSec=900

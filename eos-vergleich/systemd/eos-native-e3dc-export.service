@@ -1,0 +1,9 @@
+[Unit]
+Description=Feed E3DC measurements to native EOS and refresh native forecasts
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ems/.venv/bin/python /opt/eos/scripts/e3dc_to_eos.py --url http://127.0.0.1:8523 --hours 720 --measurements-only --refresh-predictions --optimize --optimization-timeout 600 --archive-system eos_native
+TimeoutStartSec=900

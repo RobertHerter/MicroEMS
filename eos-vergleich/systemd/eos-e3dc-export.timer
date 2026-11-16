@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh EOS comparison data every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=eos-e3dc-export.service
+
+[Install]
+WantedBy=timers.target

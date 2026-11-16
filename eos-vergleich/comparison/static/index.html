@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#08131d">
+    <title>EMS Leitstand · Drei Fahrpläne</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Zum Vergleich springen</a>
+    <div class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">homePi / Vergleichsleitstand</p>
+          <h1>Drei Fahrpläne.<br><span>Ein Haus.</span></h1>
+        </div>
+        <div class="mast-meta">
+          <div class="live-mark"><span aria-hidden="true"></span> Lokale Live-Daten</div>
+          <time id="updated-at">wird geladen …</time>
+          <button id="refresh" class="refresh" type="button">Neu laden <span aria-hidden="true">↻</span></button>
+        </div>
+      </header>
+
+      <main id="main">
+        <section class="system-rail" aria-label="Status der Systeme" id="system-rail"></section>
+
+        <section class="scoreboard" aria-labelledby="score-title">
+          <div class="section-head">
+            <div>
+              <p class="section-index">01 / Bilanz</p>
+              <h2 id="score-title">Was kostet der Fahrplan?</h2>
+            </div>
+            <p class="section-note">48 Stunden · gemeinsame Betrachtung</p>
+          </div>
+          <div class="score-table-wrap">
+            <table class="score-table" id="score-table">
+              <thead><tr><th>System</th><th>Saldo</th><th>Bezug brutto</th><th>Einspeisung brutto</th><th>PV</th><th>Last</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="chart-section" aria-labelledby="dispatch-title">
+          <div class="section-head">
+            <div>
+              <p class="section-index">02 / Fahrplan</p>
+              <h2 id="dispatch-title">Wo trennen sich die Wege?</h2>
+            </div>
+            <div class="legend" aria-label="Legende">
+              <span><i class="legend-line microems"></i>MicroEMS</span>
+              <span><i class="legend-line eos-import"></i>EOS Import</span>
+              <span><i class="legend-line eos-native"></i>EOS nativ</span>
+            </div>
+          </div>
+          <div class="chart-frame">
+            <div class="chart-caption">
+              <div><strong>Netto-Netzleistung</strong><span>Bruttobezug minus Bruttoeinspeisung</span></div>
+              <output id="grid-readout">Zeiger über die Kurve bewegen</output>
+            </div>
+            <div class="chart-host" id="grid-chart" role="img" aria-label="Netzleistung der drei Systeme über 48 Stunden"></div>
+          </div>
+          <div class="intent-grid" id="intent-grid" aria-label="Batterieabsichten der drei Systeme"></div>
+        </section>
+
+        <section class="forecast-section" aria-labelledby="forecast-title">
+          <div class="section-head">
+            <div>
+              <p class="section-index">03 / Annahmen</p>
+              <h2 id="forecast-title">Drei Blicke in dieselbe Zukunft</h2>
+            </div>
+            <div class="metric-tabs" role="tablist" aria-label="Prognosegröße">
+              <button role="tab" aria-selected="true" data-metric="pvKw">PV</button>
+              <button role="tab" aria-selected="false" data-metric="loadKw">Last</button>
+              <button role="tab" aria-selected="false" data-metric="priceCt">Preis</button>
+              <button role="tab" aria-selected="false" data-metric="socPct">SOC</button>
+            </div>
+          </div>
+          <div class="forecast-layout">
+            <div class="chart-frame compact">
+              <div class="chart-caption">
+                <div><strong id="forecast-label">PV-Prognose</strong><span id="forecast-unit">kW</span></div>
+                <output id="forecast-readout"></output>
+              </div>
+              <div class="chart-host" id="forecast-chart" role="img" aria-label="Vergleich der Prognosen"></div>
+            </div>
+            <aside class="agreement" aria-label="Übereinstimmung">
+              <p>Gemeinsame Batterieabsicht</p>
+              <strong id="agreement-value">–</strong>
+              <div class="agreement-bar"><span id="agreement-bar"></span></div>
+              <small id="agreement-copy">wird berechnet</small>
+            </aside>
+          </div>
+        </section>
+
+        <section class="quality-section" aria-labelledby="quality-title">
+          <div class="section-head">
+            <div>
+              <p class="section-index">04 / Rückblick</p>
+              <h2 id="quality-title">Wer lag näher?</h2>
+            </div>
+            <p class="section-note">Mitternachtsfahrplan · 00:00 → Ist</p>
+          </div>
+          <div class="quality-board">
+            <div class="quality-verdict">
+              <p>Abstand zur Wirklichkeit</p>
+              <strong id="quality-verdict">wird berechnet</strong>
+              <span id="quality-copy">SOC und Netzbezug abgeschlossener Tage</span>
+            </div>
+            <div class="quality-ranking" id="quality-ranking" aria-label="Rangfolge der Fahrplanqualität"></div>
+          </div>
+          <div class="quality-history">
+            <div class="quality-history-head">
+              <div><strong>Abgeschlossene Tagesproben</strong><span>Bezugs-MAE in kW · SOC-MAE in Prozentpunkten</span></div>
+              <span id="quality-window"></span>
+            </div>
+            <div class="quality-table-wrap">
+              <table class="quality-table">
+                <thead>
+                  <tr><th>Tag / Ist</th><th>MicroEMS</th><th>EOS Import</th><th>EOS nativ</th></tr>
+                </thead>
+                <tbody id="quality-days"></tbody>
+              </table>
+            </div>
+          </div>
+          <p class="quality-method" id="quality-method"></p>
+        </section>
+
+        <section class="divergence-section" aria-labelledby="divergence-title">
+          <div class="section-head">
+            <div>
+              <p class="section-index">05 / Prüfstellen</p>
+              <h2 id="divergence-title">Hier lohnt der zweite Blick</h2>
+            </div>
+            <p class="section-note">größte Spreizung der Netzfahrpläne</p>
+          </div>
+          <div class="divergence-list" id="divergence-list"></div>
+        </section>
+
+        <section class="method-note" aria-labelledby="method-title">
+          <p class="section-index">06 / Lesart</p>
+          <h2 id="method-title">Fair vergleichen</h2>
+          <div class="method-grid" id="method-grid"></div>
+          <p class="raster-note" id="raster-note"></p>
+        </section>
+      </main>
+
+      <footer>
+        <span>MicroEMS × Akkudoktor EOS</span>
+        <span>Read-only · keine Steuerbefehle</span>
+      </footer>
+    </div>
+    <div class="loading" id="loading" aria-live="polite"><span></span>Daten werden synchronisiert</div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

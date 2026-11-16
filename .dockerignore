@@ -23,3 +23,6 @@ docker-compose.yml
 Dockerfile
 .dockerignore
 *.md
+
+# EOS-Vergleichsaufbau (laeuft ausserhalb des Images)
+eos-vergleich

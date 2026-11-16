@@ -1,0 +1,21 @@
+[Unit]
+Description=MicroEMS and Akkudoktor EOS comparison dashboard
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/eos/comparison
+ExecStart=/usr/bin/python3 /opt/eos/comparison/server.py
+Environment=EMS_COMPARE_HOST=0.0.0.0
+Environment=EMS_COMPARE_PORT=8530
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/eos/comparison/snapshots
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

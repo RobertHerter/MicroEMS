@@ -1,0 +1,31 @@
+name: eos-native
+
+networks:
+  default:
+    name: eos-native
+
+services:
+  eos:
+    container_name: native-eos
+    image: akkudoktor/eos:latest
+    build: !reset null
+    ports: !override
+      - "127.0.0.1:8523:8503"
+      - "127.0.0.1:8524:8504"
+    volumes:
+      - /opt/eos/data-native:/data:rw
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    environment:
+      EOS_CONFIG_DIR: /data/config
+      EOS_EMS__MODE: DISABLED
+      EOS_EMS__INTERVAL: "900"
+      EOS_SERVER__STARTUP_EOSDASH: "false"
+      EOS_SERVER__EOSDASH_SESSKEY: "native-eos-comparison-no-proxy"
+    # Ohne Begrenzung wuchs das json-Log von microems-eos in 8 Tagen auf
+    # 10,8 GB (14.11.2026). Wirkt ab dem naechsten Neuanlegen des Containers.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh native EOS data every 15 minutes
+
+[Timer]
+OnCalendar=*:1/15
+Persistent=true
+Unit=eos-native-e3dc-export.service
+
+[Install]
+WantedBy=timers.target
