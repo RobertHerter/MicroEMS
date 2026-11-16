@@ -3,7 +3,7 @@
 # Reproduzierbare Installation (exakt getestete Versionen): pip install -r requirements.lock
 
 PyYAML>=6.0.3
-pandas>=3.1.0
+pandas>=3.1.1
 numpy>=2.5.4
 python-dateutil>=2.9.0.post0
 
@@ -30,7 +30,7 @@ PuLP>=4.2.0,<5
 highspy>=1.16.0
 
 # Feiertage (Verbrauchsprognose)
-holidays>=0.107
+holidays>=0.108
 
 # InfluxDB – beide Clients, je nach konfigurierter Version wird einer genutzt
 influxdb>=5.3.2          # InfluxDB 1.x (InfluxQL)
@@ -46,7 +46,7 @@ plotly>=7.1.0
 scikit-learn>=1.9.1
 # Begrenzt die OpenMP-Threads des Preismodell-Trainings im Hintergrund
 # (ems/main.py). Kommt mit scikit-learn mit, wird aber direkt importiert.
-threadpoolctl>=3.7.0
+threadpoolctl>=3.8.0
 
 # Optionale E3DC-Anbindung per RSCP
 pye3dc>=0.10.0

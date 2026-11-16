@@ -7,11 +7,23 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # holidays (bis einschliesslich 0.108) verlangt python-dateutil<3; ein
+      # Sprung auf 3.x/4.x ist damit nicht aufloesbar (PR #55, 16.11.2026).
+      # Eintrag entfernen, sobald holidays die Obergrenze aufhebt.
+      - dependency-name: "python-dateutil"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Python 3.15: fuer PyYAML 6.0.3 gibt es noch kein fertiges Paket
+      # (cp315), der Image-Build scheitert (PR #54, 16.11.2026). Eintrag
+      # entfernen, sobald PyYAML Pakete fuer 3.15 veroeffentlicht.
+      - dependency-name: "python"
+        versions: [">= 3.15.a, < 3.16"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
