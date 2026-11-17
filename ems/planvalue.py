@@ -58,7 +58,10 @@ def _lp_solver():
             _LP_SOLVER = eingebaut(msg=0)
         else:
             # PuLP 4 ohne System-CBC: HiGHS ist ohnehin installiert.
-            _LP_SOLVER = pulp.HiGHS(msg=False)
+            # threads=1 wie der Optimierer: HiGHS teilt sich je Prozess einen
+            # Thread-Pool; mit "automatisch" angelegt, scheiterte danach jeder
+            # Optimiererlauf mit "Not Solved".
+            _LP_SOLVER = pulp.HiGHS(msg=False, threads=1)
     return _LP_SOLVER
 
 

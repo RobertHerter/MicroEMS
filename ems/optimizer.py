@@ -136,6 +136,8 @@ ZIEL_TOLERANZ_CT = 0.01
 # HiGHS kann einen laufenden Solve aus einem zweiten Thread sauber abbrechen.
 # Das ist wichtig fuer systemctl stop/restart: ohne cancelSolve blieb der Dienst
 # bis zum Solver-Zeitlimit im nativen C++-Aufruf haengen.
+HIGHS_THREADS = 1
+
 _solver_cancel = threading.Event()
 _solver_shutdown = threading.Event()
 _solver_active = threading.Event()
@@ -394,6 +396,11 @@ class _WarmHiGHS(pulp.HiGHS):
     gelieferten Werten, wird ohne Startlösung neu gerechnet (Warnung im Log)."""
 
     def __init__(self, warm_values=None, **kwargs):
+        # HiGHS teilt sich je PROZESS einen Thread-Pool. Ist er einmal mit
+        # anderer Thread-Zahl angelegt, verweigert jeder spätere Lauf mit
+        # threads=1 die Arbeit und kommt ohne Lösung zurück ("Not Solved").
+        # Darum rechnet hier alles mit einem Thread, auch ohne Angabe.
+        kwargs.setdefault("threads", HIGHS_THREADS)
         super().__init__(**kwargs)
         self.warm_values = warm_values or {}
 
@@ -434,10 +441,20 @@ class _WarmHiGHS(pulp.HiGHS):
 
         watcher = threading.Thread(target=_cancel_watcher,
                                    name="ems-solver-cancel", daemon=True)
+        # Ohne diesen Schalter setzt cancelSolve() in highspy nur ein Flag,
+        # das niemand liest - der Lauf rechnete bis zum Zeitlimit weiter.
+        try:
+            lp.solverModel.HandleUserInterrupt = True
+        except Exception as exc:   # pragma: no cover - defensiv
+            log.debug("Solver-Abbruch nicht einschaltbar (%s).", exc)
         _solver_active.set()
         watcher.start()
         try:
             super().callSolver(lp)
+            if _thread_pool_blockiert(lp.solverModel):
+                log.warning("HiGHS: Thread-Pool des Prozesses war mit anderer "
+                            "Thread-Zahl angelegt - zurückgesetzt, rechne neu.")
+                super().callSolver(lp)
             if not _solver_cancel.is_set():
                 self._pruefe_ziel(lp, mit_start)
         finally:
@@ -466,6 +483,22 @@ class _WarmHiGHS(pulp.HiGHS):
             log.warning("HiGHS: Zielwert passt auch kalt nicht zur Lösung "
                         "(Abweichung %.2f ct) - Plan prüfen.",
                         _highs_ziel_abweichung(h) or 0.0)
+
+
+def _thread_pool_blockiert(h) -> bool:
+    """True, wenn der Lauf gar nicht begann, weil ein fremder HiGHS-Aufruf den
+    prozessweiten Thread-Pool mit anderer Thread-Zahl angelegt hat. Der Pool
+    wird dann zurückgesetzt, damit der nächste Lauf rechnen kann."""
+    try:
+        import highspy
+        if h.getModelStatus() != highspy.HighsModelStatus.kNotset:
+            return False
+        if h.getNumCol() == 0:
+            return False
+        highspy.Highs.resetGlobalScheduler(True)
+        return True
+    except Exception:   # pragma: no cover - defensiv (u. a. Test-Attrappen)
+        return False
 
 
 def _highspy_version(h) -> str:
