@@ -15,7 +15,7 @@ python-dateutil>=2.9.0.post0
 # System-CBC (Paket coinor-cbc), der Produktivpfad ist ohnehin HiGHS.
 # Seit 09.11.2026 mindestens 4.2.0: 13 echte Laeufe unter 4.0.0 und 4.2.0
 # bitgleich (Plan und Kosten).
-PuLP>=4.2.0,<5
+PuLP>=4.3.1,<5
 # HiGHS ist der PRODUKTIV genutzte Solver: schneller als das gebuendelte CBC und
 # mit festem Seed deterministisch (gleicher Input -> gleicher Plan). Darauf bauen
 # Plan-Stabilitaet, Warmstart-Artefakt-Erkennung und der Kalt-Resolve auf. Fehlt
